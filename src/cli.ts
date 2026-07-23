@@ -19,6 +19,7 @@ import { daemonCommand } from './commands/daemon.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { homeCommand } from './commands/home.js';
 import { setupCommand } from './commands/setup.js';
+import { editorCommand } from './commands/editor.js';
 import { CasError } from './util/errors.js';
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -178,6 +179,14 @@ program
   .option('--shell <shell>', 'powershell or posix (defaults to your platform)')
   .action((opts: { profile?: string; shell?: string }) => {
     process.exitCode = offCommand(context(), opts);
+  });
+
+program
+  .command('editor [action]')
+  .description('make your editor (Cursor/VS Code) launch Claude through ccx: on|off')
+  .option('--editor <name>', 'cursor or vscode (defaults to cursor)')
+  .action((action: string | undefined, opts: { editor?: string }) => {
+    process.exitCode = editorCommand(context(), action, opts);
   });
 
 program

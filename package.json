@@ -8,7 +8,8 @@
   },
   "bin": {
     "ccx": "dist/cli.js",
-    "claude-auto-switch": "dist/cli.js"
+    "claude-auto-switch": "dist/cli.js",
+    "ccx-claude": "dist/editor-cli.js"
   },
   "files": [
     "dist",
