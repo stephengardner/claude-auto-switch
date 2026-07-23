@@ -9,6 +9,29 @@ function resolveEditor(explicit?: string): Editor {
   return explicit === 'vscode' ? 'vscode' : 'cursor';
 }
 
+export interface EditorResult {
+  ok: boolean;
+  message: string;
+}
+
+/** Point one editor at the active ccx account (reused by `ccx on` and `ccx editor on`). */
+export function enableEditor(context: CliContext, editor: Editor): EditorResult {
+  if (!syncEditorJunctionToActive(context)) {
+    return { ok: false, message: 'no active account yet; run `ccx add <name>` first' };
+  }
+  const r = installEditorEnvVar(editor, CONFIG_DIR_VAR, editorJunctionPath(context), context.ctx);
+  return r.ok
+    ? { ok: true, message: `${editor}: will use your active ccx account (restart ${editor})` }
+    : { ok: false, message: r.reason };
+}
+
+/** Remove ccx from one editor. */
+export function disableEditor(context: CliContext, editor: Editor): EditorResult {
+  const r = uninstallEditorEnvVar(editor, CONFIG_DIR_VAR, context.ctx);
+  removeEditorJunction(context);
+  return { ok: r.ok, message: r.ok ? `${editor}: removed ccx (restart ${editor})` : r.reason };
+}
+
 /**
  * `ccx editor on|off`: make Cursor / VS Code use your active ccx account.
  *
@@ -23,25 +46,7 @@ export function editorCommand(
   opts: { editor?: string } = {},
 ): number {
   const editor = resolveEditor(opts.editor);
-
-  if (action === 'off') {
-    const r = uninstallEditorEnvVar(editor, CONFIG_DIR_VAR, context.ctx);
-    removeEditorJunction(context);
-    context.out(r.ok ? `removed ccx from ${editor} (${r.path})` : r.reason);
-    if (r.ok) context.out(`restart ${editor} to apply.`);
-    return r.ok ? 0 : 1;
-  }
-
-  if (!syncEditorJunctionToActive(context)) {
-    context.out('no active account yet. Run `ccx add <name>` (twice), then `ccx editor on`.');
-    return 1;
-  }
-  const r = installEditorEnvVar(editor, CONFIG_DIR_VAR, editorJunctionPath(context), context.ctx);
-  if (!r.ok) {
-    context.out(r.reason);
-    return 1;
-  }
-  context.out(`${editor} will now use your active ccx account, and follow switches.`);
-  context.out(`set in ${r.path}. Restart ${editor} to apply.`);
-  return 0;
+  const r = action === 'off' ? disableEditor(context, editor) : enableEditor(context, editor);
+  context.out(r.message);
+  return r.ok ? 0 : 1;
 }

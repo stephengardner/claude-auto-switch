@@ -165,19 +165,21 @@ program
 
 program
   .command('on')
-  .description('install the transparent claude shim into your shell profile')
+  .description('set up ccx everywhere: transparent `claude` in the shell + your editors')
   .option('--profile <path>', 'profile path (defaults to your $PROFILE / rc file)')
   .option('--shell <shell>', 'powershell or posix (defaults to your platform)')
-  .action((opts: { profile?: string; shell?: string }) => {
+  .option('--no-editor', 'set up the terminal only, not editors')
+  .action((opts: { profile?: string; shell?: string; editor?: boolean }) => {
     process.exitCode = onCommand(context(), opts);
   });
 
 program
   .command('off')
-  .description('remove the transparent claude shim')
+  .description('remove ccx from your shell and editors')
   .option('--profile <path>', 'profile path (defaults to your $PROFILE / rc file)')
   .option('--shell <shell>', 'powershell or posix (defaults to your platform)')
-  .action((opts: { profile?: string; shell?: string }) => {
+  .option('--no-editor', 'remove from the terminal only')
+  .action((opts: { profile?: string; shell?: string; editor?: boolean }) => {
     process.exitCode = offCommand(context(), opts);
   });
 

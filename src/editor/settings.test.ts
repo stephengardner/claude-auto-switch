@@ -1,10 +1,14 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   editorSettingsPath,
   setWrapperSetting,
   clearWrapperSetting,
   setEnvVar,
   clearEnvVar,
+  detectEditors,
   WRAPPER_KEY,
   ENV_KEY,
 } from './settings.js';
@@ -42,6 +46,16 @@ describe('wrapper setting merge', () => {
     const next = clearWrapperSetting({ [WRAPPER_KEY]: '/x', 'editor.fontSize': 14 });
     expect(next[WRAPPER_KEY]).toBeUndefined();
     expect(next['editor.fontSize']).toBe(14);
+  });
+});
+
+describe('detectEditors', () => {
+  it('reports only editors whose user folder exists', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-det-'));
+    const c = { platform: 'linux' as const, env: { HOME: home } };
+    expect(detectEditors(c)).toEqual([]);
+    mkdirSync(path.dirname(editorSettingsPath('cursor', c)), { recursive: true });
+    expect(detectEditors(c)).toEqual(['cursor']);
   });
 });
 

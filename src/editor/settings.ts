@@ -1,7 +1,15 @@
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { homeDir, type PathCtx } from '../config/paths.js';
 
 export type Editor = 'cursor' | 'vscode';
+
+/** Editors that appear to be installed (their per-user settings folder exists). */
+export function detectEditors(c: PathCtx = {}): Editor[] {
+  return (['cursor', 'vscode'] as Editor[]).filter((e) =>
+    existsSync(path.dirname(editorSettingsPath(e, c))),
+  );
+}
 
 /** Folder name each editor uses under the per-user config location. */
 const APP_DIR: Record<Editor, string> = { cursor: 'Cursor', vscode: 'Code' };

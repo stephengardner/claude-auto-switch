@@ -1,11 +1,15 @@
 import { installShim, uninstallShim, type ShellKind } from '../shell/install-shim.js';
 import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-path.js';
+import { detectEditors } from '../editor/settings.js';
+import { enableEditor, disableEditor } from './editor.js';
 import type { CliContext } from '../context.js';
 
 export interface ShimOptions {
   profile?: string;
   /** 'powershell' or 'posix'; defaults to the platform. */
   shell?: string;
+  /** Set false to skip setting up installed editors (--no-editor). */
+  editor?: boolean;
 }
 
 function resolveTarget(
@@ -25,26 +29,40 @@ function resolveTarget(
   return { shell, profilePath };
 }
 
-/** Install the transparent `claude` shim into the shell profile. */
+/**
+ * One-command setup: install the transparent `claude` shim in the shell AND, for
+ * any editor you have installed, point it at your active ccx account. Pass
+ * `editor: false` (--no-editor) to set up the terminal only.
+ */
 export function onCommand(context: CliContext, options: ShimOptions = {}): number {
   const { shell, profilePath } = resolveTarget(context, options);
   if (installShim(profilePath, shell) === 'installed') {
-    context.out(`transparent claude shim installed in ${profilePath}`);
+    context.out(`terminal: transparent \`claude\` installed in ${profilePath}`);
     context.out(
-      shell === 'powershell'
-        ? 'reload your shell (or run: . $PROFILE) to activate it'
-        : 'reload your shell (or source the profile) to activate it',
+      shell === 'powershell' ? '  reload your shell (or run: . $PROFILE)' : '  reload your shell',
     );
   } else {
-    context.out(`shim already present in ${profilePath}`);
+    context.out(`terminal: shim already present in ${profilePath}`);
+  }
+
+  if (options.editor !== false) {
+    for (const editor of detectEditors(context.ctx)) {
+      context.out(enableEditor(context, editor).message);
+    }
   }
   return 0;
 }
 
-/** Remove the transparent `claude` shim from the shell profile. */
+/** Remove the shim from the shell, and ccx from any installed editors. */
 export function offCommand(context: CliContext, options: ShimOptions = {}): number {
   const { profilePath } = resolveTarget(context, options);
   const result = uninstallShim(profilePath);
-  context.out(result === 'removed' ? `shim removed from ${profilePath}` : `no shim found in ${profilePath}`);
+  context.out(result === 'removed' ? `terminal: shim removed from ${profilePath}` : `terminal: no shim found`);
+
+  if (options.editor !== false) {
+    for (const editor of detectEditors(context.ctx)) {
+      context.out(disableEditor(context, editor).message);
+    }
+  }
   return 0;
 }
