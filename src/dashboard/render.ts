@@ -28,6 +28,8 @@ export interface RenderOptions {
   color?: boolean;
   /** Interactive key hints in the footer (off for a plain one-shot print). */
   interactive?: boolean;
+  /** Index of the currently-selected row (for the live cursor). */
+  selected?: number;
 }
 
 const ESC = String.fromCharCode(27);
@@ -69,18 +71,20 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const nameWidth = Math.max(7, ...accounts.map((a) => a.name.length));
   const emailWidth = Math.max(5, ...accounts.map((a) => (a.email ?? '').length));
 
+  // Two-char gutter: selection cursor (>) then active marker (*).
   const header = paint(
-    `  ${'ACCOUNT'.padEnd(nameWidth)}  ${'EMAIL'.padEnd(emailWidth)}  PLAN   STATUS`,
+    `   ${'ACCOUNT'.padEnd(nameWidth)}  ${'EMAIL'.padEnd(emailWidth)}  PLAN   STATUS`,
     codes.dim,
     color,
   );
 
-  const rows = accounts.map((a) => {
-    const marker = a.active ? paint('*', codes.cyan, color) : ' ';
+  const rows = accounts.map((a, i) => {
+    const sel = i === options.selected ? paint('>', codes.cyan, color) : ' ';
+    const act = a.active ? paint('*', codes.cyan, color) : ' ';
     const name = a.active ? paint(a.name.padEnd(nameWidth), codes.bold, color) : a.name.padEnd(nameWidth);
     const email = (a.email ?? '').padEnd(emailWidth);
     const plan = (a.plan ?? '').padEnd(6);
-    return `${marker} ${name}  ${email}  ${plan} ${statusOf(a, now, color)}`;
+    return `${sel}${act} ${name}  ${email}  ${plan} ${statusOf(a, now, color)}`;
   });
 
   const title = paint('claude-auto-switch', codes.bold, color);
@@ -95,7 +99,7 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   }
 
   const footer = options.interactive
-    ? paint('[r]otate  [p]in  [e]nable/disable  [q]uit', codes.dim, color)
+    ? paint('[j/k] move  [p]in  [e]nable  [r]otate  [q]uit', codes.dim, color)
     : paint(`refreshing every ${Math.round(snapshot.refreshMs / 1000)}s`, codes.dim, color);
   lines.push('', footer);
 

@@ -1,9 +1,10 @@
-import { listAccounts } from '../accounts/registry.js';
-import { getActive } from '../state/active.js';
+import { listAccounts, updateAccount } from '../accounts/registry.js';
+import { getActive, setActive } from '../state/active.js';
 import { probeAll, type ProbeResult } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
-import { renderDashboard } from '../dashboard/render.js';
+import { renderDashboard, type DashboardAccount } from '../dashboard/render.js';
 import { toSnapshot } from '../dashboard/snapshot.js';
+import { dispatchKey } from '../dashboard/keys.js';
 import { getClaude, type CliContext } from '../context.js';
 
 export interface DashboardOptions {
@@ -23,8 +24,8 @@ export async function dashboardCommand(
   context: CliContext,
   options: DashboardOptions = {},
 ): Promise<number> {
-  const accounts = listAccounts(context.ctx);
-  if (accounts.length === 0) {
+  const initial = listAccounts(context.ctx);
+  if (initial.length === 0) {
     context.out('no accounts registered (run: ccx add <name>)');
     return 0;
   }
@@ -32,9 +33,16 @@ export async function dashboardCommand(
   const claude = getClaude(context);
   const refreshMs = Math.max(1000, (Number(options.interval) || 3) * 1000);
   const color = process.stdout.isTTY === true;
-  let healths: ProbeResult[] = await probeAll(accounts, { claude });
+  let healths: ProbeResult[] = await probeAll(initial, { claude });
+  const events: string[] = [];
+  const pushEvent = (m: string): void => {
+    events.push(m);
+    if (events.length > 20) events.shift();
+  };
 
+  // Re-read accounts + ledger + active every tick so interactive edits show live.
   const build = () => {
+    const accts = listAccounts(context.ctx);
     const loggedIn = new Set(healths.filter((h) => h.loggedIn).map((h) => h.name));
     const liveEmail = new Map(healths.filter((h) => h.email).map((h) => [h.name, h.email!]));
     const livePlan = new Map(healths.filter((h) => h.plan).map((h) => [h.name, h.plan!]));
@@ -44,7 +52,7 @@ export async function dashboardCommand(
       if (c.capUntil && c.capUntil > now) cappedUntil.set(c.account, c.capUntil);
     }
     return toSnapshot({
-      accounts: accounts.map((a) => ({
+      accounts: accts.map((a) => ({
         name: a.name,
         ...(a.email !== undefined ? { email: a.email } : {}),
         ...(a.plan !== undefined ? { plan: a.plan } : {}),
@@ -56,7 +64,7 @@ export async function dashboardCommand(
       livePlan,
       cappedUntil,
       active: getActive(context.ctx),
-      events: [],
+      events: events.slice(-5),
       now,
       refreshMs,
     });
@@ -71,7 +79,34 @@ export async function dashboardCommand(
     refreshMs,
     color,
     reprobe: async () => {
-      healths = await probeAll(accounts, { claude });
+      healths = await probeAll(listAccounts(context.ctx), { claude });
+    },
+    onPin: (a) => {
+      setActive(a.name, context.ctx);
+      pushEvent(`pinned ${a.name}`);
+    },
+    onToggle: (a) => {
+      updateAccount(a.name, { enabled: !a.enabled }, context.ctx);
+      pushEvent(`${a.enabled ? 'disabled' : 'enabled'} ${a.name}`);
+    },
+    onRotate: () => {
+      const active = getActive(context.ctx);
+      const loggedIn = new Set(healths.filter((h) => h.loggedIn).map((h) => h.name));
+      const now = Date.now();
+      const capped = new Set(
+        loadLedger(context.ctx)
+          .caps.filter((c) => c.capUntil && c.capUntil > now)
+          .map((c) => c.account),
+      );
+      const next = listAccounts(context.ctx)
+        .filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name) && a.name !== active)
+        .sort((x, y) => x.priority - y.priority)[0];
+      if (next) {
+        setActive(next.name, context.ctx);
+        pushEvent(`rotated to ${next.name}`);
+      } else {
+        pushEvent('no other healthy account to rotate to');
+      }
     },
   });
   return 0;
@@ -81,22 +116,38 @@ interface LoopDeps {
   refreshMs: number;
   color: boolean;
   reprobe: () => Promise<void>;
+  onPin: (a: DashboardAccount) => void;
+  onToggle: (a: DashboardAccount) => void;
+  onRotate: () => void;
 }
 
-/** Clear-screen refresh loop; quits on q / Ctrl-C / Ctrl-D. */
+/** Clear-screen refresh loop with a selection cursor; quits on q / Ctrl-C / Ctrl-D. */
 async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: LoopDeps): Promise<void> {
   const out = process.stdout;
   const stdin = process.stdin as NodeJS.ReadStream & { setRawMode?: (v: boolean) => void };
 
   let running = true;
+  let selected = 0;
+  let snap = build();
   let wake: (() => void) | null = null;
+
+  const clamp = (): void => {
+    selected = Math.max(0, Math.min(selected, snap.accounts.length - 1));
+  };
   const stop = (): void => {
     running = false;
     if (wake) wake();
   };
   const onKey = (d: Buffer): void => {
-    const first = d[0];
-    if (d.toString('utf8') === 'q' || first === 3 || first === 4) stop();
+    const r = dispatchKey(d.toString('utf8'), d[0], selected, snap.accounts.length);
+    selected = r.selected;
+    if (r.action === 'quit') return stop();
+    const target = snap.accounts[selected];
+    if (r.action === 'pin' && target) deps.onPin(target);
+    else if (r.action === 'toggle' && target) deps.onToggle(target);
+    else if (r.action === 'rotate') deps.onRotate();
+    else if (r.action === 'none') return;
+    if (wake) wake(); // re-render immediately on any handled key
   };
 
   try {
@@ -115,8 +166,10 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         await deps.reprobe();
         lastProbe = Date.now();
       }
+      snap = build();
+      clamp();
       out.write(CLEAR_HOME);
-      out.write(renderDashboard(build(), { color: deps.color, interactive: true }));
+      out.write(renderDashboard(snap, { color: deps.color, interactive: true, selected }));
       out.write('\n');
       await new Promise<void>((resolve) => {
         wake = resolve;

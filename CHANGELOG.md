@@ -19,6 +19,29 @@ semantic versioning.
   `~/.claude`), `status`, `start` / `stop` (background watcher), and `run`
   (foreground).
 
+## [1.3.0]
+
+### Added
+
+- **Live dashboard** (`ccx dashboard`, alias `ccx watch`): an auto-refreshing
+  view of every account (status, active marker, capped-until) with a selection
+  cursor and keys to pin, enable/disable, and rotate without leaving the screen.
+  `--once` prints a single frame for scripts.
+
+## [1.2.0]
+
+### Added
+
+- **Transparent hot-swap**: run Claude Code through `ccx` and it switches to
+  another account when the active one hits its model cap, continuing the same
+  conversation in place.
+
+### Security
+
+- Account names validated and destructive operations contained to the profiles
+  tree; credential/identity/token files written owner-only; Windows resolves the
+  real `claude` binary; malformed config fails cleanly.
+
 ## [1.0.0]
 
 ### Added

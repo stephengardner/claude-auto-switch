@@ -66,6 +66,18 @@ describe('renderDashboard (plain)', () => {
       '[r]otate',
     );
   });
+
+  it('marks the selected row with a cursor', () => {
+    const out = renderDashboard(
+      snapshot([account({ name: 'a' }), account({ name: 'b' })]),
+      { color: false, selected: 1 },
+    );
+    const lines = out.split('\n');
+    const bRow = lines.find((l) => l.includes('b'))!;
+    expect(bRow.trimStart().startsWith('>')).toBe(true);
+    const aRow = lines.find((l) => / a /.test(l) || l.includes(' a  '))!;
+    expect(aRow.trimStart().startsWith('>')).toBe(false);
+  });
 });
 
 describe('renderDashboard (color)', () => {

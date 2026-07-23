@@ -62,7 +62,7 @@ npm link            # puts `ccx` on your PATH
 ```
 ccx add work        # register an account and log it in (opens your browser)
 ccx add personal    # repeat for each account you want to rotate between
-ccx list            # see each account: email, plan, logged in, capped-until
+ccx dashboard       # live view of every account (or `ccx list` for a one-shot)
 ccx run             # start a Claude session that auto-switches on a cap
 ```
 
@@ -76,6 +76,7 @@ route through it, install the transparent shim with `ccx on`.
 | --- | --- |
 | `ccx add <name>` | Register a new account (its own profile) and log it in |
 | `ccx run [-- <args>]` | Run a Claude session that hot-swaps accounts on a cap |
+| `ccx dashboard` (alias `watch`) | Live, auto-refreshing view of every account; keys to pin/enable/rotate |
 | `ccx list` | Every account with live health (email, plan, logged-in, capped-until) |
 | `ccx status [name]` | Detailed health for one or all accounts |
 | `ccx use <name>` | Pin which account a new session starts on |
