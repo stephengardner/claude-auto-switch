@@ -16,6 +16,7 @@ import { loginCommand } from './commands/login.js';
 import { enableCommand, disableCommand, priorityCommand } from './commands/account-config.js';
 import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
+import { dashboardCommand } from './commands/dashboard.js';
 import { CasError } from './util/errors.js';
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -41,6 +42,16 @@ program
   .description('show all accounts and their health')
   .action(async () => {
     process.exitCode = await listCommand(context());
+  });
+
+program
+  .command('dashboard')
+  .alias('watch')
+  .description('live account dashboard (auto-refreshing)')
+  .option('--once', 'print a single frame and exit')
+  .option('--interval <seconds>', 'refresh interval in seconds')
+  .action(async (opts: { once?: boolean; interval?: string }) => {
+    process.exitCode = await dashboardCommand(context(), opts);
   });
 
 program
