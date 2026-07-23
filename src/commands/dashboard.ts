@@ -19,7 +19,13 @@ export interface DashboardOptions {
 const HEALTH_REPROBE_MS = 20_000;
 const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
-const CLEAR_HOME = '\x1b[2J\x1b[H';
+// Alternate screen + home-repaint = flicker-free. Repainting over the old frame
+// (instead of clearing the whole screen each tick) is what removes the blink.
+const ENTER_ALT = '\x1b[?1049h';
+const EXIT_ALT = '\x1b[?1049l';
+const HOME = '\x1b[H';
+const CLEAR_LINE_END = '\x1b[K';
+const CLEAR_BELOW = '\x1b[J';
 
 /** Live account dashboard. `--once` prints a single frame (script/CI friendly). */
 export async function dashboardCommand(
@@ -157,7 +163,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
   }
   stdin.resume();
   stdin.on('data', onKey);
-  out.write(HIDE_CURSOR);
+  out.write(ENTER_ALT + HIDE_CURSOR);
 
   let lastProbe = Date.now();
   try {
@@ -168,9 +174,11 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       }
       snap = build();
       clamp();
-      out.write(CLEAR_HOME);
-      out.write(renderDashboard(snap, { color: deps.color, interactive: true, selected }));
-      out.write('\n');
+      // Paint over the previous frame from the top: home, then each line clears
+      // its own tail, then clear anything left below. No full-screen erase.
+      const frame = renderDashboard(snap, { color: deps.color, interactive: true, selected });
+      const painted = frame.split('\n').map((l) => l + CLEAR_LINE_END).join('\r\n');
+      out.write(HOME + painted + '\r\n' + CLEAR_BELOW);
       await new Promise<void>((resolve) => {
         wake = resolve;
         setTimeout(resolve, deps.refreshMs);
@@ -185,6 +193,6 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       /* ignore */
     }
     stdin.pause();
-    out.write(`${SHOW_CURSOR}\n`);
+    out.write(SHOW_CURSOR + EXIT_ALT);
   }
 }
