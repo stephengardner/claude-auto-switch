@@ -1,0 +1,11 @@
+{
+  "authStatus": {
+    "loggedIn": true,
+    "authMethod": "claude.ai",
+    "apiProvider": "firstParty",
+    "email": "max-user@example.com",
+    "orgName": "Max User's Organization",
+    "subscriptionType": "max"
+  },
+  "capped": false
+}

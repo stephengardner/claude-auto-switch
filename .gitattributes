@@ -1,0 +1,9 @@
+# Normalize line endings for a clean cross-platform repo.
+* text=auto eol=lf
+
+# PowerShell scripts stay CRLF to be safe on Windows hosts.
+*.ps1 text eol=crlf
+
+# Treat common binaries as binary.
+*.png binary
+*.ico binary

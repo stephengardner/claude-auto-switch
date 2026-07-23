@@ -1,0 +1,13 @@
+{
+  "authStatus": {
+    "loggedIn": true,
+    "authMethod": "claude.ai",
+    "apiProvider": "firstParty",
+    "email": "capped-user@example.com",
+    "orgName": "Capped User's Organization",
+    "subscriptionType": "max"
+  },
+  "capped": true,
+  "capMessage": "Usage limit reached. Your limit resets at 3pm.",
+  "capExitCode": 1
+}

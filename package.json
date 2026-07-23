@@ -1,0 +1,69 @@
+{
+  "name": "claude-auto-switch",
+  "version": "1.2.0",
+  "description": "Keep working across Claude usage limits: run Claude Code through ccx and it transparently switches to another of your accounts when one hits its cap.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "ccx": "dist/cli.js",
+    "claude-auto-switch": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "src/shell/claude.ps1",
+    "src/shell/claude.sh",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "verify": "npm run typecheck && npm run lint && npm run test",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "cli",
+    "account-switcher",
+    "rotation",
+    "rate-limit",
+    "usage-limit"
+  ],
+  "author": "Stephen Gardner",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stephengardner/claude-auto-switch.git"
+  },
+  "homepage": "https://github.com/stephengardner/claude-auto-switch#readme",
+  "bugs": {
+    "url": "https://github.com/stephengardner/claude-auto-switch/issues"
+  },
+  "dependencies": {
+    "commander": "^12.0.0",
+    "execa": "^9.0.0",
+    "node-pty": "^1.1.0",
+    "playwright-core": "^1.44.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@vitest/coverage-v8": "^4.0.0",
+    "eslint": "^9.9.0",
+    "prettier": "^3.3.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^4.0.0"
+  }
+}

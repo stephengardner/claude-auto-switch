@@ -1,0 +1,40 @@
+# Changelog
+
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
+semantic versioning.
+
+## [1.1.0]
+
+### Added
+
+- **Always-on daemon** (`ccx daemon`): makes rotation happen everywhere with zero
+  action, including the IDE extension. It points the OS-level `CLAUDE_CONFIG_DIR`
+  at a junction it controls, so every Claude client follows the active account.
+- **Free limit detection** by watching `usage-cache.json` (percent used, reset
+  times, rate-limited flag), the signal Claude Code already shares across
+  clients. Rotates proactively at `capThresholdPercent` (default 95%) to the
+  account with the most headroom.
+- `ccx daemon install` / `uninstall` (junction + env var, never touches
+  `~/.claude`), `status`, `start` / `stop` (background watcher), and `run`
+  (foreground).
+
+## [1.0.0]
+
+### Added
+
+- **Foundation** (Phase 1): isolated per-account profiles, health probing via
+  `claude auth status`, the account registry, the selector policy, the launcher,
+  and the `ccx` commands (`add`, `list`, `status`, `use`, `rotate`, `run`,
+  `remove`), the transparent shim (`ccx on` / `off`), and `ccx doctor`.
+- **Rotation brain** (Phase 2): a rate-limit ledger, cap detection, auto-rotate
+  on cap for headless runs, `ccx cap` for manual caps, and a `CAPPED UNTIL`
+  column in `ccx list`.
+- **Real-browser auto-login** (Phase 3): `ccx login <name>` / `--all` drives your
+  real Chrome over the DevTools protocol to click Authorize, plus a browser-port
+  reachability check in `ccx doctor`.
+- **Polish** (Phase 4): `ccx enable` / `disable` / `priority` for shaping the
+  rotation order, bash/zsh shim variants alongside PowerShell, and `ccx token`
+  for minting a long-lived headless token via `claude setup-token`.
+- Fake `claude` test harness for zero-spend, zero-login testing; GitHub Actions
+  CI on Ubuntu and Windows; 0 dependency vulnerabilities.

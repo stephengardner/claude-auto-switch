@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# SECURITY: never commit account credentials or per-account profile state.
+# The profile store lives OUTSIDE this repo (~/.claude-auto-switch/profiles) by
+# default; these rules are defense in depth in case anything lands locally.
+# ---------------------------------------------------------------------------
+/profiles/
+.claude-auto-switch/
+**/.credentials.json
+*.credentials.json
+accounts.json
+ledger.json
+oauth-token
+**/oauth-token
+session-debug.log
+last-setup-token-output.txt
+config.local.*
+
+# Node / build
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+*.log
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Internal design/working docs (kept locally, not part of the shipped project)
+/docs/superpowers/
+
+# OS cruft
+.DS_Store
+Thumbs.db
