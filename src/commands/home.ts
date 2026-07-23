@@ -12,7 +12,7 @@ export function gettingStarted(): string {
     '  2. ccx add <name>     add another to switch between',
     '  3. ccx run            start a Claude session that auto-switches on a cap',
     '',
-    'Then: ccx dashboard for a live view, ccx --help for all commands.',
+    'Stuck? ccx setup shows your next step. ccx --help lists every command.',
   ].join('\n');
 }
 

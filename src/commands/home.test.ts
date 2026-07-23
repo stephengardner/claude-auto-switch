@@ -17,7 +17,7 @@ describe('gettingStarted', () => {
     expect(g).toContain('claude-auto-switch');
     expect(g).toContain('ccx add');
     expect(g).toContain('ccx run');
-    expect(g).toContain('ccx dashboard');
+    expect(g).toContain('ccx setup');
   });
 });
 
