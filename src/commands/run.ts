@@ -7,6 +7,7 @@ import { autoRotateHeadless } from '../launcher/rotating-run.js';
 import { loadLedger, saveLedger, cappedNames, markCapped } from '../ledger/ledger.js';
 import { getClaude, type CliContext } from '../context.js';
 import { hasAnyUsableAccount, runInteractiveHotSwap } from './session.js';
+import { advanceActiveToHealthy } from '../state/active-sync.js';
 import { shouldHintShim, shimHintText, wasHinted, markHinted } from './shim-hint.js';
 import { isShimInstalled } from '../shell/install-shim.js';
 import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-path.js';
@@ -72,6 +73,7 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
       },
     });
     saveLedger(result.ledger, context.ctx);
+    advanceActiveToHealthy(context, loggedIn); // carry the switch over to the editor
     return result.exitCode;
   }
 
@@ -97,6 +99,7 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
     context.out(
       `\n[ccx] "${result.account.name}" hit its limit; your next session will use a different account.`,
     );
+    advanceActiveToHealthy(context, loggedIn); // carry the switch over to the editor
   }
   return watched.exitCode;
 }

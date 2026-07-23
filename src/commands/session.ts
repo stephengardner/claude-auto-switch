@@ -2,7 +2,8 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { listAccounts } from '../accounts/registry.js';
-import { getActive } from '../state/active.js';
+import { getActive, setActive } from '../state/active.js';
+import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { loadLedger, saveLedger, markCapped, cappedNames } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
@@ -188,6 +189,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const account = accounts.find((a) => a.name === hotAccount.name);
       if (!account) return { kind: 'ok', exitCode: 1 };
       activate(account);
+      // Track the account we are actually on so the editor pointer follows it.
+      setActive(account.name, context.ctx);
+      syncEditorPointerIfEnabled(context);
       const token = readToken(account.dir);
       const env: Record<string, string> = token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
       const base = { claude, configDir: sessionDir, env, ...(debugLog ? { debugLog } : {}) };
