@@ -1,31 +1,22 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { installEditorWrapper, uninstallEditorWrapper } from '../editor/install.js';
+import { installEditorEnvVar, uninstallEditorEnvVar } from '../editor/install.js';
+import { syncEditorJunctionToActive, removeEditorJunction, editorJunctionPath } from '../editor/junction.js';
 import type { Editor } from '../editor/settings.js';
 import type { CliContext } from '../context.js';
 
-/** Find the ccx-claude launcher on PATH; fall back to this build's editor-cli.js. */
-export function resolveWrapperPath(): string {
-  const cmd = process.platform === 'win32' ? 'where' : 'which';
-  try {
-    const out = execFileSync(cmd, ['ccx-claude'], { encoding: 'utf8' });
-    const first = out
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .find((s) => s.length > 0 && existsSync(s));
-    if (first) return first;
-  } catch {
-    /* not on PATH (dev / not linked) */
-  }
-  return fileURLToPath(new URL('../editor-cli.js', import.meta.url));
-}
+const CONFIG_DIR_VAR = 'CLAUDE_CONFIG_DIR';
 
 function resolveEditor(explicit?: string): Editor {
   return explicit === 'vscode' ? 'vscode' : 'cursor';
 }
 
-/** `ccx editor on|off [--editor cursor|vscode]`: point the editor at ccx. */
+/**
+ * `ccx editor on|off`: make Cursor / VS Code use your active ccx account.
+ *
+ * It points the editor's CLAUDE_CONFIG_DIR at a pointer ccx controls (the active
+ * account). This is safe on every OS: it never changes how the editor launches
+ * Claude, only which account it uses. When your active account changes, the
+ * editor's next chat follows.
+ */
 export function editorCommand(
   context: CliContext,
   action: string | undefined,
@@ -34,29 +25,23 @@ export function editorCommand(
   const editor = resolveEditor(opts.editor);
 
   if (action === 'off') {
-    const r = uninstallEditorWrapper(editor, context.ctx);
-    context.out(r.ok ? `removed the ccx launcher from ${editor} (${r.path})` : r.reason);
+    const r = uninstallEditorEnvVar(editor, CONFIG_DIR_VAR, context.ctx);
+    removeEditorJunction(context);
+    context.out(r.ok ? `removed ccx from ${editor} (${r.path})` : r.reason);
     if (r.ok) context.out(`restart ${editor} to apply.`);
     return r.ok ? 0 : 1;
   }
 
-  // On Windows the extension launches the wrapper with a raw (shell:false) spawn,
-  // which cannot run the .cmd shim npm installs; pointing the editor at it would
-  // break Claude in the editor. Refuse until the Windows launcher lands.
-  const platform = context.ctx.platform ?? process.platform;
-  if (platform === 'win32') {
-    context.out('editor support on Windows is still in progress, so this would break Claude in your editor.');
-    context.out('use the terminal for now: `ccx run`, or `ccx on` to type `claude` directly.');
+  if (!syncEditorJunctionToActive(context)) {
+    context.out('no active account yet. Run `ccx add <name>` (twice), then `ccx editor on`.');
     return 1;
   }
-
-  const wrapper = resolveWrapperPath();
-  const r = installEditorWrapper(editor, wrapper, context.ctx);
+  const r = installEditorEnvVar(editor, CONFIG_DIR_VAR, editorJunctionPath(context), context.ctx);
   if (!r.ok) {
     context.out(r.reason);
     return 1;
   }
-  context.out(`${editor} will now launch Claude through ccx (auto-switches accounts).`);
+  context.out(`${editor} will now use your active ccx account, and follow switches.`);
   context.out(`set in ${r.path}. Restart ${editor} to apply.`);
   return 0;
 }

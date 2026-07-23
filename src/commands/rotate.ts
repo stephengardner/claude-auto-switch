@@ -2,6 +2,7 @@ import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import { probeAll } from '../health/prober.js';
 import { select } from '../selector/selector.js';
+import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { getClaude, type CliContext } from '../context.js';
 
 /** Switch the active account to the next healthy one (skips the current active). */
@@ -20,6 +21,7 @@ export async function rotateCommand(context: CliContext): Promise<number> {
   }
 
   setActive(result.account.name, context.ctx);
+  syncEditorPointerIfEnabled(context);
   context.out(`rotated to: ${result.account.name}`);
   return 0;
 }

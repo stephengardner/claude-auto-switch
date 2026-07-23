@@ -7,6 +7,7 @@ import { toSnapshot } from '../dashboard/snapshot.js';
 import { dispatchKey } from '../dashboard/keys.js';
 import { configHome } from '../config/paths.js';
 import { appendEvent, readEvents, formatEvent } from '../events/log.js';
+import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { getClaude, type CliContext } from '../context.js';
 
 export interface DashboardOptions {
@@ -89,6 +90,7 @@ export async function dashboardCommand(
     },
     onPin: (a) => {
       setActive(a.name, context.ctx);
+      syncEditorPointerIfEnabled(context);
       pushEvent(`pinned ${a.name}`);
     },
     onToggle: (a) => {
@@ -109,6 +111,7 @@ export async function dashboardCommand(
         .sort((x, y) => x.priority - y.priority)[0];
       if (next) {
         setActive(next.name, context.ctx);
+        syncEditorPointerIfEnabled(context);
         pushEvent(`rotated to ${next.name}`);
       } else {
         pushEvent('no other healthy account to rotate to');

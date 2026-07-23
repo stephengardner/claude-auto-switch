@@ -4,6 +4,8 @@ import {
   editorSettingsPath,
   setWrapperSetting,
   clearWrapperSetting,
+  setEnvVar,
+  clearEnvVar,
   type Editor,
 } from './settings.js';
 import type { PathCtx } from '../config/paths.js';
@@ -36,33 +38,58 @@ function writeSettings(file: string, data: Record<string, unknown>): void {
   writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
 }
 
-/** Point the editor's Claude launcher at ccx-claude. */
+/**
+ * Safely transform an editor's settings.json: parse (refusing on JSONC it can't
+ * parse), transform, back up, and write. Never clobbers on a parse failure.
+ */
+function updateSettings(
+  editor: Editor,
+  c: PathCtx,
+  hint: string,
+  transform: (s: Record<string, unknown>) => Record<string, unknown>,
+): InstallOutcome {
+  const file = editorSettingsPath(editor, c);
+  const settings = parseSettings(file);
+  if (settings === null) {
+    return { ok: false, path: file, reason: `could not safely parse ${file} (comments?); ${hint}` };
+  }
+  writeSettings(file, transform(settings));
+  return { ok: true, path: file, action: 'installed' };
+}
+
+/** Inject an environment variable into the editor's Claude (the safe path). */
+export function installEditorEnvVar(
+  editor: Editor,
+  name: string,
+  value: string,
+  c: PathCtx = {},
+): InstallOutcome {
+  return updateSettings(editor, c, `set "${name}": "${value}" under claudeCode.environmentVariables yourself`, (s) =>
+    setEnvVar(s, name, value),
+  );
+}
+
+/** Remove an injected environment variable. */
+export function uninstallEditorEnvVar(editor: Editor, name: string, c: PathCtx = {}): InstallOutcome {
+  const file = editorSettingsPath(editor, c);
+  if (!existsSync(file)) return { ok: true, path: file, action: 'noop' };
+  return updateSettings(editor, c, `remove ${name} yourself`, (s) => clearEnvVar(s, name));
+}
+
+/** Point the editor's Claude launcher at ccx-claude (the wrapper path; macOS/Linux). */
 export function installEditorWrapper(
   editor: Editor,
   wrapperPath: string,
   c: PathCtx = {},
 ): InstallOutcome {
-  const file = editorSettingsPath(editor, c);
-  const settings = parseSettings(file);
-  if (settings === null) {
-    return {
-      ok: false,
-      path: file,
-      reason: `could not safely parse ${file} (it may contain comments); add "claudeCode.claudeProcessWrapper": "${wrapperPath}" yourself`,
-    };
-  }
-  writeSettings(file, setWrapperSetting(settings, wrapperPath));
-  return { ok: true, path: file, action: 'installed' };
+  return updateSettings(editor, c, `add "claudeCode.claudeProcessWrapper": "${wrapperPath}" yourself`, (s) =>
+    setWrapperSetting(s, wrapperPath),
+  );
 }
 
 /** Remove the editor's Claude launcher override. */
 export function uninstallEditorWrapper(editor: Editor, c: PathCtx = {}): InstallOutcome {
   const file = editorSettingsPath(editor, c);
-  const settings = parseSettings(file);
-  if (settings === null) {
-    return { ok: false, path: file, reason: `could not safely parse ${file}; remove the setting yourself` };
-  }
   if (!existsSync(file)) return { ok: true, path: file, action: 'noop' };
-  writeSettings(file, clearWrapperSetting(settings));
-  return { ok: true, path: file, action: 'removed' };
+  return updateSettings(editor, c, 'remove the setting yourself', (s) => clearWrapperSetting(s));
 }
