@@ -19,6 +19,21 @@ semantic versioning.
   `~/.claude`), `status`, `start` / `stop` (background watcher), and `run`
   (foreground).
 
+## [1.7.0]
+
+### Changed
+
+- **Nicer dashboard**: a framed layout with rules, colored status dots, and
+  clearer active/selected markers. No faked data (no usage bar without real,
+  fresh usage numbers).
+
+### Added
+
+- **Safe, all-platform editor integration**: `ccx editor on` points Cursor /
+  VS Code at your active account via `CLAUDE_CONFIG_DIR`, and the pointer follows
+  your account switches (including terminal caps). It never changes how the
+  editor launches Claude, so there is no risk to your editor.
+
 ## [1.6.0]
 
 ### Changed

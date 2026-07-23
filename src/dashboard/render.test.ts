@@ -62,29 +62,28 @@ describe('renderDashboard (plain)', () => {
 
   it('shows recent events (last 5) when present', () => {
     const out = renderDashboard(snapshot([account()], ['e1', 'e2', 'e3', 'e4', 'e5', 'e6']), opts);
-    expect(out).toContain('recent');
     expect(out).toContain('e6');
     expect(out).not.toContain('e1');
   });
 
   it('shows key hints only in interactive mode, no footer for a one-shot frame', () => {
-    expect(renderDashboard(snapshot([account()]), opts)).not.toContain('[r]otate');
+    expect(renderDashboard(snapshot([account()]), opts)).not.toContain('rotate');
     expect(renderDashboard(snapshot([account()]), opts)).not.toContain('refreshing');
     expect(renderDashboard(snapshot([account()]), { color: false, interactive: true })).toContain(
-      '[r]otate',
+      'r rotate',
     );
   });
 
-  it('marks the selected row with a cursor', () => {
+  it('marks the selected row with the cursor and the active row with a marker', () => {
     const out = renderDashboard(
-      snapshot([account({ name: 'a' }), account({ name: 'b' })]),
+      snapshot([account({ name: 'a', active: true }), account({ name: 'b' })]),
       { color: false, selected: 1 },
     );
     const lines = out.split('\n');
     const bRow = lines.find((l) => l.includes('b'))!;
-    expect(bRow.trimStart().startsWith('>')).toBe(true);
-    const aRow = lines.find((l) => / a /.test(l) || l.includes(' a  '))!;
-    expect(aRow.trimStart().startsWith('>')).toBe(false);
+    expect(bRow.trimStart().startsWith('▸')).toBe(true);
+    const aRow = lines.find((l) => l.includes(' a '))!;
+    expect(aRow.trimStart().startsWith('▸')).toBe(false); // a is active but not selected
   });
 });
 
