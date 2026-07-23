@@ -19,6 +19,17 @@ semantic versioning.
   `~/.claude`), `status`, `start` / `stop` (background watcher), and `run`
   (foreground).
 
+## [1.5.0]
+
+### Added
+
+- **Dashboard priority column** (`PRI`), completing the account fields the
+  dashboard shows (account, email, plan, status, active, priority, events).
+- **`ccx setup`**: a state-aware onboarding guide that prints the single clearest
+  next step for where you are.
+- **First-run shim tip**: after your first `ccx run`, a one-time tip points you
+  to `ccx on` for transparent `claude`.
+
 ## [1.4.0]
 
 ### Added

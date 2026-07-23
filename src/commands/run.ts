@@ -7,6 +7,24 @@ import { autoRotateHeadless } from '../launcher/rotating-run.js';
 import { loadLedger, saveLedger, cappedNames, markCapped } from '../ledger/ledger.js';
 import { getClaude, type CliContext } from '../context.js';
 import { hasAnyUsableAccount, runInteractiveHotSwap } from './session.js';
+import { shouldHintShim, shimHintText, wasHinted, markHinted } from './shim-hint.js';
+import { isShimInstalled } from '../shell/install-shim.js';
+import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-path.js';
+import { configHome } from '../config/paths.js';
+
+/** Show a one-time tip about the transparent shim, after an interactive session. */
+function maybeHintShim(context: CliContext): void {
+  const platform = context.ctx.platform ?? process.platform;
+  const profile =
+    platform === 'win32'
+      ? defaultPowerShellProfile(context.ctx)
+      : defaultPosixProfile(context.ctx);
+  const home = configHome(context.ctx);
+  if (shouldHintShim(isShimInstalled(profile), wasHinted(home))) {
+    (context.err ?? ((m: string) => process.stderr.write(`${m}\n`)))(shimHintText());
+    markHinted(home);
+  }
+}
 
 /** True for headless requests (`-p` / `--print`), where output can be captured. */
 function isHeadless(args: string[]): boolean {
@@ -28,7 +46,9 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
   // Interactive sessions with stored tokens get transparent hot-swap: the token
   // selects the account, so we skip the slow per-account health probe.
   if (!isHeadless(passthroughArgs) && hasAnyUsableAccount(context)) {
-    return runInteractiveHotSwap(context, passthroughArgs);
+    const code = await runInteractiveHotSwap(context, passthroughArgs);
+    maybeHintShim(context); // one-time tip after the session, if the shim is off
+    return code;
   }
 
   const pinned = getActive(context.ctx) ?? undefined;
