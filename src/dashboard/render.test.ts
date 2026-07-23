@@ -31,6 +31,13 @@ describe('renderDashboard (plain)', () => {
     expect(out).toContain('personal');
   });
 
+  it('shows a priority column with the account priority', () => {
+    const out = renderDashboard(snapshot([account({ name: 'work', priority: 2 })]), opts);
+    expect(out).toContain('PRI');
+    const workRow = out.split('\n').find((l) => l.includes('work'))!;
+    expect(workRow).toMatch(/\b2\b/);
+  });
+
   it('marks the active account and names it in the subtitle', () => {
     const out = renderDashboard(snapshot([account({ name: 'a', active: true }), account({ name: 'b' })]), opts);
     expect(out).toContain('active: a');

@@ -71,9 +71,10 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const nameWidth = Math.max(7, ...accounts.map((a) => a.name.length));
   const emailWidth = Math.max(5, ...accounts.map((a) => (a.email ?? '').length));
 
-  // Two-char gutter: selection cursor (>) then active marker (*).
+  // Two-char gutter: selection cursor (>) then active marker (*). PRI is the
+  // rotation priority (lower goes first); rows are already sorted by it.
   const header = paint(
-    `   ${'ACCOUNT'.padEnd(nameWidth)}  ${'EMAIL'.padEnd(emailWidth)}  PLAN   STATUS`,
+    `   ${'ACCOUNT'.padEnd(nameWidth)}  ${'EMAIL'.padEnd(emailWidth)}  ${'PLAN'.padEnd(6)} ${'PRI'.padEnd(3)} STATUS`,
     codes.dim,
     color,
   );
@@ -84,7 +85,8 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     const name = a.active ? paint(a.name.padEnd(nameWidth), codes.bold, color) : a.name.padEnd(nameWidth);
     const email = (a.email ?? '').padEnd(emailWidth);
     const plan = (a.plan ?? '').padEnd(6);
-    return `${sel}${act} ${name}  ${email}  ${plan} ${statusOf(a, now, color)}`;
+    const pri = String(a.priority).padEnd(3);
+    return `${sel}${act} ${name}  ${email}  ${plan} ${pri} ${statusOf(a, now, color)}`;
   });
 
   const title = paint('claude-auto-switch', codes.bold, color);
