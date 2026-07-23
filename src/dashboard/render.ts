@@ -98,10 +98,11 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     for (const e of events.slice(-5)) lines.push(`  ${e}`);
   }
 
-  const footer = options.interactive
-    ? paint('[j/k] move  [p]in  [e]nable  [r]otate  [q]uit', codes.dim, color)
-    : paint(`refreshing every ${Math.round(snapshot.refreshMs / 1000)}s`, codes.dim, color);
-  lines.push('', footer);
+  // Key hints only make sense in the live (interactive) loop; a one-shot frame
+  // gets no footer so it never implies it is refreshing.
+  if (options.interactive) {
+    lines.push('', paint('[j/k] move  [p]in  [e]nable  [r]otate  [q]uit', codes.dim, color));
+  }
 
   return lines.join('\n');
 }

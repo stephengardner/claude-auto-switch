@@ -19,6 +19,17 @@ semantic versioning.
   `~/.claude`), `status`, `start` / `stop` (background watcher), and `run`
   (foreground).
 
+## [1.4.0]
+
+### Added
+
+- **Live swap events**: `ccx dashboard` shows swaps as they happen, via a shared
+  event log that `ccx run` writes to, so an open dashboard reacts to a session
+  running in another terminal.
+- **Smart bare `ccx`**: running `ccx` with no command shows a getting-started
+  guide (when no accounts exist) or a quick status glance (when they do),
+  instead of raw help.
+
 ## [1.3.0]
 
 ### Added

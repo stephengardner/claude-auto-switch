@@ -60,8 +60,9 @@ describe('renderDashboard (plain)', () => {
     expect(out).not.toContain('e1');
   });
 
-  it('footer shows refresh cadence by default, key hints when interactive', () => {
-    expect(renderDashboard(snapshot([account()]), opts)).toContain('refreshing every 3s');
+  it('shows key hints only in interactive mode, no footer for a one-shot frame', () => {
+    expect(renderDashboard(snapshot([account()]), opts)).not.toContain('[r]otate');
+    expect(renderDashboard(snapshot([account()]), opts)).not.toContain('refreshing');
     expect(renderDashboard(snapshot([account()]), { color: false, interactive: true })).toContain(
       '[r]otate',
     );

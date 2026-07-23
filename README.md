@@ -68,7 +68,8 @@ ccx run             # start a Claude session that auto-switches on a cap
 
 Use `ccx run` exactly like `claude`. Pass arguments through after the command
 (for example `ccx run -- -p "summarize this repo"`). To make plain `claude`
-route through it, install the transparent shim with `ccx on`.
+route through it, install the transparent shim with `ccx on`. Run `ccx` on its
+own any time for a quick status glance.
 
 ## Commands
 

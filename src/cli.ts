@@ -17,6 +17,7 @@ import { enableCommand, disableCommand, priorityCommand } from './commands/accou
 import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
 import { dashboardCommand } from './commands/dashboard.js';
+import { homeCommand } from './commands/home.js';
 import { CasError } from './util/errors.js';
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -31,6 +32,11 @@ program
   .version(pkg.version)
   .option('--json', 'output JSON where supported', false)
   .option('--quiet', 'reduce output', false);
+
+// Bare `ccx`: getting-started guide (no accounts) or a status glance (accounts).
+program.action(async () => {
+  process.exitCode = await homeCommand(context());
+});
 
 function context() {
   const opts = program.opts<{ json: boolean; quiet: boolean }>();
