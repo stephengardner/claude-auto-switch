@@ -40,6 +40,16 @@ export function editorCommand(
     return r.ok ? 0 : 1;
   }
 
+  // On Windows the extension launches the wrapper with a raw (shell:false) spawn,
+  // which cannot run the .cmd shim npm installs; pointing the editor at it would
+  // break Claude in the editor. Refuse until the Windows launcher lands.
+  const platform = context.ctx.platform ?? process.platform;
+  if (platform === 'win32') {
+    context.out('editor support on Windows is still in progress, so this would break Claude in your editor.');
+    context.out('use the terminal for now: `ccx run`, or `ccx on` to type `claude` directly.');
+    return 1;
+  }
+
   const wrapper = resolveWrapperPath();
   const r = installEditorWrapper(editor, wrapper, context.ctx);
   if (!r.ok) {

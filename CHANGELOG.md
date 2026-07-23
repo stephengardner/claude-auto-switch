@@ -19,6 +19,21 @@ semantic versioning.
   `~/.claude`), `status`, `start` / `stop` (background watcher), and `run`
   (foreground).
 
+## [1.6.0]
+
+### Changed
+
+- Friendlier, clearer README that leads with the value and states plainly where
+  it works (terminal everywhere; editors on macOS/Linux; Windows editor support
+  in progress).
+
+### Fixed
+
+- The editor launcher now runs the exact command an editor hands it, on the
+  chosen account (correct wrapper behavior).
+- `ccx editor on` refuses safely on Windows (where the extension cannot launch
+  the wrapper yet) instead of breaking Claude in the editor.
+
 ## [1.5.0]
 
 ### Added
