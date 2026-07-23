@@ -5,6 +5,8 @@ import { loadLedger } from '../ledger/ledger.js';
 import { renderDashboard, type DashboardAccount } from '../dashboard/render.js';
 import { toSnapshot } from '../dashboard/snapshot.js';
 import { dispatchKey } from '../dashboard/keys.js';
+import { configHome } from '../config/paths.js';
+import { appendEvent, readEvents, formatEvent } from '../events/log.js';
 import { getClaude, type CliContext } from '../context.js';
 
 export interface DashboardOptions {
@@ -31,14 +33,12 @@ export async function dashboardCommand(
   }
 
   const claude = getClaude(context);
+  const home = configHome(context.ctx);
   const refreshMs = Math.max(1000, (Number(options.interval) || 3) * 1000);
   const color = process.stdout.isTTY === true;
   let healths: ProbeResult[] = await probeAll(initial, { claude });
-  const events: string[] = [];
-  const pushEvent = (m: string): void => {
-    events.push(m);
-    if (events.length > 20) events.shift();
-  };
+  // Dashboard actions go to the same shared log that `ccx run` writes to.
+  const pushEvent = (m: string): void => appendEvent(home, m, Date.now());
 
   // Re-read accounts + ledger + active every tick so interactive edits show live.
   const build = () => {
@@ -64,7 +64,7 @@ export async function dashboardCommand(
       livePlan,
       cappedUntil,
       active: getActive(context.ctx),
-      events: events.slice(-5),
+      events: readEvents(home, 5).map(formatEvent),
       now,
       refreshMs,
     });

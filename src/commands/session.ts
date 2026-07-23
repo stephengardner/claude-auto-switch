@@ -9,6 +9,7 @@ import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config
 import { runHotSwapSession } from '../launcher/hot-swap.js';
 import { runPtySession } from '../launcher/pty-session.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
+import { appendEvent } from '../events/log.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 
@@ -131,6 +132,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   const sessionCreds = path.join(sessionDir, CREDS);
   seedSessionSettings(sessionDir, accounts);
   const err = context.err ?? ((m: string) => process.stderr.write(`${m}\n`));
+  const home = configHome(context.ctx);
+  // Record events to the shared log so an open `ccx dashboard` shows swaps live.
+  const logEvent = (m: string): void => appendEvent(home, m, Date.now());
   const debugLog = process.env.CAS_DEBUG ? path.join(sessionDir, 'session-debug.log') : undefined;
 
   let current: Account | null = null;
@@ -190,6 +194,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const wantContinue = isContinue && !wantsContinue(args);
 
       err(`[ccx] session on "${account.name}"`);
+      logEvent(`session on ${account.name}`);
       const outcome = await runPtySession({
         ...base,
         args: wantContinue ? [...args, '--continue'] : args,
@@ -213,8 +218,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         }),
         context.ctx,
       );
+      logEvent(`${accountName} hit its limit`);
     },
-    notify: (m) => err(`[ccx] ${m}`),
+    notify: (m) => {
+      err(`[ccx] ${m}`);
+      logEvent(m);
+    },
   });
 
   // On exit, save any refreshed credential back to its account and remove the
