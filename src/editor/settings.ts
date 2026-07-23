@@ -9,6 +9,40 @@ const APP_DIR: Record<Editor, string> = { cursor: 'Cursor', vscode: 'Code' };
 /** The extension setting that names the program used to launch Claude. */
 export const WRAPPER_KEY = 'claudeCode.claudeProcessWrapper';
 
+/** The extension setting that injects environment variables into Claude. */
+export const ENV_KEY = 'claudeCode.environmentVariables';
+
+interface EnvEntry {
+  name: string;
+  value: string;
+}
+
+function envArray(settings: Record<string, unknown>): EnvEntry[] {
+  const raw = settings[ENV_KEY];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((e): e is EnvEntry => !!e && typeof (e as EnvEntry).name === 'string');
+}
+
+/**
+ * Set one environment variable in the editor's list, preserving every other
+ * variable and setting. This is the Windows-safe way to switch accounts: point
+ * CLAUDE_CONFIG_DIR at the active account without touching how Claude launches.
+ */
+export function setEnvVar(
+  settings: Record<string, unknown>,
+  name: string,
+  value: string,
+): Record<string, unknown> {
+  const next = envArray(settings).filter((e) => e.name !== name);
+  next.push({ name, value });
+  return { ...settings, [ENV_KEY]: next };
+}
+
+/** Remove one environment variable, preserving the rest. */
+export function clearEnvVar(settings: Record<string, unknown>, name: string): Record<string, unknown> {
+  return { ...settings, [ENV_KEY]: envArray(settings).filter((e) => e.name !== name) };
+}
+
 /** The user `settings.json` path for an editor, per OS. */
 export function editorSettingsPath(editor: Editor, c: PathCtx = {}): string {
   const platform = c.platform ?? process.platform;
