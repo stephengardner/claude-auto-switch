@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import net from 'node:net';
 import { configHome, profilesDir } from '../config/paths.js';
+import { detectEditors } from '../editor/settings.js';
+import { readEditorEnvVar } from '../editor/install.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { ClaudeInvoker } from '../invoker.js';
 
@@ -101,6 +103,19 @@ function defaultTrackedFiles(): string[] {
   }
 }
 
+/** Informational: report which installed editors are pointed at ccx. */
+export function auditEditor(context: CliContext): DoctorCheck {
+  const editors = detectEditors(context.ctx);
+  if (editors.length === 0) {
+    return { name: 'editor', ok: true, detail: 'no Cursor/VS Code detected' };
+  }
+  const parts = editors.map((e) => {
+    const v = readEditorEnvVar(e, 'CLAUDE_CONFIG_DIR', context.ctx);
+    return `${e} ${v ? 'set up (ccx on)' : 'not set up (run: ccx on)'}`;
+  });
+  return { name: 'editor', ok: true, detail: parts.join('; ') };
+}
+
 export async function runDoctor(
   context: CliContext,
   deps: DoctorDeps = {},
@@ -110,6 +125,7 @@ export async function runDoctor(
     auditConfig(context),
     auditGitSafety(trackedFiles),
     auditRealClaude(context, deps),
+    auditEditor(context),
     await auditBrowserPort(context, deps),
   ];
   return { checks, ok: checks.every((c) => c.ok) };

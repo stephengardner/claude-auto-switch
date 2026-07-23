@@ -19,6 +19,25 @@ semantic versioning.
   `~/.claude`), `status`, `start` / `stop` (background watcher), and `run`
   (foreground).
 
+## [1.8.0]
+
+### Added
+
+- `ccx doctor` now reports editor integration status (which editors are set up).
+
+### Verified
+
+- Traced the Cursor / VS Code extension's own code: it reads the
+  `environmentVariables` setting and injects it into the Claude process. Combined
+  with the pointer resolving to the active account, the editor path is confirmed
+  end to end from the extension's actual code.
+
+## [1.7.1]
+
+### Changed
+
+- Messaging centered on "set up once with `ccx on`, then just use `claude`".
+
 ## [1.7.0]
 
 ### Changed

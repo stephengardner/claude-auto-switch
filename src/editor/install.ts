@@ -6,6 +6,7 @@ import {
   clearWrapperSetting,
   setEnvVar,
   clearEnvVar,
+  ENV_KEY,
   type Editor,
 } from './settings.js';
 import type { PathCtx } from '../config/paths.js';
@@ -74,6 +75,19 @@ export function uninstallEditorEnvVar(editor: Editor, name: string, c: PathCtx =
   const file = editorSettingsPath(editor, c);
   if (!existsSync(file)) return { ok: true, path: file, action: 'noop' };
   return updateSettings(editor, c, `remove ${name} yourself`, (s) => clearEnvVar(s, name));
+}
+
+/** Read the current value of an injected environment variable, or null. */
+export function readEditorEnvVar(editor: Editor, name: string, c: PathCtx = {}): string | null {
+  const settings = parseSettings(editorSettingsPath(editor, c));
+  if (!settings) return null;
+  const raw = settings[ENV_KEY];
+  if (!Array.isArray(raw)) return null;
+  const entry = raw.find(
+    (e): e is { name: string; value: string } =>
+      !!e && (e as { name?: string }).name === name && typeof (e as { value?: string }).value === 'string',
+  );
+  return entry ? entry.value : null;
 }
 
 /** Point the editor's Claude launcher at ccx-claude (the wrapper path; macOS/Linux). */

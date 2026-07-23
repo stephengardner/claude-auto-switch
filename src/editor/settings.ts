@@ -6,9 +6,13 @@ export type Editor = 'cursor' | 'vscode';
 
 /** Editors that appear to be installed (their per-user settings folder exists). */
 export function detectEditors(c: PathCtx = {}): Editor[] {
-  return (['cursor', 'vscode'] as Editor[]).filter((e) =>
-    existsSync(path.dirname(editorSettingsPath(e, c))),
-  );
+  try {
+    return (['cursor', 'vscode'] as Editor[]).filter((e) =>
+      existsSync(path.dirname(editorSettingsPath(e, c))),
+    );
+  } catch {
+    return []; // no resolvable home dir means no editors to detect
+  }
 }
 
 /** Folder name each editor uses under the per-user config location. */
