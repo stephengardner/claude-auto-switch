@@ -19,6 +19,14 @@ semantic versioning.
   `~/.claude`), `status`, `start` / `stop` (background watcher), and `run`
   (foreground).
 
+## [1.8.1]
+
+### Fixed
+
+- The editor uses its own pointer (`editor-active`) instead of sharing the
+  daemon's `active` link, so `ccx editor off` and `ccx daemon uninstall` no
+  longer disturb each other.
+
 ## [1.8.0]
 
 ### Added

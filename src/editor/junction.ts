@@ -1,6 +1,6 @@
+import path from 'node:path';
 import { getActive } from '../state/active.js';
 import { getAccount } from '../accounts/registry.js';
-import { activeLinkPath } from '../daemon/install.js';
 import { setTarget, removeTarget, isLink } from '../daemon/junction.js';
 import { ensureEditorReady } from '../commands/editor-ready.js';
 import { configHome } from '../config/paths.js';
@@ -8,11 +8,12 @@ import type { CliContext } from '../context.js';
 
 /**
  * The editor points CLAUDE_CONFIG_DIR at this stable path, and ccx flips it to
- * whichever account is active. Reuses the same "active" link the daemon uses, so
- * the terminal and editor share one notion of the active account.
+ * whichever account is active. It is the editor's OWN pointer (distinct from the
+ * daemon's "active" link) so `ccx editor off` and `ccx daemon uninstall` never
+ * disturb each other.
  */
 export function editorJunctionPath(context: CliContext): string {
-  return activeLinkPath(configHome(context.ctx));
+  return path.join(configHome(context.ctx), 'editor-active');
 }
 
 /**
