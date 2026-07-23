@@ -8,6 +8,7 @@ import { launchWatched } from '../launcher/launcher.js';
 import { loadLedger, saveLedger, markCapped, cappedNames } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
 import { appendEvent } from '../events/log.js';
+import { ensureEditorReady } from './editor-ready.js';
 import { configHome } from '../config/paths.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
@@ -51,6 +52,8 @@ export async function editorLaunch(context: CliContext, args: string[]): Promise
     return (await launchWatched(args, { name: '', dir: '' }, { claude })).exitCode;
   }
 
+  // Seed onboarding/identity so the editor's claude does not re-onboard/re-login.
+  ensureEditorReady(chosen.dir, context.ctx);
   const result = await launchWatched(args, { name: chosen.name, dir: chosen.dir }, { claude });
   if (result.classification.kind === 'capped') {
     saveLedger(

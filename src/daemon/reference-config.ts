@@ -15,9 +15,11 @@ export function defaultClaudeJsonPath(c: PathCtx = {}): string {
 }
 
 export function readReferenceConfig(c: PathCtx = {}): Record<string, unknown> {
-  const file = defaultClaudeJsonPath(c);
-  if (!existsSync(file)) return {};
+  // A missing or unresolvable reference config just means "no preferences to
+  // inherit" (return {}); it must never crash the caller.
   try {
+    const file = defaultClaudeJsonPath(c);
+    if (!existsSync(file)) return {};
     return JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
   } catch {
     return {};
