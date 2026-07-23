@@ -85,8 +85,21 @@ export async function launchWatched(
   deps: LaunchDeps,
 ): Promise<WatchedResult> {
   const argv = invokerArgs(deps.claude, args);
-  const child = spawn(deps.claude.bin, argv, {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: account.dir },
+  return spawnWatched(deps.claude.bin, argv, { CLAUDE_CONFIG_DIR: account.dir });
+}
+
+/**
+ * Spawn any command with inherited stdin/stdout (transparent) while teeing and
+ * watching stderr for the rate-limit signal. Used to run claude directly AND to
+ * run an editor's exact "run this" command on a chosen account.
+ */
+export async function spawnWatched(
+  bin: string,
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): Promise<WatchedResult> {
+  const child = spawn(bin, args, {
+    env: { ...process.env, ...extraEnv },
     stdio: ['inherit', 'inherit', 'pipe'],
   });
 
