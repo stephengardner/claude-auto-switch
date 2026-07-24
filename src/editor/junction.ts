@@ -1,10 +1,23 @@
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { getActive } from '../state/active.js';
-import { getAccount } from '../accounts/registry.js';
-import { setTarget, removeTarget, isLink } from '../daemon/junction.js';
+import { getAccount, listAccounts } from '../accounts/registry.js';
+import { setTarget, removeTarget, isLink, readTarget } from '../daemon/junction.js';
+import { readToken } from '../daemon/token-store.js';
 import { ensureEditorReady } from '../commands/editor-ready.js';
 import { configHome } from '../config/paths.js';
 import type { CliContext } from '../context.js';
+
+/** The account the editor pointer currently resolves to, or null. */
+export function editorTargetAccount(context: CliContext): { name: string; loggedIn: boolean } | null {
+  const target = readTarget(editorJunctionPath(context));
+  if (!target) return null;
+  const resolved = path.resolve(target);
+  const account = listAccounts(context.ctx).find((a) => path.resolve(a.dir) === resolved);
+  if (!account) return null;
+  const loggedIn = existsSync(path.join(account.dir, '.credentials.json')) || readToken(account.dir) !== null;
+  return { name: account.name, loggedIn };
+}
 
 /**
  * The editor points CLAUDE_CONFIG_DIR at this stable path, and ccx flips it to

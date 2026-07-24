@@ -4,6 +4,7 @@ import net from 'node:net';
 import { configHome, profilesDir } from '../config/paths.js';
 import { detectEditors } from '../editor/settings.js';
 import { readEditorEnvVar } from '../editor/install.js';
+import { editorTargetAccount } from '../editor/junction.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { ClaudeInvoker } from '../invoker.js';
 
@@ -109,9 +110,12 @@ export function auditEditor(context: CliContext): DoctorCheck {
   if (editors.length === 0) {
     return { name: 'editor', ok: true, detail: 'no Cursor/VS Code detected' };
   }
+  const target = editorTargetAccount(context);
   const parts = editors.map((e) => {
-    const v = readEditorEnvVar(e, 'CLAUDE_CONFIG_DIR', context.ctx);
-    return `${e} ${v ? 'set up (ccx on)' : 'not set up (run: ccx on)'}`;
+    const configured = readEditorEnvVar(e, 'CLAUDE_CONFIG_DIR', context.ctx) !== null;
+    if (!configured) return `${e} not set up (run: ccx on)`;
+    if (target) return `${e} uses "${target.name}"${target.loggedIn ? '' : ' (needs login)'}`;
+    return `${e} set up`;
   });
   return { name: 'editor', ok: true, detail: parts.join('; ') };
 }

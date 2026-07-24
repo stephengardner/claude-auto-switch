@@ -5,8 +5,9 @@ import path from 'node:path';
 import { addCommand } from '../../src/commands/add.js';
 import { useCommand } from '../../src/commands/use.js';
 import { editorCommand } from '../../src/commands/editor.js';
+import { writeFileSync } from 'node:fs';
 import { editorSettingsPath, ENV_KEY } from '../../src/editor/settings.js';
-import { editorJunctionPath } from '../../src/editor/junction.js';
+import { editorJunctionPath, editorTargetAccount } from '../../src/editor/junction.js';
 import { loadConfig } from '../../src/config/config.js';
 import type { CliContext } from '../../src/context.js';
 
@@ -23,9 +24,13 @@ describe('ccx editor on/off (env-var approach)', () => {
     const context = makeContext(home);
     const dirA = path.join(home, 'profiles', 'A');
     await addCommand(context, 'A', { dir: dirA, login: false });
+    writeFileSync(path.join(dirA, '.credentials.json'), '{}', 'utf8'); // A is logged in
     useCommand(context, 'A');
 
     expect(editorCommand(context, 'on')).toBe(0);
+
+    // The pointer resolves to account A, and doctor can name it.
+    expect(editorTargetAccount(context)).toEqual({ name: 'A', loggedIn: true });
 
     // The editor settings now inject CLAUDE_CONFIG_DIR = the ccx pointer.
     const settings = JSON.parse(readFileSync(editorSettingsPath('cursor', context.ctx), 'utf8'));
