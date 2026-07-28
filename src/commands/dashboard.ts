@@ -92,8 +92,14 @@ export async function dashboardCommand(
     onUse: (a) => {
       setActive(a.name, context.ctx);
       syncEditorPointerIfEnabled(context);
-      writeSwitchRequest(a.name, Date.now(), context.ctx); // switch a live session in place
+      writeSwitchRequest(a.name, Date.now(), 'seamless', context.ctx); // in-place, no restart
       pushEvent(`switched to ${a.name}`);
+    },
+    onForce: (a) => {
+      setActive(a.name, context.ctx);
+      syncEditorPointerIfEnabled(context);
+      writeSwitchRequest(a.name, Date.now(), 'restart', context.ctx); // instant, restarts session
+      pushEvent(`switching to ${a.name} now`);
     },
     onToggle: (a) => {
       updateAccount(a.name, { enabled: !a.enabled }, context.ctx);
@@ -128,6 +134,7 @@ interface LoopDeps {
   color: boolean;
   reprobe: () => Promise<void>;
   onUse: (a: DashboardAccount) => void;
+  onForce: (a: DashboardAccount) => void;
   onToggle: (a: DashboardAccount) => void;
   onRotate: () => void;
 }
@@ -155,6 +162,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     if (r.action === 'quit') return stop();
     const target = snap.accounts[selected];
     if (r.action === 'use' && target) deps.onUse(target);
+    else if (r.action === 'force' && target) deps.onForce(target);
     else if (r.action === 'toggle' && target) deps.onToggle(target);
     else if (r.action === 'rotate') deps.onRotate();
     else if (r.action === 'none') return;

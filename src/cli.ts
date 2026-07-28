@@ -88,9 +88,10 @@ program
 
 program
   .command('use <name>')
-  .description('pin the active account')
-  .action((name: string) => {
-    process.exitCode = useCommand(context(), name);
+  .description('switch the active account (a running session moves to it seamlessly)')
+  .option('--now', 'switch instantly by restarting the session (--continue) instead of the seamless in-place swap')
+  .action((name: string, opts: { now?: boolean }) => {
+    process.exitCode = useCommand(context(), name, opts);
   });
 
 program

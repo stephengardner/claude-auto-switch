@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.10.0]
+
+### Changed
+
+- **Switching a running session is now seamless by default.** Picking an account
+  (dashboard Enter, or `ccx use <name>`) swaps the credential file under the
+  running session; Claude re-reads it within ~30s (its credential cache TTL) and
+  the SAME session moves to the new account, no restart, nothing lost. Before,
+  the switch restarted the session with `--continue`, which reloaded the TUI and
+  lost live state.
+
+### Added
+
+- **Force-now (instant) switch** for when you want it immediately: `ccx use <name>
+  --now`, or press `f` on a row in the live dashboard. This keeps the old instant
+  behavior (restart + `--continue`), trading the TUI reload for zero latency.
+
 ## [1.9.0]
 
 ### Added

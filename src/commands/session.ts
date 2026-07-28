@@ -193,6 +193,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const a = accounts.find((x) => x.name === name);
       return a && hasLogin(a.dir) ? { name: a.name, dir: a.dir } : null;
     },
+    // The account the session is ACTUALLY on right now (may have moved via a
+    // seamless swap), so a cap is attributed to the right account.
+    currentAccount: () => current?.name ?? '',
     runSession: async (hotAccount, isContinue) => {
       const account = accounts.find((a) => a.name === hotAccount.name);
       if (!account) return { kind: 'ok', exitCode: 1 };
@@ -203,13 +206,29 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const token = readToken(account.dir);
       const env: Record<string, string> = token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
       // Watch for an operator-requested switch to a DIFFERENT, usable account.
+      // Seamless (default) swaps credentials under the running process; 'restart'
+      // returns the name so the child is ended and the loop relaunches --continue.
       const switchWatch = (): string | null => {
-        const decision = decideSwitch(readSwitchRequest(context.ctx), account.name, (name) => {
+        const request = readSwitchRequest(context.ctx);
+        const onNow = current?.name ?? account.name;
+        const decision = decideSwitch(request, onNow, (name) => {
           const t = accounts.find((a) => a.name === name);
           return !!t && hasLogin(t.dir);
         });
         if (decision.consume) clearSwitchRequest(context.ctx);
-        return decision.switchTo;
+        if (!decision.switchTo) return null;
+        const target = accounts.find((a) => a.name === decision.switchTo);
+        if (!target) return null;
+        if (request?.mode === 'restart') return target.name; // end child, relaunch --continue
+        // Seamless: swap the credential file under the running claude. It re-reads
+        // within ~30s (its cache TTL), moving the SAME session to the new account
+        // with no restart and nothing lost.
+        activate(target);
+        setActive(target.name, context.ctx);
+        syncEditorPointerIfEnabled(context);
+        logEvent(`switching to ${target.name} in place`);
+        err(`[ccx] switching to "${target.name}" (no restart; takes effect within ~30s)`);
+        return null;
       };
       const base = { claude, configDir: sessionDir, env, switchWatch, ...(debugLog ? { debugLog } : {}) };
       const wantContinue = isContinue && !wantsContinue(args);

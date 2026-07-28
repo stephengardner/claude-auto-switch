@@ -17,6 +17,8 @@ export interface HotSwapDeps {
   nextAccount: (excluding: Set<string>) => HotSwapAccount | null;
   /** Resolve a specific account by name (for an operator-requested switch); null if unusable. */
   resolveAccount: (name: string) => HotSwapAccount | null;
+  /** The account the session is actually on now (it may have moved via a seamless swap). */
+  currentAccount?: () => string;
   /**
    * Run one claude session (the real impl runs it inside a PTY). `isContinue`
    * resumes the same conversation (--continue) after a swap.
@@ -56,9 +58,11 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
     first = false;
 
     if (outcome.kind === 'capped') {
-      capped.add(account.name);
-      deps.markCapped(account.name, outcome.reason ?? 'usage cap', outcome.resetAt);
-      deps.notify(`"${account.name}" hit its limit; continuing on another account...`);
+      // The session may have moved via a seamless swap; attribute to the real one.
+      const capName = deps.currentAccount?.() || account.name;
+      capped.add(capName);
+      deps.markCapped(capName, outcome.reason ?? 'usage cap', outcome.resetAt);
+      deps.notify(`"${capName}" hit its limit; continuing on another account...`);
       continue;
     }
 

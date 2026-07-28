@@ -25,6 +25,10 @@ describe('dispatchKey', () => {
     expect(dispatchKey('p', 112, 1, 3)).toEqual({ selected: 1, action: 'use' });
   });
 
+  it('maps f to force (instant switch) without moving', () => {
+    expect(dispatchKey('f', 102, 1, 3)).toEqual({ selected: 1, action: 'force' });
+  });
+
   it('maps e/r to toggle/rotate without moving', () => {
     expect(dispatchKey('e', undefined, 1, 3)).toEqual({ selected: 1, action: 'toggle' });
     expect(dispatchKey('r', undefined, 1, 3)).toEqual({ selected: 1, action: 'rotate' });

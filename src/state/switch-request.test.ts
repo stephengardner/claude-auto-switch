@@ -15,19 +15,19 @@ function ctx() {
 }
 
 describe('switch-request file', () => {
-  it('writes, reads back, and clears a request', () => {
+  it('writes, reads back, and clears a request (seamless + restart modes)', () => {
     const c = ctx();
     expect(readSwitchRequest(c)).toBeNull();
-    writeSwitchRequest('phx', 1234, c);
-    expect(readSwitchRequest(c)).toEqual({ account: 'phx', at: 1234 });
+    writeSwitchRequest('phx', 1234, 'seamless', c);
+    expect(readSwitchRequest(c)).toEqual({ account: 'phx', at: 1234, mode: 'seamless' });
+    writeSwitchRequest('phx', 5, 'restart', c);
+    expect(readSwitchRequest(c)?.mode).toBe('restart');
     clearSwitchRequest(c);
     expect(readSwitchRequest(c)).toBeNull();
   });
 
-  it('treats a malformed request as absent (never throws)', () => {
-    const c = ctx();
-    // A partial/garbage file must not crash a live session.
-    writeSwitchRequest('x', 1, c);
+  it('never throws when the home cannot be resolved', () => {
+    // A missing/garbage location must not crash a live session's poll.
     expect(() => readSwitchRequest({ env: { CLAUDE_AUTO_SWITCH_HOME: 'C:/nope/does/not/exist' } })).not.toThrow();
   });
 });

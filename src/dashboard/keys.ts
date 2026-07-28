@@ -1,4 +1,4 @@
-export type KeyAction = 'quit' | 'move' | 'use' | 'toggle' | 'rotate' | 'none';
+export type KeyAction = 'quit' | 'move' | 'use' | 'force' | 'toggle' | 'rotate' | 'none';
 
 export interface KeyOutcome {
   /** New selection index (clamped to the row count). */
@@ -31,6 +31,7 @@ export function dispatchKey(
   if (byte0 === 13 || byte0 === 10 || key === 'u' || key === 'p') {
     return { selected, action: 'use' };
   }
+  if (key === 'f') return { selected, action: 'force' }; // instant switch (restarts the session)
   if (key === 'e') return { selected, action: 'toggle' };
   if (key === 'r') return { selected, action: 'rotate' };
   return { selected, action: 'none' };

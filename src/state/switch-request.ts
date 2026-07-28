@@ -10,8 +10,21 @@ import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
  * and, when it can honor it, swaps credentials and resumes the same conversation
  * on the requested account. File-based IPC, same pattern as the events log.
  */
-const SwitchRequestSchema = z.object({ account: z.string(), at: z.number() });
+/**
+ * `mode` decides HOW a running session honors the switch:
+ * - 'seamless' (default): swap the credential file under the running process; it
+ *   re-reads within ~30s (its cache TTL), so the SAME session moves to the new
+ *   account with no restart and nothing lost.
+ * - 'restart': end the process and relaunch `claude --continue` on the new
+ *   account (instant, but reloads the TUI and loses live state).
+ */
+const SwitchRequestSchema = z.object({
+  account: z.string(),
+  at: z.number(),
+  mode: z.enum(['seamless', 'restart']).optional(),
+});
 export type SwitchRequest = z.infer<typeof SwitchRequestSchema>;
+export type SwitchMode = 'seamless' | 'restart';
 
 const FILENAME = 'switch-request.json';
 
@@ -19,9 +32,14 @@ function switchRequestPath(c: PathCtx = {}): string {
   return path.join(configHome(c), FILENAME);
 }
 
-/** Ask a running session to switch to `account` and continue in place. */
-export function writeSwitchRequest(account: string, at: number, c: PathCtx = {}): void {
-  writeJsonFile(switchRequestPath(c), { account, at });
+/** Ask a running session to switch to `account` (seamless by default). */
+export function writeSwitchRequest(
+  account: string,
+  at: number,
+  mode: SwitchMode = 'seamless',
+  c: PathCtx = {},
+): void {
+  writeJsonFile(switchRequestPath(c), { account, at, mode });
 }
 
 /** The pending request, or null. A malformed file is ignored (never crashes a live session). */
