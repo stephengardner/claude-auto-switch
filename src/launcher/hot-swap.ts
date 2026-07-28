@@ -4,15 +4,19 @@ export interface HotSwapAccount {
 }
 
 export interface SessionOutcome {
-  kind: 'ok' | 'capped' | 'no-conversation';
+  kind: 'ok' | 'capped' | 'no-conversation' | 'switch';
   exitCode: number;
   reason?: string;
   resetAt?: number;
+  /** For kind 'switch': the account the operator asked to switch to, in place. */
+  switchTo?: string;
 }
 
 export interface HotSwapDeps {
   /** Next healthy account, excluding the given capped names; null when none remain. */
   nextAccount: (excluding: Set<string>) => HotSwapAccount | null;
+  /** Resolve a specific account by name (for an operator-requested switch); null if unusable. */
+  resolveAccount: (name: string) => HotSwapAccount | null;
   /**
    * Run one claude session (the real impl runs it inside a PTY). `isContinue`
    * resumes the same conversation (--continue) after a swap.
@@ -36,9 +40,13 @@ export interface HotSwapDeps {
 export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
   const capped = new Set<string>();
   let first = true;
+  // When the operator picks an account mid-session, we relaunch on THAT account
+  // next (instead of the policy pick), resuming the same conversation.
+  let forced: HotSwapAccount | null = null;
 
   for (;;) {
-    const account = deps.nextAccount(capped);
+    const account: HotSwapAccount | null = forced ?? deps.nextAccount(capped);
+    forced = null;
     if (!account) {
       deps.notify('every account is capped; try again after a reset');
       return 1;
@@ -53,6 +61,19 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
       deps.notify(`"${account.name}" hit its limit; continuing on another account...`);
       continue;
     }
+
+    if (outcome.kind === 'switch' && outcome.switchTo) {
+      const target = deps.resolveAccount(outcome.switchTo);
+      // A manual pick overrides a prior cap-avoidance for that account.
+      capped.delete(outcome.switchTo);
+      // Relaunch the SAME conversation (--continue): on the requested account if
+      // it resolves, otherwise fall back to the current one so ending the child
+      // never drops the session.
+      forced = target ?? account;
+      if (target) deps.notify(`switching to "${target.name}"...`);
+      continue;
+    }
+
     return outcome.exitCode;
   }
 }

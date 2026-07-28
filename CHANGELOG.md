@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.9.0]
+
+### Added
+
+- **Switch a running session in place.** Pick an account in the live dashboard
+  (Enter) or run `ccx use <name>` while a session is running, and that session
+  swaps to the chosen account and resumes the SAME conversation with `--continue`,
+  no restart. Before this, picking an account only affected your next session;
+  now it reaches the session you are already in. (Caps still auto-switch as
+  before.) A logged-out or already-current pick is ignored.
+
 ## [1.8.4]
 
 ### Fixed

@@ -1,5 +1,6 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
+import { writeSwitchRequest } from '../state/switch-request.js';
 import { probeAll, type ProbeResult } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { renderDashboard, type DashboardAccount } from '../dashboard/render.js';
@@ -91,6 +92,7 @@ export async function dashboardCommand(
     onUse: (a) => {
       setActive(a.name, context.ctx);
       syncEditorPointerIfEnabled(context);
+      writeSwitchRequest(a.name, Date.now(), context.ctx); // switch a live session in place
       pushEvent(`switched to ${a.name}`);
     },
     onToggle: (a) => {

@@ -3,7 +3,7 @@
 // claude-auto-switch drives: `auth status`, `auth login`, and a generic run.
 // Behavior is driven by a scenario JSON, resolved from FAKE_CLAUDE_SCENARIO or
 // <CLAUDE_CONFIG_DIR>/fake-scenario.json. No network, no model spend, no logins.
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 
 const args = process.argv.slice(2);
@@ -63,5 +63,24 @@ if (scenario.capped) {
 
 // Record the invocation so launcher tests can assert on args + config dir.
 writeJson(path.join(configDir, 'fake-last-run.json'), { args, configDir });
+
+// For multi-launch (hot-swap / in-place switch) tests: append each run to a
+// shared log, tagged with which account credential is present in the config dir,
+// so a test can see the session move from one account to another.
+const runsLog = process.env.FAKE_CLAUDE_RUNS_LOG;
+if (runsLog) {
+  let marker = null;
+  try {
+    marker = JSON.parse(readFileSync(path.join(configDir, '.credentials.json'), 'utf8')).account ?? null;
+  } catch {
+    /* no credential present */
+  }
+  appendFileSync(runsLog, `${JSON.stringify({ args, marker })}\n`, 'utf8');
+}
 process.stdout.write(`fake-claude ran: ${args.join(' ')}\n`);
-process.exit(0);
+
+// Stay alive when asked, so a test can interrupt the run (cap or switch) before
+// it exits on its own. Killed by the parent (child.kill) ends it immediately.
+const idleMs = Number(process.env.FAKE_CLAUDE_IDLE_MS) || 0;
+if (idleMs > 0) setTimeout(() => process.exit(0), idleMs);
+else process.exit(0);

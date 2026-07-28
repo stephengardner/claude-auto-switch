@@ -13,6 +13,12 @@ export interface PtySessionOptions {
   env?: Record<string, string>;
   /** If set, write the session's raw output here for debugging cap detection. */
   debugLog?: string;
+  /**
+   * Polled periodically; return an account name when the operator has picked a
+   * different account mid-session, and the child is ended so the swap loop
+   * relaunches --continue on it. Return null to keep running.
+   */
+  switchWatch?: () => string | null;
 }
 
 function cleanEnv(extra: Record<string, string>): Record<string, string> {
@@ -43,11 +49,26 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     let noConversation = false;
     let window = '';
     let captured = '';
+    let switching: string | null = null;
+
+    // The operator can pick a different account mid-session (dashboard Enter /
+    // `ccx use`); poll for that and end the child so the swap loop relaunches
+    // --continue on the chosen account, in place.
+    const switchPoll = options.switchWatch
+      ? setInterval(() => {
+          if (capped || switching || noConversation) return;
+          const target = options.switchWatch!();
+          if (target) {
+            switching = target;
+            setTimeout(() => child.kill(), 80);
+          }
+        }, 400)
+      : null;
 
     const dataSub = child.onData((data) => {
       process.stdout.write(data);
       if (options.debugLog) captured += data;
-      if (capped) return;
+      if (capped || switching) return;
       window = (window + data).slice(-4000);
       const hit = matchesCapText(window);
       if (hit) {
@@ -92,6 +113,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     const exitSub = child.onExit(({ exitCode }) => {
       dataSub.dispose();
       exitSub.dispose();
+      if (switchPoll) clearInterval(switchPoll);
       stdin.off('data', onInput);
       process.stdout.off('resize', onResize);
       if (stdin.isTTY) stdin.setRawMode?.(false);
@@ -106,11 +128,13 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         }
       }
       resolve(
-        capped
-          ? { kind: 'capped', exitCode, reason: capped.reason, resetAt: capped.resetAt }
-          : noConversation
-            ? { kind: 'no-conversation', exitCode }
-            : { kind: 'ok', exitCode },
+        switching
+          ? { kind: 'switch', exitCode, switchTo: switching }
+          : capped
+            ? { kind: 'capped', exitCode, reason: capped.reason, resetAt: capped.resetAt }
+            : noConversation
+              ? { kind: 'no-conversation', exitCode }
+              : { kind: 'ok', exitCode },
       );
     });
   });

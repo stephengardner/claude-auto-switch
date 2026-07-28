@@ -3,6 +3,7 @@ import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
+import { readSwitchRequest, clearSwitchRequest, decideSwitch } from '../state/switch-request.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { loadLedger, saveLedger, markCapped, cappedNames } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
@@ -132,6 +133,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   secureMkdir(sessionDir);
   const sessionCreds = path.join(sessionDir, CREDS);
   seedSessionSettings(sessionDir, accounts);
+  // Drop any stale switch request so a fresh session starts on the active account
+  // and only a NEW mid-session pick triggers an in-place swap.
+  clearSwitchRequest(context.ctx);
   const err = context.err ?? ((m: string) => process.stderr.write(`${m}\n`));
   const home = configHome(context.ctx);
   // Record events to the shared log so an open `ccx dashboard` shows swaps live.
@@ -185,6 +189,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const pick = (pinned ? eligible.find((a) => a.name === pinned) : undefined) ?? eligible[0];
       return pick ? { name: pick.name, dir: pick.dir } : null;
     },
+    resolveAccount: (name) => {
+      const a = accounts.find((x) => x.name === name);
+      return a && hasLogin(a.dir) ? { name: a.name, dir: a.dir } : null;
+    },
     runSession: async (hotAccount, isContinue) => {
       const account = accounts.find((a) => a.name === hotAccount.name);
       if (!account) return { kind: 'ok', exitCode: 1 };
@@ -194,7 +202,16 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       syncEditorPointerIfEnabled(context);
       const token = readToken(account.dir);
       const env: Record<string, string> = token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
-      const base = { claude, configDir: sessionDir, env, ...(debugLog ? { debugLog } : {}) };
+      // Watch for an operator-requested switch to a DIFFERENT, usable account.
+      const switchWatch = (): string | null => {
+        const decision = decideSwitch(readSwitchRequest(context.ctx), account.name, (name) => {
+          const t = accounts.find((a) => a.name === name);
+          return !!t && hasLogin(t.dir);
+        });
+        if (decision.consume) clearSwitchRequest(context.ctx);
+        return decision.switchTo;
+      };
+      const base = { claude, configDir: sessionDir, env, switchWatch, ...(debugLog ? { debugLog } : {}) };
       const wantContinue = isContinue && !wantsContinue(args);
 
       err(`[ccx] session on "${account.name}"`);
