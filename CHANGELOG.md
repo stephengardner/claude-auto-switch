@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.8.3]
+
+### Fixed
+
+- `ccx on` now installs the transparent `claude` shim into the PowerShell
+  profile your shell actually loads. It asks PowerShell for its real `$PROFILE`
+  and falls back to the OneDrive-redirected Documents folder, so on the common
+  Windows setup where OneDrive redirects Documents the shim no longer lands in a
+  profile that never loads. Before this, `claude` kept running the real binary
+  and nothing auto-switched, including inside the Cursor / VS Code terminal.
+
 ## [1.1.0]
 
 ### Added
