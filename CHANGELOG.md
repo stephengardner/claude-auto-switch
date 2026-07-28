@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.10.1]
+
+### Fixed
+
+- **`ccx on` now sets up your editor even when `settings.json` has comments.**
+  Editor settings are JSONC (comments and trailing commas are allowed), which
+  plain JSON parsing rejects, so ccx used to refuse with a "could not safely
+  parse" warning and silently skip the editor setup for most VS Code / Cursor
+  users. It now reads and edits JSONC safely, applying minimal edits that
+  preserve every comment and your formatting, backs the file up first, and still
+  refuses only a genuinely malformed file.
+
 ## [1.10.0]
 
 ### Changed

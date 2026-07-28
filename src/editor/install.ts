@@ -1,12 +1,20 @@
 import { existsSync, readFileSync, copyFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import {
+  parse as parseJsonc,
+  modify,
+  applyEdits,
+  type ParseError,
+  type FormattingOptions,
+} from 'jsonc-parser';
+import {
   editorSettingsPath,
   setWrapperSetting,
   clearWrapperSetting,
   setEnvVar,
   clearEnvVar,
   ENV_KEY,
+  WRAPPER_KEY,
   type Editor,
 } from './settings.js';
 import type { PathCtx } from '../config/paths.js';
@@ -16,46 +24,54 @@ export type InstallOutcome =
   | { ok: false; path: string; reason: string };
 
 /**
- * Parse settings.json SAFELY. Editor settings files may contain comments
- * (JSONC), which plain JSON.parse rejects. If a non-empty file will not parse,
- * we return null and the caller REFUSES to write, rather than clobbering the
- * user's settings.
+ * Parse a settings.json tolerantly. Editor settings are JSONC (comments and
+ * trailing commas are valid), so we use a JSONC parser rather than JSON.parse.
+ * Returns null ONLY when the file is genuinely malformed (real syntax errors),
+ * in which case the caller refuses to write rather than risk clobbering it.
  */
-function parseSettings(file: string): Record<string, unknown> | null {
-  if (!existsSync(file)) return {};
-  const text = readFileSync(file, 'utf8').trim();
-  if (text.length === 0) return {};
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return null;
-  }
+function parseSettings(text: string): Record<string, unknown> | null {
+  if (text.trim().length === 0) return {};
+  const errors: ParseError[] = [];
+  const parsed = parseJsonc(text, errors, { allowTrailingComma: true }) as unknown;
+  if (errors.length > 0) return null;
+  return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
 }
 
-function writeSettings(file: string, data: Record<string, unknown>): void {
-  mkdirSync(path.dirname(file), { recursive: true });
-  if (existsSync(file)) copyFileSync(file, `${file}.cas-backup`);
-  writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+/** Guess the file's indent unit (from its first indented line) so edits match it. */
+function detectFormatting(text: string): FormattingOptions {
+  const indent = /\n([ \t]+)\S/.exec(text)?.[1];
+  if (!indent) return { tabSize: 2, insertSpaces: true };
+  if (indent.startsWith('\t')) return { tabSize: 2, insertSpaces: false };
+  return { tabSize: indent.length || 2, insertSpaces: true };
 }
 
 /**
- * Safely transform an editor's settings.json: parse (refusing on JSONC it can't
- * parse), transform, back up, and write. Never clobbers on a parse failure.
+ * Set (or, with `undefined`, remove) ONE top-level key in an editor's
+ * settings.json, preserving every other key, every comment, and the file's
+ * formatting (via minimal JSONC edits). Backs the file up first, and refuses to
+ * write if the file is genuinely malformed.
  */
-function updateSettings(
+function editSettingKey(
   editor: Editor,
   c: PathCtx,
   hint: string,
-  transform: (s: Record<string, unknown>) => Record<string, unknown>,
+  key: string,
+  compute: (current: Record<string, unknown>) => unknown,
 ): InstallOutcome {
   const file = editorSettingsPath(editor, c);
-  const settings = parseSettings(file);
-  if (settings === null) {
-    return { ok: false, path: file, reason: `could not safely parse ${file} (comments?); ${hint}` };
+  const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  const current = parseSettings(text);
+  if (current === null) {
+    return { ok: false, path: file, reason: `could not safely parse ${file}; ${hint}` };
   }
-  writeSettings(file, transform(settings));
-  return { ok: true, path: file, action: 'installed' };
+  const value = compute(current);
+  const base = text.trim().length > 0 ? text : '{}';
+  const edits = modify(base, [key], value, { formattingOptions: detectFormatting(base) });
+  const next = applyEdits(base, edits);
+  mkdirSync(path.dirname(file), { recursive: true });
+  if (existsSync(file)) copyFileSync(file, `${file}.cas-backup`);
+  writeFileSync(file, next.endsWith('\n') ? next : `${next}\n`, 'utf8');
+  return { ok: true, path: file, action: value === undefined ? 'removed' : 'installed' };
 }
 
 /** Inject an environment variable into the editor's Claude (the safe path). */
@@ -65,21 +81,30 @@ export function installEditorEnvVar(
   value: string,
   c: PathCtx = {},
 ): InstallOutcome {
-  return updateSettings(editor, c, `set "${name}": "${value}" under claudeCode.environmentVariables yourself`, (s) =>
-    setEnvVar(s, name, value),
+  return editSettingKey(
+    editor,
+    c,
+    `set "${name}" under ${ENV_KEY} yourself`,
+    ENV_KEY,
+    (cur) => setEnvVar(cur, name, value)[ENV_KEY],
   );
 }
 
-/** Remove an injected environment variable. */
+/** Remove an injected environment variable (dropping the key if it becomes empty). */
 export function uninstallEditorEnvVar(editor: Editor, name: string, c: PathCtx = {}): InstallOutcome {
   const file = editorSettingsPath(editor, c);
   if (!existsSync(file)) return { ok: true, path: file, action: 'noop' };
-  return updateSettings(editor, c, `remove ${name} yourself`, (s) => clearEnvVar(s, name));
+  return editSettingKey(editor, c, `remove ${name} yourself`, ENV_KEY, (cur) => {
+    const rest = clearEnvVar(cur, name)[ENV_KEY];
+    return Array.isArray(rest) && rest.length > 0 ? rest : undefined;
+  });
 }
 
 /** Read the current value of an injected environment variable, or null. */
 export function readEditorEnvVar(editor: Editor, name: string, c: PathCtx = {}): string | null {
-  const settings = parseSettings(editorSettingsPath(editor, c));
+  const file = editorSettingsPath(editor, c);
+  if (!existsSync(file)) return null;
+  const settings = parseSettings(readFileSync(file, 'utf8'));
   if (!settings) return null;
   const raw = settings[ENV_KEY];
   if (!Array.isArray(raw)) return null;
@@ -96,8 +121,12 @@ export function installEditorWrapper(
   wrapperPath: string,
   c: PathCtx = {},
 ): InstallOutcome {
-  return updateSettings(editor, c, `add "claudeCode.claudeProcessWrapper": "${wrapperPath}" yourself`, (s) =>
-    setWrapperSetting(s, wrapperPath),
+  return editSettingKey(
+    editor,
+    c,
+    `add "${WRAPPER_KEY}": "${wrapperPath}" yourself`,
+    WRAPPER_KEY,
+    (cur) => setWrapperSetting(cur, wrapperPath)[WRAPPER_KEY],
   );
 }
 
@@ -105,5 +134,5 @@ export function installEditorWrapper(
 export function uninstallEditorWrapper(editor: Editor, c: PathCtx = {}): InstallOutcome {
   const file = editorSettingsPath(editor, c);
   if (!existsSync(file)) return { ok: true, path: file, action: 'noop' };
-  return updateSettings(editor, c, 'remove the setting yourself', (s) => clearWrapperSetting(s));
+  return editSettingKey(editor, c, 'remove the setting yourself', WRAPPER_KEY, (cur) => clearWrapperSetting(cur)[WRAPPER_KEY]);
 }

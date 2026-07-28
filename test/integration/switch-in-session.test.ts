@@ -57,7 +57,9 @@ describe('on-demand switch in a running session (against fake-claude)', () => {
   it('seamless (default): swaps the credential file in place, no relaunch', async () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-seamless-'));
     const runsLog = path.join(home, 'runs.jsonl');
-    process.env.FAKE_CLAUDE_IDLE_MS = '900';
+    // A generous idle so the swap poll fires well before the run ends, even under
+    // parallel-suite CPU load (keeps this timing test from flaking).
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
     process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
 
     const context = makeContext(home);
@@ -74,8 +76,11 @@ describe('on-demand switch in a running session (against fake-claude)', () => {
     const launches = runs.filter((r) => r.type === 'launch');
     expect(launches).toHaveLength(1); // NO relaunch: same process throughout
     expect(launches[0]?.marker).toBe('A'); // launched on A
-    // The credential file was swapped to B underneath the running process: the
-    // simulated re-read at run's end sees B, without any restart.
+    // The seamless swap fired (deterministic: logged to the event stream)...
+    const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
+    expect(events).toContain('switching to B in place');
+    // ...and it swapped the credential file to B underneath the running process
+    // (the simulated ~30s re-read at run's end sees B), with no restart.
     const lastReread = runs.filter((r) => r.type === 'reread').pop();
     expect(lastReread?.marker).toBe('B');
   });
@@ -83,7 +88,7 @@ describe('on-demand switch in a running session (against fake-claude)', () => {
   it('force-now (restart): relaunches on the picked account with --continue', async () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-forcenow-'));
     const runsLog = path.join(home, 'runs.jsonl');
-    process.env.FAKE_CLAUDE_IDLE_MS = '900';
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500'; // generous margin so the poll fires under load
     process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
 
     const context = makeContext(home);

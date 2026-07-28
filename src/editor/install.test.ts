@@ -29,11 +29,25 @@ describe('installEditorWrapper', () => {
     expect(settings[WRAPPER_KEY]).toBe('/bin/ccx-claude');
   });
 
-  it('REFUSES to write when the file has comments (never clobbers)', () => {
+  it('preserves comments and trailing commas when merging into JSONC', () => {
     const c = ctxWithHome();
     const file = editorSettingsPath('cursor', c);
     mkdirSync(path.dirname(file), { recursive: true });
-    const original = '{\n  // my settings\n  "editor.fontSize": 15\n}';
+    const original = '{\n  // keep me\n  "editor.fontSize": 15,\n}';
+    writeFileSync(file, original, 'utf8');
+    const r = installEditorWrapper('cursor', '/bin/ccx-claude', c);
+    expect(r.ok).toBe(true);
+    const text = readFileSync(file, 'utf8');
+    expect(text).toContain('// keep me'); // comment survived
+    expect(text).toContain('"editor.fontSize": 15'); // existing key survived
+    expect(text).toContain('/bin/ccx-claude'); // wrapper written
+  });
+
+  it('still REFUSES a genuinely malformed file (never clobbers)', () => {
+    const c = ctxWithHome();
+    const file = editorSettingsPath('cursor', c);
+    mkdirSync(path.dirname(file), { recursive: true });
+    const original = '{ "editor.fontSize": 15 '; // unterminated object
     writeFileSync(file, original, 'utf8');
     const r = installEditorWrapper('cursor', '/bin/ccx-claude', c);
     expect(r.ok).toBe(false);
