@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,6 +52,32 @@ describe('on-demand switch in a running session (against fake-claude)', () => {
   afterEach(() => {
     delete process.env.FAKE_CLAUDE_IDLE_MS;
     delete process.env.FAKE_CLAUDE_RUNS_LOG;
+    delete process.env.FAKE_CLAUDE_EMIT_CAP;
+  });
+
+  it('ignores a cap message replayed at startup (no user input): no false cap, no cascade', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-nocascade-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '600';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    process.env.FAKE_CLAUDE_EMIT_CAP = '1'; // the run "replays" a prior cap at startup
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    // No user input: the startup cap must be treated as historical, not fresh.
+    const exit = await runCommand(context, []);
+    expect(exit).toBe(0); // ended normally on A, not "every account is capped" (exit 1)
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(1); // no rotation -> no cascade
+    const ledgerPath = path.join(home, 'ledger.json');
+    const caps = existsSync(ledgerPath)
+      ? ((JSON.parse(readFileSync(ledgerPath, 'utf8')) as { caps?: unknown[] }).caps ?? [])
+      : [];
+    expect(caps).toHaveLength(0); // nothing falsely marked capped
   });
 
   it('seamless (default): swaps the credential file in place, no relaunch', async () => {

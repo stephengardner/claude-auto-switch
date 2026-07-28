@@ -146,6 +146,16 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
   const saveBack = (account: Account): void => {
     if (!existsSync(sessionCreds)) return;
+    // Guard against corrupting a good login: a killed or partial OAuth refresh
+    // can leave the session credential empty or malformed. Never copy that over
+    // the account's stored credential -- keep the last good one instead.
+    try {
+      const fresh = readFileSync(sessionCreds, 'utf8');
+      const parsed = JSON.parse(fresh) as Record<string, unknown>;
+      if (fresh.trim().length === 0 || Object.keys(parsed).length === 0) return;
+    } catch {
+      return; // not valid JSON: do not propagate it to the account
+    }
     try {
       copySecretFile(sessionCreds, path.join(account.dir, CREDS));
     } catch {

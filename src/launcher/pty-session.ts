@@ -50,6 +50,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     let window = '';
     let captured = '';
     let switching: string | null = null;
+    let userActive = false;
 
     // The operator can pick a different account mid-session (dashboard Enter /
     // `ccx use`); poll for that and end the child so the swap loop relaunches
@@ -70,18 +71,25 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       if (options.debugLog) captured += data;
       if (capped || switching) return;
       window = (window + data).slice(-4000);
+      // A --continue with nothing to resume: signal a fresh relaunch is needed.
+      // Not gated on user input (it only appears during the resume itself).
+      if (/No conversation found to continue/i.test(window)) {
+        noConversation = true;
+        setTimeout(() => child.kill(), 100);
+        return;
+      }
+      // Cap detection is gated on user activity. A cap message seen at startup or
+      // while --continue REPLAYS the previous conversation (before the user has
+      // typed) is historical -- e.g. the prior account's cap being re-rendered --
+      // NOT a fresh cap. Matching it would falsely cap every account we rotate
+      // through (the cascade bug). Only fresh output after the user acts counts.
+      if (!userActive) return;
       const hit = matchesCapText(window);
       if (hit) {
         capped = { reason: hit.reason, resetAt: hit.resetAt };
         window = '';
         // Let the limit message finish rendering, then end the child so we swap.
         setTimeout(() => child.kill(), 150);
-        return;
-      }
-      // A --continue with nothing to resume: signal a fresh relaunch is needed.
-      if (/No conversation found to continue/i.test(window)) {
-        noConversation = true;
-        setTimeout(() => child.kill(), 100);
       }
     });
 
@@ -98,6 +106,12 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     }
     stdin.resume();
     const onInput = (d: Buffer): void => {
+      // The user is now driving the session: drop any startup/replay output from
+      // the cap-detection window so only fresh output (from here on) can count.
+      if (!userActive) {
+        userActive = true;
+        window = '';
+      }
       // Normalize Enter: terminals may send \r\n or lone \n, but the TUI submits
       // on \r. Without this, typing works but Enter never sends (MinTTY).
       const text = d.toString('utf8').replace(/\r?\n/g, '\r');

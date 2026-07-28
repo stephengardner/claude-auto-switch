@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.10.2]
+
+### Fixed
+
+- **No more false "every account is capped" cascade.** When one account really
+  hit its limit, rotating to the next relaunched it with `--continue`, which
+  replays the prior conversation and re-renders that cap message; the watcher
+  matched the replayed text and falsely capped every account in turn (and the
+  rapid churn could corrupt a login). Cap detection is now gated on user
+  activity, so a cap message shown at startup or during a `--continue` replay
+  (before you have typed) is treated as historical, not a fresh cap.
+- **A corrupt or half-written session credential can no longer overwrite a good
+  account login** (guards against a killed OAuth refresh logging an account out).
+- **Quitting the dashboard with `q` exits immediately**, instead of leaving a
+  dangling refresh timer that kept the process (and the terminal) hung.
+
 ## [1.10.1]
 
 ### Fixed

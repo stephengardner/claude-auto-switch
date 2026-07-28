@@ -80,6 +80,13 @@ if (runsLog) {
 }
 process.stdout.write(`fake-claude ran: ${args.join(' ')}\n`);
 
+// Simulate a --continue replay re-rendering the PREVIOUS account's cap message.
+// The watcher must NOT treat this as a fresh cap while the user has not typed
+// (that is the false-cap cascade this guards against).
+if (process.env.FAKE_CLAUDE_EMIT_CAP) {
+  process.stdout.write("You've reached your Fable 5 limit. Run /usage-credits to continue.\n");
+}
+
 // Stay alive when asked, so a test can interrupt the run (cap or switch) before
 // it exits. Killed by the parent (child.kill) ends it immediately.
 const idleMs = Number(process.env.FAKE_CLAUDE_IDLE_MS) || 0;

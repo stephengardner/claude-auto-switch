@@ -193,8 +193,14 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       const painted = frame.split('\n').map((l) => l + CLEAR_LINE_END).join('\r\n');
       out.write(HOME + painted + '\r\n' + CLEAR_BELOW);
       await new Promise<void>((resolve) => {
-        wake = resolve;
-        setTimeout(resolve, deps.refreshMs);
+        const timer = setTimeout(resolve, deps.refreshMs);
+        // Waking early (a keypress / quit) clears the pending refresh timer, so
+        // quitting exits immediately instead of leaving a dangling timer that
+        // keeps the process (and the terminal) hung for up to refreshMs.
+        wake = () => {
+          clearTimeout(timer);
+          resolve();
+        };
       });
       wake = null;
     }
