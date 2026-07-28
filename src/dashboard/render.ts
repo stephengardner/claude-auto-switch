@@ -116,7 +116,9 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   }
 
   if (options.interactive) {
-    lines.push(paint('j/k move  ·  p pin  ·  e enable  ·  r rotate  ·  q quit', codes.dim, color));
+    lines.push(
+      paint('j/k move  ·  enter use  ·  e enable  ·  r rotate  ·  q quit', codes.dim, color),
+    );
   }
 
   return lines.join('\n');

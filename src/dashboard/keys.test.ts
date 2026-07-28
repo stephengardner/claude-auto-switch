@@ -18,8 +18,14 @@ describe('dispatchKey', () => {
     expect(dispatchKey('\x1b[A', undefined, 0, 3)).toEqual({ selected: 0, action: 'move' });
   });
 
-  it('maps p/e/r to pin/toggle/rotate without moving', () => {
-    expect(dispatchKey('p', undefined, 1, 3)).toEqual({ selected: 1, action: 'pin' });
+  it('activates the selected row (use) on Enter, u, or p', () => {
+    expect(dispatchKey('\r', 13, 1, 3)).toEqual({ selected: 1, action: 'use' });
+    expect(dispatchKey('\n', 10, 1, 3)).toEqual({ selected: 1, action: 'use' });
+    expect(dispatchKey('u', 117, 1, 3)).toEqual({ selected: 1, action: 'use' });
+    expect(dispatchKey('p', 112, 1, 3)).toEqual({ selected: 1, action: 'use' });
+  });
+
+  it('maps e/r to toggle/rotate without moving', () => {
     expect(dispatchKey('e', undefined, 1, 3)).toEqual({ selected: 1, action: 'toggle' });
     expect(dispatchKey('r', undefined, 1, 3)).toEqual({ selected: 1, action: 'rotate' });
   });

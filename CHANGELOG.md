@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.8.4]
+
+### Fixed
+
+- **Dashboard: press Enter to use the account under the cursor.** The live
+  dashboard now activates the highlighted account when you press Enter (or `u`),
+  so you can pick any account, including the 3rd or 4th, not just cycle the top
+  two with `r rotate`. The footer hint is now `enter use`; the old `p pin` label
+  was misleading (it silently did the same thing). Your next `claude`, in the
+  terminal and the editor, uses the account you pick.
+
 ## [1.8.3]
 
 ### Fixed

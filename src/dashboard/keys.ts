@@ -1,4 +1,4 @@
-export type KeyAction = 'quit' | 'move' | 'pin' | 'toggle' | 'rotate' | 'none';
+export type KeyAction = 'quit' | 'move' | 'use' | 'toggle' | 'rotate' | 'none';
 
 export interface KeyOutcome {
   /** New selection index (clamped to the row count). */
@@ -26,7 +26,11 @@ export function dispatchKey(
   if (key === 'q' || byte0 === 3 || byte0 === 4) return { selected, action: 'quit' };
   if (key === 'j' || key === '\x1b[B') return { selected: clamp(selected + 1, count), action: 'move' };
   if (key === 'k' || key === '\x1b[A') return { selected: clamp(selected - 1, count), action: 'move' };
-  if (key === 'p') return { selected, action: 'pin' };
+  // Enter (also u / p) activates the highlighted account: it becomes the one
+  // your next `claude` uses, in the terminal and the editor.
+  if (byte0 === 13 || byte0 === 10 || key === 'u' || key === 'p') {
+    return { selected, action: 'use' };
+  }
   if (key === 'e') return { selected, action: 'toggle' };
   if (key === 'r') return { selected, action: 'rotate' };
   return { selected, action: 'none' };

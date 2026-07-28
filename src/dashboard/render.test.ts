@@ -69,9 +69,10 @@ describe('renderDashboard (plain)', () => {
   it('shows key hints only in interactive mode, no footer for a one-shot frame', () => {
     expect(renderDashboard(snapshot([account()]), opts)).not.toContain('rotate');
     expect(renderDashboard(snapshot([account()]), opts)).not.toContain('refreshing');
-    expect(renderDashboard(snapshot([account()]), { color: false, interactive: true })).toContain(
-      'r rotate',
-    );
+    const footer = renderDashboard(snapshot([account()]), { color: false, interactive: true });
+    expect(footer).toContain('r rotate');
+    expect(footer).toContain('enter use'); // the activate-selected hint
+    expect(footer).not.toContain('pin'); // the old misleading label is gone
   });
 
   it('marks the selected row with the cursor and the active row with a marker', () => {

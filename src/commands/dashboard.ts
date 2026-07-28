@@ -88,10 +88,10 @@ export async function dashboardCommand(
     reprobe: async () => {
       healths = await probeAll(listAccounts(context.ctx), { claude });
     },
-    onPin: (a) => {
+    onUse: (a) => {
       setActive(a.name, context.ctx);
       syncEditorPointerIfEnabled(context);
-      pushEvent(`pinned ${a.name}`);
+      pushEvent(`switched to ${a.name}`);
     },
     onToggle: (a) => {
       updateAccount(a.name, { enabled: !a.enabled }, context.ctx);
@@ -125,7 +125,7 @@ interface LoopDeps {
   refreshMs: number;
   color: boolean;
   reprobe: () => Promise<void>;
-  onPin: (a: DashboardAccount) => void;
+  onUse: (a: DashboardAccount) => void;
   onToggle: (a: DashboardAccount) => void;
   onRotate: () => void;
 }
@@ -152,7 +152,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     selected = r.selected;
     if (r.action === 'quit') return stop();
     const target = snap.accounts[selected];
-    if (r.action === 'pin' && target) deps.onPin(target);
+    if (r.action === 'use' && target) deps.onUse(target);
     else if (r.action === 'toggle' && target) deps.onToggle(target);
     else if (r.action === 'rotate') deps.onRotate();
     else if (r.action === 'none') return;
