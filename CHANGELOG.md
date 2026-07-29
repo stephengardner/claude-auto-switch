@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.12.0]
+
+### Added
+
+- **`ccx doctor` now verifies every integrity invariant**, so one command
+  answers "is ccx healthy and leaving Claude alone?":
+  - `terminal-shim`: installed in the profile your shell actually loads, and
+    carries the safe fallback (uninstalling ccx can't break `claude`);
+    `ccx on` upgrades an outdated block in place.
+  - `shared-history`: the session root links to `~/.claude/projects` (your
+    `/resume` lists and memories are one store, not forked).
+  - `accounts`: REAL probed login state per account (a dead token with a
+    leftover credential file is reported as needing login, not as healthy),
+    with the exact `ccx login <name>` fix named.
+  - `caps`: which accounts are currently marked capped, and a hard failure if
+    every enabled account is (the "nothing can run" state).
+
 ## [1.11.1]
 
 ### Fixed

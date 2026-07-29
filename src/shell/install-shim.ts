@@ -42,9 +42,22 @@ export function isShimInstalled(profilePath: string): boolean {
   return existsSync(profilePath) && readFileSync(profilePath, 'utf8').includes(MARKER_START);
 }
 
-/** Install the shim block idempotently, backing up an existing profile first. */
+/** True when the installed shim has the falls-back-to-real-claude safety net. */
+export function shimHasFallback(profilePath: string): boolean {
+  if (!isShimInstalled(profilePath)) return false;
+  const text = readFileSync(profilePath, 'utf8');
+  return text.includes('Get-Command ccx') || text.includes('command -v ccx');
+}
+
+/**
+ * Install the shim block idempotently, backing up an existing profile first.
+ * An installed but OUTDATED block (no uninstall fallback) is upgraded in place.
+ */
 export function installShim(profilePath: string, shell: ShellKind): 'installed' | 'already-present' {
-  if (isShimInstalled(profilePath)) return 'already-present';
+  if (isShimInstalled(profilePath)) {
+    if (shimHasFallback(profilePath)) return 'already-present';
+    uninstallShim(profilePath); // outdated block: replace with the current one
+  }
 
   mkdirSync(path.dirname(profilePath), { recursive: true });
   const existing = existsSync(profilePath) ? readFileSync(profilePath, 'utf8') : '';
