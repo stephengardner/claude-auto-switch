@@ -26,6 +26,7 @@ import {
   hasUsableLogin,
 } from '../accounts/credential-vault.js';
 import { withCredentialLock } from '../claude/locks.js';
+import { logCredentialEvent } from '../accounts/credential-log.js';
 import { appendEvent } from '../events/log.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
@@ -189,7 +190,15 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // Never propagate a corrupt credential: a killed or partial OAuth refresh
     // can leave the session credential empty or malformed, and overwriting a
     // good login with that is the worst outcome (installCredential re-checks).
-    if (!isUsableCredential(sessionCreds)) return;
+    if (!isUsableCredential(sessionCreds)) {
+      // The session is signed out. Recording this is how "why was I asked to
+      // sign in again?" becomes answerable later.
+      logCredentialEvent(
+        { account: account.name, kind: 'signed-out', detail: 'session had no login; left the stored one alone' },
+        context.ctx,
+      );
+      return;
+    }
     // Identity guard. The session's config tracks whoever it is logged in as
     // right now, so if that is not this profile's account, writing the
     // credential back would put someone else's login into this profile. That is

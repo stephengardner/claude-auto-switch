@@ -4,6 +4,7 @@ import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { readToken } from '../daemon/token-store.js';
 import { hasUsableLogin } from '../accounts/credential-vault.js';
+import { logCredentialEvent } from '../accounts/credential-log.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
 import { refreshCredentialIfExpired } from './oauth-refresh.js';
 
@@ -67,7 +68,7 @@ export interface RefreshUsageOptions {
    * using goes stale within hours, and a stale token cannot report usage, which
    * would hide exactly the accounts rotation wants to move to.
    */
-  renew?: (accountDir: string) => Promise<{ status: string }>;
+  renew?: (accountDir: string) => Promise<{ status: string; detail?: string }>;
 }
 
 /**
@@ -117,7 +118,22 @@ export async function refreshUsage(
   for (const account of stale) {
     let result: LimitProbeResult;
     try {
-      await renew(account.dir); // no-op when the token is still good
+      // Renewal rotates the token, so it is the single most likely reason a
+      // login stops working. Record what happened, with the reason.
+      const renewal = await renew(account.dir);
+      if (renewal.status === 'refreshed') {
+        logCredentialEvent({ account: account.name, kind: 'renewed' }, c);
+      } else if (renewal.status === 'needs-login') {
+        logCredentialEvent(
+          { account: account.name, kind: 'needs-login', detail: renewal.detail ?? 'renewal refused' },
+          c,
+        );
+      } else if (renewal.status === 'unavailable') {
+        logCredentialEvent(
+          { account: account.name, kind: 'renew-failed', detail: renewal.detail ?? 'renewal unavailable' },
+          c,
+        );
+      }
       result = await probe(path.join(account.dir, '.credentials.json'));
     } catch {
       result = { verdict: 'unknown' };

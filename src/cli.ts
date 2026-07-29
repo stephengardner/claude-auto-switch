@@ -11,6 +11,7 @@ import { usageCommand } from './commands/usage.js';
 import { autoCommand, type AutoOptions } from './commands/auto.js';
 import { proactiveCommand } from './commands/proactive-config.js';
 import { statuslineCommand } from './commands/statusline.js';
+import { historyCommand } from './commands/history.js';
 import { runCommand } from './commands/run.js';
 import { removeCommand } from './commands/remove.js';
 import { onCommand, offCommand } from './commands/onoff.js';
@@ -118,6 +119,15 @@ program
   .description('show real per-account usage (5-hour + weekly) with reset times')
   .action(async () => {
     process.exitCode = await usageCommand(context());
+  });
+
+program
+  .command('history')
+  .description('what has happened to your logins and accounts (why you were asked to sign in)')
+  .option('--limit <n>', 'how many entries to show')
+  .option('--logins', 'only login events, without the switches')
+  .action((opts: { limit?: string; logins?: boolean }) => {
+    process.exitCode = historyCommand(context(), opts);
   });
 
 program

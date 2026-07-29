@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { refreshUsage, readUsageSnapshot } from './usage-store.js';
 import type { LimitProbeResult } from './limit-probe.js';
+import { readCredentialEvents } from '../accounts/credential-log.js';
 
 function setup(names: string[]) {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-usage-'));
@@ -45,6 +46,26 @@ describe('refreshUsage', () => {
     expect(snap.accounts['a']?.sevenDayReset).toBe(2_000);
     // Persisted: a fresh read sees the same data.
     expect(readUsageSnapshot(c).accounts['b']?.sevenDay).toBe(0.6);
+  });
+
+  it('records renewals in the credential log, so a lost login is explainable', async () => {
+    const { c, accounts } = setup(['a']);
+    await refreshUsage(accounts, c, {
+      probe: () => Promise.resolve(result(0.1, 0.2)),
+      renew: () => Promise.resolve({ status: 'refreshed' }),
+    });
+    expect(readCredentialEvents(10, c).map((e) => e.kind)).toEqual(['renewed']);
+  });
+
+  it('records a refused renewal as needing sign-in, with the reason', async () => {
+    const { c, accounts } = setup(['a']);
+    await refreshUsage(accounts, c, {
+      probe: () => Promise.resolve(result(0.1, 0.2)),
+      renew: () => Promise.resolve({ status: 'needs-login', detail: 'invalid_grant' }),
+    });
+    const events = readCredentialEvents(10, c);
+    expect(events[0]?.kind).toBe('needs-login');
+    expect(events[0]?.detail).toBe('invalid_grant');
   });
 
   it('respects the TTL: fresh entries are not refetched', async () => {

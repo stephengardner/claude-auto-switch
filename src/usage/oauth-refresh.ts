@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { acquireLockDir, CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
 import { writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import { credentialPath, previousCredentialPath, isUsableCredential } from '../accounts/credential-vault.js';
 
@@ -61,12 +63,30 @@ export async function refreshCredentialIfExpired(
   const oauth = raw.claudeAiOauth as OauthBlock | undefined;
   if (!oauth || typeof oauth !== 'object') return { status: 'unavailable', detail: 'not an oauth login' };
   if (!oauth.refreshToken) return { status: 'needs-login', detail: 'no refresh token stored' };
+  // Captured after the checks above so the nested renewal can rely on them.
+  const auth: OauthBlock = oauth;
+  const refreshToken: string = oauth.refreshToken;
 
   const expiresAt = typeof oauth.expiresAt === 'number' ? oauth.expiresAt : 0;
   if (expiresAt > now() + EXPIRY_BUFFER_MS && oauth.accessToken) {
     return { status: 'not-needed' };
   }
 
+  // Renewing rotates the token: the one Claude may be holding stops working the
+  // moment ours is issued. Claude coordinates its own renewals through this
+  // lock, so we take it too, and we do it for the WHOLE operation (request and
+  // write) rather than just the write. Without this, ccx and Claude can renew
+  // the same login at the same time and whichever finishes second is left
+  // holding a token the server has already retired, which is a sign-in prompt
+  // out of nowhere.
+  const lock = acquireLockDir(path.join(accountDir, CREDENTIALS_LOCK_DIR));
+  try {
+    return await performRenewal();
+  } finally {
+    lock.release();
+  }
+
+  async function performRenewal(): Promise<RefreshOutcome> {
   let response: Response;
   try {
     response = await fetchImpl(options.tokenUrl ?? TOKEN_URL, {
@@ -74,7 +94,7 @@ export async function refreshCredentialIfExpired(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         grant_type: 'refresh_token',
-        refresh_token: oauth.refreshToken,
+        refresh_token: refreshToken,
         client_id: options.clientId ?? CLIENT_ID,
       }),
     });
@@ -119,7 +139,7 @@ export async function refreshCredentialIfExpired(
   const updated: Record<string, unknown> = {
     ...raw,
     claudeAiOauth: {
-      ...oauth,
+      ...auth,
       accessToken: payload.access_token,
       ...(payload.refresh_token ? { refreshToken: payload.refresh_token } : {}),
       ...(payload.expires_in ? { expiresAt: now() + payload.expires_in * 1000 } : {}),
@@ -127,6 +147,7 @@ export async function refreshCredentialIfExpired(
   };
   writeSecretFile(file, JSON.stringify(updated));
   return { status: 'refreshed' };
+  }
 }
 
 export const REFRESH_EXPIRY_BUFFER_MS = EXPIRY_BUFFER_MS;
