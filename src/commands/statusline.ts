@@ -1,5 +1,9 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { getActive } from '../state/active.js';
+import { listAccounts } from '../accounts/registry.js';
+import { hasUsableLogin } from '../accounts/credential-vault.js';
+import { configHome } from '../config/paths.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import type { CliContext } from '../context.js';
 
@@ -60,6 +64,32 @@ function windowsOf(usage: {
   return windows;
 }
 
+function samePath(a: string, b: string): boolean {
+  return path.resolve(a).replace(/\\/g, '/').toLowerCase() === path.resolve(b).replace(/\\/g, '/').toLowerCase();
+}
+
+/**
+ * Is ccx driving the session that asked for this line?
+ *
+ * Claude runs the status line command as a child of the session, so it inherits
+ * that session's config location. When ccx is running things, that location is
+ * one of the folders ccx hands out; when you launched Claude directly it is not.
+ */
+function isManagedSession(context: CliContext): boolean {
+  const configDir = (context.ctx.env ?? process.env).CLAUDE_CONFIG_DIR;
+  if (!configDir) return false; // plain `claude` on the default config
+  const home = configHome(context.ctx);
+  return (
+    samePath(configDir, path.join(home, 'session')) || // terminal session
+    samePath(configDir, path.join(home, 'editor-active')) // editor, following ccx
+  );
+}
+
+function accountDirOf(context: CliContext, name: string): string {
+  const account = listAccounts(context.ctx).find((a) => a.name === name);
+  return account?.dir ?? path.join(configHome(context.ctx), 'profiles', name);
+}
+
 /** How long until a window resets, e.g. "2h" or "3d". */
 function until(resetsAt: number | null | undefined, now: number): string | null {
   if (!resetsAt || resetsAt <= now) return null;
@@ -93,8 +123,15 @@ already using a status line? keep it and wrap it, so you get both:
  * that is the thing you would act on.
  */
 export function statuslineSegment(context: CliContext, options: StatuslineOptions = {}): string {
+  // Say nothing about accounts unless ccx is actually driving THIS session.
+  // Otherwise the line reports the room on whichever account ccx would pick,
+  // while you are really on a different one and nothing is watching for a
+  // limit: reassuring, and wrong, which is the worst thing a status line can be.
+  if (!isManagedSession(context)) return 'no ccx';
+
   const active = getActive(context.ctx);
   if (!active) return 'ccx: no account';
+  if (!hasUsableLogin(accountDirOf(context, active))) return `! ${active} needs sign-in`;
 
   const entry = readUsageSnapshot(context.ctx).accounts[active];
   const name = options.compact ? '' : active;

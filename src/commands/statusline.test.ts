@@ -1,15 +1,42 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { statuslineCommand } from './statusline.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
 
-function setup(active: string | null, usage?: Record<string, unknown>): { context: CliContext; lines: string[] } {
+function setup(
+  active: string | null,
+  usage?: Record<string, unknown>,
+  options: { managed?: boolean } = {},
+): { context: CliContext; lines: string[] } {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-status-'));
-  const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home } };
-  if (active) writeFileSync(path.join(home, 'active.json'), JSON.stringify({ active }), 'utf8');
+  // Claude runs the status line inside the session, so a managed session is one
+  // whose config location is the folder ccx handed it.
+  const managed = options.managed ?? true;
+  const ctx = {
+    env: {
+      CLAUDE_AUTO_SWITCH_HOME: home,
+      ...(managed ? { CLAUDE_CONFIG_DIR: path.join(home, 'session') } : {}),
+    },
+  };
+  if (active) {
+    writeFileSync(path.join(home, 'active.json'), JSON.stringify({ active }), 'utf8');
+    // A signed-in account, so the line reports usage rather than asking for a login.
+    const dir = path.join(home, 'profiles', active);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'tok' } }),
+      'utf8',
+    );
+    writeFileSync(
+      path.join(home, 'accounts.json'),
+      JSON.stringify({ accounts: [{ name: active, dir, priority: 0, enabled: true }] }),
+      'utf8',
+    );
+  }
   if (usage) {
     writeFileSync(path.join(home, 'usage-snapshot.json'), JSON.stringify({ accounts: usage }), 'utf8');
   }
@@ -75,6 +102,26 @@ describe('statuslineCommand', () => {
     const { context, lines } = setup('work');
     await statuslineCommand(context);
     expect(lines[0]).toBe('work');
+  });
+
+  it('says "no ccx" when ccx is NOT driving this session', async () => {
+    // A plain `claude` session must never be shown another account's headroom
+    // as though it were protected.
+    const { context, lines } = setup('work', { work: entry({ fiveHour: 0.1, sevenDay: 0.1 }) }, { managed: false });
+    await statuslineCommand(context);
+    expect(lines[0]).toBe('no ccx');
+  });
+
+  it('asks for a sign-in when the active account has no usable login', async () => {
+    const { context, lines } = setup('work');
+    const home = (context.ctx.env as Record<string, string>).CLAUDE_AUTO_SWITCH_HOME ?? '';
+    writeFileSync(
+      path.join(home, 'profiles', 'work', '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: '' } }),
+      'utf8',
+    );
+    await statuslineCommand(context);
+    expect(lines[0]).toContain('needs sign-in');
   });
 
   it('says so when no account is selected', async () => {
