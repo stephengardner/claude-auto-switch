@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.14.0]
+
+### Fixed
+
+- **Switching accounts inside an editor terminal no longer kills the session.**
+  In a VS Code / Cursor integrated terminal (itself a pseudo-terminal), ending a
+  session the way an account swap does sent Windows down an asynchronous
+  teardown path that raced the next session's startup and corrupted the ccx
+  process a few seconds later, taking the whole session with it. ccx now ends
+  the session's process directly so the teardown is ordinary and ordered.
+  Measured on the failing setup: 5 crashes in 7 swap runs before, 0 in 6 after.
+
+### Added
+
+- **Credential safety net.** Every credential write now keeps the previous one
+  alongside it, so a failed swap rolls back instead of leaving an account logged
+  out, and a corrupt or empty credential can never overwrite a good login.
+- **Cooperation with Claude's own credential lock** during a swap, so a swap can
+  no longer collide with Claude refreshing its token in the background. It is
+  deliberately best-effort with a short bounded wait: it closes the race in the
+  normal case and can never block your swap.
+
+### Changed
+
+- **Credential files are written atomically** (write beside, then replace), so a
+  crash or a killed process can never leave a half-written login on disk.
+- **The terminal is claimed once per run** instead of being re-configured by
+  every session, so swapping accounts no longer toggles terminal state while a
+  pseudo-terminal is being torn down.
+
 ## [1.13.0]
 
 ### Added

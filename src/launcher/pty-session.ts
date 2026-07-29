@@ -1,7 +1,9 @@
+import { execFileSync } from 'node:child_process';
 import { spawn, type IPty } from 'node-pty';
 import { matchesCapText } from './cap-detect.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { writeSecretFile } from '../util/secret-file.js';
+import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
 
 export interface PtySessionOptions {
@@ -27,6 +29,12 @@ export interface PtySessionOptions {
    * When absent, a text match is trusted as-is (legacy behavior).
    */
   verifyCap?: (renderedText: string) => Promise<boolean>;
+  /**
+   * The run's terminal input. Sessions borrow the operator's keyboard from this
+   * owner rather than taking the terminal into raw mode themselves, so a swap
+   * never toggles global terminal state mid-teardown.
+   */
+  input?: TerminalInput;
 }
 
 function cleanEnv(extra: Record<string, string>): Record<string, string> {
@@ -73,12 +81,26 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     let totalOutput = 0;
 
     let weKilled = false;
+    /**
+     * End the child. On Windows we terminate the process tree directly instead
+     * of calling node-pty's kill(): that path spawns a console-enumeration
+     * helper and tears the pseudo-terminal down asynchronously, which races the
+     * next session's spawn during an account swap and can corrupt the host
+     * process. Killing the process makes node-pty observe an ordinary exit.
+     */
     const safeKill = (): void => {
-      try {
-        if (!exited) {
-          weKilled = true;
-          child.kill();
+      if (exited) return;
+      weKilled = true;
+      if (process.platform === 'win32' && child.pid) {
+        try {
+          execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+          return;
+        } catch {
+          /* fall through to node-pty's own kill */
         }
+      }
+      try {
+        child.kill();
       } catch {
         /* already gone */
       }
@@ -156,25 +178,11 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         });
     });
 
-    const stdin = process.stdin as NodeJS.ReadStream & {
-      setRawMode?: (v: boolean) => void;
-      isTTY?: boolean;
-    };
-    // A real Windows console reports isTTY; Git Bash/MinTTY does not but still
-    // needs raw mode where available. Try regardless and ignore failures.
-    try {
-      stdin.setRawMode?.(true);
-    } catch {
-      /* not a raw-capable stdin (e.g. a pipe) */
-    }
-    stdin.resume();
-    const onInput = (d: Buffer): void => {
-      // Normalize Enter: terminals may send \r\n or lone \n, but the TUI submits
-      // on \r. Without this, typing works but Enter never sends (MinTTY).
-      const text = d.toString('utf8').replace(/\r?\n/g, '\r');
-      child.write(text);
-    };
-    stdin.on('data', onInput);
+    // Borrow the keyboard from the run's owner (or claim it just for this
+    // session when running standalone, e.g. in tests).
+    const ownsInput = options.input === undefined;
+    const input = options.input ?? openTerminalInput();
+    const detachInput = input.attach((text) => child.write(text));
 
     const onResize = (): void => {
       child.resize(process.stdout.columns ?? 80, process.stdout.rows ?? 24);
@@ -185,30 +193,21 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       exited = true;
       exitSub.dispose();
       if (switchPoll) clearInterval(switchPoll);
-      stdin.off('data', onInput);
+      // Stop routing keystrokes here, but leave the terminal's MODE alone: the
+      // run's owner holds it across sessions so a swap never toggles it.
+      detachInput();
+      if (ownsInput) input.close();
       process.stdout.off('resize', onResize);
-      if (stdin.isTTY) stdin.setRawMode?.(false);
-      stdin.pause();
-      // NOTE: stdin is NOT unref'd here. A hot-swap relaunch resumes it for the
-      // next session, and resuming an unref'd Windows TTY handle corrupts the
-      // process (0xC0000374, proven live). The session LOOP releases stdin once
-      // no more sessions will run.
 
       const finalize = (): void => {
         if (finalized) return;
         finalized = true;
         dataSub.dispose();
-        // Release ConPTY handles for NATURAL exits (the post-session hang fix).
-        // Never a second kill after safeKill: double-killing an active ConPTY
-        // corrupts the heap and crashes the whole ccx process a few seconds
-        // into the NEXT session (0xC0000374, seen live on a mid-session switch).
-        if (!weKilled) {
-          try {
-            child.kill();
-          } catch {
-            /* already disposed */
-          }
-        }
+        // Nothing is killed here. The child has already exited; calling kill()
+        // on a dead pseudo-terminal re-enters node-pty's async Windows teardown
+        // for no benefit. Input/handle release is owned by the run (see
+        // terminal-input), which is what keeps the process from hanging.
+        void weKilled;
         if (options.debugLog) {
           // The debug log is a full transcript of a live session; write it
           // owner-only. CAS_DEBUG is opt-in and documented as sensitive.

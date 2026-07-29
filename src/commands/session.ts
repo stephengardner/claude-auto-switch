@@ -10,9 +10,17 @@ import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { runHotSwapSession } from '../launcher/hot-swap.js';
 import { runPtySession } from '../launcher/pty-session.js';
+import { openTerminalInput } from '../launcher/terminal-input.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
 import { probeLimit } from '../usage/limit-probe.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
+import {
+  installCredential,
+  rollbackCredential,
+  isUsableCredential,
+  identityKey,
+} from '../accounts/credential-vault.js';
+import { withCredentialLock } from '../claude/locks.js';
 import { appendEvent } from '../events/log.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
@@ -64,21 +72,6 @@ function identityFields(accountDir: string): Record<string, unknown> {
   return id;
 }
 
-/**
- * A stable identity fingerprint for a .claude.json (the account's uuid/email/
- * org), or null when it carries no identity. Used to detect a mid-session
- * `/login` as a DIFFERENT account, which must not be saved back onto the
- * original profile (that cross-contaminates two logins).
- */
-function identityKeyFromConfig(claudeJsonPath: string): string | null {
-  const cfg = readJsonSafe(claudeJsonPath);
-  const oauth = (cfg?.oauthAccount ?? null) as Record<string, unknown> | null;
-  if (!oauth) return null;
-  const parts = ['accountUuid', 'emailAddress', 'organizationUuid']
-    .map((k) => (typeof oauth[k] === 'string' ? (oauth[k] as string) : ''))
-    .filter((v) => v.length > 0);
-  return parts.length > 0 ? parts.join('|') : null;
-}
 
 /**
  * Build/refresh the session's .claude.json so the interactive app treats it as
@@ -185,28 +178,23 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
   const saveBack = (account: Account): void => {
     if (!existsSync(sessionCreds)) return;
-    // Guard against corrupting a good login: a killed or partial OAuth refresh
-    // can leave the session credential empty or malformed. Never copy that over
-    // the account's stored credential -- keep the last good one instead.
-    try {
-      const fresh = readFileSync(sessionCreds, 'utf8');
-      const parsed = JSON.parse(fresh) as Record<string, unknown>;
-      if (fresh.trim().length === 0 || Object.keys(parsed).length === 0) return;
-    } catch {
-      return; // not valid JSON: do not propagate it to the account
-    }
+    // Never propagate a corrupt credential: a killed or partial OAuth refresh
+    // can leave the session credential empty or malformed, and overwriting a
+    // good login with that is the worst outcome (installCredential re-checks).
+    if (!isUsableCredential(sessionCreds)) return;
     // Identity guard: if the operator ran `/login` mid-session as a DIFFERENT
     // account, the session identity no longer matches this profile. Saving the
     // credential back would clobber this profile with someone else's login
     // (two profiles ending up on the same token). Skip it.
-    const sessionId = identityKeyFromConfig(path.join(sessionDir, '.claude.json'));
-    const accountId = identityKeyFromConfig(path.join(account.dir, '.claude.json'));
+    const sessionId = identityKey(sessionDir);
+    const accountId = identityKey(account.dir);
     if (sessionId && accountId && sessionId !== accountId) {
       err(`[ccx] session is now a different account than "${account.name}"; not overwriting its login`);
       return;
     }
     try {
-      copySecretFile(sessionCreds, path.join(account.dir, CREDS));
+      // Keeps the account's previous credential as a rollback cushion.
+      installCredential(account.dir, sessionCreds);
     } catch {
       /* best effort: preserve a refreshed token back to the account */
     }
@@ -221,21 +209,39 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     }
   };
 
+  /**
+   * Point the shared session at `account`, transactionally. The whole swap runs
+   * under Claude's own credential lock so it cannot collide with a background
+   * token refresh, and a failure part-way rolls the session credential back
+   * instead of leaving the session on a half-applied account.
+   */
   const activate = (account: Account): void => {
-    if (current && current.name !== account.name) saveBack(current);
-    const src = path.join(account.dir, CREDS);
-    // Always replace (or clear) the session credential so one account's login
-    // can never linger into another account's session.
-    if (existsSync(src)) {
-      copySecretFile(src, sessionCreds);
-    } else {
-      scrubSessionCreds();
-    }
-    // Stamp the account's identity (oauthAccount/userID) so the interactive app
-    // sees a logged-in account instead of prompting for login.
-    applyAccountIdentity(sessionDir, account.dir, context.ctx);
+    withCredentialLock(sessionDir, () => {
+      if (current && current.name !== account.name) saveBack(current);
+      const src = path.join(account.dir, CREDS);
+      // Always replace (or clear) the session credential so one account's login
+      // can never linger into another account's session.
+      if (existsSync(src)) {
+        try {
+          installCredential(sessionDir, src);
+          // Stamp the account's identity (oauthAccount/userID) so the interactive
+          // app sees a logged-in account instead of prompting for login.
+          applyAccountIdentity(sessionDir, account.dir, context.ctx);
+        } catch (e) {
+          rollbackCredential(sessionDir);
+          throw e;
+        }
+      } else {
+        scrubSessionCreds();
+        applyAccountIdentity(sessionDir, account.dir, context.ctx);
+      }
+    });
     current = account;
   };
+
+  // Claim the operator's keyboard once for the whole run; every session in the
+  // swap loop borrows it, so terminal mode is never toggled mid-swap.
+  const terminalInput = openTerminalInput();
 
   const exitCode = await runHotSwapSession({
     nextAccount: (excluding) => {
@@ -295,6 +301,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         env,
         switchWatch,
         verifyCap,
+        input: terminalInput,
         ...(debugLog ? { debugLog } : {}),
       };
       const wantContinue = isContinue && !wantsContinue(args);
@@ -332,14 +339,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     },
   });
 
+  // No more sessions will run: restore the terminal and stop reading input.
+  terminalInput.close();
   // On exit, save any refreshed credential back to its account and remove the
   // live credential from the shared session dir so nothing is left at rest.
   if (current) saveBack(current);
   scrubSessionCreds();
-  // No more sessions will run: NOW release stdin so a piped host (CI, scripts)
-  // is not kept alive. Doing this between swapped sessions corrupts the Windows
-  // TTY teardown (0xC0000374 a few seconds into the next session, proven live),
-  // which is why it happens here and not in the per-session exit path.
-  (process.stdin as unknown as { unref?: () => void }).unref?.();
   return exitCode;
 }
