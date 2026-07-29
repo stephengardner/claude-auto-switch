@@ -15,13 +15,16 @@ import { configHome } from '../config/paths.js';
 
 /** Show a one-time tip about the transparent shim, after an interactive session. */
 function maybeHintShim(context: CliContext): void {
+  const home = configHome(context.ctx);
+  // Cheap check first: once hinted, skip entirely (resolving the PowerShell
+  // profile spawns a shell, which is far too costly for an every-run no-op).
+  if (wasHinted(home)) return;
   const platform = context.ctx.platform ?? process.platform;
   const profile =
     platform === 'win32'
       ? defaultPowerShellProfile(context.ctx)
       : defaultPosixProfile(context.ctx);
-  const home = configHome(context.ctx);
-  if (shouldHintShim(isShimInstalled(profile), wasHinted(home))) {
+  if (shouldHintShim(isShimInstalled(profile), false)) {
     (context.err ?? ((m: string) => process.stderr.write(`${m}\n`)))(shimHintText());
     markHinted(home);
   }

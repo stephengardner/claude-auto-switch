@@ -3,6 +3,7 @@ import { resolveRealClaude } from './launcher/real-claude.js';
 import type { Config } from './config/config.schema.js';
 import type { PathCtx } from './config/paths.js';
 import type { ClaudeInvoker } from './invoker.js';
+import type { LimitVerdict } from './usage/limit-probe.js';
 
 /** Everything a command needs: paths context, config, output sink, and flags. */
 export interface CliContext {
@@ -10,6 +11,8 @@ export interface CliContext {
   config: Config;
   /** Injected in tests; resolved lazily from config otherwise (see getClaude). */
   claude?: ClaudeInvoker;
+  /** Injected in tests: overrides the API limit verification (usage/limit-probe). */
+  verifyCap?: (renderedText: string) => Promise<LimitVerdict>;
   out: (message: string) => void;
   /** ccx's own status messages. MUST go to stderr so it never corrupts a run's stdout protocol. */
   err?: (message: string) => void;

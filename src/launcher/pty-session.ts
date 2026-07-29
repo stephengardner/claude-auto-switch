@@ -19,6 +19,14 @@ export interface PtySessionOptions {
    * relaunches --continue on it. Return null to keep running.
    */
   switchWatch?: () => string | null;
+  /**
+   * Called when cap-looking text renders, with that text; resolves true ONLY if
+   * the account is actually limited (verified against the API). Rendered text
+   * alone is untrustworthy: --continue and the resume picker REPLAY history,
+   * including old cap messages, and code on screen can mention rate limits.
+   * When absent, a text match is trusted as-is (legacy behavior).
+   */
+  verifyCap?: (renderedText: string) => Promise<boolean>;
 }
 
 function cleanEnv(extra: Record<string, string>): Record<string, string> {
@@ -50,7 +58,17 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     let window = '';
     let captured = '';
     let switching: string | null = null;
-    let userActive = false;
+    let exited = false;
+    let verifying = false;
+    let suppressUntil = 0;
+
+    const safeKill = (): void => {
+      try {
+        if (!exited) child.kill();
+      } catch {
+        /* already gone */
+      }
+    };
 
     // The operator can pick a different account mid-session (dashboard Enter /
     // `ccx use`); poll for that and end the child so the swap loop relaunches
@@ -61,7 +79,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
           const target = options.switchWatch!();
           if (target) {
             switching = target;
-            setTimeout(() => child.kill(), 80);
+            setTimeout(safeKill, 80);
           }
         }, 400)
       : null;
@@ -72,25 +90,44 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       if (capped || switching) return;
       window = (window + data).slice(-4000);
       // A --continue with nothing to resume: signal a fresh relaunch is needed.
-      // Not gated on user input (it only appears during the resume itself).
       if (/No conversation found to continue/i.test(window)) {
         noConversation = true;
-        setTimeout(() => child.kill(), 100);
+        setTimeout(() => safeKill(), 100);
         return;
       }
-      // Cap detection is gated on user activity. A cap message seen at startup or
-      // while --continue REPLAYS the previous conversation (before the user has
-      // typed) is historical -- e.g. the prior account's cap being re-rendered --
-      // NOT a fresh cap. Matching it would falsely cap every account we rotate
-      // through (the cascade bug). Only fresh output after the user acts counts.
-      if (!userActive) return;
+      // Cap-looking text is a TRIGGER, never a verdict. --continue and the
+      // resume picker replay history (old cap messages included), and code on
+      // screen can mention rate limits; acting on text alone falsely capped
+      // every account in turn. Verify against the API and only act when the
+      // account is confirmed limited. Refuted matches back off briefly so a
+      // replay cannot spam probes.
+      if (verifying || Date.now() < suppressUntil) return;
       const hit = matchesCapText(window);
-      if (hit) {
+      if (!hit) return;
+      const snapshot = window;
+      window = '';
+      if (!options.verifyCap) {
         capped = { reason: hit.reason, resetAt: hit.resetAt };
-        window = '';
-        // Let the limit message finish rendering, then end the child so we swap.
-        setTimeout(() => child.kill(), 150);
+        setTimeout(safeKill, 150);
+        return;
       }
+      verifying = true;
+      void options
+        .verifyCap(snapshot)
+        .then((confirmed) => {
+          verifying = false;
+          if (exited || capped || switching) return;
+          if (confirmed) {
+            capped = { reason: hit.reason, resetAt: hit.resetAt };
+            setTimeout(safeKill, 150);
+          } else {
+            suppressUntil = Date.now() + 20_000;
+          }
+        })
+        .catch(() => {
+          verifying = false;
+          suppressUntil = Date.now() + 20_000;
+        });
     });
 
     const stdin = process.stdin as NodeJS.ReadStream & {
@@ -106,12 +143,6 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     }
     stdin.resume();
     const onInput = (d: Buffer): void => {
-      // The user is now driving the session: drop any startup/replay output from
-      // the cap-detection window so only fresh output (from here on) can count.
-      if (!userActive) {
-        userActive = true;
-        window = '';
-      }
       // Normalize Enter: terminals may send \r\n or lone \n, but the TUI submits
       // on \r. Without this, typing works but Enter never sends (MinTTY).
       const text = d.toString('utf8').replace(/\r?\n/g, '\r');
@@ -125,6 +156,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     process.stdout.on('resize', onResize);
 
     const exitSub = child.onExit(({ exitCode }) => {
+      exited = true;
       dataSub.dispose();
       exitSub.dispose();
       if (switchPoll) clearInterval(switchPoll);
@@ -132,6 +164,15 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       process.stdout.off('resize', onResize);
       if (stdin.isTTY) stdin.setRawMode?.(false);
       stdin.pause();
+      // Release everything that can keep the event loop alive after the child
+      // is gone: piped stdin (non-TTY hosts) and the ConPTY handles node-pty
+      // holds. Without this the ccx process can hang after a finished session.
+      (stdin as unknown as { unref?: () => void }).unref?.();
+      try {
+        child.kill();
+      } catch {
+        /* already disposed */
+      }
       if (options.debugLog) {
         // The debug log is a full transcript of a live session; write it
         // owner-only. CAS_DEBUG is opt-in and documented as sensitive.

@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.11.0]
+
+### Fixed
+
+- **ccx sessions now share your real Claude history and memories.** ccx used to
+  run sessions under its own private config root, which made `/resume` look
+  empty in every repo and hid your project memories from ccx-launched sessions
+  (and hid ccx sessions from plain `claude`). The session root's `projects`
+  folder is now a link to `~/.claude/projects`, so both see ONE store: `/resume`
+  is complete everywhere, memories are shared, and nothing forks again. Existing
+  ccx-side history is merged in automatically (never overwriting anything), with
+  a backup kept.
+- **Cap detection is now verified against the API, ending the false-switch
+  loops for good.** Rendered text (a replayed cap message during `--continue` /
+  the resume picker, or even code that mentions rate limits) can no longer
+  trigger a rotation: a match only triggers a minimal API check with the live
+  credential, and ccx acts solely when the API confirms the account is actually
+  limited. This kills the resume-picker switch loop the previous fix missed.
+- **ccx sessions now run with your real settings** (hooks, permissions, status
+  line): the user-level `~/.claude/settings.json` is merged into the session,
+  with session-specific keys (like the model pin) winning.
+- **The ccx process exits promptly when a session ends** instead of hanging on
+  lingering terminal handles.
+
 ## [1.10.2]
 
 ### Fixed

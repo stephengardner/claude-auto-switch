@@ -19,12 +19,18 @@ interface RunEntry {
   marker: string | null;
 }
 
-function makeContext(home: string): CliContext {
-  const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home } };
+type Verdict = 'limited' | 'allowed' | 'unknown';
+
+function makeContext(home: string, verifyCap?: () => Promise<Verdict>): CliContext {
+  // HOME/USERPROFILE point at the temp home so the shared-projects link targets
+  // the test's own ~/.claude, never the real one.
+  const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home } };
   return {
     ctx,
     config: loadConfig(ctx),
     claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+    // Default: the API refutes any cap-looking text (no network in tests).
+    verifyCap: verifyCap ?? (() => Promise.resolve('allowed' as Verdict)),
     out: () => {},
     err: () => {},
     json: false,
@@ -55,21 +61,25 @@ describe('on-demand switch in a running session (against fake-claude)', () => {
     delete process.env.FAKE_CLAUDE_EMIT_CAP;
   });
 
-  it('ignores a cap message replayed at startup (no user input): no false cap, no cascade', async () => {
+  it('replayed cap text is refuted by the API check: no false cap, no cascade', async () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-nocascade-'));
     const runsLog = path.join(home, 'runs.jsonl');
     process.env.FAKE_CLAUDE_IDLE_MS = '600';
     process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
-    process.env.FAKE_CLAUDE_EMIT_CAP = '1'; // the run "replays" a prior cap at startup
+    process.env.FAKE_CLAUDE_EMIT_CAP = '1'; // the run "replays" a prior cap message
 
-    const context = makeContext(home);
+    const verified: string[] = [];
+    const context = makeContext(home, () => {
+      verified.push('probe');
+      return Promise.resolve('allowed'); // the API says: not actually limited
+    });
     await loginAccount(context, home, 'A');
     await loginAccount(context, home, 'B');
     setActive('A', context.ctx);
 
-    // No user input: the startup cap must be treated as historical, not fresh.
     const exit = await runCommand(context, []);
     expect(exit).toBe(0); // ended normally on A, not "every account is capped" (exit 1)
+    expect(verified.length).toBeGreaterThan(0); // the match TRIGGERED verification
 
     const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
     expect(launches).toHaveLength(1); // no rotation -> no cascade
@@ -78,6 +88,38 @@ describe('on-demand switch in a running session (against fake-claude)', () => {
       ? ((JSON.parse(readFileSync(ledgerPath, 'utf8')) as { caps?: unknown[] }).caps ?? [])
       : [];
     expect(caps).toHaveLength(0); // nothing falsely marked capped
+  });
+
+  it('a VERIFIED cap rotates once and continues on the next account', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-realcap-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    process.env.FAKE_CLAUDE_EMIT_CAP = '1'; // every launch renders the cap text
+
+    // First probe confirms a REAL cap (on A); after rotating, the replayed text
+    // on B is refuted. This is exactly the real-world sequence.
+    let calls = 0;
+    const context = makeContext(home, () => {
+      calls += 1;
+      return Promise.resolve(calls === 1 ? 'limited' : 'allowed');
+    });
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    const exit = await runCommand(context, []);
+    expect(exit).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(2); // one rotation, then stable
+    expect(launches[0]?.marker).toBe('A');
+    expect(launches[1]?.marker).toBe('B');
+    expect(launches[1]?.args).toContain('--continue'); // same conversation continued
+    const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
+      caps: Array<{ account: string }>;
+    }).caps;
+    expect(caps.map((c) => c.account)).toEqual(['A']); // only the real cap recorded
   });
 
   it('seamless (default): swaps the credential file in place, no relaunch', async () => {

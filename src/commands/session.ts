@@ -10,6 +10,8 @@ import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { runHotSwapSession } from '../launcher/hot-swap.js';
 import { runPtySession } from '../launcher/pty-session.js';
+import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
+import { probeLimit } from '../usage/limit-probe.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import { appendEvent } from '../events/log.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -132,7 +134,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   const sessionDir = path.join(configHome(context.ctx), 'session');
   secureMkdir(sessionDir);
   const sessionCreds = path.join(sessionDir, CREDS);
+  // Share the user's REAL ~/.claude session/memory store (projects) so /resume
+  // and project memories are complete and identical in ccx sessions and plain
+  // `claude` alike. Self-heals each start; skips safely if files are busy.
+  ensureSharedProjects(sessionDir, context.ctx);
   seedSessionSettings(sessionDir, accounts);
+  // Bring in the user's real settings (hooks, permissions), session keys winning.
+  mergeUserSettings(sessionDir, context.ctx);
   // Drop any stale switch request so a fresh session starts on the active account
   // and only a NEW mid-session pick triggers an in-place swap.
   clearSwitchRequest(context.ctx);
@@ -143,6 +151,18 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   const debugLog = process.env.CAS_DEBUG ? path.join(sessionDir, 'session-debug.log') : undefined;
 
   let current: Account | null = null;
+
+  // Ground-truth cap check: rendered text only TRIGGERS this; the API decides.
+  // Uses the SESSION credential (the live, possibly-refreshed token).
+  const verifyCap = async (renderedText: string): Promise<boolean> => {
+    const verdict = context.verifyCap
+      ? await context.verifyCap(renderedText)
+      : (await probeLimit(sessionCreds, renderedText)).verdict;
+    if (verdict !== 'limited') {
+      err('[ccx] limit text on screen, but the API says this account is not limited; ignoring (replayed history)');
+    }
+    return verdict === 'limited';
+  };
 
   const saveBack = (account: Account): void => {
     if (!existsSync(sessionCreds)) return;
@@ -240,7 +260,14 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         err(`[ccx] switching to "${target.name}" (no restart; takes effect within ~30s)`);
         return null;
       };
-      const base = { claude, configDir: sessionDir, env, switchWatch, ...(debugLog ? { debugLog } : {}) };
+      const base = {
+        claude,
+        configDir: sessionDir,
+        env,
+        switchWatch,
+        verifyCap,
+        ...(debugLog ? { debugLog } : {}),
+      };
       const wantContinue = isContinue && !wantsContinue(args);
 
       err(`[ccx] session on "${account.name}"`);
