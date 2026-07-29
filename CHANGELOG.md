@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.12.1]
+
+### Fixed
+
+- **A real session limit no longer terminates your session.** Claude exits
+  itself when the session limit hits; the cap verification introduced in 1.11.0
+  was asynchronous, so Claude's exit beat the verdict and ccx concluded "normal
+  exit" and quit, killing the whole session instead of rotating. The exit path
+  now waits for the in-flight verdict (and checks the final output flush, which
+  ConPTY delivers after exit) before deciding: a confirmed cap at exit rotates
+  to the next account and continues the conversation, exactly like a cap during
+  a live session.
+- **A bare 429 no longer counts as proof of a cap.** Verified live: some models
+  (Fable) return 429 for every account, capped or not, with no usage headers;
+  trusting that would have rotated accounts on a phantom cap. Only a response
+  carrying the unified usage headers can confirm a limit; anything else falls
+  back to a base-model check of the account-wide state, and an unconfirmable
+  match never switches accounts.
+- **Fixed a crash a few seconds after an account switch or cap rotation**
+  (Windows heap corruption, `0xC0000374`, found and fixed in live end-to-end
+  runs with real accounts): the per-session exit path released the terminal's
+  input handle and re-killed an already-killed pseudo-terminal; the next
+  session's relaunch then resumed that corrupted input handle and the whole ccx
+  process died during its startup. Terminal-input release now happens once,
+  after the last session ends, and a swapped-out session is never killed twice.
+  Verified live: start on one account, real reply, forced switch, second
+  session healthy with no crash.
+
 ## [1.12.0]
 
 ### Added

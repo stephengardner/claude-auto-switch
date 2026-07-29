@@ -90,6 +90,38 @@ describe('on-demand switch in a running session (against fake-claude)', () => {
     expect(caps).toHaveLength(0); // nothing falsely marked capped
   });
 
+  it('rotates when claude EXITS ITSELF on a verified cap (the session-limit exit flavor)', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-exitcap-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    // NO idle: the fake prints the cap message and exits immediately, exactly
+    // what real claude does when the 5-hour session limit is hit.
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    process.env.FAKE_CLAUDE_EMIT_CAP = '1';
+
+    let calls = 0;
+    const context = makeContext(home, () => {
+      calls += 1;
+      // The first probe confirms the REAL cap on A; the replayed text on B is refuted.
+      return Promise.resolve(calls === 1 ? 'limited' : 'allowed');
+    });
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    const exit = await runCommand(context, []);
+    expect(exit).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(2); // did NOT terminate: rotated and continued
+    expect(launches[0]?.marker).toBe('A');
+    expect(launches[1]?.marker).toBe('B');
+    expect(launches[1]?.args).toContain('--continue');
+    const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
+      caps: Array<{ account: string }>;
+    }).caps;
+    expect(caps.map((c) => c.account)).toEqual(['A']);
+  });
+
   it('a VERIFIED cap rotates once and continues on the next account', async () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-realcap-'));
     const runsLog = path.join(home, 'runs.jsonl');

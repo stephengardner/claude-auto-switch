@@ -159,7 +159,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       ? await context.verifyCap(renderedText)
       : (await probeLimit(sessionCreds, renderedText)).verdict;
     if (verdict !== 'limited') {
-      err('[ccx] limit text on screen, but the API says this account is not limited; ignoring (replayed history)');
+      err(
+        '[ccx] limit text on screen, but no account-wide cap is confirmed by the API; not switching. ' +
+          'If this is a per-model limit, switch accounts yourself: ccx use <name> (or Enter in ccx dashboard).',
+      );
     }
     return verdict === 'limited';
   };
@@ -307,5 +310,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // live credential from the shared session dir so nothing is left at rest.
   if (current) saveBack(current);
   scrubSessionCreds();
+  // No more sessions will run: NOW release stdin so a piped host (CI, scripts)
+  // is not kept alive. Doing this between swapped sessions corrupts the Windows
+  // TTY teardown (0xC0000374 a few seconds into the next session, proven live),
+  // which is why it happens here and not in the per-session exit path.
+  (process.stdin as unknown as { unref?: () => void }).unref?.();
   return exitCode;
 }

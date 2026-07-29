@@ -29,9 +29,37 @@ describe('probeModelFor', () => {
 });
 
 describe('probeLimit', () => {
-  it('429 means limited', async () => {
-    const r = await probeLimit(credsFile(), '', fakeFetch(429));
+  it('429 WITH unified usage headers means limited', async () => {
+    const r = await probeLimit(
+      credsFile(),
+      '',
+      fakeFetch(429, { 'anthropic-ratelimit-unified-5h-utilization': '1.0' }),
+    );
     expect(r.verdict).toBe('limited');
+  });
+
+  it('a bare 429 (no usage headers) NEVER confirms: decides from the base model', async () => {
+    // Proven live: Fable 429s for EVERY account, capped or not, with no unified
+    // headers. Trusting it would rotate accounts on a phantom cap.
+    const seen: string[] = [];
+    const f = (async (_url: unknown, init?: { body?: unknown }) => {
+      const body = JSON.parse(String(init?.body)) as { model: string };
+      seen.push(body.model);
+      if (body.model === 'claude-fable-5') return new Response('{}', { status: 429 }); // bare
+      return new Response('{}', {
+        status: 200,
+        headers: new Headers({ 'anthropic-ratelimit-unified-status': 'allowed' }),
+      });
+    }) as unknown as typeof fetch;
+    const r = await probeLimit(credsFile(), "You've reached your Fable 5 limit.", f);
+    expect(seen).toEqual(['claude-fable-5', 'claude-haiku-4-5-20251001']);
+    expect(r.verdict).toBe('allowed'); // the base model is the ground truth
+  });
+
+  it('bare 429 on both models stays unknown (never confirms a cap)', async () => {
+    const f = (async () => new Response('{}', { status: 429 })) as unknown as typeof fetch;
+    const r = await probeLimit(credsFile(), 'Fable 5 limit', f);
+    expect(r.verdict).toBe('unknown');
   });
 
   it('200 with allowed status (and utilization headers) means allowed', async () => {

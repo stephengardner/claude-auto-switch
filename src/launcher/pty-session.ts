@@ -61,6 +61,9 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     let exited = false;
     let verifying = false;
     let suppressUntil = 0;
+    let lastHit: { reason?: string; resetAt?: number } | null = null;
+    let pendingVerify: Promise<boolean> | null = null;
+    let finalized = false;
     // The "No conversation found to continue" error only matters on a --continue
     // launch, and the real one prints in the FIRST flush of output. Watching any
     // longer would let a REPLAYED conversation that merely contains that phrase
@@ -69,9 +72,13 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       options.args.includes('--continue') || options.args.includes('-c');
     let totalOutput = 0;
 
+    let weKilled = false;
     const safeKill = (): void => {
       try {
-        if (!exited) child.kill();
+        if (!exited) {
+          weKilled = true;
+          child.kill();
+        }
       } catch {
         /* already gone */
       }
@@ -124,21 +131,28 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         return;
       }
       verifying = true;
-      void options
+      lastHit = { reason: hit.reason, resetAt: hit.resetAt };
+      // Kept as a handle: if the child exits while this is in flight (claude
+      // EXITS ITSELF on a session limit), the exit path awaits the verdict
+      // instead of concluding "normal exit" and dropping the session.
+      pendingVerify = options
         .verifyCap(snapshot)
         .then((confirmed) => {
           verifying = false;
-          if (exited || capped || switching) return;
           if (confirmed) {
-            capped = { reason: hit.reason, resetAt: hit.resetAt };
-            setTimeout(safeKill, 150);
+            if (!capped && !switching) {
+              capped = { reason: hit.reason, resetAt: hit.resetAt };
+              if (!exited) setTimeout(safeKill, 150);
+            }
           } else {
             suppressUntil = Date.now() + 20_000;
           }
+          return confirmed;
         })
         .catch(() => {
           verifying = false;
           suppressUntil = Date.now() + 20_000;
+          return false;
         });
     });
 
@@ -169,40 +183,83 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
 
     const exitSub = child.onExit(({ exitCode }) => {
       exited = true;
-      dataSub.dispose();
       exitSub.dispose();
       if (switchPoll) clearInterval(switchPoll);
       stdin.off('data', onInput);
       process.stdout.off('resize', onResize);
       if (stdin.isTTY) stdin.setRawMode?.(false);
       stdin.pause();
-      // Release everything that can keep the event loop alive after the child
-      // is gone: piped stdin (non-TTY hosts) and the ConPTY handles node-pty
-      // holds. Without this the ccx process can hang after a finished session.
-      (stdin as unknown as { unref?: () => void }).unref?.();
-      try {
-        child.kill();
-      } catch {
-        /* already disposed */
-      }
-      if (options.debugLog) {
-        // The debug log is a full transcript of a live session; write it
-        // owner-only. CAS_DEBUG is opt-in and documented as sensitive.
-        try {
-          writeSecretFile(options.debugLog, captured);
-        } catch {
-          /* best effort */
+      // NOTE: stdin is NOT unref'd here. A hot-swap relaunch resumes it for the
+      // next session, and resuming an unref'd Windows TTY handle corrupts the
+      // process (0xC0000374, proven live). The session LOOP releases stdin once
+      // no more sessions will run.
+
+      const finalize = (): void => {
+        if (finalized) return;
+        finalized = true;
+        dataSub.dispose();
+        // Release ConPTY handles for NATURAL exits (the post-session hang fix).
+        // Never a second kill after safeKill: double-killing an active ConPTY
+        // corrupts the heap and crashes the whole ccx process a few seconds
+        // into the NEXT session (0xC0000374, seen live on a mid-session switch).
+        if (!weKilled) {
+          try {
+            child.kill();
+          } catch {
+            /* already disposed */
+          }
         }
-      }
-      resolve(
-        switching
-          ? { kind: 'switch', exitCode, switchTo: switching }
-          : capped
-            ? { kind: 'capped', exitCode, reason: capped.reason, resetAt: capped.resetAt }
-            : noConversation
-              ? { kind: 'no-conversation', exitCode }
-              : { kind: 'ok', exitCode },
-      );
+        if (options.debugLog) {
+          // The debug log is a full transcript of a live session; write it
+          // owner-only. CAS_DEBUG is opt-in and documented as sensitive.
+          try {
+            writeSecretFile(options.debugLog, captured);
+          } catch {
+            /* best effort */
+          }
+        }
+        resolve(
+          switching
+            ? { kind: 'switch', exitCode, switchTo: switching }
+            : capped
+              ? { kind: 'capped', exitCode, reason: capped.reason, resetAt: capped.resetAt }
+              : noConversation
+                ? { kind: 'no-conversation', exitCode }
+                : { kind: 'ok', exitCode },
+        );
+      };
+
+      // Claude EXITS ITSELF on a session limit, and ConPTY can flush the very
+      // output containing that limit message AFTER the exit event. So: give the
+      // trailing flush a moment, then settle any in-flight (or newly-triggered)
+      // verification BEFORE deciding this was a normal exit. Without this, a
+      // real cap raced the async verdict and the whole session ended instead of
+      // rotating (the "my session completely terminated" bug).
+      setTimeout(() => {
+        if (capped || switching || noConversation) return finalize();
+        const timeboxed = (p: Promise<boolean>): Promise<boolean> =>
+          Promise.race([p, new Promise<boolean>((r) => setTimeout(() => r(false), 12_000))]);
+        if (pendingVerify) {
+          void timeboxed(pendingVerify).then((confirmed) => {
+            if (confirmed && !capped) capped = lastHit ?? {};
+            finalize();
+          });
+          return;
+        }
+        const hit = matchesCapText(window);
+        if (hit && options.verifyCap) {
+          // Deliberately ignores the refute-backoff: a REAL cap can land inside
+          // the 20s window right after a refuted replay, and the child is gone
+          // so one probe here is the only chance to catch it.
+          void timeboxed(options.verifyCap(window).catch(() => false)).then((confirmed) => {
+            if (confirmed) capped = { reason: hit.reason, resetAt: hit.resetAt };
+            finalize();
+          });
+          return;
+        }
+        if (hit && !options.verifyCap) capped = { reason: hit.reason, resetAt: hit.resetAt };
+        finalize();
+      }, 250);
     });
   });
 }

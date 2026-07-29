@@ -63,7 +63,9 @@ export async function probeLimit(
   const token = readOauthToken(credentialsFile);
   if (!token) return { verdict: 'unknown', detail: 'no oauth token' };
 
-  const attempt = async (model: string): Promise<LimitProbeResult & { notFound?: boolean }> => {
+  const attempt = async (
+    model: string,
+  ): Promise<LimitProbeResult & { retryBase?: boolean }> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
     try {
@@ -80,16 +82,25 @@ export async function probeLimit(
       });
       const fiveHour = num(res.headers.get('anthropic-ratelimit-unified-5h-utilization'));
       const sevenDay = num(res.headers.get('anthropic-ratelimit-unified-7d-utilization'));
+      const unifiedStatus = res.headers.get('anthropic-ratelimit-unified-status');
+      // The unified subscription limiter stamps these headers on ITS responses.
+      const hasUnified = fiveHour !== undefined || sevenDay !== undefined || unifiedStatus !== null;
       const usage = {
         ...(fiveHour !== undefined ? { fiveHour } : {}),
         ...(sevenDay !== undefined ? { sevenDay } : {}),
       };
-      if (res.status === 429) return { verdict: 'limited', ...usage, detail: `429 on ${model}` };
-      if (res.status === 404) return { verdict: 'unknown', notFound: true, detail: `unknown model ${model}` };
+      if (res.status === 429) {
+        // PROVEN: some models (Fable) 429 for EVERY account, capped or not, with
+        // no unified headers -- model-access noise, not a usage cap. Only a 429
+        // that carries the unified headers is a real subscription limit; a bare
+        // one must fall through to the base model, never confirm.
+        if (hasUnified) return { verdict: 'limited', ...usage, detail: `429 on ${model}` };
+        return { verdict: 'unknown', retryBase: true, detail: `bare 429 on ${model} (no usage headers)` };
+      }
+      if (res.status === 404) return { verdict: 'unknown', retryBase: true, detail: `unknown model ${model}` };
       if (res.status === 200) {
-        const status = res.headers.get('anthropic-ratelimit-unified-status');
-        if (status && status !== 'allowed') {
-          return { verdict: 'limited', ...usage, detail: `unified-status ${status}` };
+        if (unifiedStatus && unifiedStatus !== 'allowed') {
+          return { verdict: 'limited', ...usage, detail: `unified-status ${unifiedStatus}` };
         }
         return { verdict: 'allowed', ...usage };
       }
@@ -103,8 +114,14 @@ export async function probeLimit(
 
   const model = probeModelFor(renderedText);
   const first = await attempt(model);
-  // A stale model-name mapping must not blind us: fall back to the base model.
-  if (first.notFound && model !== BASE_MODEL) return attempt(BASE_MODEL);
+  // Inconclusive on the hinted model (unknown id, or a headerless 429): decide
+  // from the BASE model, whose response reflects the account-wide 5h/7d state.
+  if (first.retryBase && model !== BASE_MODEL) {
+    const base = await attempt(BASE_MODEL);
+    if (base.retryBase) return { verdict: 'unknown', detail: `${first.detail}; ${base.detail}` };
+    return base;
+  }
+  if (first.retryBase) return { verdict: 'unknown', detail: first.detail };
   return first;
 }
 
