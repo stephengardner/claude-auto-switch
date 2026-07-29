@@ -3,7 +3,9 @@ import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
-import { readSwitchRequest, clearSwitchRequest, decideSwitch } from '../state/switch-request.js';
+import { readSwitchRequest, clearSwitchRequest, decideSwitch, writeSwitchRequest } from '../state/switch-request.js';
+import { startProactiveRotation } from '../usage/proactive.js';
+import { buildProactiveDeps } from '../usage/proactive-deps.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { loadLedger, saveLedger, markCapped, cappedNames } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
@@ -19,6 +21,7 @@ import {
   rollbackCredential,
   isUsableCredential,
   identityKey,
+  sessionIdentityEmail,
 } from '../accounts/credential-vault.js';
 import { withCredentialLock } from '../claude/locks.js';
 import { appendEvent } from '../events/log.js';
@@ -182,13 +185,26 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // can leave the session credential empty or malformed, and overwriting a
     // good login with that is the worst outcome (installCredential re-checks).
     if (!isUsableCredential(sessionCreds)) return;
-    // Identity guard: if the operator ran `/login` mid-session as a DIFFERENT
-    // account, the session identity no longer matches this profile. Saving the
-    // credential back would clobber this profile with someone else's login
-    // (two profiles ending up on the same token). Skip it.
+    // Identity guard. The session's config tracks whoever it is logged in as
+    // right now, so if that is not this profile's account, writing the
+    // credential back would put someone else's login into this profile. That is
+    // how profiles end up scrambled or sharing one login, so it is refused.
+    //
+    // Checked against the address recorded when the account was registered,
+    // which does not drift, rather than against the profile's own config file,
+    // which can already be wrong by the time we look at it.
+    const sessionEmail = sessionIdentityEmail(sessionDir);
+    if (sessionEmail && account.email && sessionEmail.toLowerCase() !== account.email.toLowerCase()) {
+      err(
+        `[ccx] this session is signed in as ${sessionEmail}, not "${account.name}" (${account.email}); ` +
+          'leaving that account\'s stored login untouched',
+      );
+      return;
+    }
+    // Fall back to comparing config identities when the registry has no address.
     const sessionId = identityKey(sessionDir);
     const accountId = identityKey(account.dir);
-    if (sessionId && accountId && sessionId !== accountId) {
+    if (!sessionEmail && sessionId && accountId && sessionId !== accountId) {
       err(`[ccx] session is now a different account than "${account.name}"; not overwriting its login`);
       return;
     }
@@ -242,6 +258,23 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // Claim the operator's keyboard once for the whole run; every session in the
   // swap loop borrows it, so terminal mode is never toggled mid-swap.
   const terminalInput = openTerminalInput();
+
+  // Watch our own headroom and hand the session to a roomier account before the
+  // current one runs out. The switch goes through the normal request path, so
+  // the conversation moves in place rather than restarting.
+  const proactive = startProactiveRotation(
+    buildProactiveDeps(context, {
+      current: () => current?.name ?? null,
+      requestSwitch: (account, reason) => {
+        err(`[ccx] ${reason}; moving to "${account}" before this account runs out`);
+        logEvent(`proactive switch to ${account}`);
+        setActive(account, context.ctx);
+        syncEditorPointerIfEnabled(context);
+        writeSwitchRequest(account, Date.now(), 'seamless', context.ctx);
+      },
+    }),
+    Math.max(30, context.config.rotation.usageCheckSeconds) * 1000,
+  );
 
   const exitCode = await runHotSwapSession({
     nextAccount: (excluding) => {
@@ -339,7 +372,8 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     },
   });
 
-  // No more sessions will run: restore the terminal and stop reading input.
+  // No more sessions will run: stop watching usage and restore the terminal.
+  proactive.stop();
   terminalInput.close();
   // On exit, save any refreshed credential back to its account and remove the
   // live credential from the shared session dir so nothing is left at rest.

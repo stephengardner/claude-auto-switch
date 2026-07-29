@@ -32,6 +32,8 @@ export interface ModelWindow {
 
 export interface LimitProbeResult {
   verdict: LimitVerdict;
+  /** Set when the endpoint asked us to back off (429), in ms. */
+  retryAfterMs?: number;
   /** 0..1 utilization for the 5-hour session window. */
   fiveHour?: number;
   /** 0..1 utilization for the weekly "all models" window. */
@@ -117,7 +119,17 @@ export async function probeLimit(
       },
       signal: controller.signal,
     });
-    if (res.status !== 200) return { verdict: 'unknown', detail: `status ${res.status}` };
+    if (res.status !== 200) {
+      // The usage endpoint has its own small budget: asking for several accounts
+      // at once gets most of them turned away. Surface the back-off so callers
+      // can pace themselves instead of hammering it.
+      const retry = Number(res.headers.get('retry-after'));
+      return {
+        verdict: 'unknown',
+        detail: `status ${res.status}`,
+        ...(Number.isFinite(retry) && retry > 0 ? { retryAfterMs: retry * 1000 } : {}),
+      };
+    }
     const data = (await res.json()) as UsageResponse;
 
     const fiveHour = frac(data.five_hour?.utilization);

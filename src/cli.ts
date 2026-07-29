@@ -8,6 +8,7 @@ import { addCommand } from './commands/add.js';
 import { useCommand } from './commands/use.js';
 import { rotateCommand } from './commands/rotate.js';
 import { usageCommand } from './commands/usage.js';
+import { autoCommand, type AutoOptions } from './commands/auto.js';
 import { runCommand } from './commands/run.js';
 import { removeCommand } from './commands/remove.js';
 import { onCommand, offCommand } from './commands/onoff.js';
@@ -115,6 +116,19 @@ program
   .description('show real per-account usage (5-hour + weekly) with reset times')
   .action(async () => {
     process.exitCode = await usageCommand(context());
+  });
+
+program
+  .command('auto')
+  .description('move to a roomier account before the current one runs out')
+  .option('--once', 'run a single check and exit (cron friendly)')
+  .option('--json', 'emit JSON instead of prose')
+  .option('--model <name>', 'decide using one model\'s weekly window (e.g. Fable)')
+  .option('--interval <seconds>', 'seconds between checks when looping')
+  .option('--dry-run', 'report what would happen without switching')
+  .option('--threshold <percent>', 'treat an account as nearly out at this percent')
+  .action(async (opts: AutoOptions) => {
+    process.exitCode = await autoCommand(context(), opts);
   });
 
 program

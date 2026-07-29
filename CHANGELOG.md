@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.15.0]
+
+### Added
+
+- **Move to a roomier account before you run out.** A running session watches its
+  own usage and, when the window that will actually stop you gets close to its
+  limit, hands the conversation to the account with the most room left, in
+  place. `ccx auto` does the same for scripts and scheduled runs, with
+  `--once`, `--json`, `--dry-run`, `--model`, `--threshold`, and stable exit
+  codes (0 switched, 2 nothing to do, 3 off, 1 error).
+- **`ccx doctor` now verifies who each profile is actually logged in as.** Local
+  files report the account a profile *claims*; only the API can say whose login
+  a stored token really is. This catches profiles holding the wrong account, or
+  two profiles sharing one login, and names the exact `ccx login` fix.
+- **Stale accounts renew themselves.** An account you are not using goes stale
+  within hours, and a stale token cannot report usage, which used to leave
+  rotation blind to exactly the accounts it should switch to. Renewal writes the
+  result immediately and atomically, keeps the previous generation, and reports
+  a genuinely dead login as needing sign-in rather than changing anything.
+
+### Fixed
+
+- **A logged-out session can no longer destroy a stored login.** When a session
+  is signed out, Claude leaves a complete but EMPTY credential; ccx treated that
+  as real and could save it over a good account. Credentials must now actually
+  contain a login to be written anywhere.
+- **Writing a login into the wrong profile is refused.** If a session is signed
+  in as a different account than the profile it came from, its credential is no
+  longer saved back over that profile.
+- **Usage is fetched one account at a time.** Asking for several at once made
+  the usage endpoint turn most of them away, and those failures used to
+  overwrite good numbers with blanks; failures now keep the last known values.
+
 ## [1.14.0]
 
 ### Fixed

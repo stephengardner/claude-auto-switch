@@ -5,6 +5,7 @@ import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { readToken } from '../daemon/token-store.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
+import { refreshCredentialIfExpired } from './oauth-refresh.js';
 
 /**
  * Cached per-account subscription usage (5h/7d utilization + resets), fetched
@@ -59,6 +60,25 @@ export interface RefreshUsageOptions {
   now?: () => number;
   /** Injected in tests; defaults to the real API probe. */
   probe?: (credentialsFile: string) => Promise<LimitProbeResult>;
+  /** Delay between account fetches, to stay inside the endpoint's budget. */
+  gapMs?: number;
+  /**
+   * Renew an account's token before reading its usage. An account you are not
+   * using goes stale within hours, and a stale token cannot report usage, which
+   * would hide exactly the accounts rotation wants to move to.
+   */
+  renew?: (accountDir: string) => Promise<{ status: string }>;
+}
+
+/**
+ * Sleep between fetches. Deliberately NOT unref'd: this runs inside an awaited
+ * refresh, and an unref'd timer lets the process exit mid-refresh (which shows
+ * up as a command that prints nothing at all).
+ */
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function hasLogin(dir: string): boolean {
@@ -78,8 +98,11 @@ export async function refreshUsage(
 ): Promise<UsageSnapshot> {
   const maxAge = options.maxAgeMs ?? USAGE_TTL_MS;
   const now = options.now ?? (() => Date.now());
+  const gapMs = options.gapMs ?? 400;
   const probe =
     options.probe ?? ((file: string) => probeUsage(file));
+  const renew =
+    options.renew ?? ((accountDir: string) => refreshCredentialIfExpired(accountDir));
 
   const snapshot = readUsageSnapshot(c);
   const stale = accounts.filter((a) => {
@@ -89,25 +112,40 @@ export async function refreshUsage(
   });
   if (stale.length === 0) return snapshot;
 
-  const results = await Promise.all(
-    stale.map(async (a) => {
-      try {
-        const r = await probe(path.join(a.dir, '.credentials.json'));
-        return { name: a.name, r };
-      } catch {
-        return { name: a.name, r: { verdict: 'unknown' } as LimitProbeResult };
-      }
-    }),
-  );
-  for (const { name, r } of results) {
-    snapshot.accounts[name] = {
-      fiveHour: r.fiveHour ?? null,
-      sevenDay: r.sevenDay ?? null,
-      fiveHourReset: r.fiveHourReset ?? null,
-      sevenDayReset: r.sevenDayReset ?? null,
-      ...(r.models ? { models: r.models.map((m) => ({ name: m.name, utilization: m.utilization, resetsAt: m.resetsAt ?? null })) } : {}),
-      at: now(),
-    };
+  // Sequential, with a small gap: the usage endpoint has a small budget and
+  // asking for several accounts at once gets most of them turned away.
+  for (const account of stale) {
+    let result: LimitProbeResult;
+    try {
+      await renew(account.dir); // no-op when the token is still good
+      result = await probe(path.join(account.dir, '.credentials.json'));
+    } catch {
+      result = { verdict: 'unknown' };
+    }
+
+    const known = result.fiveHour !== undefined || result.sevenDay !== undefined;
+    if (known) {
+      snapshot.accounts[account.name] = {
+        fiveHour: result.fiveHour ?? null,
+        sevenDay: result.sevenDay ?? null,
+        fiveHourReset: result.fiveHourReset ?? null,
+        sevenDayReset: result.sevenDayReset ?? null,
+        ...(result.models
+          ? { models: result.models.map((m) => ({ name: m.name, utilization: m.utilization, resetsAt: m.resetsAt ?? null })) }
+          : {}),
+        at: now(),
+      };
+    } else {
+      // Could not read it (offline, or the endpoint asked us to slow down).
+      // KEEP the last known numbers rather than replacing them with blanks, and
+      // just mark the attempt so the next refresh is due after the TTL.
+      const previous = snapshot.accounts[account.name];
+      snapshot.accounts[account.name] = previous
+        ? { ...previous, at: now() }
+        : { fiveHour: null, sevenDay: null, fiveHourReset: null, sevenDayReset: null, at: now() };
+      if (result.retryAfterMs) await pause(Math.min(result.retryAfterMs, 5_000));
+    }
+    if (stale.length > 1) await pause(gapMs);
   }
   try {
     writeJsonFile(snapshotPath(c), snapshot);

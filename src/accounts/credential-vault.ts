@@ -23,16 +23,64 @@ export function previousCredentialPath(dir: string): string {
   return path.join(dir, PREVIOUS_FILE);
 }
 
-/** True when the file holds a non-empty JSON object (a plausible credential). */
+/**
+ * True when the file actually carries a login, not merely the right shape.
+ *
+ * This distinction matters: when a session is logged out (or a token refresh
+ * fails) Claude leaves a complete, valid-JSON credential whose token strings are
+ * EMPTY. Treating that as a credential and saving it back over a stored account
+ * destroys that login, which is exactly how an account here ended up with empty
+ * tokens and no way back.
+ *
+ * Unrecognised shapes are accepted when they carry any non-empty value, so a
+ * future change to Claude's credential format cannot make ccx refuse everything.
+ */
 export function isUsableCredential(file: string): boolean {
   try {
     const text = readFileSync(file, 'utf8');
     if (text.trim().length === 0) return false;
     const parsed = JSON.parse(text) as Record<string, unknown>;
-    return typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length > 0;
+    if (typeof parsed !== 'object' || parsed === null) return false;
+
+    const oauth = parsed.claudeAiOauth as { accessToken?: unknown } | undefined;
+    if (oauth && typeof oauth === 'object') {
+      // Known shape: it is a login only if there is an access token in it.
+      return typeof oauth.accessToken === 'string' && oauth.accessToken.length > 0;
+    }
+    if (typeof parsed.primaryApiKey === 'string' && parsed.primaryApiKey.length > 0) return true;
+    return hasNonEmptyValue(parsed);
   } catch {
     return false;
   }
+}
+
+/**
+ * The email a config dir is currently signed in as, or null. Claude keeps this
+ * current for the session it is running, which makes it the reliable answer to
+ * "who is this session actually logged in as right now".
+ */
+export function sessionIdentityEmail(configDir: string): string | null {
+  try {
+    const cfg = JSON.parse(readFileSync(path.join(configDir, '.claude.json'), 'utf8')) as {
+      oauthAccount?: { emailAddress?: unknown };
+    };
+    const email = cfg.oauthAccount?.emailAddress;
+    return typeof email === 'string' && email.length > 0 ? email : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Any non-empty string/number anywhere in the object (forward compatibility). */
+function hasNonEmptyValue(value: unknown, depth = 0): boolean {
+  if (depth > 4) return false;
+  if (typeof value === 'string') return value.length > 0;
+  if (typeof value === 'number') return true;
+  if (Array.isArray(value)) return value.some((v) => hasNonEmptyValue(v, depth + 1));
+  if (value && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some((v) => hasNonEmptyValue(v, depth + 1));
+  }
+  return false;
 }
 
 /**

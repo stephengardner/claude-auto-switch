@@ -19,6 +19,12 @@ export const ConfigSchema = z.object({
       autoRelaunchInteractive: z.boolean().default(true),
       defaultBackoffMinutes: z.number().int().positive().default(300),
       capThresholdPercent: z.number().int().min(1).max(100).default(95),
+      /** Move off an account once its binding window hits this percent (0 = off). */
+      proactivePercent: z.number().int().min(0).max(100).default(90),
+      /** Require this many points more headroom on the target (anti-flap). */
+      proactiveHysteresisPercent: z.number().int().min(0).max(100).default(10),
+      /** How often a running session checks its own usage. */
+      usageCheckSeconds: z.number().int().positive().default(300),
     })
     .default({}),
   realClaudePath: z.string().nullable().default(null),
@@ -36,6 +42,9 @@ export interface PartialConfig {
     autoRelaunchInteractive?: boolean;
     defaultBackoffMinutes?: number;
     capThresholdPercent?: number;
+    proactivePercent?: number;
+    proactiveHysteresisPercent?: number;
+    usageCheckSeconds?: number;
   };
   realClaudePath?: string | null;
 }

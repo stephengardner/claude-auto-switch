@@ -12,6 +12,7 @@ import { isLink, readTarget } from '../daemon/junction.js';
 import { readToken } from '../daemon/token-store.js';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { listAccounts } from '../accounts/registry.js';
+import { verifyAccountIdentities } from '../accounts/identity-check.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { probeAll } from '../health/prober.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -32,6 +33,10 @@ export interface DoctorDeps {
   checkBrowserPort?: (port: number) => Promise<boolean>;
   /** Shell-profile resolver for the shim check; injected in tests. */
   resolveShimProfile?: () => string | null;
+  /** Skip checks that need the network (used by tests and offline runs). */
+  skipNetwork?: boolean;
+  /** Injected in tests for the identity check. */
+  fetchImpl?: typeof fetch;
 }
 
 /** Files that must never be committed. */
@@ -213,6 +218,36 @@ export async function auditAccounts(context: CliContext): Promise<DoctorCheck> {
   };
 }
 
+/**
+ * Confirm each profile holds the account it claims to. This is the only check
+ * that can catch profiles that have been scrambled or that share one login,
+ * because local files report the recorded identity, not the token's owner.
+ */
+export async function auditIdentities(
+  context: CliContext,
+  deps: DoctorDeps = {},
+): Promise<DoctorCheck> {
+  const name = 'account-identity';
+  const accounts = listAccounts(context.ctx);
+  if (accounts.length === 0) return { name, ok: true, detail: 'no accounts registered' };
+  if (deps.skipNetwork) return { name, ok: true, detail: 'skipped (no network checks)' };
+
+  const findings = await verifyAccountIdentities(
+    accounts.map((a) => ({ name: a.name, dir: a.dir, ...(a.email ? { email: a.email } : {}) })),
+    deps.fetchImpl ?? fetch,
+  );
+  const broken = findings.filter((f) => f.kind === 'mismatch' || f.kind === 'duplicate');
+  if (broken.length === 0) {
+    const loggedOut = findings.filter((f) => f.kind === 'logged-out').length;
+    return {
+      name,
+      ok: true,
+      detail: loggedOut > 0 ? `${findings.length - loggedOut} confirmed, ${loggedOut} need login` : 'every profile holds the account it should',
+    };
+  }
+  return { name, ok: false, detail: broken.map((f) => `${f.account}: ${f.detail}`).join('; ') };
+}
+
 /** Cap state: informational, but every-enabled-account-capped is a failure. */
 export function auditCaps(context: CliContext): DoctorCheck {
   const name = 'caps';
@@ -257,6 +292,7 @@ export async function runDoctor(
     auditShim(context, deps),
     auditSharedHistory(context),
     await auditAccounts(context),
+    await auditIdentities(context, deps),
     auditCaps(context),
     auditGitSafety(trackedFiles),
     auditRealClaude(context, deps),
