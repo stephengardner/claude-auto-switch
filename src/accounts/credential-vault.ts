@@ -55,6 +55,18 @@ export function isUsableCredential(file: string): boolean {
 }
 
 /**
+ * Whether a profile can actually run a session.
+ *
+ * The credential FILE existing is not the same as being signed in: a signed-out
+ * profile keeps a complete file whose tokens are empty. Selecting such an
+ * account starts a session that cannot work, and (worse) mis-reports the
+ * failure as a usage limit.
+ */
+export function hasUsableLogin(dir: string): boolean {
+  return isUsableCredential(credentialPath(dir));
+}
+
+/**
  * The email a config dir is currently signed in as, or null. Claude keeps this
  * current for the session it is running, which makes it the reliable answer to
  * "who is this session actually logged in as right now".

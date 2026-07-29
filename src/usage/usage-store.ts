@@ -1,9 +1,9 @@
 import path from 'node:path';
-import { existsSync } from 'node:fs';
 import { z } from 'zod';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { readToken } from '../daemon/token-store.js';
+import { hasUsableLogin } from '../accounts/credential-vault.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
 import { refreshCredentialIfExpired } from './oauth-refresh.js';
 
@@ -82,7 +82,7 @@ function pause(ms: number): Promise<void> {
 }
 
 function hasLogin(dir: string): boolean {
-  return existsSync(path.join(dir, '.credentials.json')) || readToken(dir) !== null;
+  return hasUsableLogin(dir) || readToken(dir) !== null;
 }
 
 /**

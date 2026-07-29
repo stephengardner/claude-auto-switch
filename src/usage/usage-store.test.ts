@@ -11,7 +11,12 @@ function setup(names: string[]) {
   const accounts = names.map((name) => {
     const dir = path.join(home, 'profiles', name);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, '.credentials.json'), '{}', 'utf8'); // logged in
+    // A real-shaped login: an empty object is a signed-OUT profile, not a login.
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: `tok-${name}` } }),
+      'utf8',
+    );
     return { name, dir };
   });
   return { c, accounts };

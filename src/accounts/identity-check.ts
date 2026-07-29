@@ -130,5 +130,25 @@ export async function verifyAccountIdentities(
     }
     findings.push({ account: account.name, actual, kind: 'ok', detail: actual });
   }
+
+  // Two profiles signed into the SAME account is a problem even when each looks
+  // correct on its own: it happens when one profile is re-pointed at another's
+  // account, which rewrites what it claims about itself so nothing looks wrong.
+  // It also means rotating between them gains no headroom at all.
+  const byOwner = new Map<string, string[]>();
+  for (const f of findings) {
+    if (f.kind !== 'ok' || !f.actual) continue;
+    const key = f.actual.toLowerCase();
+    byOwner.set(key, [...(byOwner.get(key) ?? []), f.account]);
+  }
+  for (const [owner, names] of byOwner) {
+    if (names.length < 2) continue;
+    for (const name of names.slice(1)) {
+      const finding = findings.find((f) => f.account === name);
+      if (!finding) continue;
+      finding.kind = 'duplicate';
+      finding.detail = `also signed in as ${owner}, the same account as "${names[0]}" (run: ccx login ${name})`;
+    }
+  }
   return findings;
 }

@@ -1,5 +1,3 @@
-import { existsSync } from 'node:fs';
-import path from 'node:path';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import { probeAll } from '../health/prober.js';
@@ -8,6 +6,7 @@ import { launchWatched, spawnWatched } from '../launcher/launcher.js';
 import type { CapClassification } from '../launcher/cap-detect.js';
 import { loadLedger, saveLedger, markCapped, cappedNames } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
+import { hasUsableLogin } from '../accounts/credential-vault.js';
 import { appendEvent } from '../events/log.js';
 import { ensureEditorReady } from './editor-ready.js';
 import { configHome } from '../config/paths.js';
@@ -15,7 +14,7 @@ import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 
 function hasLogin(dir: string): boolean {
-  return existsSync(path.join(dir, '.credentials.json')) || readToken(dir) !== null;
+  return hasUsableLogin(dir) || readToken(dir) !== null;
 }
 
 /** Pick the account to launch on: active if usable, else the healthiest eligible. */

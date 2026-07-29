@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.17.0]
+
+### Added
+
+- **See which account you are on, without ccx getting in the way.** Claude owns
+  the screen while it runs, so anything ccx prints is either scribbled over or
+  steps on the interface. Two quiet channels instead:
+  - `ccx statusline` prints one line for Claude's own status line (the account
+    in use and the limit closest to stopping it). `ccx statusline --install`
+    shows the settings snippet; it composes with a status line you already have.
+  - A switch now asks the TERMINAL to notify you and updates the window title.
+    Both are escape sequences that draw nothing, so the session is untouched,
+    and terminals that do not support them simply ignore them.
+
+### Fixed
+
+- **A signed-out account is no longer treated as available.** A signed-out
+  profile keeps a complete credential file with empty tokens, so ccx could pick
+  it, fail to start, and record it as having hit its usage limit. Found by the
+  first real cap test: a genuine limit correctly moved the session on, then a
+  signed-out account was wrongly blamed for a limit it never hit.
+- **A refused credential now clears the session instead of leaving the previous
+  one in place**, which had let a session keep running as the account it was
+  supposedly moving away from.
+
 ## [1.16.0]
 
 ### Added

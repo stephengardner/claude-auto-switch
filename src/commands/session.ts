@@ -13,6 +13,7 @@ import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config
 import { runHotSwapSession } from '../launcher/hot-swap.js';
 import { runPtySession } from '../launcher/pty-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
+import { notifyAccountSwitch } from '../launcher/notify.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
 import { probeLimit } from '../usage/limit-probe.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
@@ -22,6 +23,7 @@ import {
   isUsableCredential,
   identityKey,
   sessionIdentityEmail,
+  hasUsableLogin,
 } from '../accounts/credential-vault.js';
 import { withCredentialLock } from '../claude/locks.js';
 import { appendEvent } from '../events/log.js';
@@ -32,7 +34,10 @@ const CREDS = '.credentials.json';
 
 /** An account is usable if it has a login (a credentials file, or a stored token on macOS). */
 function hasLogin(accountDir: string): boolean {
-  return existsSync(path.join(accountDir, CREDS)) || readToken(accountDir) !== null;
+  // A signed-out profile keeps a complete credential file with empty tokens, so
+  // file presence is not a login. Selecting one starts a session that cannot
+  // work and then looks like a usage limit.
+  return hasUsableLogin(accountDir) || readToken(accountDir) !== null;
 }
 
 /** True when at least one account can run (hot-swap is possible). */
@@ -237,19 +242,20 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const src = path.join(account.dir, CREDS);
       // Always replace (or clear) the session credential so one account's login
       // can never linger into another account's session.
-      if (existsSync(src)) {
-        try {
-          installCredential(sessionDir, src);
-          // Stamp the account's identity (oauthAccount/userID) so the interactive
-          // app sees a logged-in account instead of prompting for login.
-          applyAccountIdentity(sessionDir, account.dir, context.ctx);
-        } catch (e) {
-          rollbackCredential(sessionDir);
-          throw e;
+      try {
+        // A refused credential (missing, or signed out with empty tokens) must
+        // CLEAR the session, never leave the previous account's login in place:
+        // the session would keep running as that account while ccx believed it
+        // had moved, and its limit would then be blamed on the wrong account.
+        if (!existsSync(src) || !installCredential(sessionDir, src)) {
+          scrubSessionCreds();
         }
-      } else {
-        scrubSessionCreds();
+        // Stamp the account's identity (oauthAccount/userID) so the interactive
+        // app sees a logged-in account instead of prompting for login.
         applyAccountIdentity(sessionDir, account.dir, context.ctx);
+      } catch (e) {
+        rollbackCredential(sessionDir);
+        throw e;
       }
     });
     current = account;
@@ -326,6 +332,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         syncEditorPointerIfEnabled(context);
         logEvent(`switching to ${target.name} in place`);
         err(`[ccx] switching to "${target.name}" (no restart; takes effect within ~30s)`);
+        notifyAccountSwitch(target.name, 'switched in place');
         return null;
       };
       const base = {
@@ -341,6 +348,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
       err(`[ccx] session on "${account.name}"`);
       logEvent(`session on ${account.name}`);
+      // Claude owns the screen from here, so tell the operator through the
+      // terminal itself (a notification / title change draws nothing).
+      notifyAccountSwitch(account.name, isContinue ? 'continued here' : 'session start');
       const outcome = await runPtySession({
         ...base,
         args: wantContinue ? [...args, '--continue'] : args,

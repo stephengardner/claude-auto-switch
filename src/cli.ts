@@ -10,6 +10,7 @@ import { rotateCommand } from './commands/rotate.js';
 import { usageCommand } from './commands/usage.js';
 import { autoCommand, type AutoOptions } from './commands/auto.js';
 import { proactiveCommand } from './commands/proactive-config.js';
+import { statuslineCommand } from './commands/statusline.js';
 import { runCommand } from './commands/run.js';
 import { removeCommand } from './commands/remove.js';
 import { onCommand, offCommand } from './commands/onoff.js';
@@ -117,6 +118,14 @@ program
   .description('show real per-account usage (5-hour + weekly) with reset times')
   .action(async () => {
     process.exitCode = await usageCommand(context());
+  });
+
+program
+  .command('statusline')
+  .description('one line for Claude status line: the account in use and how full it is')
+  .option('--install', 'print the settings snippet that wires this into Claude')
+  .action((opts: { install?: boolean }) => {
+    process.exitCode = statuslineCommand(context(), opts);
   });
 
 program
