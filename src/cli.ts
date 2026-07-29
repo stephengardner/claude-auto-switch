@@ -124,8 +124,9 @@ program
   .command('statusline')
   .description('one line for Claude status line: the account in use and how full it is')
   .option('--install', 'print the settings snippet that wires this into Claude')
-  .action((opts: { install?: boolean }) => {
-    process.exitCode = statuslineCommand(context(), opts);
+  .option('--wrap <command>', 'run your existing status line command and append ccx to it')
+  .action(async (opts: { install?: boolean; wrap?: string }) => {
+    process.exitCode = await statuslineCommand(context(), opts);
   });
 
 program

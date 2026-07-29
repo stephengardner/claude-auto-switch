@@ -30,39 +30,39 @@ const entry = (over: Record<string, unknown>) => ({
 });
 
 describe('statuslineCommand', () => {
-  it('shows the account and the window closest to its limit', () => {
+  it('shows the account and the window closest to its limit', async () => {
     const { context, lines } = setup('work', {
       work: entry({ fiveHour: 0.1, sevenDay: 0.62, models: [{ name: 'Fable', utilization: 0.78 }] }),
     });
-    expect(statuslineCommand(context)).toBe(0);
+    expect(await statuslineCommand(context)).toBe(0);
     // Not the hour or the week: the model window is what would stop you.
     expect(lines[0]).toContain('work');
     expect(lines[0]).toContain('Fable 78%');
   });
 
-  it('warns once the binding window is nearly (or fully) spent', () => {
+  it('warns once the binding window is nearly (or fully) spent', async () => {
     const { context, lines } = setup('work', {
       work: entry({ fiveHour: 0, sevenDay: 0, models: [{ name: 'Fable', utilization: 1 }] }),
     });
-    statuslineCommand(context);
+    await statuslineCommand(context);
     expect(lines[0]?.startsWith('!')).toBe(true);
   });
 
-  it('stays quiet and useful when usage is unknown', () => {
+  it('stays quiet and useful when usage is unknown', async () => {
     const { context, lines } = setup('work');
-    statuslineCommand(context);
+    await statuslineCommand(context);
     expect(lines[0]).toBe('· work');
   });
 
-  it('says so when no account is selected', () => {
+  it('says so when no account is selected', async () => {
     const { context, lines } = setup(null);
-    statuslineCommand(context);
+    await statuslineCommand(context);
     expect(lines[0]).toContain('no account selected');
   });
 
-  it('prints the settings snippet with --install', () => {
+  it('prints the settings snippet with --install', async () => {
     const { context, lines } = setup('work');
-    statuslineCommand(context, { install: true });
+    await statuslineCommand(context, { install: true });
     expect(lines.join('\n')).toContain('"statusLine"');
     expect(lines.join('\n')).toContain('ccx statusline');
   });
