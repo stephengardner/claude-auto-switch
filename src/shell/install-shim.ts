@@ -6,12 +6,35 @@ const MARKER_END = '# <<< claude-auto-switch shim <<<';
 
 export type ShellKind = 'powershell' | 'posix';
 
-/** The marker-delimited shim block for the given shell. `#` comments work in both. */
+/**
+ * The marker-delimited shim block for the given shell. `#` comments work in
+ * both. The function falls back to the REAL claude when ccx is not on PATH, so
+ * uninstalling ccx (without running `ccx off` first) never breaks `claude`.
+ */
 export function shimBlock(shell: ShellKind): string {
   const fn =
     shell === 'powershell'
-      ? ['function claude {', '    ccx run -- @args', '}']
-      : ['claude() {', '    ccx run -- "$@"', '}'];
+      ? [
+          'function claude {',
+          '    if (Get-Command ccx -ErrorAction SilentlyContinue) {',
+          '        ccx run -- @args',
+          '    }',
+          '    else {',
+          '        $real = Get-Command claude -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1',
+          '        if ($real) { & $real.Source @args }',
+          '        else { Write-Error "claude not found on PATH" }',
+          '    }',
+          '}',
+        ]
+      : [
+          'claude() {',
+          '    if command -v ccx >/dev/null 2>&1; then',
+          '        ccx run -- "$@"',
+          '    else',
+          '        command claude "$@"',
+          '    fi',
+          '}',
+        ];
   return [MARKER_START, ...fn, MARKER_END].join('\n');
 }
 

@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.11.1]
+
+### Fixed
+
+- **Uninstalling ccx can no longer break .** The shell shim now falls
+  back to the real Claude binary when ccx is not on PATH (both PowerShell and
+  bash/zsh), so removing the package without running claude-auto-switch   active: shopsheriff
+───────────────────────────────────────────────────────────────────────
+   ACCOUNT      EMAIL                           PLAN  PRI  STATUS
+   main                                               0    ● logged out
+   second       opensourceaugie@gmail.com       max   1    ● ready
+   maxed        augdog911@gmail.com             max   2    ● ready
+   phx          stephen@phoenixtechnologies.io  max   3    ● ready
+ * shopsheriff  stephen@shopsheriff.com         max   4    ● ready
+───────────────────────────────────────────────────────────────────────
+  21:05  every account is capped; try again after a reset
+  21:17  every account is capped; try again after a reset
+  21:18  session on shopsheriff
+  21:22  session on shopsheriff
+  21:24  session on shopsheriff
+───────────────────────────────────────────────────────────────────────
+
+ccx dashboard for a live view  |  ccx run to start a session first leaves
+   working normally. Verified live in both shells, both branches.
+- **Closed another replayed-text trap before it bit anyone:** the
+  "No conversation found to continue" detector now only watches the first flush
+  of output on an actual  launch, so a replayed conversation that
+  merely CONTAINS that phrase can no longer interrupt a session (same failure
+  class as the false-cap cascade, found by auditing for it).
+
 ## [1.11.0]
 
 ### Fixed

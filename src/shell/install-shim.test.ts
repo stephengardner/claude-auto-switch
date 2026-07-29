@@ -41,7 +41,16 @@ describe('shim installer', () => {
     const p = profile();
     installShim(p, 'powershell');
     expect(installShim(p, 'powershell')).toBe('already-present');
-    expect(readFileSync(p, 'utf8').split('claude').length - 1).toBeLessThan(4);
+    // Exactly ONE shim block exists after repeated installs.
+    expect(readFileSync(p, 'utf8').split('>>> claude-auto-switch shim >>>').length - 1).toBe(1);
+  });
+
+  it('falls back to the real claude when ccx is not on PATH', () => {
+    // Uninstalling ccx without `ccx off` must never leave `claude` broken.
+    expect(shimBlock('powershell')).toContain('Get-Command ccx -ErrorAction SilentlyContinue');
+    expect(shimBlock('powershell')).toContain('$real.Source @args');
+    expect(shimBlock('posix')).toContain('command -v ccx');
+    expect(shimBlock('posix')).toContain('command claude "$@"');
   });
 
   it('preserves existing content and writes a backup', () => {

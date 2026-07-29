@@ -61,6 +61,13 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     let exited = false;
     let verifying = false;
     let suppressUntil = 0;
+    // The "No conversation found to continue" error only matters on a --continue
+    // launch, and the real one prints in the FIRST flush of output. Watching any
+    // longer would let a REPLAYED conversation that merely contains that phrase
+    // kill the session (the same trap as replayed cap text).
+    const watchNoConversation =
+      options.args.includes('--continue') || options.args.includes('-c');
+    let totalOutput = 0;
 
     const safeKill = (): void => {
       try {
@@ -88,9 +95,14 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       process.stdout.write(data);
       if (options.debugLog) captured += data;
       if (capped || switching) return;
+      totalOutput += data.length;
       window = (window + data).slice(-4000);
       // A --continue with nothing to resume: signal a fresh relaunch is needed.
-      if (/No conversation found to continue/i.test(window)) {
+      if (
+        watchNoConversation &&
+        totalOutput <= 6000 &&
+        /No conversation found to continue/i.test(window)
+      ) {
         noConversation = true;
         setTimeout(() => safeKill(), 100);
         return;
