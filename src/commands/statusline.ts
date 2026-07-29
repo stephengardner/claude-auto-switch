@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import { getActive } from '../state/active.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
-import { bindingUtilization } from '../usage/headroom.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -24,27 +23,50 @@ export interface StatuslineOptions {
    * ccx does not cost you the status line you already had.
    */
   wrap?: string;
+  /** Leave out the account name (useful when your line already shows it). */
+  compact?: boolean;
 }
 
 function pct(fraction: number): string {
   return `${Math.round(fraction * 100)}%`;
 }
 
-/** The window closest to its limit, e.g. "Fable 78%", or null when unknown. */
-function bindingLabel(usage: {
+interface Window {
+  label: string;
+  used: number;
+  resetsAt?: number | null;
+}
+
+/** Every limit currently running against this account. */
+function windowsOf(usage: {
   fiveHour: number | null;
   sevenDay: number | null;
-  models?: Array<{ name: string; utilization: number }> | null;
-}): string | null {
-  const windows: Array<{ label: string; used: number }> = [];
-  if (typeof usage.fiveHour === 'number') windows.push({ label: '5h', used: usage.fiveHour });
-  if (typeof usage.sevenDay === 'number') windows.push({ label: 'wk', used: usage.sevenDay });
-  for (const m of usage.models ?? []) {
-    if (typeof m.utilization === 'number') windows.push({ label: m.name, used: m.utilization });
+  fiveHourReset?: number | null;
+  sevenDayReset?: number | null;
+  models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
+}): Window[] {
+  const windows: Window[] = [];
+  if (typeof usage.fiveHour === 'number') {
+    windows.push({ label: '5h', used: usage.fiveHour, resetsAt: usage.fiveHourReset ?? null });
   }
-  if (windows.length === 0) return null;
-  const worst = windows.reduce((a, b) => (b.used > a.used ? b : a));
-  return `${worst.label} ${pct(worst.used)}`;
+  if (typeof usage.sevenDay === 'number') {
+    windows.push({ label: 'week', used: usage.sevenDay, resetsAt: usage.sevenDayReset ?? null });
+  }
+  for (const m of usage.models ?? []) {
+    if (typeof m.utilization === 'number') {
+      windows.push({ label: m.name, used: m.utilization, resetsAt: m.resetsAt ?? null });
+    }
+  }
+  return windows;
+}
+
+/** How long until a window resets, e.g. "2h" or "3d". */
+function until(resetsAt: number | null | undefined, now: number): string | null {
+  if (!resetsAt || resetsAt <= now) return null;
+  const mins = Math.round((resetsAt - now) / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.round(mins / 60);
+  return hours < 48 ? `${hours}h` : `${Math.round(hours / 24)}d`;
 }
 
 const SNIPPET = `add this to your Claude settings.json:
@@ -61,17 +83,38 @@ already using a status line? keep it and wrap it, so you get both:
     "command": "ccx statusline --wrap <your existing command>"
   }`;
 
-/** The ccx part of the status line, e.g. "· maxed Fable 13%". */
-export function statuslineSegment(context: CliContext): string {
+/**
+ * The ccx part of the status line, e.g. `Fable 87% left`.
+ *
+ * Written to answer one question at a glance: how much working room is left
+ * before something stops me. So it reports what REMAINS rather than what has
+ * been spent (a bare "13%" reads as reassuring when it means nearly empty), on
+ * the window that will run out first, and it only mentions the reset time once
+ * that is the thing you would act on.
+ */
+export function statuslineSegment(context: CliContext, options: StatuslineOptions = {}): string {
   const active = getActive(context.ctx);
-  if (!active) return 'ccx: no account selected';
+  if (!active) return 'ccx: no account';
+
   const entry = readUsageSnapshot(context.ctx).accounts[active];
-  const label = entry ? bindingLabel(entry) : null;
-  const used = entry ? bindingUtilization(entry) : null;
-  // Quiet while there is room, louder as the account fills up, so a glance is
-  // enough and nothing shouts until it matters.
-  const mark = used !== null && used >= 0.9 ? '!' : '·';
-  return label ? `${mark} ${active} ${label}` : `${mark} ${active}`;
+  const name = options.compact ? '' : active;
+  if (!entry) return name || 'ccx';
+
+  const windows = windowsOf(entry);
+  if (windows.length === 0) return name || 'ccx';
+  const binding = windows.reduce((a, b) => (b.used > a.used ? b : a));
+
+  const left = Math.max(0, 1 - binding.used);
+  const resets = until(binding.resetsAt, Date.now());
+  const amount = left <= 0 ? `${binding.label} spent` : `${binding.label} ${pct(left)} left`;
+  // The reset time is noise while there is plenty of room, and the only thing
+  // that matters once there is not.
+  const showReset = left <= 0.15 && resets;
+  const mark = left <= 0.1 ? '!' : '';
+
+  return [mark, name, amount, showReset ? `resets ${resets}` : '']
+    .filter((part) => part.length > 0)
+    .join(' ');
 }
 
 /**
@@ -79,7 +122,11 @@ export function statuslineSegment(context: CliContext): string {
  * Claude gave us, and append ccx's part. Their line always wins: if ccx cannot
  * produce its part, theirs is still printed unchanged.
  */
-async function wrapExisting(context: CliContext, command: string): Promise<string> {
+async function wrapExisting(
+  context: CliContext,
+  command: string,
+  options: StatuslineOptions,
+): Promise<string> {
   const stdin = await readStdin();
   let existing = '';
   try {
@@ -89,7 +136,7 @@ async function wrapExisting(context: CliContext, command: string): Promise<strin
   }
   let ours = '';
   try {
-    ours = statuslineSegment(context);
+    ours = statuslineSegment(context, options);
   } catch {
     ours = '';
   }
@@ -148,10 +195,10 @@ export async function statuslineCommand(
     return 0;
   }
   if (options.wrap) {
-    context.out(await wrapExisting(context, options.wrap));
+    context.out(await wrapExisting(context, options.wrap, options));
     return 0;
   }
 
-  context.out(statuslineSegment(context));
+  context.out(statuslineSegment(context, options));
   return 0;
 }
