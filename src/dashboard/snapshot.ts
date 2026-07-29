@@ -20,6 +20,8 @@ export interface SnapshotInput {
   livePlan?: Map<string, string>;
   /** Account name -> epoch ms it is capped until. */
   cappedUntil: Map<string, number>;
+  /** Account name -> subscription usage (0..1 utilization per window). */
+  usage?: Map<string, { fiveHour: number | null; sevenDay: number | null }>;
   active: string | null;
   events: string[];
   now: number;
@@ -30,6 +32,7 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
   const accounts: DashboardAccount[] = input.accounts
     .map((a) => {
       const cap = input.cappedUntil.get(a.name);
+      const usage = input.usage?.get(a.name);
       return {
         name: a.name,
         email: input.liveEmail?.get(a.name) ?? a.email,
@@ -39,6 +42,7 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
         enabled: a.enabled,
         priority: a.priority,
         ...(cap !== undefined ? { cappedUntil: cap } : {}),
+        ...(usage !== undefined ? { usage } : {}),
       };
     })
     // Stable, meaningful order: preferred (lowest priority) first, ties by name.

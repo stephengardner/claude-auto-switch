@@ -1,39 +1,46 @@
 import { readFileSync } from 'node:fs';
 
 /**
- * Verify whether an account is ACTUALLY rate-limited by asking the API, instead
- * of trusting rendered text. A cap message on screen can be historical (replayed
- * by --continue / the resume picker) or even the user's own code discussing rate
- * limits; acting on it without verification is what caused the false-cap
- * rotation cascade. The API response is ground truth: a minimal request returns
- * the subscription's unified rate-limit state in its headers (the same signal
- * Claude Code's own status bar uses).
+ * Read an account's real subscription usage, and verify whether it is actually
+ * rate-limited, from Anthropic's dedicated OAuth usage endpoint. This is a plain
+ * GET that costs no tokens and returns the same numbers the Claude usage page
+ * shows: the 5-hour session window, the weekly "all models" window, and a
+ * per-model breakdown (e.g. Fable's weekly window), each with a utilization
+ * percent and a reset time.
+ *
+ * Rendered cap text on screen is never trusted directly (--continue and the
+ * resume picker replay old cap messages, and code can mention rate limits); this
+ * endpoint is the ground truth used to confirm or refute a cap before switching.
  */
 
 export type LimitVerdict = 'limited' | 'allowed' | 'unknown';
 
-/** Model ids for probing, mapped from names appearing in rendered cap messages. */
-const MODEL_HINTS: Array<{ re: RegExp; model: string }> = [
-  { re: /fable/i, model: 'claude-fable-5' },
-  { re: /opus/i, model: 'claude-opus-4-8' },
-  { re: /sonnet/i, model: 'claude-sonnet-4-6' },
-  { re: /haiku/i, model: 'claude-haiku-4-5-20251001' },
-];
-const BASE_MODEL = 'claude-haiku-4-5-20251001';
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+const OAUTH_BETA = 'oauth-2025-04-20';
 
-/** Pick the probe model from the rendered message (a per-model cap needs a per-model probe). */
-export function probeModelFor(renderedText: string): string {
-  for (const h of MODEL_HINTS) {
-    if (h.re.test(renderedText)) return h.model;
-  }
-  return BASE_MODEL;
+/** A per-model (or per-scope) weekly window from the usage response. */
+export interface ModelWindow {
+  /** Display name, e.g. "Fable". */
+  name: string;
+  /** 0..1 utilization. */
+  utilization: number;
+  /** Epoch ms reset time, when present. */
+  resetsAt?: number;
+  /** Raw severity string from the API (e.g. "normal", "warning"). */
+  severity?: string;
 }
 
 export interface LimitProbeResult {
   verdict: LimitVerdict;
-  /** 0..1 utilization when the response carried it. */
+  /** 0..1 utilization for the 5-hour session window. */
   fiveHour?: number;
+  /** 0..1 utilization for the weekly "all models" window. */
   sevenDay?: number;
+  /** Reset times (epoch ms). */
+  fiveHourReset?: number;
+  sevenDayReset?: number;
+  /** Per-model weekly windows (Fable, Opus, ...). */
+  models?: ModelWindow[];
   detail?: string;
 }
 
@@ -49,11 +56,47 @@ export function readOauthToken(credentialsFile: string): string | null {
   }
 }
 
+interface UsageWindow {
+  utilization?: number | null;
+  resets_at?: string | null;
+}
+interface UsageLimit {
+  kind?: string;
+  percent?: number | null;
+  severity?: string | null;
+  resets_at?: string | null;
+  is_active?: boolean | null;
+  scope?: { model?: { display_name?: string | null } | null } | null;
+}
+interface UsageResponse {
+  five_hour?: UsageWindow | null;
+  seven_day?: UsageWindow | null;
+  limits?: UsageLimit[] | null;
+}
+
+/** Utilization comes back as a 0..100 percent; normalize to a 0..1 fraction. */
+function frac(v: number | null | undefined): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return undefined;
+  return v / 100;
+}
+
+function epochMs(iso: string | null | undefined): number | undefined {
+  if (!iso) return undefined;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? undefined : t;
+}
+
+/** A limit is "hit" at/over 100%, or when its severity says so. */
+function isHit(percent: number | null | undefined, severity: string | null | undefined): boolean {
+  if (typeof percent === 'number' && percent >= 100) return true;
+  return typeof severity === 'string' && /exhaust|reject|block|over_?limit|limit_reached/i.test(severity);
+}
+
 /**
- * Ask the API whether this credential is currently limited, optionally for the
- * model named in a rendered message. Fail-safe: anything ambiguous (no token,
- * network error, unexpected status) returns 'unknown' -- callers must treat that
- * as NOT confirmation of a cap.
+ * Fetch usage + decide a limit verdict from ONE GET. Fail-safe: no token, a
+ * network error, or an unexpected status all yield verdict 'unknown' (never a
+ * false 'limited'). `renderedText` narrows the verdict to a named model's window
+ * when a per-model cap is on screen (e.g. "Fable 5 limit").
  */
 export async function probeLimit(
   credentialsFile: string,
@@ -63,70 +106,67 @@ export async function probeLimit(
   const token = readOauthToken(credentialsFile);
   if (!token) return { verdict: 'unknown', detail: 'no oauth token' };
 
-  const attempt = async (
-    model: string,
-  ): Promise<LimitProbeResult & { retryBase?: boolean }> => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    try {
-      const res = await fetchImpl('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${token}`,
-          'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'oauth-2025-04-20',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: 'user', content: '.' }] }),
-        signal: controller.signal,
-      });
-      const fiveHour = num(res.headers.get('anthropic-ratelimit-unified-5h-utilization'));
-      const sevenDay = num(res.headers.get('anthropic-ratelimit-unified-7d-utilization'));
-      const unifiedStatus = res.headers.get('anthropic-ratelimit-unified-status');
-      // The unified subscription limiter stamps these headers on ITS responses.
-      const hasUnified = fiveHour !== undefined || sevenDay !== undefined || unifiedStatus !== null;
-      const usage = {
-        ...(fiveHour !== undefined ? { fiveHour } : {}),
-        ...(sevenDay !== undefined ? { sevenDay } : {}),
-      };
-      if (res.status === 429) {
-        // PROVEN: some models (Fable) 429 for EVERY account, capped or not, with
-        // no unified headers -- model-access noise, not a usage cap. Only a 429
-        // that carries the unified headers is a real subscription limit; a bare
-        // one must fall through to the base model, never confirm.
-        if (hasUnified) return { verdict: 'limited', ...usage, detail: `429 on ${model}` };
-        return { verdict: 'unknown', retryBase: true, detail: `bare 429 on ${model} (no usage headers)` };
-      }
-      if (res.status === 404) return { verdict: 'unknown', retryBase: true, detail: `unknown model ${model}` };
-      if (res.status === 200) {
-        if (unifiedStatus && unifiedStatus !== 'allowed') {
-          return { verdict: 'limited', ...usage, detail: `unified-status ${unifiedStatus}` };
-        }
-        return { verdict: 'allowed', ...usage };
-      }
-      return { verdict: 'unknown', ...usage, detail: `status ${res.status}` };
-    } catch (err) {
-      return { verdict: 'unknown', detail: (err as Error).message };
-    } finally {
-      clearTimeout(timer);
-    }
-  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetchImpl(USAGE_URL, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        'anthropic-beta': OAUTH_BETA,
+        'user-agent': 'claude-auto-switch',
+      },
+      signal: controller.signal,
+    });
+    if (res.status !== 200) return { verdict: 'unknown', detail: `status ${res.status}` };
+    const data = (await res.json()) as UsageResponse;
 
-  const model = probeModelFor(renderedText);
-  const first = await attempt(model);
-  // Inconclusive on the hinted model (unknown id, or a headerless 429): decide
-  // from the BASE model, whose response reflects the account-wide 5h/7d state.
-  if (first.retryBase && model !== BASE_MODEL) {
-    const base = await attempt(BASE_MODEL);
-    if (base.retryBase) return { verdict: 'unknown', detail: `${first.detail}; ${base.detail}` };
-    return base;
+    const fiveHour = frac(data.five_hour?.utilization);
+    const sevenDay = frac(data.seven_day?.utilization);
+    const models: ModelWindow[] = (data.limits ?? [])
+      .filter((l) => l.kind === 'weekly_scoped' && l.scope?.model?.display_name)
+      .map((l) => ({
+        name: l.scope!.model!.display_name!,
+        utilization: frac(l.percent) ?? 0,
+        ...(epochMs(l.resets_at) !== undefined ? { resetsAt: epochMs(l.resets_at) } : {}),
+        ...(l.severity ? { severity: l.severity } : {}),
+      }));
+
+    const usage: LimitProbeResult = {
+      verdict: 'allowed',
+      ...(fiveHour !== undefined ? { fiveHour } : {}),
+      ...(sevenDay !== undefined ? { sevenDay } : {}),
+      ...(epochMs(data.five_hour?.resets_at) !== undefined
+        ? { fiveHourReset: epochMs(data.five_hour?.resets_at) }
+        : {}),
+      ...(epochMs(data.seven_day?.resets_at) !== undefined
+        ? { sevenDayReset: epochMs(data.seven_day?.resets_at) }
+        : {}),
+      ...(models.length > 0 ? { models } : {}),
+    };
+
+    // A per-model cap on screen: decide from THAT model's window when we can
+    // match it, so a Fable cap is not masked by a healthy all-models number.
+    const named = models.find((m) => renderedText.toLowerCase().includes(m.name.toLowerCase()));
+    if (named && named.utilization >= 1) {
+      return { ...usage, verdict: 'limited', detail: `${named.name} weekly at limit` };
+    }
+
+    const limited =
+      (data.limits ?? []).some((l) => l.is_active !== false && isHit(l.percent, l.severity)) ||
+      (fiveHour !== undefined && fiveHour >= 1) ||
+      (sevenDay !== undefined && sevenDay >= 1);
+    return { ...usage, verdict: limited ? 'limited' : 'allowed' };
+  } catch (err) {
+    return { verdict: 'unknown', detail: (err as Error).message };
+  } finally {
+    clearTimeout(timer);
   }
-  if (first.retryBase) return { verdict: 'unknown', detail: first.detail };
-  return first;
 }
 
-function num(v: string | null): number | undefined {
-  if (v === null) return undefined;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
+/** Read the account-wide usage picture (no cap decision needed). */
+export function probeUsage(
+  credentialsFile: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<LimitProbeResult> {
+  return probeLimit(credentialsFile, '', fetchImpl);
 }

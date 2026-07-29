@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.13.0]
+
+### Added
+
+- **Real per-account usage in the dashboard and a new `ccx usage` command.**
+  See each account's 5-hour and weekly utilization, reset times, and the
+  per-model weekly windows (e.g. Fable), pulled from Anthropic's own usage
+  endpoint. The dashboard gains a `USAGE` column; `ccx usage` prints the full
+  breakdown including which model window is the binding one. Usage is
+  TTL-cached (5 min) so it is fetched at most once per account per window.
+
+### Changed
+
+- **Usage and cap verification now use Anthropic's dedicated usage endpoint**
+  (a plain GET) instead of reading rate-limit headers off a tiny message
+  request. This costs zero tokens, and it exposes the per-model weekly windows
+  the header approach could not see, so a per-model cap (Fable) is verified
+  against Fable's own window rather than a healthy all-models number.
+
+### Fixed
+
+- **Running `/login` as a different account mid-session no longer corrupts the
+  original profile.** The save-back now compares the session's current identity
+  against the profile it would write to and refuses when they differ, so two
+  profiles can never end up sharing one login.
+
 ## [1.12.1]
 
 ### Fixed

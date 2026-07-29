@@ -14,6 +14,8 @@ export interface DashboardAccount {
   /** Epoch ms the account is capped until, if currently capped. */
   cappedUntil?: number;
   priority: number;
+  /** Subscription usage (0..1 per window), from the unified rate-limit signal. */
+  usage?: { fiveHour: number | null; sevenDay: number | null };
 }
 
 export interface DashboardSnapshot {
@@ -69,6 +71,23 @@ function statusColor(a: DashboardAccount, now: number): string {
   return codes.green;
 }
 
+/** Plain usage text for an account: "5h 9% wk 42%", or empty when unknown. */
+function usageText(a: DashboardAccount): string {
+  const u = a.usage;
+  if (!u || (u.fiveHour === null && u.sevenDay === null)) return '';
+  const pct = (v: number | null): string => (v === null ? '?' : `${Math.round(v * 100)}%`);
+  return `5h ${pct(u.fiveHour)} wk ${pct(u.sevenDay)}`;
+}
+
+/** Usage color by the hotter window: red at/over the limit, yellow near it. */
+function usageColor(a: DashboardAccount): string {
+  const u = a.usage;
+  const hottest = Math.max(u?.fiveHour ?? 0, u?.sevenDay ?? 0);
+  if (hottest >= 1) return codes.red;
+  if (hottest >= 0.9) return codes.yellow;
+  return codes.dim;
+}
+
 /** Render the full dashboard frame for the given snapshot. */
 export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOptions = {}): string {
   const color = options.color ?? true;
@@ -78,11 +97,12 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const emailW = Math.max('EMAIL'.length, ...accounts.map((a) => (a.email ?? '').length));
   const planW = Math.max('PLAN'.length, ...accounts.map((a) => (a.plan ?? '').length));
   const priW = 3;
+  const usageW = Math.max('USAGE'.length, ...accounts.map((a) => usageText(a).length));
   const statusW = Math.max('STATUS'.length, ...accounts.map((a) => statusText(a, now).length + 2));
 
   // Two-char gutter: selection cursor then active marker, both plain-text
   // visible so the active row is clear even without color.
-  const rowWidth = 3 + nameW + 2 + emailW + 2 + planW + 2 + priW + 2 + statusW;
+  const rowWidth = 3 + nameW + 2 + emailW + 2 + planW + 2 + priW + 2 + usageW + 2 + statusW;
   const rule = paint('─'.repeat(rowWidth), codes.dim, color);
 
   const title = paint('claude-auto-switch', codes.bold, color);
@@ -90,7 +110,7 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const titleLine = `${title}   ${paint(`active: ${activeName}`, codes.dim, color)}`;
 
   const header = paint(
-    `   ${'ACCOUNT'.padEnd(nameW)}  ${'EMAIL'.padEnd(emailW)}  ${'PLAN'.padEnd(planW)}  ${'PRI'.padEnd(priW)}  STATUS`,
+    `   ${'ACCOUNT'.padEnd(nameW)}  ${'EMAIL'.padEnd(emailW)}  ${'PLAN'.padEnd(planW)}  ${'PRI'.padEnd(priW)}  ${'USAGE'.padEnd(usageW)}  STATUS`,
     codes.dim,
     color,
   );
@@ -104,8 +124,9 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     const email = (a.email ?? '').padEnd(emailW);
     const plan = (a.plan ?? '').padEnd(planW);
     const pri = String(a.priority).padEnd(priW);
+    const usage = paint(usageText(a).padEnd(usageW), usageColor(a), color);
     const dot = paint('●', statusColor(a, now), color);
-    return `${cursor}${active} ${name}  ${email}  ${plan}  ${pri}  ${dot} ${statusText(a, now)}`;
+    return `${cursor}${active} ${name}  ${email}  ${plan}  ${pri}  ${usage}  ${dot} ${statusText(a, now)}`;
   });
 
   const lines = [titleLine, rule, header, ...rows, rule];

@@ -1,6 +1,7 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import { writeSwitchRequest } from '../state/switch-request.js';
+import { refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
 import { probeAll, type ProbeResult } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { renderDashboard, type DashboardAccount } from '../dashboard/render.js';
@@ -45,6 +46,14 @@ export async function dashboardCommand(
   const refreshMs = Math.max(1000, (Number(options.interval) || 3) * 1000);
   const color = process.stdout.isTTY === true;
   let healths: ProbeResult[] = await probeAll(initial, { claude });
+  // Real per-account usage from the unified rate-limit signal, TTL-cached so the
+  // network is touched at most once per account per window (about a token each).
+  let usageSnap: UsageSnapshot = readUsageSnapshot(context.ctx);
+  try {
+    usageSnap = await refreshUsage(initial, context.ctx);
+  } catch {
+    /* cached (possibly empty) usage is fine */
+  }
   // Dashboard actions go to the same shared log that `ccx run` writes to.
   const pushEvent = (m: string): void => appendEvent(home, m, Date.now());
 
@@ -59,6 +68,12 @@ export async function dashboardCommand(
     for (const c of loadLedger(context.ctx).caps) {
       if (c.capUntil && c.capUntil > now) cappedUntil.set(c.account, c.capUntil);
     }
+    const usage = new Map(
+      Object.entries(usageSnap.accounts).map(([name, u]) => [
+        name,
+        { fiveHour: u.fiveHour, sevenDay: u.sevenDay },
+      ]),
+    );
     return toSnapshot({
       accounts: accts.map((a) => ({
         name: a.name,
@@ -71,6 +86,7 @@ export async function dashboardCommand(
       liveEmail,
       livePlan,
       cappedUntil,
+      usage,
       active: getActive(context.ctx),
       events: readEvents(home, 5).map(formatEvent),
       now,
@@ -88,6 +104,12 @@ export async function dashboardCommand(
     color,
     reprobe: async () => {
       healths = await probeAll(listAccounts(context.ctx), { claude });
+      try {
+        // TTL-guarded internally: refetches only entries older than the window.
+        usageSnap = await refreshUsage(listAccounts(context.ctx), context.ctx);
+      } catch {
+        /* keep showing the cached usage */
+      }
     },
     onUse: (a) => {
       setActive(a.name, context.ctx);

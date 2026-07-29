@@ -65,6 +65,22 @@ function identityFields(accountDir: string): Record<string, unknown> {
 }
 
 /**
+ * A stable identity fingerprint for a .claude.json (the account's uuid/email/
+ * org), or null when it carries no identity. Used to detect a mid-session
+ * `/login` as a DIFFERENT account, which must not be saved back onto the
+ * original profile (that cross-contaminates two logins).
+ */
+function identityKeyFromConfig(claudeJsonPath: string): string | null {
+  const cfg = readJsonSafe(claudeJsonPath);
+  const oauth = (cfg?.oauthAccount ?? null) as Record<string, unknown> | null;
+  if (!oauth) return null;
+  const parts = ['accountUuid', 'emailAddress', 'organizationUuid']
+    .map((k) => (typeof oauth[k] === 'string' ? (oauth[k] as string) : ''))
+    .filter((v) => v.length > 0);
+  return parts.length > 0 ? parts.join('|') : null;
+}
+
+/**
  * Build/refresh the session's .claude.json so the interactive app treats it as
  * fully onboarded and logged in as the active account.
  * - First build: inherit the user's onboarding flags (from their default config)
@@ -178,6 +194,16 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       if (fresh.trim().length === 0 || Object.keys(parsed).length === 0) return;
     } catch {
       return; // not valid JSON: do not propagate it to the account
+    }
+    // Identity guard: if the operator ran `/login` mid-session as a DIFFERENT
+    // account, the session identity no longer matches this profile. Saving the
+    // credential back would clobber this profile with someone else's login
+    // (two profiles ending up on the same token). Skip it.
+    const sessionId = identityKeyFromConfig(path.join(sessionDir, '.claude.json'));
+    const accountId = identityKeyFromConfig(path.join(account.dir, '.claude.json'));
+    if (sessionId && accountId && sessionId !== accountId) {
+      err(`[ccx] session is now a different account than "${account.name}"; not overwriting its login`);
+      return;
     }
     try {
       copySecretFile(sessionCreds, path.join(account.dir, CREDS));

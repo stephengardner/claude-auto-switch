@@ -75,6 +75,21 @@ describe('renderDashboard (plain)', () => {
     expect(footer).not.toContain('pin'); // the old misleading label is gone
   });
 
+  it('shows per-account usage when present, blank when unknown', () => {
+    const out = renderDashboard(
+      snapshot([
+        account({ name: 'hasusage', usage: { fiveHour: 0.09, sevenDay: 0.42 } }),
+        account({ name: 'nousage' }),
+      ]),
+      opts,
+    );
+    expect(out).toContain('USAGE');
+    const row = out.split('\n').find((l) => l.includes('hasusage'))!;
+    expect(row).toContain('5h 9% wk 42%');
+    const bare = out.split('\n').find((l) => l.includes('nousage'))!;
+    expect(bare).not.toContain('5h');
+  });
+
   it('marks the selected row with the cursor and the active row with a marker', () => {
     const out = renderDashboard(
       snapshot([account({ name: 'a', active: true }), account({ name: 'b' })]),

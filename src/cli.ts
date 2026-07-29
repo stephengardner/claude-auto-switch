@@ -7,6 +7,7 @@ import { statusCommand } from './commands/status.js';
 import { addCommand } from './commands/add.js';
 import { useCommand } from './commands/use.js';
 import { rotateCommand } from './commands/rotate.js';
+import { usageCommand } from './commands/usage.js';
 import { runCommand } from './commands/run.js';
 import { removeCommand } from './commands/remove.js';
 import { onCommand, offCommand } from './commands/onoff.js';
@@ -107,6 +108,13 @@ program
   .description('switch to the next healthy account')
   .action(async () => {
     process.exitCode = await rotateCommand(context());
+  });
+
+program
+  .command('usage')
+  .description('show real per-account usage (5-hour + weekly) with reset times')
+  .action(async () => {
+    process.exitCode = await usageCommand(context());
   });
 
 program
