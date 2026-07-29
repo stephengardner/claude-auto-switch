@@ -45,7 +45,7 @@ describe('auditShim', () => {
     installShim(p, 'powershell');
     const r = auditShim(context(), { resolveShimProfile: () => p });
     expect(r.ok).toBe(true);
-    expect(r.detail).toContain('safe fallback');
+    expect(r.detail).toContain('runs through ccx');
   });
 
   it('FAILS on an outdated shim without the uninstall fallback', () => {
@@ -108,16 +108,30 @@ describe('doctorCommand', () => {
     const lines: string[] = [];
     const code = await doctorCommand(context(lines), cleanDeps);
     expect(code).toBe(0);
-    expect(lines.join('\n')).toContain('all checks passed');
+    expect(lines.join('\n')).toContain('everything is in order');
   });
 
-  it('fails and reports when secrets are tracked', async () => {
+  it('reports the problem and how to fix it when something is wrong', async () => {
     const lines: string[] = [];
     const code = await doctorCommand(context(lines), {
       ...cleanDeps,
       gitTrackedFiles: () => ['accounts.json'],
     });
     expect(code).toBe(1);
-    expect(lines.join('\n')).toContain('FAIL');
+    const out = lines.join('\n');
+    expect(out).toContain('1 problem found');
+    expect(out).toContain('git safety'); // named in plain language
+    expect(out).toContain('✗');
+  });
+
+  it('emits machine-readable output with --json', async () => {
+    const lines: string[] = [];
+    const ctx = { ...context(lines), json: true };
+    const code = await doctorCommand(ctx, cleanDeps);
+    expect(code).toBe(0);
+    const payload = JSON.parse(lines.join('\n'));
+    expect(payload.schemaVersion).toBe(1);
+    expect(payload.ok).toBe(true);
+    expect(Array.isArray(payload.checks)).toBe(true);
   });
 });

@@ -15,6 +15,7 @@ import { listAccounts } from '../accounts/registry.js';
 import { verifyAccountIdentities } from '../accounts/identity-check.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { probeAll } from '../health/prober.js';
+import { codes, paint } from '../ui/style.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { ClaudeInvoker } from '../invoker.js';
 
@@ -22,6 +23,10 @@ export interface DoctorCheck {
   name: string;
   ok: boolean;
   detail: string;
+  /** Commands that would resolve this, shown together at the end. */
+  fix?: string[];
+  /** Worth mentioning, but not a failure (e.g. an optional integration is off). */
+  note?: boolean;
 }
 
 export interface DoctorDeps {
@@ -69,7 +74,8 @@ function auditConfig(context: CliContext): DoctorCheck {
   return {
     name: 'config',
     ok: true,
-    detail: `config home ${home}; profiles ${profiles}${existsSync(home) ? '' : ' (not created yet)'}`,
+    detail: `${home}${existsSync(home) ? '' : ' (not created yet)'}`,
+    ...(profiles.startsWith(home) ? {} : { note: false }),
   };
 }
 
@@ -89,9 +95,10 @@ async function auditBrowserPort(context: CliContext, deps: DoctorDeps): Promise<
   return {
     name: 'browser-debug-port',
     ok: true,
+    ...(reachable ? {} : { note: true }),
     detail: reachable
-      ? `Chrome DevTools reachable on ${port}`
-      : `no Chrome on debug port ${port} (needed only for auto-login; start Chrome with --remote-debugging-port=${port})`,
+      ? `Chrome is reachable for automatic sign-in (port ${port})`
+      : `automatic sign-in unavailable; ccx login opens a browser for you instead`,
   };
 }
 
@@ -141,17 +148,20 @@ export function auditShim(context: CliContext, deps: DoctorDeps = {}): DoctorChe
     return {
       name: 'terminal-shim',
       ok: true,
-      detail: `not installed; \`claude\` runs stock (run: ccx on to enable auto-switching)`,
+      note: true,
+      detail: 'not installed; `claude` runs on its own',
+      fix: ['ccx on'],
     };
   }
   if (!shimHasFallback(profile)) {
     return {
       name: 'terminal-shim',
       ok: false,
-      detail: `outdated shim in ${profile}: uninstalling ccx would break \`claude\` (run: ccx on to upgrade)`,
+      detail: 'an old shim is installed; removing ccx would break `claude`',
+      fix: ['ccx on'],
     };
   }
-  return { name: 'terminal-shim', ok: true, detail: `installed in ${profile}, with safe fallback` };
+  return { name: 'terminal-shim', ok: true, detail: 'typing `claude` runs through ccx' };
 }
 
 function samePath(a: string, b: string): boolean {
@@ -210,11 +220,11 @@ export async function auditAccounts(context: CliContext): Promise<DoctorCheck> {
     );
   }
   const out = accounts.filter((a) => !loggedInNames.has(a.name));
-  const fix = out.length > 0 ? ` (${out.map((a) => `ccx login ${a.name}`).join('; ')})` : '';
   return {
     name,
     ok: accounts.some((a) => a.enabled && loggedInNames.has(a.name)),
-    detail: `${loggedInNames.size}/${accounts.length} logged in${fix}`,
+    detail: `${loggedInNames.size} of ${accounts.length} signed in`,
+    ...(out.length > 0 ? { fix: out.map((a) => `ccx login ${a.name}`), note: true } : {}),
   };
 }
 
@@ -242,10 +252,24 @@ export async function auditIdentities(
     return {
       name,
       ok: true,
-      detail: loggedOut > 0 ? `${findings.length - loggedOut} confirmed, ${loggedOut} need login` : 'every profile holds the account it should',
+      detail:
+        loggedOut > 0
+          ? `${findings.length - loggedOut} confirmed, ${loggedOut} not signed in`
+          : 'every profile holds the account it should',
     };
   }
-  return { name, ok: false, detail: broken.map((f) => `${f.account}: ${f.detail}`).join('; ') };
+  return {
+    name,
+    ok: false,
+    detail: broken
+      .map((f) =>
+        f.kind === 'duplicate'
+          ? `${f.account} shares a login with another profile`
+          : `${f.account} holds ${f.actual}, expected ${f.expected}`,
+      )
+      .join('; '),
+    fix: broken.map((f) => `ccx login ${f.account}`),
+  };
 }
 
 /** Cap state: informational, but every-enabled-account-capped is a failure. */
@@ -270,16 +294,26 @@ export function auditCaps(context: CliContext): DoctorCheck {
 export function auditEditor(context: CliContext): DoctorCheck {
   const editors = detectEditors(context.ctx);
   if (editors.length === 0) {
-    return { name: 'editor', ok: true, detail: 'no Cursor/VS Code detected' };
+    return { name: 'editor', ok: true, detail: 'no Cursor or VS Code found' };
   }
   const target = editorTargetAccount(context);
-  const parts = editors.map((e) => {
-    const configured = readEditorEnvVar(e, 'CLAUDE_CONFIG_DIR', context.ctx) !== null;
-    if (!configured) return `${e} not set up (run: ccx on)`;
-    if (target) return `${e} uses "${target.name}"${target.loggedIn ? '' : ' (needs login)'}`;
-    return `${e} set up`;
-  });
-  return { name: 'editor', ok: true, detail: parts.join('; ') };
+  const unset = editors.filter((e) => readEditorEnvVar(e, 'CLAUDE_CONFIG_DIR', context.ctx) === null);
+  if (unset.length === editors.length) {
+    return {
+      name: 'editor',
+      ok: true,
+      note: true,
+      detail: `${editors.join(' and ')} not set up to follow your account`,
+      fix: ['ccx on'],
+    };
+  }
+  const following = target ? `following "${target.name}"` : 'set up';
+  return {
+    name: 'editor',
+    ok: true,
+    detail: unset.length === 0 ? `${editors.join(' and ')} ${following}` : `${following}; ${unset.join(', ')} not set up`,
+    ...(unset.length > 0 ? { fix: ['ccx on'], note: true } : {}),
+  };
 }
 
 export async function runDoctor(
@@ -302,12 +336,69 @@ export async function runDoctor(
   return { checks, ok: checks.every((c) => c.ok) };
 }
 
+/** Human-friendly names, so the report reads like sentences rather than keys. */
+const LABELS: Record<string, string> = {
+  config: 'config',
+  'terminal-shim': 'terminal',
+  'shared-history': 'history',
+  accounts: 'accounts',
+  'account-identity': 'identity',
+  caps: 'limits',
+  'git-safety': 'git safety',
+  'real-claude': 'claude',
+  editor: 'editor',
+  'browser-debug-port': 'browser',
+};
+
 /** Print the doctor report and return 0 when all checks pass, 1 otherwise. */
 export async function doctorCommand(context: CliContext, deps: DoctorDeps = {}): Promise<number> {
   const { checks, ok } = await runDoctor(context, deps);
-  for (const check of checks) {
-    context.out(`${check.ok ? 'ok  ' : 'FAIL'}  ${check.name}: ${check.detail}`);
+  const color = process.stdout.isTTY === true && !context.json;
+
+  if (context.json) {
+    context.out(JSON.stringify({ schemaVersion: 1, ok, checks }, null, 2));
+    return ok ? 0 : 1;
   }
-  context.out(ok ? 'doctor: all checks passed' : 'doctor: some checks FAILED');
+
+  const labelFor = (check: DoctorCheck): string => LABELS[check.name] ?? check.name;
+  const width = Math.max(...checks.map((c) => labelFor(c).length));
+
+  context.out('');
+  context.out(`${paint('claude-auto-switch', codes.bold, color)}  ${paint('checkup', codes.dim, color)}`);
+  context.out('');
+
+  for (const check of checks) {
+    // Three states, because "fine but worth knowing" is not a failure: a green
+    // dot for healthy, yellow for an optional thing that is off, red for broken.
+    const mark = !check.ok
+      ? paint('✗', codes.red, color)
+      : check.note
+        ? paint('●', codes.yellow, color)
+        : paint('●', codes.green, color);
+    const label = labelFor(check).padEnd(width);
+    const detail = check.ok ? paint(check.detail, codes.dim, color) : check.detail;
+    context.out(`  ${mark} ${paint(label, codes.bold, color && !check.ok)}  ${detail}`);
+  }
+
+  const fixes = [...new Set(checks.flatMap((c) => c.fix ?? []))];
+  context.out('');
+  if (ok && fixes.length === 0) {
+    context.out(`  ${paint('everything is in order', codes.green, color)}`);
+  } else if (ok) {
+    context.out(`  ${paint('nothing is broken. optional next steps:', codes.dim, color)}`);
+    for (const fix of fixes) context.out(`    ${paint(fix, codes.cyan, color)}`);
+  } else {
+    const broken = checks.filter((c) => !c.ok);
+    context.out(
+      `  ${paint(`${broken.length} problem${broken.length === 1 ? '' : 's'} found:`, codes.red, color)}`,
+    );
+    if (fixes.length > 0) {
+      for (const fix of fixes) context.out(`    ${paint(fix, codes.cyan, color)}`);
+    } else {
+      // Nothing scripted can fix these, so at least name them plainly.
+      for (const check of broken) context.out(`    ${labelFor(check)}: ${check.detail}`);
+    }
+  }
+  context.out('');
   return ok ? 0 : 1;
 }

@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.16.0]
+
+### Added
+
+- **The dashboard now shows the limit that will actually stop you.** An account
+  can read 0% for the hour and 62% for the week and still be unusable because
+  one model's weekly window is spent. The usage column now shows whichever
+  window is closest to its limit (for example `Fable 100%`), coloured as it gets
+  close, instead of a reassuring average.
+- **`ccx doctor` reads like a report** rather than a log: plain-language names,
+  a green / amber / red mark per check, and one list of the exact commands that
+  would fix what it found. `--json` emits the same result for scripts.
+- **Signing in records which account a profile holds**, so later checks compare
+  against something known rather than what a profile claims about itself.
+
+## [1.15.1]
+
+### Changed
+
+- **Moving a live session to another account is now opt-in.** It changes what
+  you are working in, so it no longer happens unasked: `ccx proactive on`
+  (optionally `--percent`), `ccx proactive off`, `ccx proactive` to see where it
+  stands. Running `ccx auto` yourself still works while it is off.
+
 ## [1.15.0]
 
 ### Added

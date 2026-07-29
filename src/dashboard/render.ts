@@ -14,8 +14,12 @@ export interface DashboardAccount {
   /** Epoch ms the account is capped until, if currently capped. */
   cappedUntil?: number;
   priority: number;
-  /** Subscription usage (0..1 per window), from the unified rate-limit signal. */
-  usage?: { fiveHour: number | null; sevenDay: number | null };
+  /** Subscription usage (0..1 per window), including per-model weekly windows. */
+  usage?: {
+    fiveHour: number | null;
+    sevenDay: number | null;
+    models?: Array<{ name: string; utilization: number }> | null;
+  };
 }
 
 export interface DashboardSnapshot {
@@ -34,20 +38,7 @@ export interface RenderOptions {
   selected?: number;
 }
 
-const ESC = String.fromCharCode(27);
-const codes = {
-  reset: `${ESC}[0m`,
-  bold: `${ESC}[1m`,
-  dim: `${ESC}[2m`,
-  green: `${ESC}[32m`,
-  yellow: `${ESC}[33m`,
-  red: `${ESC}[31m`,
-  cyan: `${ESC}[36m`,
-};
-
-function paint(text: string, code: string, color: boolean): string {
-  return color ? `${code}${text}${codes.reset}` : text;
-}
+import { codes, paint } from '../ui/style.js';
 
 function hhmm(epochMs: number, now: number): string {
   const mins = Math.max(0, Math.round((epochMs - now) / 60000));
@@ -71,20 +62,38 @@ function statusColor(a: DashboardAccount, now: number): string {
   return codes.green;
 }
 
-/** Plain usage text for an account: "5h 9% wk 42%", or empty when unknown. */
-function usageText(a: DashboardAccount): string {
+/**
+ * The limit that will actually stop this account, e.g. `Fable 100%`.
+ *
+ * An account can sit at 0% for the hour and 62% for the week and still be
+ * completely unusable because one model's weekly window is spent, so the row
+ * shows whichever window is closest to its limit rather than a reassuring
+ * average.
+ */
+function bindingWindow(a: DashboardAccount): { label: string; used: number } | null {
   const u = a.usage;
-  if (!u || (u.fiveHour === null && u.sevenDay === null)) return '';
-  const pct = (v: number | null): string => (v === null ? '?' : `${Math.round(v * 100)}%`);
-  return `5h ${pct(u.fiveHour)} wk ${pct(u.sevenDay)}`;
+  if (!u) return null;
+  const windows: Array<{ label: string; used: number }> = [];
+  if (typeof u.fiveHour === 'number') windows.push({ label: '5h', used: u.fiveHour });
+  if (typeof u.sevenDay === 'number') windows.push({ label: 'wk', used: u.sevenDay });
+  for (const m of u.models ?? []) {
+    if (typeof m.utilization === 'number') windows.push({ label: m.name, used: m.utilization });
+  }
+  if (windows.length === 0) return null;
+  return windows.reduce((worst, w) => (w.used > worst.used ? w : worst));
 }
 
-/** Usage color by the hotter window: red at/over the limit, yellow near it. */
+/** Plain usage text for an account: the binding window, or empty when unknown. */
+function usageText(a: DashboardAccount): string {
+  const binding = bindingWindow(a);
+  return binding ? `${binding.label} ${Math.round(binding.used * 100)}%` : '';
+}
+
+/** Red once the binding window is spent, yellow as it approaches. */
 function usageColor(a: DashboardAccount): string {
-  const u = a.usage;
-  const hottest = Math.max(u?.fiveHour ?? 0, u?.sevenDay ?? 0);
-  if (hottest >= 1) return codes.red;
-  if (hottest >= 0.9) return codes.yellow;
+  const used = bindingWindow(a)?.used ?? 0;
+  if (used >= 1) return codes.red;
+  if (used >= 0.9) return codes.yellow;
   return codes.dim;
 }
 

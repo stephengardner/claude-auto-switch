@@ -75,19 +75,24 @@ describe('renderDashboard (plain)', () => {
     expect(footer).not.toContain('pin'); // the old misleading label is gone
   });
 
-  it('shows per-account usage when present, blank when unknown', () => {
+  it('shows the limit that will actually stop the account, blank when unknown', () => {
     const out = renderDashboard(
       snapshot([
-        account({ name: 'hasusage', usage: { fiveHour: 0.09, sevenDay: 0.42 } }),
+        account({ name: 'hourly', usage: { fiveHour: 0.42, sevenDay: 0.09 } }),
+        // Comfortable by the hour and the week, but one model's window is spent:
+        // that is what stops you, so that is what the row must show.
+        account({
+          name: 'modelout',
+          usage: { fiveHour: 0, sevenDay: 0.62, models: [{ name: 'Fable', utilization: 1 }] },
+        }),
         account({ name: 'nousage' }),
       ]),
       opts,
     );
     expect(out).toContain('USAGE');
-    const row = out.split('\n').find((l) => l.includes('hasusage'))!;
-    expect(row).toContain('5h 9% wk 42%');
-    const bare = out.split('\n').find((l) => l.includes('nousage'))!;
-    expect(bare).not.toContain('5h');
+    expect(out.split('\n').find((l) => l.includes('hourly'))!).toContain('5h 42%');
+    expect(out.split('\n').find((l) => l.includes('modelout'))!).toContain('Fable 100%');
+    expect(out.split('\n').find((l) => l.includes('nousage'))!).not.toContain('%');
   });
 
   it('marks the selected row with the cursor and the active row with a marker', () => {

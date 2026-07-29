@@ -21,7 +21,10 @@ export interface SnapshotInput {
   /** Account name -> epoch ms it is capped until. */
   cappedUntil: Map<string, number>;
   /** Account name -> subscription usage (0..1 utilization per window). */
-  usage?: Map<string, { fiveHour: number | null; sevenDay: number | null }>;
+  usage?: Map<
+    string,
+    { fiveHour: number | null; sevenDay: number | null; models?: Array<{ name: string; utilization: number }> | null }
+  >;
   active: string | null;
   events: string[];
   now: number;

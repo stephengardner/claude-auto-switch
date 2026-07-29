@@ -71,7 +71,7 @@ export async function dashboardCommand(
     const usage = new Map(
       Object.entries(usageSnap.accounts).map(([name, u]) => [
         name,
-        { fiveHour: u.fiveHour, sevenDay: u.sevenDay },
+        { fiveHour: u.fiveHour, sevenDay: u.sevenDay, ...(u.models ? { models: u.models } : {}) },
       ]),
     );
     return toSnapshot({

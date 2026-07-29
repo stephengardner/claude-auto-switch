@@ -30,6 +30,19 @@ export interface CheckableAccount {
   email?: string;
 }
 
+/**
+ * Ask the API which account the credential stored in `dir` belongs to. This is
+ * the only authoritative answer: local files report the identity a profile has
+ * recorded, which can already be wrong.
+ */
+export async function fetchTokenOwner(
+  dir: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  const token = accessTokenOf(dir);
+  return token ? whoAmI(token, fetchImpl) : null;
+}
+
 function accessTokenOf(dir: string): string | null {
   try {
     const parsed = JSON.parse(readFileSync(credentialPath(dir), 'utf8')) as {

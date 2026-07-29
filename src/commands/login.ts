@@ -1,4 +1,5 @@
-import { listAccounts, getAccount } from '../accounts/registry.js';
+import { listAccounts, getAccount, updateAccount } from '../accounts/registry.js';
+import { fetchTokenOwner } from '../accounts/identity-check.js';
 import { probeAll } from '../health/prober.js';
 import { loginAccount, type LoginDeps } from '../login/login.js';
 import { cdpBrowserAuthorizer } from '../login/browser.js';
@@ -55,7 +56,18 @@ export async function loginCommand(
       deps,
     );
     context.out(`  ${result.ok ? 'ok' : 'FAILED'}: ${result.detail}`);
-    if (!result.ok) allOk = false;
+    if (!result.ok) {
+      allOk = false;
+      continue;
+    }
+    // Record who this profile is now, straight from the API. Captured here
+    // because a login just proved it, and having it means later checks compare
+    // against something known rather than against whatever a file claims.
+    const owner = await fetchTokenOwner(account.dir);
+    if (owner && owner !== account.email) {
+      updateAccount(account.name, { email: owner }, context.ctx);
+      context.out(`  signed in as ${owner}`);
+    }
   }
   return allOk ? 0 : 1;
 }
