@@ -64,9 +64,25 @@ export async function loginCommand(
     // because a login just proved it, and having it means later checks compare
     // against something known rather than against whatever a file claims.
     const owner = await fetchTokenOwner(account.dir);
-    if (owner && owner !== account.email) {
+    if (!owner) continue;
+    if (owner !== account.email) {
       updateAccount(account.name, { email: owner }, context.ctx);
-      context.out(`  signed in as ${owner}`);
+    }
+    context.out(`  signed in as ${owner}`);
+
+    // The browser stays signed in between logins, so a second `ccx login` can
+    // quietly hand you the SAME account again. Two profiles on one account is
+    // silent and useless (switching between them gains nothing), so say it now
+    // rather than letting it be discovered later.
+    const twin = listAccounts(context.ctx).find(
+      (other) => other.name !== account.name && other.email?.toLowerCase() === owner.toLowerCase(),
+    );
+    if (twin) {
+      context.out(
+        `  warning: "${twin.name}" is signed in as ${owner} too. Sign out at claude.ai ` +
+          `(or use a different browser profile), then run: ccx login ${account.name}`,
+      );
+      allOk = false;
     }
   }
   return allOk ? 0 : 1;
