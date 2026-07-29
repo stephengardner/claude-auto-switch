@@ -19,8 +19,12 @@ export const ConfigSchema = z.object({
       autoRelaunchInteractive: z.boolean().default(true),
       defaultBackoffMinutes: z.number().int().positive().default(300),
       capThresholdPercent: z.number().int().min(1).max(100).default(95),
-      /** Move off an account once its binding window hits this percent (0 = off). */
-      proactivePercent: z.number().int().min(0).max(100).default(90),
+      /**
+       * Move off an account once its binding window hits this percent.
+       * OFF by default (0): moving a live session is something the operator
+       * opts into, not a surprise. Turn it on with `ccx proactive on`.
+       */
+      proactivePercent: z.number().int().min(0).max(100).default(0),
       /** Require this many points more headroom on the target (anti-flap). */
       proactiveHysteresisPercent: z.number().int().min(0).max(100).default(10),
       /** How often a running session checks its own usage. */

@@ -2,6 +2,7 @@ import { getActive, setActive } from '../state/active.js';
 import { writeSwitchRequest } from '../state/switch-request.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { proactiveTick, type TickResult } from '../usage/proactive.js';
+import { DEFAULT_PROACTIVE_PERCENT } from './proactive-config.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
 import { appendEvent } from '../events/log.js';
 import { configHome } from '../config/paths.js';
@@ -74,6 +75,9 @@ export async function autoCommand(context: CliContext, options: AutoOptions = {}
     },
     ...(options.model ? { model: options.model } : {}),
   });
+  // Running this command IS the opt-in, so it works even when the always-on
+  // watcher is switched off; `ccx proactive on` is what enables that.
+  if (!deps.thresholdPercent) deps.thresholdPercent = DEFAULT_PROACTIVE_PERCENT;
   const override = Number(options.threshold);
   if (Number.isFinite(override) && override >= 0 && override <= 100) {
     deps.thresholdPercent = override;

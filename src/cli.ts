@@ -9,6 +9,7 @@ import { useCommand } from './commands/use.js';
 import { rotateCommand } from './commands/rotate.js';
 import { usageCommand } from './commands/usage.js';
 import { autoCommand, type AutoOptions } from './commands/auto.js';
+import { proactiveCommand } from './commands/proactive-config.js';
 import { runCommand } from './commands/run.js';
 import { removeCommand } from './commands/remove.js';
 import { onCommand, offCommand } from './commands/onoff.js';
@@ -116,6 +117,20 @@ program
   .description('show real per-account usage (5-hour + weekly) with reset times')
   .action(async () => {
     process.exitCode = await usageCommand(context());
+  });
+
+program
+  .command('proactive [action]')
+  .description('turn "move me to a roomier account before I run out" on or off')
+  .option('--percent <percent>', 'move once the binding limit reaches this percent')
+  .action((action: string | undefined, opts: { percent?: string }) => {
+    const verb = action === 'on' || action === 'off' || action === 'status' ? action : undefined;
+    if (action && !verb) {
+      process.stderr.write(`unknown action "${action}" (use: on, off, status)\n`);
+      process.exitCode = 1;
+      return;
+    }
+    process.exitCode = proactiveCommand(context(), verb, opts);
   });
 
 program
