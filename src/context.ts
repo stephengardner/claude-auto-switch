@@ -13,6 +13,8 @@ export interface CliContext {
   claude?: ClaudeInvoker;
   /** Injected in tests: overrides the API limit verification (usage/limit-probe). */
   verifyCap?: (renderedText: string) => Promise<LimitVerdict>;
+  /** Injected in tests: overrides the API lookup of who a stored login belongs to. */
+  lookupOwner?: (dir: string) => Promise<string | null>;
   out: (message: string) => void;
   /** ccx's own status messages. MUST go to stderr so it never corrupts a run's stdout protocol. */
   err?: (message: string) => void;

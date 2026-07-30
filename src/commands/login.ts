@@ -1,5 +1,5 @@
-import { listAccounts, getAccount, updateAccount } from '../accounts/registry.js';
-import { fetchTokenOwner } from '../accounts/identity-check.js';
+import { listAccounts, getAccount } from '../accounts/registry.js';
+import { settleNewLogin } from '../login/settle-login.js';
 import { probeAll } from '../health/prober.js';
 import { loginAccount, type LoginDeps } from '../login/login.js';
 import { cdpBrowserAuthorizer } from '../login/browser.js';
@@ -60,30 +60,10 @@ export async function loginCommand(
       allOk = false;
       continue;
     }
-    // Record who this profile is now, straight from the API. Captured here
-    // because a login just proved it, and having it means later checks compare
-    // against something known rather than against whatever a file claims.
-    const owner = await fetchTokenOwner(account.dir);
-    if (!owner) continue;
-    if (owner !== account.email) {
-      updateAccount(account.name, { email: owner }, context.ctx);
-    }
-    context.out(`  signed in as ${owner}`);
-
-    // The browser stays signed in between logins, so a second `ccx login` can
-    // quietly hand you the SAME account again. Two profiles on one account is
-    // silent and useless (switching between them gains nothing), so say it now
-    // rather than letting it be discovered later.
-    const twin = listAccounts(context.ctx).find(
-      (other) => other.name !== account.name && other.email?.toLowerCase() === owner.toLowerCase(),
-    );
-    if (twin) {
-      context.out(
-        `  warning: "${twin.name}" is signed in as ${owner} too. Sign out at claude.ai ` +
-          `(or use a different browser profile), then run: ccx login ${account.name}`,
-      );
-      allOk = false;
-    }
+    // Accepted or refused in one shared place, so `ccx add` and `ccx login`
+    // cannot disagree about what a valid sign-in is.
+    const settled = await settleNewLogin(context, { name: account.name, dir: account.dir });
+    if (!settled.ok) allOk = false;
   }
   return allOk ? 0 : 1;
 }

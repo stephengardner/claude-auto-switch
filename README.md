@@ -25,8 +25,12 @@ That is the entire setup. Now use Claude normally.
 
 > Adding a second account? Your browser is still signed in to the first one, so
 > sign out at claude.ai first (or use a different browser profile). Otherwise
-> both accounts end up being the same one. ccx warns you when that happens, and
-> `ccx doctor` checks it at any time.
+> both profiles end up holding the same account, and that is worse than useless:
+> signing in again replaces a login, so renewing one profile would end the other.
+> ccx **refuses** that sign-in: the profile goes back to the login it had before,
+> or, if it had none, the refused login is removed rather than left active. So
+> you cannot end up there by accident, whichever command you used.
+> `ccx doctor` checks for it at any time.
 
 ## Using it in your terminal
 

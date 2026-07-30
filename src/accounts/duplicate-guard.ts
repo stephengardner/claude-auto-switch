@@ -1,0 +1,95 @@
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { credentialPath } from './credential-vault.js';
+
+/**
+ * Stopping two profiles from holding the same account.
+ *
+ * This is worth preventing rather than detecting, because the damage is not just
+ * cosmetic. Renewing a login ROTATES it: the old token stops working the moment
+ * the new one is issued. So when two profiles share a login, renewing either one
+ * destroys the other, and the account cannot be recovered without signing in
+ * again. That is how two accounts here ended up dead.
+ *
+ * The state is also useless even before it breaks: switching between two
+ * profiles that are the same account gains no extra room at all.
+ */
+
+export interface ProfileLike {
+  name: string;
+  dir: string;
+}
+
+/** A short, comparable fingerprint of a token, so tokens never get logged. */
+function fingerprint(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 16);
+}
+
+interface Tokens {
+  access?: string;
+  refresh?: string;
+}
+
+function tokensOf(dir: string): Tokens {
+  try {
+    const parsed = JSON.parse(readFileSync(credentialPath(dir), 'utf8')) as {
+      claudeAiOauth?: { accessToken?: string; refreshToken?: string };
+    };
+    const oauth = parsed.claudeAiOauth ?? {};
+    return {
+      ...(typeof oauth.accessToken === 'string' && oauth.accessToken.length > 0
+        ? { access: fingerprint(oauth.accessToken) }
+        : {}),
+      ...(typeof oauth.refreshToken === 'string' && oauth.refreshToken.length > 0
+        ? { refresh: fingerprint(oauth.refreshToken) }
+        : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Profiles that share a login with another profile, grouped together.
+ *
+ * Sharing a REFRESH token is the dangerous one: renewing any member of the group
+ * invalidates the rest. Sharing only an access token is the same account reached
+ * by two different logins, which is wasteful but not destructive.
+ */
+export function sharedLoginGroups(profiles: ProfileLike[]): Array<{ fingerprint: string; names: string[] }> {
+  const byRefresh = new Map<string, string[]>();
+  for (const profile of profiles) {
+    const { refresh } = tokensOf(profile.dir);
+    if (!refresh) continue;
+    byRefresh.set(refresh, [...(byRefresh.get(refresh) ?? []), profile.name]);
+  }
+  return [...byRefresh.entries()]
+    .filter(([, names]) => names.length > 1)
+    .map(([fp, names]) => ({ fingerprint: fp, names }));
+}
+
+/** Would renewing this profile's login also invalidate another profile's? */
+export function renewalWouldBreakOthers(profile: ProfileLike, profiles: ProfileLike[]): string[] {
+  const { refresh } = tokensOf(profile.dir);
+  if (!refresh) return [];
+  return profiles
+    .filter((other) => other.name !== profile.name && tokensOf(other.dir).refresh === refresh)
+    .map((other) => other.name);
+}
+
+/**
+ * Does another profile already hold `email`? Compared case-insensitively,
+ * because an address that differs only in case is the same account.
+ */
+export function profileAlreadyHolding(
+  email: string,
+  profiles: Array<ProfileLike & { email?: string }>,
+  exclude: string,
+): string | null {
+  const wanted = email.trim().toLowerCase();
+  if (wanted.length === 0) return null;
+  const match = profiles.find(
+    (p) => p.name !== exclude && (p.email ?? '').trim().toLowerCase() === wanted,
+  );
+  return match ? match.name : null;
+}

@@ -14,6 +14,7 @@ import { hasUsableLogin } from '../accounts/credential-vault.js';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { listAccounts } from '../accounts/registry.js';
 import { verifyAccountIdentities } from '../accounts/identity-check.js';
+import { sharedLoginGroups } from '../accounts/duplicate-guard.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { probeAll } from '../health/prober.js';
 import { codes, paint } from '../ui/style.js';
@@ -262,14 +263,31 @@ export async function auditIdentities(
   return {
     name,
     ok: false,
-    detail: broken
-      .map((f) =>
-        f.kind === 'duplicate'
-          ? `${f.account} shares a login with another profile`
-          : `${f.account} holds ${f.actual}, expected ${f.expected}`,
-      )
-      .join('; '),
+    detail: broken.map((f) => `${f.account} ${f.detail.replace(/ \(run: [^)]+\)/, '')}`).join('; '),
     fix: broken.map((f) => `ccx login ${f.account}`),
+  };
+}
+
+/**
+ * Do any two profiles hold the same login?
+ *
+ * Checked locally and without the network, because this is the state that
+ * destroys accounts: renewing a shared login ends it for the other profile. It
+ * needs to be visible immediately, not only when a network check is possible.
+ */
+export function auditSharedLogins(context: CliContext): DoctorCheck {
+  const name = 'separate-logins';
+  const groups = sharedLoginGroups(listAccounts(context.ctx));
+  if (groups.length === 0) {
+    return { name, ok: true, detail: 'no two accounts share a sign-in that renewal could end' };
+  }
+  return {
+    name,
+    ok: false,
+    detail: groups
+      .map((g) => `${g.names.join(' and ')} hold the SAME sign-in; renewing either would end the other`)
+      .join('; '),
+    fix: groups.flatMap((g) => g.names.slice(1)).map((n) => `ccx login ${n}`),
   };
 }
 
@@ -327,6 +345,7 @@ export async function runDoctor(
     auditShim(context, deps),
     auditSharedHistory(context),
     await auditAccounts(context),
+    auditSharedLogins(context),
     await auditIdentities(context, deps),
     auditCaps(context),
     auditGitSafety(trackedFiles),
@@ -344,6 +363,7 @@ const LABELS: Record<string, string> = {
   'shared-history': 'history',
   accounts: 'accounts',
   'account-identity': 'identity',
+  'separate-logins': 'separate logins',
   caps: 'limits',
   'git-safety': 'git safety',
   'real-claude': 'claude',

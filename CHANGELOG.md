@@ -4,6 +4,89 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.23.0]
+
+### Changed
+
+- **Two profiles can no longer end up on the same login.** This was the single
+  most damaging thing that could happen: signing in a second profile while the
+  browser was still signed in to the first gave both profiles the same login.
+  Renewing a login replaces it, so renewing either profile silently ended the
+  other, and the account stayed dead until it was signed in again by hand. Two
+  accounts were lost exactly that way. Four changes so it cannot recur:
+  - **A sign-in is now accepted or refused in one shared place**, used by both
+    `ccx add` and `ccx login`. This matters because `ccx add` is the path that
+    actually creates duplicates (your browser is still signed in to the account
+    you added last), and it used to run the login directly, so a check living in
+    `ccx login` did not apply to it at all.
+  - **A duplicate is refused, not warned about.** ccx asks who the new login
+    belongs to, and if another profile already holds that account it puts the
+    profile back to its previous login, or removes the refused login when there
+    is no previous one to go back to. Either way the duplicate is never left
+    active. From `ccx add`, the new registration is dropped too, so you end up
+    exactly where you started.
+  - Automatic renewal **skips** any profile that shares a login with another one.
+    Only the renewal is skipped: usage still updates for that profile, and the
+    reason is recorded once, when a renewal was actually due.
+  - `ccx doctor` gained a `separate logins` check that spots shared logins with
+    no network call, so it reports even when offline. It reads the local
+    fingerprints, so it is also the check that still works when the API does not.
+
+Nothing in the report ever contains a token: sharing is detected by comparing
+hashes.
+
+## [1.22.1]
+
+### Fixed
+
+- The tests that drive a real terminal now **skip loudly** where a machine will
+  not allocate one, instead of failing. A skipped test says so and names the
+  reason; it is not counted as covered.
+
+## [1.22.0]
+
+### Fixed
+
+- **A used-up model no longer looks like being signed out.** Hitting the limit on
+  one model (Fable, say) was recorded as the whole account being out, so ccx
+  refused to start on any model and left the session with no login at all, which
+  reads as "not logged in". Model limits are now recorded per model: other models
+  keep working, the message says which model is out, and as a last resort ccx
+  starts on the account you were already using rather than refusing.
+
+## [1.21.0]
+
+### Fixed
+
+- **Renewing a login now takes Claude's own lock** before writing, so ccx and
+  Claude cannot write the credential file at the same moment. Every credential
+  change is also recorded to a log you can read with `ccx history` (no tokens,
+  only what happened and when), which is what turned "I keep having to sign in
+  again" from a mystery into a traceable event.
+
+## [1.20.0]
+
+### Fixed
+
+- The status line only claims an account when ccx is **actually** running the
+  session. Started Claude directly? It says `no ccx` instead of naming an
+  account it is not managing.
+
+## [1.19.0]
+
+### Changed
+
+- README rewritten to describe what ccx does now, in plain English.
+
+## [1.18.0] and [1.17.1]
+
+### Added
+
+- The status line reports the room you have **left**, not the amount used, and
+  mentions the reset time only when it is close enough to matter.
+- `ccx statusline --wrap <command>` composes with a status line you already have,
+  instead of replacing it.
+
 ## [1.17.0]
 
 ### Added
