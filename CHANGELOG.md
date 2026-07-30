@@ -24,6 +24,13 @@ semantic versioning.
   process is gone or it stops being refreshed, so a crashed session cannot block
   renewals forever.
 
+- **The same protection for the account your editor uses.** The editor reads an
+  account's login directly, so ccx is not involved in those sessions and cannot
+  see that one is running. That account is now left alone too. The one exception
+  keeps its usage readable: a running Claude refreshes its own login within
+  minutes of expiry, so a login that has been dead for half an hour is held by
+  nothing, and renewing it is safe.
+
 - **The next terminal no longer starts on a dead login.** A token that Claude
   refreshed mid-session used to reach the account's own folder only when the
   session ended, so for as long as you kept working, that folder held a login that

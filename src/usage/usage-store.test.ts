@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { refreshUsage, readUsageSnapshot } from './usage-store.js';
@@ -153,6 +153,91 @@ describe('refreshUsage', () => {
     // Usage still updates, read from the copy the session keeps fresh.
     expect(probedFiles.some((f) => f.startsWith(sessionDir))).toBe(true);
     expect(snap.accounts['busy']?.fiveHour).toBe(0.5);
+  });
+
+  describe('an account the editor is pointed at', () => {
+    /** Point the editor pointer at `dir`, the way `ccx editor on` does. */
+    function pointEditorAt(home: string, dir: string): void {
+      try {
+        symlinkSync(dir, path.join(home, 'editor-active'), 'junction');
+      } catch {
+        symlinkSync(dir, path.join(home, 'editor-active'));
+      }
+    }
+
+    /** Give an account a login that expired `minutesAgo`. */
+    function expiredLogin(dir: string, name: string, minutesAgo: number): void {
+      writeFileSync(
+        path.join(dir, '.credentials.json'),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: `tok-${name}`,
+            refreshToken: `rt-${name}`,
+            expiresAt: Date.now() - minutesAgo * 60_000,
+          },
+        }),
+        'utf8',
+      );
+    }
+
+    it('is NOT renewed while it could still be in use', async () => {
+      // The editor reads the login directly, so ccx cannot see its session. This
+      // is the same failure as the terminal case: renewing signs the editor out.
+      const { c, accounts } = setup(['ide', 'other']);
+      const home = c.env.CLAUDE_AUTO_SWITCH_HOME as string;
+      expiredLogin(accounts[0]!.dir, 'ide', 1);
+      expiredLogin(accounts[1]!.dir, 'other', 1);
+      pointEditorAt(home, accounts[0]!.dir);
+
+      const renewed: string[] = [];
+      await refreshUsage(accounts, c, {
+        probe: () => Promise.resolve(result(0.2, 0.3)),
+        renew: (dir) => {
+          renewed.push(dir);
+          return Promise.resolve({ status: 'refreshed' });
+        },
+      });
+
+      expect(renewed.some((d) => d.includes('ide'))).toBe(false);
+      expect(renewed.some((d) => d.includes('other'))).toBe(true); // not pointed at
+      expect(readCredentialEvents(10, c).some((e) => e.detail?.includes('editor'))).toBe(true);
+    });
+
+    it('IS renewed once its login has been dead too long for anything to hold it', async () => {
+      // Otherwise an idle editor account's usage would go stale for good. A live
+      // Claude refreshes within minutes, so hours of nothing means nothing is
+      // using it, and renewing is both safe and the only way to read its usage.
+      const { c, accounts } = setup(['ide']);
+      const home = c.env.CLAUDE_AUTO_SWITCH_HOME as string;
+      expiredLogin(accounts[0]!.dir, 'ide', 120);
+      pointEditorAt(home, accounts[0]!.dir);
+
+      const renewed: string[] = [];
+      await refreshUsage(accounts, c, {
+        probe: () => Promise.resolve(result(0.2, 0.3)),
+        renew: (dir) => {
+          renewed.push(dir);
+          return Promise.resolve({ status: 'refreshed' });
+        },
+      });
+
+      expect(renewed).toHaveLength(1);
+    });
+
+    it('protects nothing when the editor integration is off', async () => {
+      const { c, accounts } = setup(['ide']);
+      expiredLogin(accounts[0]!.dir, 'ide', 1);
+      // No pointer at all.
+      const renewed: string[] = [];
+      await refreshUsage(accounts, c, {
+        probe: () => Promise.resolve(result(0.2, 0.3)),
+        renew: (dir) => {
+          renewed.push(dir);
+          return Promise.resolve({ status: 'refreshed' });
+        },
+      });
+      expect(renewed).toHaveLength(1);
+    });
   });
 
   it('resumes renewing once the session that was using it is gone', async () => {

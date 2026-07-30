@@ -8,7 +8,8 @@ import { logCredentialEvent } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { liveLeases, type LeaseOptions } from '../session/lease.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
-import { refreshCredentialIfExpired, renewalIsDue } from './oauth-refresh.js';
+import { refreshCredentialIfExpired, renewalIsDue, expiredLongerThan } from './oauth-refresh.js';
+import { editorPointerAccount } from '../editor/junction.js';
 
 /**
  * Cached per-account subscription usage (5h/7d utilization + resets), fetched
@@ -39,6 +40,12 @@ export type UsageSnapshot = z.infer<typeof SnapshotSchema>;
 
 const FILENAME = 'usage-snapshot.json';
 export const USAGE_TTL_MS = 5 * 60_000;
+/**
+ * How long a login must have been expired before ccx will renew one the editor is
+ * pointed at. A running Claude refreshes within minutes, so half an hour of
+ * nothing means nothing is holding it.
+ */
+const EDITOR_IDLE_GRACE_MS = 30 * 60_000;
 
 function snapshotPath(c: PathCtx = {}): string {
   return path.join(configHome(c), FILENAME);
@@ -139,6 +146,16 @@ export async function refreshUsage(
     liveLeases(c, options.leaseOptions ?? {}).map((l) => [l.account, l] as const),
   );
 
+  // The editor reads an account's login DIRECTLY through its pointer, so ccx is
+  // not in the loop for those sessions and cannot tell whether one is running.
+  // Renewing that login can sign the editor out exactly as it used to sign
+  // terminal sessions out, so it is left alone. The exception keeps usage
+  // readable: a live Claude refreshes its own token within minutes of expiry, so
+  // a token that has been dead far longer than that is held by nothing, and
+  // renewing it is safe. Without that exception, an idle editor account's usage
+  // would go stale for good.
+  const editorAccount = editorPointerAccount(accounts, c);
+
   // Sequential, with a small gap: the usage endpoint has a small budget and
   // asking for several accounts at once gets most of them turned away.
   for (const account of stale) {
@@ -152,11 +169,15 @@ export async function refreshUsage(
       // would append the same line forever.
       const lease = inUse.get(account.name);
       const siblings = renewalWouldBreakOthers(account, accounts);
+      const editorMayBeUsingIt =
+        account.name === editorAccount && !expiredLongerThan(account.dir, EDITOR_IDLE_GRACE_MS);
       const refusal = lease
         ? `not renewed: a running session (pid ${lease.pid}) is using this login; renewing would sign it out`
         : siblings.length > 0
           ? `not renewed: shares a login with ${siblings.join(', ')}; renewing would end theirs`
-          : null;
+          : editorMayBeUsingIt
+            ? 'not renewed: your editor is pointed at this account and may be using it'
+            : null;
       const mayRenew = refusal === null;
       if (refusal && renewalIsDue(account.dir)) {
         logCredentialEvent({ account: account.name, kind: 'refused', detail: refusal }, c);
