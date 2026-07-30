@@ -225,7 +225,7 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   } else if (options.interactive) {
     lines.push(
       paint(
-        'j/k move  ·  enter use  ·  f now  ·  a add  ·  n rename  ·  e enable  ·  r rotate  ·  q quit',
+        'j/k move  ·  enter use  ·  f now  ·  a add  ·  n rename  ·  L sign in  ·  e enable  ·  r rotate  ·  q quit',
         codes.dim,
         color,
       ),

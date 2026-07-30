@@ -7,6 +7,7 @@ export type KeyAction =
   | 'rotate'
   | 'add'
   | 'rename'
+  | 'login'
   | 'none';
 
 export interface KeyOutcome {
@@ -43,6 +44,10 @@ export function dispatchKey(
   if (key === 'f') return { selected, action: 'force' }; // instant switch (restarts the session)
   if (key === 'a') return { selected, action: 'add' }; // register another account
   if (key === 'n') return { selected, action: 'rename' }; // rename the highlighted one
+  // Sign this account in again, as itself or as a different account. Capital L
+  // on purpose: it hands the screen to a browser sign-in, so it should be hard
+  // to hit by accident while moving around.
+  if (key === 'L') return { selected, action: 'login' };
   if (key === 'e') return { selected, action: 'toggle' };
   if (key === 'r') return { selected, action: 'rotate' };
   return { selected, action: 'none' };
