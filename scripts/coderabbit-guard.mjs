@@ -100,7 +100,7 @@ function reviewBodies(owner, name, pr) {
   const reviews = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}/reviews`, '--paginate']) ?? [];
   return reviews
     .filter((r) => isReviewer(r.user?.login))
-    .map((r) => ({ id: r.id, body: r.body ?? '' }))
+    .map((r) => ({ id: r.id, body: r.body ?? '', at: Date.parse(r.submitted_at ?? '') || 0 }))
     .filter((r) => r.body.length > 0);
 }
 
@@ -148,7 +148,11 @@ function reviewerState(owner, name, pr) {
 /** Every comment on the pull request, with who wrote it. */
 function allComments(owner, name, pr) {
   const comments = ghJson(['api', `repos/${owner}/${name}/issues/${pr}/comments`, '--paginate']) ?? [];
-  return comments.map((c) => ({ author: c.user?.login ?? '', body: c.body ?? '' }));
+  return comments.map((c) => ({
+    author: c.user?.login ?? '',
+    body: c.body ?? '',
+    at: Date.parse(c.created_at ?? '') || 0,
+  }));
 }
 
 function main() {
@@ -166,7 +170,7 @@ function main() {
     bodies = reviewBodies(owner, name, pr);
     const comments = allComments(owner, name, pr);
     humanComments = comments;
-    summaries = comments.filter((c) => isReviewer(c.author)).map((c) => c.body);
+    summaries = comments.filter((c) => isReviewer(c.author));
   } catch (err) {
     // Could not ask GitHub. Not knowing is not the same as being clear.
     console.error(`coderabbit-guard: could not read PR #${pr}: ${err.message.split('\n')[0]}`);
@@ -190,16 +194,18 @@ function main() {
   // Findings raised inside a review body cannot be resolved and cannot be
   // replied to, so they are answered once, explicitly, by a comment saying they
   // have been read. Without that they would block the pull request forever.
-  const acknowledged = bodyFindingsAcknowledged(humanComments, isReviewer);
+  const raised = [
+    ...bodies.map((r) => ({ kind: 'review-body', where: `review ${r.id}`, at: r.at, findings: bodyFindings(r.body) })),
+    ...summaries.map((c) => ({ kind: 'summary-comment', where: 'summary', at: c.at, findings: bodyFindings(c.body) })),
+  ].filter((r) => r.findings.length > 0);
+
+  // The acknowledgement must be newer than the newest finding it is clearing.
+  const newestFinding = raised.reduce((newest, r) => Math.max(newest, r.at), 0);
+  const acknowledged = bodyFindingsAcknowledged(humanComments, isReviewer, newestFinding);
   if (!acknowledged) {
-    for (const review of bodies) {
-      for (const finding of bodyFindings(review.body)) {
-        blockers.push({ kind: 'review-body', where: `review ${review.id}`, excerpt: finding.slice(0, 140) });
-      }
-    }
-    for (const body of summaries) {
-      for (const finding of bodyFindings(body)) {
-        blockers.push({ kind: 'summary-comment', where: 'summary', excerpt: finding.slice(0, 140) });
+    for (const source of raised) {
+      for (const finding of source.findings) {
+        blockers.push({ kind: source.kind, where: source.where, excerpt: finding.slice(0, 140) });
       }
     }
   }

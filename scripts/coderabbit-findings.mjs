@@ -15,8 +15,19 @@
  * (`_🟠 Major_`) or collects them under headings that name the section, so those
  * are what we look for.
  */
-const SEVERITY_BADGE = /_[^_\n]*\b(critical|major|minor|nitpick)\b[^_\n]*_/i;
-const SECTION_HEADING = /(outside diff range|nitpick)\s+comments?/i;
+/**
+ * A badge is the WHOLE italic label, like `_🟠 Major_`: an icon, a space, the
+ * word, nothing else. Allowing other words inside meant `_No major concerns_`
+ * counted as a finding, which blocks a merge over reassurance.
+ */
+const SEVERITY_BADGE = /_[^\w_\n]*(critical|major|minor|nitpick)[^\w_\n]*_/i;
+
+/**
+ * A heading STARTS the line (after markdown, a blockquote marker, an HTML
+ * summary tag, or an icon), so a sentence that merely mentions "nitpick
+ * comments" is not mistaken for the section that contains them.
+ */
+const SECTION_HEADING = /^[\s>*_#-]*(?:<summary>)?[^\w<\n]*(outside diff range|nitpick)\s+comments?\b/i;
 
 /** Does this single line of a review body raise something? */
 export function isBodyFinding(line) {
@@ -43,11 +54,24 @@ export function bodyFindings(body) {
  */
 export const BODY_ACK = 'guard-ack: body findings reviewed';
 
-/** Has a human said they went through the review-body findings? */
-export function bodyFindingsAcknowledged(comments, isReviewer) {
-  return (comments ?? []).some(
-    (c) => !isReviewer(c.author ?? '') && String(c.body ?? '').toLowerCase().includes(BODY_ACK),
-  );
+/**
+ * Has a human said they went through the review-body findings raised at
+ * `findingsAt`?
+ *
+ * The acknowledgement has to come AFTER those findings. Accepting any past one
+ * meant a single comment, posted before a review even ran, cleared every body
+ * finding from then on: an off switch disguised as a confirmation.
+ */
+export function bodyFindingsAcknowledged(comments, isReviewer, findingsAt = 0) {
+  const cutoff = Number(findingsAt) || 0;
+  return (comments ?? []).some((c) => {
+    if (isReviewer(c.author ?? '')) return false;
+    if (!String(c.body ?? '').toLowerCase().includes(BODY_ACK)) return false;
+    const at = Number(c.at) || 0;
+    // Without a usable timestamp, treat it as not covering these findings: too
+    // permissive here means findings vanish silently.
+    return at > cutoff;
+  });
 }
 
 /**

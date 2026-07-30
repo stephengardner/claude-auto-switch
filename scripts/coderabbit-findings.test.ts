@@ -23,13 +23,15 @@ describe('spotting a finding in a review body', () => {
     }
   });
 
-  it('matches the headings it groups body findings under', () => {
+  it('matches the headings it groups body findings under, in the shape they arrive', () => {
     expect(isBodyFinding('⚠️ Outside diff range comments (2)')).toBe(true);
     expect(isBodyFinding('🧹 Nitpick comments (3)')).toBe(true);
+    // The real thing is wrapped in a blockquote and an HTML summary tag.
+    expect(isBodyFinding('> <summary>⚠️ Outside diff range comments (2)</summary><blockquote>')).toBe(true);
   });
 
   it('does NOT match ordinary prose that merely mentions those words', () => {
-    // The exact false positive CodeRabbit caught: this blocked a pull request.
+    // Each of these blocked, or would have blocked, a real pull request.
     for (const line of [
       'no security issue found',
       'No major concerns with this change.',
@@ -38,6 +40,13 @@ describe('spotting a finding in a review body', () => {
       'Reviewed 3 files; nothing to report.',
       '',
       '   ',
+      // Formatted reassurance: italics containing a severity word is not a badge.
+      '_No major concerns_',
+      '_no critical issues found_',
+      '_Minor wording only, nothing to change_',
+      // A heading only counts when it starts the line.
+      'This review has no nitpick comments to report.',
+      'See the outside diff range comments section above for context.',
     ]) {
       expect(isBodyFinding(line), line).toBe(false);
     }
@@ -62,16 +71,27 @@ describe('spotting a finding in a review body', () => {
 });
 
 describe('answering body findings', () => {
-  it('needs a human to say they read them', () => {
-    expect(bodyFindingsAcknowledged([], isReviewer)).toBe(false);
+  const ack = (at: number) => [{ author: 'stephengardner', body: `ok, ${BODY_ACK}`, at }];
+
+  it('needs a human to say they read them, after they were raised', () => {
+    expect(bodyFindingsAcknowledged([], isReviewer, 100)).toBe(false);
+    expect(bodyFindingsAcknowledged(ack(200), isReviewer, 100)).toBe(true);
+  });
+
+  it('does NOT let an earlier acknowledgement clear findings raised later', () => {
+    // Otherwise one comment, posted before any review, switches this off forever.
+    expect(bodyFindingsAcknowledged(ack(100), isReviewer, 200)).toBe(false);
+  });
+
+  it('does not accept an acknowledgement with no usable time', () => {
     expect(
-      bodyFindingsAcknowledged([{ author: 'stephengardner', body: `ok, ${BODY_ACK}` }], isReviewer),
-    ).toBe(true);
+      bodyFindingsAcknowledged([{ author: 'stephengardner', body: BODY_ACK }], isReviewer, 200),
+    ).toBe(false);
   });
 
   it('does not accept the reviewer acknowledging itself', () => {
     expect(
-      bodyFindingsAcknowledged([{ author: 'coderabbitai[bot]', body: BODY_ACK }], isReviewer),
+      bodyFindingsAcknowledged([{ author: 'coderabbitai[bot]', body: BODY_ACK, at: 999 }], isReviewer, 100),
     ).toBe(false);
   });
 });
