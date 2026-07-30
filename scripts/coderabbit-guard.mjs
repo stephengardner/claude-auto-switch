@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Refuse to merge while CodeRabbit still has unresolved serious findings.
+ * Refuse to merge while ANY CodeRabbit comment is still unanswered.
  *
  * Usage:  node scripts/coderabbit-guard.mjs <pr-number> [--json]
  * Exit:   0 = clear to merge, 1 = blocked, 2 = could not tell
@@ -22,8 +22,23 @@
 import { execFileSync } from 'node:child_process';
 
 const REVIEWER = 'coderabbitai';
-/** Wording CodeRabbit uses for the severities worth blocking on. */
-const SERIOUS = /\b(critical|major)\b/i;
+
+/**
+ * EVERY comment counts, not only the ones marked serious.
+ *
+ * Severity is the reviewer's guess. A "nitpick" that turns out to be a real bug
+ * still ships the bug, and deciding which comments deserve an answer is how
+ * comments go unanswered. So the rule is simple: every comment gets resolved or
+ * gets a reply saying why it is wrong.
+ */
+
+/**
+ * Headings CodeRabbit uses when it raises something inside a review body, where
+ * GitHub offers no "resolve" button. Kept narrow so ordinary summary prose does
+ * not read as a finding; widen it in LESSONS.md when a real review proves it too
+ * narrow.
+ */
+const BODY_FINDING = /(potential issue|refactor suggestion|nitpick|possible bug|security|outside diff range)/i;
 
 function gh(args) {
   return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
@@ -115,7 +130,6 @@ function main() {
     const comments = thread.comments?.nodes ?? [];
     const first = comments[0];
     if (!first || !isReviewer(first.author?.login)) continue;
-    if (!SERIOUS.test(first.body ?? '')) continue;
     // Resolved, or answered by a human reply: handled either way.
     const answered = thread.isResolved || comments.slice(1).some((c) => !isReviewer(c.author?.login));
     if (answered) continue;
@@ -130,14 +144,14 @@ function main() {
   // a human to confirm rather than silently ignored.
   for (const review of bodies) {
     for (const line of review.body.split('\n')) {
-      if (SERIOUS.test(line) && line.trim().length > 0) {
+      if (BODY_FINDING.test(line) && line.trim().length > 0) {
         blockers.push({ kind: 'review-body', where: `review ${review.id}`, excerpt: line.trim().slice(0, 140) });
       }
     }
   }
   for (const body of summaries) {
     for (const line of body.split('\n')) {
-      if (SERIOUS.test(line) && line.trim().length > 0) {
+      if (BODY_FINDING.test(line) && line.trim().length > 0) {
         blockers.push({ kind: 'summary-comment', where: 'summary', excerpt: line.trim().slice(0, 140) });
       }
     }
@@ -153,11 +167,11 @@ function main() {
     process.exit(2);
   }
   if (blockers.length === 0) {
-    console.log(`coderabbit-guard: PR #${pr} is clear (no unresolved critical or major findings).`);
+    console.log(`coderabbit-guard: PR #${pr} is clear (every CodeRabbit comment is resolved or answered).`);
     process.exit(0);
   }
 
-  console.error(`coderabbit-guard: PR #${pr} BLOCKED by ${blockers.length} unresolved finding(s):`);
+  console.error(`coderabbit-guard: PR #${pr} BLOCKED by ${blockers.length} unanswered comment(s):`);
   for (const b of blockers) console.error(`  [${b.kind}] ${b.where}  ${b.excerpt}`);
   console.error('');
   console.error('Fix each one, push, then REPLY on that inline comment with the fix SHA.');
