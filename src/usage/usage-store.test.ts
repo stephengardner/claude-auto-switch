@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { refreshUsage, readUsageSnapshot } from './usage-store.js';
 import type { LimitProbeResult } from './limit-probe.js';
 import { readCredentialEvents } from '../accounts/credential-log.js';
+import { takeLease } from '../session/lease.js';
 
 function setup(names: string[]) {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-usage-'));
@@ -115,6 +116,144 @@ describe('refreshUsage', () => {
     }
     await refreshUsage(accounts, c, { probe: () => Promise.resolve(result(0.1, 0.2)) });
     expect(readCredentialEvents(10, c)).toHaveLength(0);
+  });
+
+  it('never renews a login a running session is using, and reads that live copy', async () => {
+    // The whole reason leases exist. Renewing REPLACES a login, so renewing this
+    // one would sign the running session out mid-work: the operator sees
+    // "Login expired - please run /login" having done nothing.
+    const { c, accounts } = setup(['busy', 'idle']);
+    const sessionDir = path.join(
+      c.env.CLAUDE_AUTO_SWITCH_HOME as string,
+      'live-session',
+    );
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      path.join(sessionDir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'tok-live', refreshToken: 'rt-live' } }),
+      'utf8',
+    );
+    takeLease('busy', sessionDir, c);
+
+    const renewed: string[] = [];
+    const probedFiles: string[] = [];
+    const snap = await refreshUsage(accounts, c, {
+      probe: (file) => {
+        probedFiles.push(file);
+        return Promise.resolve(result(0.5, 0.6));
+      },
+      renew: (dir) => {
+        renewed.push(dir);
+        return Promise.resolve({ status: 'refreshed' });
+      },
+    });
+
+    expect(renewed.some((d) => d.includes('busy'))).toBe(false); // the live one: untouched
+    expect(renewed.some((d) => d.includes('idle'))).toBe(true); // an idle one is safe
+    // Usage still updates, read from the copy the session keeps fresh.
+    expect(probedFiles.some((f) => f.startsWith(sessionDir))).toBe(true);
+    expect(snap.accounts['busy']?.fiveHour).toBe(0.5);
+  });
+
+  describe('an account the editor is pointed at', () => {
+    /** Point the editor pointer at `dir`, the way `ccx editor on` does. */
+    function pointEditorAt(home: string, dir: string): void {
+      try {
+        symlinkSync(dir, path.join(home, 'editor-active'), 'junction');
+      } catch {
+        symlinkSync(dir, path.join(home, 'editor-active'));
+      }
+    }
+
+    /** Give an account a login that expired `minutesAgo`. */
+    function expiredLogin(dir: string, name: string, minutesAgo: number): void {
+      writeFileSync(
+        path.join(dir, '.credentials.json'),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: `tok-${name}`,
+            refreshToken: `rt-${name}`,
+            expiresAt: Date.now() - minutesAgo * 60_000,
+          },
+        }),
+        'utf8',
+      );
+    }
+
+    it('is NOT renewed while it could still be in use', async () => {
+      // The editor reads the login directly, so ccx cannot see its session. This
+      // is the same failure as the terminal case: renewing signs the editor out.
+      const { c, accounts } = setup(['ide', 'other']);
+      const home = c.env.CLAUDE_AUTO_SWITCH_HOME as string;
+      expiredLogin(accounts[0]!.dir, 'ide', 1);
+      expiredLogin(accounts[1]!.dir, 'other', 1);
+      pointEditorAt(home, accounts[0]!.dir);
+
+      const renewed: string[] = [];
+      await refreshUsage(accounts, c, {
+        probe: () => Promise.resolve(result(0.2, 0.3)),
+        renew: (dir) => {
+          renewed.push(dir);
+          return Promise.resolve({ status: 'refreshed' });
+        },
+      });
+
+      expect(renewed.some((d) => d.includes('ide'))).toBe(false);
+      expect(renewed.some((d) => d.includes('other'))).toBe(true); // not pointed at
+      expect(readCredentialEvents(10, c).some((e) => e.detail?.includes('editor'))).toBe(true);
+    });
+
+    it('IS renewed once its login has been dead too long for anything to hold it', async () => {
+      // Otherwise an idle editor account's usage would go stale for good. A live
+      // Claude refreshes within minutes, so hours of nothing means nothing is
+      // using it, and renewing is both safe and the only way to read its usage.
+      const { c, accounts } = setup(['ide']);
+      const home = c.env.CLAUDE_AUTO_SWITCH_HOME as string;
+      expiredLogin(accounts[0]!.dir, 'ide', 120);
+      pointEditorAt(home, accounts[0]!.dir);
+
+      const renewed: string[] = [];
+      await refreshUsage(accounts, c, {
+        probe: () => Promise.resolve(result(0.2, 0.3)),
+        renew: (dir) => {
+          renewed.push(dir);
+          return Promise.resolve({ status: 'refreshed' });
+        },
+      });
+
+      expect(renewed).toHaveLength(1);
+    });
+
+    it('protects nothing when the editor integration is off', async () => {
+      const { c, accounts } = setup(['ide']);
+      expiredLogin(accounts[0]!.dir, 'ide', 1);
+      // No pointer at all.
+      const renewed: string[] = [];
+      await refreshUsage(accounts, c, {
+        probe: () => Promise.resolve(result(0.2, 0.3)),
+        renew: (dir) => {
+          renewed.push(dir);
+          return Promise.resolve({ status: 'refreshed' });
+        },
+      });
+      expect(renewed).toHaveLength(1);
+    });
+  });
+
+  it('resumes renewing once the session that was using it is gone', async () => {
+    const { c, accounts } = setup(['busy']);
+    takeLease('busy', path.join(c.env.CLAUDE_AUTO_SWITCH_HOME as string, 'gone'), c);
+    const renewed: string[] = [];
+    await refreshUsage(accounts, c, {
+      probe: () => Promise.resolve(result(0.1, 0.2)),
+      renew: (dir) => {
+        renewed.push(dir);
+        return Promise.resolve({ status: 'refreshed' });
+      },
+      // The session died without cleaning up. Protection must not outlive it.
+      leaseOptions: { isAlive: () => false },
+    });
+    expect(renewed).toHaveLength(1);
   });
 
   it('respects the TTL: fresh entries are not refetched', async () => {

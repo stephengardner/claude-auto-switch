@@ -5,7 +5,7 @@ import { getAccount, listAccounts } from '../accounts/registry.js';
 import { setTarget, removeTarget, isLink, readTarget } from '../daemon/junction.js';
 import { readToken } from '../daemon/token-store.js';
 import { ensureEditorReady } from '../commands/editor-ready.js';
-import { configHome } from '../config/paths.js';
+import { configHome, type PathCtx } from '../config/paths.js';
 import type { CliContext } from '../context.js';
 
 /** The account the editor pointer currently resolves to, or null. */
@@ -17,6 +17,28 @@ export function editorTargetAccount(context: CliContext): { name: string; logged
   if (!account) return null;
   const loggedIn = existsSync(path.join(account.dir, '.credentials.json')) || readToken(account.dir) !== null;
   return { name: account.name, loggedIn };
+}
+
+/**
+ * The account the editor pointer targets, resolved from paths alone.
+ *
+ * A separate, lighter version of editorTargetAccount for callers that only have
+ * a paths context. It exists because the editor's Claude reads an account's login
+ * DIRECTLY through this pointer, so ccx is not in the loop for those sessions and
+ * cannot know one is running: renewing that login can sign the editor out the
+ * same way it used to sign terminal sessions out.
+ *
+ * Returns null when the editor integration is off, so nothing is protected
+ * needlessly.
+ */
+export function editorPointerAccount(
+  accounts: Array<{ name: string; dir: string }>,
+  c: PathCtx = {},
+): string | null {
+  const target = readTarget(path.join(configHome(c), 'editor-active'));
+  if (!target) return null;
+  const resolved = path.resolve(target);
+  return accounts.find((a) => path.resolve(a.dir) === resolved)?.name ?? null;
 }
 
 /**

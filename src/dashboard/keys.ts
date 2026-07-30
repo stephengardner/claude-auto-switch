@@ -1,4 +1,13 @@
-export type KeyAction = 'quit' | 'move' | 'use' | 'force' | 'toggle' | 'rotate' | 'none';
+export type KeyAction =
+  | 'quit'
+  | 'move'
+  | 'use'
+  | 'force'
+  | 'toggle'
+  | 'rotate'
+  | 'add'
+  | 'rename'
+  | 'none';
 
 export interface KeyOutcome {
   /** New selection index (clamped to the row count). */
@@ -32,6 +41,8 @@ export function dispatchKey(
     return { selected, action: 'use' };
   }
   if (key === 'f') return { selected, action: 'force' }; // instant switch (restarts the session)
+  if (key === 'a') return { selected, action: 'add' }; // register another account
+  if (key === 'n') return { selected, action: 'rename' }; // rename the highlighted one
   if (key === 'e') return { selected, action: 'toggle' };
   if (key === 'r') return { selected, action: 'rotate' };
   return { selected, action: 'none' };

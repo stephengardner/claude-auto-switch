@@ -7,10 +7,17 @@ import { loadLedger } from '../ledger/ledger.js';
 import { renderDashboard, type DashboardAccount } from '../dashboard/render.js';
 import { toSnapshot } from '../dashboard/snapshot.js';
 import { dispatchKey } from '../dashboard/keys.js';
-import { configHome } from '../config/paths.js';
+import { openPrompt, promptKey, rejectPrompt, type PromptState } from '../dashboard/prompt.js';
+import path from 'node:path';
+import { configHome, profilesDir } from '../config/paths.js';
+import { addAccount, getAccount } from '../accounts/registry.js';
+import { renameAccount } from '../accounts/rename.js';
+import { assertProfileName } from '../util/names.js';
+import { secureMkdir } from '../util/secret-file.js';
 import { appendEvent, readEvents, formatEvent } from '../events/log.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { getClaude, type CliContext } from '../context.js';
+import { claimRawTerminal } from '../ui/raw-terminal.js';
 
 export interface DashboardOptions {
   /** Print a single frame and exit (no live loop). */
@@ -127,6 +134,29 @@ export async function dashboardCommand(
       updateAccount(a.name, { enabled: !a.enabled }, context.ctx);
       pushEvent(`${a.enabled ? 'disabled' : 'enabled'} ${a.name}`);
     },
+    onName: (kind, text, target) => {
+      if (kind === 'add') {
+        assertProfileName(text);
+        // Checked before anything is created, so a name that is already taken
+        // reports that plainly instead of failing on the folder underneath it.
+        if (getAccount(text, context.ctx)) {
+          throw new Error(`an account called "${text}" already exists`);
+        }
+        const dir = path.join(profilesDir(context.config, context.ctx), text);
+        secureMkdir(dir);
+        addAccount({ name: text, dir }, context.ctx);
+        pushEvent(`added ${text}`);
+        // The browser sign-in is deliberately not run from in here: it wants the
+        // screen, and this screen is already taken. One command finishes it.
+        return `added "${text}" - finish it with: ccx login ${text}`;
+      }
+      if (!target) return 'nothing selected to rename';
+      const result = renameAccount(target.name, text, context.config, context.ctx);
+      pushEvent(`renamed ${result.from} to ${result.to}`);
+      return result.folderNote
+        ? `renamed to "${result.to}" (${result.folderNote})`
+        : `renamed "${result.from}" to "${result.to}"`;
+    },
     onRotate: () => {
       const active = getActive(context.ctx);
       const loggedIn = new Set(healths.filter((h) => h.loggedIn).map((h) => h.name));
@@ -159,6 +189,11 @@ interface LoopDeps {
   onForce: (a: DashboardAccount) => void;
   onToggle: (a: DashboardAccount) => void;
   onRotate: () => void;
+  /**
+   * Apply a typed name. Returns a message to show, or throws to reject the value
+   * and keep the box open so it can be corrected without retyping everything.
+   */
+  onName: (kind: 'add' | 'rename', text: string, selected: DashboardAccount | undefined) => string;
 }
 
 /** Clear-screen refresh loop with a selection cursor; quits on q / Ctrl-C / Ctrl-D. */
@@ -178,25 +213,87 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     running = false;
     if (wake) wake();
   };
+  // Shown in the footer instead of crashing the program. This handler runs on its
+  // own stack, outside the loop below, so an exception escaping it would end the
+  // process without restoring the terminal, which on Windows kills the shell.
+  // Held in an object rather than as two plain variables: both are only ever
+  // assigned inside the keypress handler, and the compiler treats a variable it
+  // never sees change as still holding its initial value.
+  const ui: {
+    notice: string | null;
+    prompt: PromptState | null;
+    /**
+     * The account the open box was opened FOR.
+     *
+     * Captured rather than re-read on submit: the rows are rebuilt every tick and
+     * reindexed, so another `ccx` adding or removing an account between opening
+     * the box and pressing Enter would otherwise rename whatever now sits at that
+     * position, which is not the account the box names.
+     */
+    promptTarget: DashboardAccount | null;
+  } = { notice: null, prompt: null, promptTarget: null };
+
+  /**
+   * One keypress into the name box. Returns the box's next state, or null when it
+   * is finished. Written as state-in/state-out so the flow stays readable.
+   */
+  const advancePrompt = (
+    state: PromptState,
+    text: string,
+    byte0: number | undefined,
+    target: DashboardAccount | null,
+  ): PromptState | null => {
+    const next = promptKey(state, text, byte0);
+    if (next.status === 'cancel') return null;
+    if (next.status !== 'submit') return next;
+    const typed = next.text.trim();
+    if (typed.length === 0) return null; // confirming an empty box just closes it
+    try {
+      ui.notice = deps.onName(next.kind, typed, target ?? undefined);
+      return null;
+    } catch (err) {
+      // Kept open with the reason, so a clash or a bad name can be fixed without
+      // retyping the whole thing.
+      return rejectPrompt(next, (err as Error).message);
+    }
+  };
+
   const onKey = (d: Buffer): void => {
-    const r = dispatchKey(d.toString('utf8'), d[0], selected, snap.accounts.length);
-    selected = r.selected;
-    if (r.action === 'quit') return stop();
-    const target = snap.accounts[selected];
-    if (r.action === 'use' && target) deps.onUse(target);
-    else if (r.action === 'force' && target) deps.onForce(target);
-    else if (r.action === 'toggle' && target) deps.onToggle(target);
-    else if (r.action === 'rotate') deps.onRotate();
-    else if (r.action === 'none') return;
+    try {
+      const text = d.toString('utf8');
+      if (ui.prompt) {
+        ui.prompt = advancePrompt(ui.prompt, text, d[0], ui.promptTarget);
+        if (!ui.prompt) ui.promptTarget = null;
+        if (wake) wake();
+        return;
+      }
+      const r = dispatchKey(text, d[0], selected, snap.accounts.length);
+      selected = r.selected;
+      if (r.action === 'quit') return stop();
+      const target = snap.accounts[selected];
+      if (r.action === 'use' && target) deps.onUse(target);
+      else if (r.action === 'force' && target) deps.onForce(target);
+      else if (r.action === 'toggle' && target) deps.onToggle(target);
+      else if (r.action === 'rotate') deps.onRotate();
+      else if (r.action === 'add') {
+        ui.prompt = openPrompt('add', 'name for the new account:');
+        ui.promptTarget = null;
+      } else if (r.action === 'rename') {
+        if (!target) return;
+        // Captured with the label, so the box acts on the account it names.
+        ui.prompt = openPrompt('rename', `new name for "${target.name}":`, '');
+        ui.promptTarget = target;
+      } else if (r.action === 'none') return;
+      ui.notice = null;
+    } catch (err) {
+      ui.notice = (err as Error).message;
+    }
     if (wake) wake(); // re-render immediately on any handled key
   };
 
-  try {
-    stdin.setRawMode?.(true);
-  } catch {
-    /* not raw-capable */
-  }
-  stdin.resume();
+  // Claiming it this way registers the restore with the process, so every way out
+  // (including a crash or Ctrl-C) hands the terminal back in one piece.
+  const terminal = claimRawTerminal({ epilogue: SHOW_CURSOR + EXIT_ALT });
   stdin.on('data', onKey);
   out.write(ENTER_ALT + HIDE_CURSOR);
 
@@ -211,7 +308,21 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       clamp();
       // Paint over the previous frame from the top: home, then each line clears
       // its own tail, then clear anything left below. No full-screen erase.
-      const frame = renderDashboard(snap, { color: deps.color, interactive: true, selected });
+      const frame = renderDashboard(snap, {
+        color: deps.color,
+        interactive: true,
+        selected,
+        ...(ui.notice ? { notice: ui.notice } : {}),
+        ...(ui.prompt
+          ? {
+              prompt: {
+                label: ui.prompt.label,
+                text: ui.prompt.text,
+                ...(ui.prompt.error ? { error: ui.prompt.error } : {}),
+              },
+            }
+          : {}),
+      });
       const painted = frame.split('\n').map((l) => l + CLEAR_LINE_END).join('\r\n');
       out.write(HOME + painted + '\r\n' + CLEAR_BELOW);
       await new Promise<void>((resolve) => {
@@ -228,12 +339,6 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     }
   } finally {
     stdin.off('data', onKey);
-    try {
-      stdin.setRawMode?.(false);
-    } catch {
-      /* ignore */
-    }
-    stdin.pause();
-    out.write(SHOW_CURSOR + EXIT_ALT);
+    terminal.restore();
   }
 }

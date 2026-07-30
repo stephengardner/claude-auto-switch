@@ -65,6 +65,33 @@ export function renewalIsDue(accountDir: string, now: () => number = () => Date.
   return expiresAt <= now() + EXPIRY_BUFFER_MS;
 }
 
+/**
+ * Has this login been dead long enough that nothing can be using it?
+ *
+ * Used to decide when it is safe to renew a login ccx does not control (an editor
+ * session reads one directly, and ccx cannot see that it is running). A live
+ * Claude refreshes its own token within minutes of expiry, so a token that has
+ * been expired far longer than that is not being held by anything, and renewing
+ * it is both safe and the only way to keep its usage readable.
+ */
+export function expiredLongerThan(
+  accountDir: string,
+  graceMs: number,
+  now: () => number = () => Date.now(),
+): boolean {
+  let oauth: OauthBlock | undefined;
+  try {
+    oauth = (
+      JSON.parse(readFileSync(credentialPath(accountDir), 'utf8')) as Record<string, unknown>
+    ).claudeAiOauth as OauthBlock | undefined;
+  } catch {
+    return false;
+  }
+  const expiresAt = typeof oauth?.expiresAt === 'number' ? oauth.expiresAt : 0;
+  if (expiresAt === 0) return false; // nothing to judge; treat as in use
+  return expiresAt < now() - graceMs;
+}
+
 /** Renew `accountDir`'s token if it is expired (or about to be). */
 export async function refreshCredentialIfExpired(
   accountDir: string,

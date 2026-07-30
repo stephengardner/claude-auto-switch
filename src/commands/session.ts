@@ -1,13 +1,24 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
-import { readSwitchRequest, clearSwitchRequest, decideSwitch, writeSwitchRequest } from '../state/switch-request.js';
+import {
+  readSwitchRequest,
+  clearSwitchRequest,
+  decideSwitch,
+  writeSwitchRequest,
+} from '../state/switch-request.js';
 import { startProactiveRotation } from '../usage/proactive.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
-import { loadLedger, saveLedger, markCapped, cappedNames, modelOnlyLimit } from '../ledger/ledger.js';
+import {
+  loadLedger,
+  saveLedger,
+  markCapped,
+  cappedNames,
+  modelOnlyLimit,
+} from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { runHotSwapSession } from '../launcher/hot-swap.js';
@@ -25,7 +36,10 @@ import {
   sessionIdentityEmail,
   hasUsableLogin,
 } from '../accounts/credential-vault.js';
-import { withCredentialLock } from '../claude/locks.js';
+import { decideSaveBack } from '../accounts/save-back.js';
+import { takeLease, touchLease, releaseLease } from '../session/lease.js';
+import { activateWithLease, finishWithLease } from '../session/handoff.js';
+import { withCredentialLock, withCredentialLockIfFree } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { appendEvent } from '../events/log.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -80,7 +94,6 @@ function identityFields(accountDir: string): Record<string, unknown> {
   }
   return id;
 }
-
 
 /**
  * Build/refresh the session's .claude.json so the interactive app treats it as
@@ -169,6 +182,14 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   const debugLog = process.env.CAS_DEBUG ? path.join(sessionDir, 'session-debug.log') : undefined;
 
   let current: Account | null = null;
+  /**
+   * The account name we announced as in use.
+   *
+   * Kept separately from `current` because that is only ever assigned inside
+   * callbacks, so the compiler cannot see it change and narrows it away at the
+   * end of the function.
+   */
+  let announced: string | null = null;
 
   // Which model was out, when the limit was about one model rather than the
   // whole account. Recorded with the limit so it never blocks other models.
@@ -203,7 +224,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // The session is signed out. Recording this is how "why was I asked to
       // sign in again?" becomes answerable later.
       logCredentialEvent(
-        { account: account.name, kind: 'signed-out', detail: 'session had no login; left the stored one alone' },
+        {
+          account: account.name,
+          kind: 'signed-out',
+          detail: 'session had no login; left the stored one alone',
+        },
         context.ctx,
       );
       return;
@@ -216,19 +241,17 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // Checked against the address recorded when the account was registered,
     // which does not drift, rather than against the profile's own config file,
     // which can already be wrong by the time we look at it.
-    const sessionEmail = sessionIdentityEmail(sessionDir);
-    if (sessionEmail && account.email && sessionEmail.toLowerCase() !== account.email.toLowerCase()) {
-      err(
-        `[ccx] this session is signed in as ${sessionEmail}, not "${account.name}" (${account.email}); ` +
-          'leaving that account\'s stored login untouched',
-      );
-      return;
-    }
-    // Fall back to comparing config identities when the registry has no address.
-    const sessionId = identityKey(sessionDir);
-    const accountId = identityKey(account.dir);
-    if (!sessionEmail && sessionId && accountId && sessionId !== accountId) {
-      err(`[ccx] session is now a different account than "${account.name}"; not overwriting its login`);
+    // The decision itself lives in decideSaveBack, where it can be tested. It
+    // was inline here, untested, and a gap in it went unnoticed for that reason.
+    const decision = decideSaveBack({
+      sessionEmail: sessionIdentityEmail(sessionDir),
+      ...(account.email ? { accountEmail: account.email } : {}),
+      sessionIdentity: identityKey(sessionDir),
+      accountIdentity: identityKey(account.dir),
+      accountName: account.name,
+    });
+    if (!decision.save) {
+      err(`[ccx] ${decision.reason}`);
       return;
     }
     try {
@@ -237,6 +260,55 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     } catch {
       /* best effort: preserve a refreshed token back to the account */
     }
+  };
+
+  /**
+   * A cheap fingerprint of the session's credential file, so a change can be
+   * spotted without reading or parsing it on every tick.
+   */
+  const credStamp = (): string => {
+    try {
+      const st = statSync(sessionCreds);
+      return `${st.mtimeMs}:${st.size}`;
+    } catch {
+      return '';
+    }
+  };
+  /** The fingerprint of the credential we last copied to the profile. */
+  let mirroredStamp = '';
+
+  /**
+   * Copy a login Claude just refreshed back to the account's own folder.
+   *
+   * Needed because a refresh REPLACES the login: once Claude renews the copy in
+   * the session folder, the copy still sitting in the profile is dead. Saving back
+   * only when the session ends leaves that dead login in place for as long as the
+   * session runs, so the next terminal starts on it and is told to sign in again.
+   *
+   * Runs on the ordinary poll tick, and does nothing unless the file actually
+   * changed. saveBack does the checking: a signed-out or someone-else's login is
+   * never written over a good one.
+   */
+  const mirrorSessionLoginToProfile = (account: Account): void => {
+    const stamp = credStamp();
+    if (!stamp || stamp === mirroredStamp) return;
+    // Under the same lock that serializes credential refreshes, so this copy
+    // cannot run against a refresh that is part-way through writing.
+    //
+    // Try-only, never waiting: the lock's wait is a synchronous sleep loop of up
+    // to two seconds, and this runs on the poll that also relays the session's
+    // output, so waiting here would visibly freeze the terminal. A busy lock just
+    // means someone else is writing, which is precisely when skipping is right;
+    // the next tick picks it up, and the final save catches anything left.
+    withCredentialLockIfFree(sessionDir, () => {
+      // Re-read inside the lock: the file may have changed again between the
+      // check above and getting the lock, and the stamp has to describe what was
+      // actually copied or a later change would be treated as already mirrored.
+      const nowStamp = credStamp();
+      if (!nowStamp || nowStamp === mirroredStamp) return;
+      mirroredStamp = nowStamp;
+      saveBack(account);
+    });
   };
 
   /** Remove the live credential from the shared session dir so it never lingers. */
@@ -255,26 +327,39 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * instead of leaving the session on a half-applied account.
    */
   const activate = (account: Account): void => {
-    withCredentialLock(sessionDir, () => {
-      if (current && current.name !== account.name) saveBack(current);
-      const src = path.join(account.dir, CREDS);
-      // Always replace (or clear) the session credential so one account's login
-      // can never linger into another account's session.
-      try {
-        // A refused credential (missing, or signed out with empty tokens) must
-        // CLEAR the session, never leave the previous account's login in place:
-        // the session would keep running as that account while ccx believed it
-        // had moved, and its limit would then be blamed on the wrong account.
-        if (!existsSync(src) || !installCredential(sessionDir, src)) {
-          scrubSessionCreds();
-        }
-        // Stamp the account's identity (oauthAccount/userID) so the interactive
-        // app sees a logged-in account instead of prompting for login.
-        applyAccountIdentity(sessionDir, account.dir, context.ctx);
-      } catch (e) {
-        rollbackCredential(sessionDir);
-        throw e;
-      }
+    // The ORDER of announce / copy / release is the safety property, so it lives
+    // in activateWithLease where tests pin it: announce first, copy second,
+    // release the old one last. Any gap between a login being in use and being
+    // announced is a gap where a renewer can retire it.
+    announced = activateWithLease(account.name, announced, {
+      takeLease: (name) => takeLease(name, sessionDir, context.ctx),
+      releaseLease: (name) => releaseLease(name, context.ctx),
+      install: () => {
+        withCredentialLock(sessionDir, () => {
+          if (current && current.name !== account.name) saveBack(current);
+          const src = path.join(account.dir, CREDS);
+          // Always replace (or clear) the session credential so one account's login
+          // can never linger into another account's session.
+          try {
+            // A refused credential (missing, or signed out with empty tokens) must
+            // CLEAR the session, never leave the previous account's login in place:
+            // the session would keep running as that account while ccx believed it
+            // had moved, and its limit would then be blamed on the wrong account.
+            if (!existsSync(src) || !installCredential(sessionDir, src)) {
+              scrubSessionCreds();
+            }
+            // Stamp the account's identity (oauthAccount/userID) so the interactive
+            // app sees a logged-in account instead of prompting for login.
+            applyAccountIdentity(sessionDir, account.dir, context.ctx);
+            // What we just put there is by definition already in the profile, so it
+            // is not a change to mirror back.
+            mirroredStamp = credStamp();
+          } catch (e) {
+            rollbackCredential(sessionDir);
+            throw e;
+          }
+        });
+      },
     });
     current = account;
   };
@@ -305,7 +390,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
       const pinned = getActive(context.ctx);
       const eligible = accounts
-        .filter((a) => a.enabled && !excluding.has(a.name) && !capped.has(a.name) && hasLogin(a.dir))
+        .filter(
+          (a) => a.enabled && !excluding.has(a.name) && !capped.has(a.name) && hasLogin(a.dir),
+        )
         .sort((a, b) => a.priority - b.priority);
       // Start on the pinned account if it is still eligible, else lowest priority.
       const pick = (pinned ? eligible.find((a) => a.name === pinned) : undefined) ?? eligible[0];
@@ -349,6 +436,23 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // Watch for an operator-requested switch to a DIFFERENT, usable account.
       // Seamless (default) swaps credentials under the running process; 'restart'
       // returns the name so the child is ended and the loop relaunches --continue.
+      /**
+       * Two jobs that must keep running for as long as the session is alive,
+       * both about not losing a login: say we are still using this account (so
+       * the no-renew protection stays in force), and copy a token Claude just
+       * refreshed back to the profile. Without the copy, the profile keeps the
+       * token Claude's refresh already retired, and the NEXT `claude` starts on
+       * a dead login and asks you to sign in.
+       *
+       * Deliberately separate from switchWatch: these ran inside it, and the
+       * poll skips switchWatch once a cap or a switch is pending, so the session
+       * went quiet exactly when it was still finishing up.
+       */
+      const onTick = (): void => {
+        if (!current) return;
+        touchLease(current.name, context.ctx);
+        mirrorSessionLoginToProfile(current);
+      };
       const switchWatch = (): string | null => {
         const request = readSwitchRequest(context.ctx);
         const onNow = current?.name ?? account.name;
@@ -377,6 +481,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         configDir: sessionDir,
         env,
         switchWatch,
+        onTick,
         verifyCap,
         input: terminalInput,
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
@@ -432,6 +537,14 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // this session afterwards report "not logged in", which sends you chasing a
   // sign-in problem that does not exist. The same token already lives in the
   // account folder with the same permissions, so removing it protected nothing.
-  if (current) saveBack(current);
+  // Save the login back, THEN stop protecting it. The other order leaves a window
+  // where a renewer rotates the profile and the save then overwrites it with the
+  // session's older token, destroying the login it just renewed.
+  finishWithLease(announced, {
+    saveBack: () => {
+      if (current) saveBack(current);
+    },
+    releaseLease: (name) => releaseLease(name, context.ctx),
+  });
   return exitCode;
 }

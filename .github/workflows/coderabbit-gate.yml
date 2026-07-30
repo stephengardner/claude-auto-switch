@@ -17,6 +17,15 @@ on:
   issue_comment:
     types: [created, edited]
 
+# One gate run per pull request at a time. Without this, every comment and every
+# review event starts another run, and each one that failed while findings were
+# still open stays on the commit as a failing check forever. The pull request then
+# cannot merge even after the gate passes, because the old failures still count.
+# Superseded runs are cancelled instead of piling up.
+concurrency:
+  group: coderabbit-gate-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: read
