@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node-pty';
 import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive } from '../../src/state/active.js';
@@ -54,7 +55,43 @@ function readRuns(runsLog: string): RunEntry[] {
     .map((l) => JSON.parse(l) as RunEntry);
 }
 
-describe('on-demand switch in a running session (against fake-claude)', () => {
+/**
+ * These tests drive a REAL pseudo-terminal, which is the only way to exercise
+ * the switch machinery honestly. Some environments will not allocate one (the
+ * hosted macOS runners refuse: `posix_spawnp failed`), and a test that cannot
+ * run is not the same as a test that fails, so they are skipped there.
+ *
+ * Deliberately noisy about it: a silently skipped test reads as a passing one.
+ */
+function canSpawnPty(): boolean {
+  try {
+    const probe = spawn(process.execPath, ['-e', 'process.exit(0)'], {
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 24,
+      cwd: process.cwd(),
+      env: process.env as Record<string, string>,
+    });
+    try {
+      probe.kill();
+    } catch {
+      /* already gone */
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const PTY_AVAILABLE = canSpawnPty();
+if (!PTY_AVAILABLE) {
+  console.warn(
+    '[skipped] real-pseudo-terminal switch tests: this environment will not allocate one, ' +
+      'so the in-session switch paths are NOT covered here.',
+  );
+}
+
+describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against fake-claude)', () => {
   afterEach(() => {
     delete process.env.FAKE_CLAUDE_IDLE_MS;
     delete process.env.FAKE_CLAUDE_RUNS_LOG;
