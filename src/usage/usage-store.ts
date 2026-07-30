@@ -5,6 +5,7 @@ import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { readToken } from '../daemon/token-store.js';
 import { hasUsableLogin } from '../accounts/credential-vault.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
+import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
 import { refreshCredentialIfExpired } from './oauth-refresh.js';
 
@@ -118,6 +119,21 @@ export async function refreshUsage(
   for (const account of stale) {
     let result: LimitProbeResult;
     try {
+      // Renewing rotates the login, so if another profile holds the SAME login
+      // this would end that one. Leave both alone and say so: a wasteful
+      // duplicate is recoverable, a destroyed login is not.
+      const siblings = renewalWouldBreakOthers(account, accounts);
+      if (siblings.length > 0) {
+        logCredentialEvent(
+          {
+            account: account.name,
+            kind: 'refused',
+            detail: `not renewed: shares a login with ${siblings.join(', ')}; renewing would end theirs`,
+          },
+          c,
+        );
+        continue;
+      }
       // Renewal rotates the token, so it is the single most likely reason a
       // login stops working. Record what happened, with the reason.
       const renewal = await renew(account.dir);

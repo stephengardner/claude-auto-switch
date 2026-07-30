@@ -73,7 +73,10 @@ describe('verifyAccountIdentities', () => {
     );
     expect(findings[0]?.kind).toBe('ok');
     expect(findings[1]?.kind).toBe('duplicate');
-    expect(findings[1]?.detail).toContain('shares the same login as "a"');
+    expect(findings[1]?.detail).toContain('"a"');
+    // The message has to say what is at stake, not just that it is a duplicate:
+    // renewing one of them ends the other, which is how two accounts were lost.
+    expect(findings[1]?.detail).toContain('renewing either would end the other');
   });
 
   it('reports an empty credential as logged out, not as a mismatch', async () => {

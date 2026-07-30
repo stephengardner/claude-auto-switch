@@ -6,9 +6,11 @@ import {
   auditGitSafety,
   auditShim,
   auditSharedHistory,
+  auditSharedLogins,
   auditCaps,
   doctorCommand,
 } from './doctor.js';
+import { addAccount } from '../accounts/registry.js';
 import { installShim } from '../shell/install-shim.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
@@ -133,5 +135,46 @@ describe('doctorCommand', () => {
     expect(payload.schemaVersion).toBe(1);
     expect(payload.ok).toBe(true);
     expect(Array.isArray(payload.checks)).toBe(true);
+  });
+});
+
+describe('auditSharedLogins', () => {
+  /** Give `name` a stored login whose refresh token is `token`. */
+  function signIn(context: CliContext, name: string, token: string): void {
+    const home = context.ctx.env?.CLAUDE_AUTO_SWITCH_HOME as string;
+    const dir = path.join(home, 'profiles', name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: `at-${token}`, refreshToken: token } }),
+      'utf8',
+    );
+    addAccount({ name, dir, enabled: true }, context.ctx);
+  }
+
+  it('passes when every account has its own login', () => {
+    const c = context();
+    signIn(c, 'one', 'refresh-one');
+    signIn(c, 'two', 'refresh-two');
+    expect(auditSharedLogins(c).ok).toBe(true);
+  });
+
+  it('fails, names both profiles, and says how to fix it when a login is shared', () => {
+    const c = context();
+    signIn(c, 'one', 'same-refresh-token');
+    signIn(c, 'two', 'same-refresh-token');
+    const r = auditSharedLogins(c);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('one');
+    expect(r.detail).toContain('two');
+    expect(r.fix).toEqual(['ccx login two']); // the first one keeps the login
+  });
+
+  it('never puts a token in the report', () => {
+    const c = context();
+    signIn(c, 'one', 'super-secret-refresh');
+    signIn(c, 'two', 'super-secret-refresh');
+    const r = auditSharedLogins(c);
+    expect(JSON.stringify(r)).not.toContain('super-secret-refresh');
   });
 });

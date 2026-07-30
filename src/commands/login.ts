@@ -1,5 +1,7 @@
 import { listAccounts, getAccount, updateAccount } from '../accounts/registry.js';
 import { fetchTokenOwner } from '../accounts/identity-check.js';
+import { profileAlreadyHolding } from '../accounts/duplicate-guard.js';
+import { rollbackCredential } from '../accounts/credential-vault.js';
 import { probeAll } from '../health/prober.js';
 import { loginAccount, type LoginDeps } from '../login/login.js';
 import { cdpBrowserAuthorizer } from '../login/browser.js';
@@ -65,25 +67,31 @@ export async function loginCommand(
     // against something known rather than against whatever a file claims.
     const owner = await fetchTokenOwner(account.dir);
     if (!owner) continue;
-    if (owner !== account.email) {
-      updateAccount(account.name, { email: owner }, context.ctx);
-    }
     context.out(`  signed in as ${owner}`);
 
-    // The browser stays signed in between logins, so a second `ccx login` can
-    // quietly hand you the SAME account again. Two profiles on one account is
-    // silent and useless (switching between them gains nothing), so say it now
-    // rather than letting it be discovered later.
-    const twin = listAccounts(context.ctx).find(
-      (other) => other.name !== account.name && other.email?.toLowerCase() === owner.toLowerCase(),
-    );
+    // The browser stays signed in between logins, so a second `ccx login` hands
+    // you the SAME account again unless you signed out. That state is refused
+    // rather than warned about, because it is not merely useless: renewing a
+    // login rotates it, so two profiles sharing one login means renewing either
+    // destroys the other, and the account is then gone until it is signed in
+    // again. Two accounts here were lost exactly that way.
+    const twin = profileAlreadyHolding(owner, listAccounts(context.ctx), account.name);
     if (twin) {
+      const restored = rollbackCredential(account.dir);
+      context.out(`  REFUSED: ${owner} is already "${twin}".`);
       context.out(
-        `  warning: "${twin.name}" is signed in as ${owner} too. Sign out at claude.ai ` +
-          `(or use a different browser profile), then run: ccx login ${account.name}`,
+        `  Two profiles on one account cannot both survive: renewing either one ends the other.`,
+      );
+      context.out(`  Sign out at claude.ai (or use a separate browser profile), then: ccx login ${account.name}`);
+      context.out(
+        restored
+          ? `  "${account.name}" was put back to its previous login.`
+          : `  "${account.name}" has no login now; sign it in as a different account.`,
       );
       allOk = false;
+      continue;
     }
+    updateAccount(account.name, { email: owner }, context.ctx);
   }
   return allOk ? 0 : 1;
 }

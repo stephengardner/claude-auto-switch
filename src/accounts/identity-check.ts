@@ -102,7 +102,7 @@ export async function verifyAccountIdentities(
       findings.push({
         account: account.name,
         kind: 'duplicate',
-        detail: `shares the same login as "${twin}" (run: ccx login ${account.name})`,
+        detail: `holds the SAME sign-in as "${twin}"; renewing either would end the other (run: ccx login ${account.name})`,
       });
       continue;
     }
@@ -147,7 +147,7 @@ export async function verifyAccountIdentities(
       const finding = findings.find((f) => f.account === name);
       if (!finding) continue;
       finding.kind = 'duplicate';
-      finding.detail = `also signed in as ${owner}, the same account as "${names[0]}" (run: ccx login ${name})`;
+      finding.detail = `is the same ACCOUNT as "${names[0]}" (${owner}), so switching between them gains nothing (run: ccx login ${name})`;
     }
   }
   return findings;
