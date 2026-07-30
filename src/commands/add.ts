@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { profilesDir } from '../config/paths.js';
-import { addAccount } from '../accounts/registry.js';
+import { addAccount, removeAccount } from '../accounts/registry.js';
+import { settleNewLogin } from '../login/settle-login.js';
 import { runInherit } from '../util/exec.js';
 import { invokerArgs } from '../invoker.js';
 import { assertProfileName, assertInsideProfiles } from '../util/names.js';
@@ -41,6 +42,18 @@ export async function addCommand(
     await runInherit(claude.bin, invokerArgs(claude, loginArgs), {
       env: { CLAUDE_CONFIG_DIR: dir },
     });
+
+    // The browser is usually still signed in to the account you added last, so
+    // this is the most likely place to end up with two profiles on one account.
+    // Checked through the same choke point as `ccx login`, and if it is refused
+    // the registration is undone so you are back where you started rather than
+    // holding a profile that cannot work.
+    const settled = await settleNewLogin(context, { name, dir });
+    if (!settled.ok) {
+      removeAccount(name, context.ctx);
+      context.out(`  "${name}" was not kept.`);
+      return 1;
+    }
   }
   return 0;
 }

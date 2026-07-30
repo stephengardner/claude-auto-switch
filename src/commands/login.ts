@@ -1,7 +1,5 @@
-import { listAccounts, getAccount, updateAccount } from '../accounts/registry.js';
-import { fetchTokenOwner } from '../accounts/identity-check.js';
-import { profileAlreadyHolding } from '../accounts/duplicate-guard.js';
-import { rollbackCredential } from '../accounts/credential-vault.js';
+import { listAccounts, getAccount } from '../accounts/registry.js';
+import { settleNewLogin } from '../login/settle-login.js';
 import { probeAll } from '../health/prober.js';
 import { loginAccount, type LoginDeps } from '../login/login.js';
 import { cdpBrowserAuthorizer } from '../login/browser.js';
@@ -62,36 +60,10 @@ export async function loginCommand(
       allOk = false;
       continue;
     }
-    // Record who this profile is now, straight from the API. Captured here
-    // because a login just proved it, and having it means later checks compare
-    // against something known rather than against whatever a file claims.
-    const owner = await fetchTokenOwner(account.dir);
-    if (!owner) continue;
-    context.out(`  signed in as ${owner}`);
-
-    // The browser stays signed in between logins, so a second `ccx login` hands
-    // you the SAME account again unless you signed out. That state is refused
-    // rather than warned about, because it is not merely useless: renewing a
-    // login rotates it, so two profiles sharing one login means renewing either
-    // destroys the other, and the account is then gone until it is signed in
-    // again. Two accounts here were lost exactly that way.
-    const twin = profileAlreadyHolding(owner, listAccounts(context.ctx), account.name);
-    if (twin) {
-      const restored = rollbackCredential(account.dir);
-      context.out(`  REFUSED: ${owner} is already "${twin}".`);
-      context.out(
-        `  Two profiles on one account cannot both survive: renewing either one ends the other.`,
-      );
-      context.out(`  Sign out at claude.ai (or use a separate browser profile), then: ccx login ${account.name}`);
-      context.out(
-        restored
-          ? `  "${account.name}" was put back to its previous login.`
-          : `  "${account.name}" has no login now; sign it in as a different account.`,
-      );
-      allOk = false;
-      continue;
-    }
-    updateAccount(account.name, { email: owner }, context.ctx);
+    // Accepted or refused in one shared place, so `ccx add` and `ccx login`
+    // cannot disagree about what a valid sign-in is.
+    const settled = await settleNewLogin(context, { name: account.name, dir: account.dir });
+    if (!settled.ok) allOk = false;
   }
   return allOk ? 0 : 1;
 }

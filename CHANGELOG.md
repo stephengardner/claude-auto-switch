@@ -13,15 +13,24 @@ semantic versioning.
   browser was still signed in to the first gave both profiles the same login.
   Renewing a login replaces it, so renewing either profile silently ended the
   other, and the account stayed dead until it was signed in again by hand. Two
-  accounts were lost exactly that way. Three changes so it cannot recur:
-  - `ccx login` now **refuses** the duplicate instead of warning about it. It
-    checks who the new login belongs to, and if another profile already holds
-    that account it puts the profile back to its previous login and tells you to
-    sign out at claude.ai first.
-  - Automatic renewal **skips** any profile that shares a login with another one,
-    and records why, so background renewal can never be what kills an account.
+  accounts were lost exactly that way. Four changes so it cannot recur:
+  - **A sign-in is now accepted or refused in one shared place**, used by both
+    `ccx add` and `ccx login`. This matters because `ccx add` is the path that
+    actually creates duplicates (your browser is still signed in to the account
+    you added last), and it used to run the login directly, so a check living in
+    `ccx login` did not apply to it at all.
+  - **A duplicate is refused, not warned about.** ccx asks who the new login
+    belongs to, and if another profile already holds that account it puts the
+    profile back to its previous login, or removes the refused login when there
+    is no previous one to go back to. Either way the duplicate is never left
+    active. From `ccx add`, the new registration is dropped too, so you end up
+    exactly where you started.
+  - Automatic renewal **skips** any profile that shares a login with another one.
+    Only the renewal is skipped: usage still updates for that profile, and the
+    reason is recorded once, when a renewal was actually due.
   - `ccx doctor` gained a `separate logins` check that spots shared logins with
-    no network call, so it reports even when offline.
+    no network call, so it reports even when offline. It reads the local
+    fingerprints, so it is also the check that still works when the API does not.
 
 Nothing in the report ever contains a token: sharing is detected by comparing
 hashes.

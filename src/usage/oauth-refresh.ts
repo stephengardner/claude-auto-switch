@@ -45,6 +45,26 @@ export interface RefreshOptions {
   clientId?: string;
 }
 
+/**
+ * Is this login expired, or close enough that it would be renewed now?
+ *
+ * Exported so a caller that must NOT renew (a profile sharing its login with
+ * another) can still tell whether a renewal would have happened, and report that
+ * once instead of on every check.
+ */
+export function renewalIsDue(accountDir: string, now: () => number = () => Date.now()): boolean {
+  let oauth: OauthBlock | undefined;
+  try {
+    oauth = (JSON.parse(readFileSync(credentialPath(accountDir), 'utf8')) as Record<string, unknown>)
+      .claudeAiOauth as OauthBlock | undefined;
+  } catch {
+    return false; // nothing readable to renew
+  }
+  if (!oauth || typeof oauth !== 'object' || !oauth.accessToken) return false;
+  const expiresAt = typeof oauth.expiresAt === 'number' ? oauth.expiresAt : 0;
+  return expiresAt <= now() + EXPIRY_BUFFER_MS;
+}
+
 /** Renew `accountDir`'s token if it is expired (or about to be). */
 export async function refreshCredentialIfExpired(
   accountDir: string,

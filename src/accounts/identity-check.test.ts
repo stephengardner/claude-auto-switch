@@ -74,9 +74,12 @@ describe('verifyAccountIdentities', () => {
     expect(findings[0]?.kind).toBe('ok');
     expect(findings[1]?.kind).toBe('duplicate');
     expect(findings[1]?.detail).toContain('"a"');
-    // The message has to say what is at stake, not just that it is a duplicate:
-    // renewing one of them ends the other, which is how two accounts were lost.
-    expect(findings[1]?.detail).toContain('renewing either would end the other');
+    // This check compares ACCESS tokens, which proves the two profiles are the
+    // same account, not that renewing one would end the other. That stronger
+    // claim needs matching refresh tokens, so it belongs to duplicate-guard and
+    // must not be asserted here.
+    expect(findings[1]?.detail).toContain('same ACCOUNT');
+    expect(findings[1]?.detail).not.toContain('renewing');
   });
 
   it('reports an empty credential as logged out, not as a mismatch', async () => {

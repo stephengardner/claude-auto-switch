@@ -68,6 +68,55 @@ describe('refreshUsage', () => {
     expect(events[0]?.detail).toBe('invalid_grant');
   });
 
+  it('does not renew a profile that shares a login, but still reads its usage', async () => {
+    const { c, accounts } = setup(['a', 'b']);
+    // Same refresh token in both: renewing either would end the other.
+    for (const account of accounts) {
+      writeFileSync(
+        path.join(account.dir, '.credentials.json'),
+        JSON.stringify({
+          claudeAiOauth: { accessToken: `tok-${account.name}`, refreshToken: 'shared-refresh' },
+        }),
+        'utf8',
+      );
+    }
+    let renewals = 0;
+    const snap = await refreshUsage(accounts, c, {
+      probe: () => Promise.resolve(result(0.3, 0.4)),
+      renew: () => {
+        renewals += 1;
+        return Promise.resolve({ status: 'refreshed' });
+      },
+    });
+
+    expect(renewals).toBe(0); // renewal is what destroys the sibling
+    // Skipping the renewal must not skip the ACCOUNT: usage still updates, and
+    // the entry is stamped, so it does not stay stale and get retried forever.
+    expect(snap.accounts['a']?.fiveHour).toBe(0.3);
+    expect(snap.accounts['b']?.at).toBeGreaterThan(0);
+  });
+
+  it('records the refusal only when a renewal was actually due, not every refresh', async () => {
+    const { c, accounts } = setup(['a', 'b']);
+    // Shared login, but both tokens are valid for hours: nothing was due, so
+    // there is nothing to report. Logging here would append on every refresh.
+    for (const account of accounts) {
+      writeFileSync(
+        path.join(account.dir, '.credentials.json'),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: `tok-${account.name}`,
+            refreshToken: 'shared-refresh',
+            expiresAt: Date.now() + 6 * 60 * 60_000,
+          },
+        }),
+        'utf8',
+      );
+    }
+    await refreshUsage(accounts, c, { probe: () => Promise.resolve(result(0.1, 0.2)) });
+    expect(readCredentialEvents(10, c)).toHaveLength(0);
+  });
+
   it('respects the TTL: fresh entries are not refetched', async () => {
     const { c, accounts } = setup(['a']);
     let calls = 0;

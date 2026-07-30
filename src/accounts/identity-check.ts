@@ -71,8 +71,13 @@ async function whoAmI(token: string, fetchImpl: typeof fetch): Promise<string | 
 
 /**
  * Check every profile: is it logged in, does its token belong to the expected
- * account, and are two profiles sharing one login? Sequential on purpose, to
+ * account, and are two profiles on the same account? Sequential on purpose, to
  * stay friendly to the endpoint.
+ *
+ * Scope: this reports duplicate OWNERSHIP only. Whether renewing one profile
+ * would destroy another's login is a different question, answered by comparing
+ * refresh tokens in duplicate-guard, because two profiles can reach one account
+ * through separate logins.
  */
 export async function verifyAccountIdentities(
   accounts: CheckableAccount[],
@@ -102,7 +107,7 @@ export async function verifyAccountIdentities(
       findings.push({
         account: account.name,
         kind: 'duplicate',
-        detail: `holds the SAME sign-in as "${twin}"; renewing either would end the other (run: ccx login ${account.name})`,
+        detail: `is the same ACCOUNT as "${twin}", so switching between them gains nothing (run: ccx login ${account.name})`,
       });
       continue;
     }

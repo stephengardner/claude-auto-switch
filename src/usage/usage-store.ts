@@ -7,7 +7,7 @@ import { hasUsableLogin } from '../accounts/credential-vault.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
-import { refreshCredentialIfExpired } from './oauth-refresh.js';
+import { refreshCredentialIfExpired, renewalIsDue } from './oauth-refresh.js';
 
 /**
  * Cached per-account subscription usage (5h/7d utilization + resets), fetched
@@ -120,10 +120,13 @@ export async function refreshUsage(
     let result: LimitProbeResult;
     try {
       // Renewing rotates the login, so if another profile holds the SAME login
-      // this would end that one. Leave both alone and say so: a wasteful
-      // duplicate is recoverable, a destroyed login is not.
+      // this would end that one. Only the RENEWAL is skipped, not the account:
+      // reading usage does not need a fresh token, so the numbers still update
+      // and the entry still gets stamped. Recorded only when a renewal was
+      // actually due, otherwise every refresh would append the same line.
       const siblings = renewalWouldBreakOthers(account, accounts);
-      if (siblings.length > 0) {
+      const mayRenew = siblings.length === 0;
+      if (!mayRenew && renewalIsDue(account.dir)) {
         logCredentialEvent(
           {
             account: account.name,
@@ -132,11 +135,10 @@ export async function refreshUsage(
           },
           c,
         );
-        continue;
       }
       // Renewal rotates the token, so it is the single most likely reason a
       // login stops working. Record what happened, with the reason.
-      const renewal = await renew(account.dir);
+      const renewal = mayRenew ? await renew(account.dir) : { status: 'not-needed' as const };
       if (renewal.status === 'refreshed') {
         logCredentialEvent({ account: account.name, kind: 'renewed' }, c);
       } else if (renewal.status === 'needs-login') {
