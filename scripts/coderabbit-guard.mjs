@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Refuse to merge while CodeRabbit still has unresolved serious findings.
+ * Refuse to merge while ANY CodeRabbit comment is still unanswered.
  *
  * Usage:  node scripts/coderabbit-guard.mjs <pr-number> [--json]
  * Exit:   0 = clear to merge, 1 = blocked, 2 = could not tell
@@ -20,10 +20,37 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import {
+  bodyFindings,
+  bodyFindingsAcknowledged,
+  threadAnswered,
+  remedyFor,
+} from './coderabbit-findings.mjs';
 
 const REVIEWER = 'coderabbitai';
-/** Wording CodeRabbit uses for the severities worth blocking on. */
-const SERIOUS = /\b(critical|major)\b/i;
+/**
+ * This gate's own check name. It has to be excluded when looking for the
+ * reviewer's signal, because it also contains the word "coderabbit": without
+ * this, the gate reads ITSELF as the reviewer, sees its own success, and decides
+ * the review is finished. It did exactly that on its first real run.
+ */
+const OWN_CHECK = 'coderabbit findings resolved';
+
+/**
+ * EVERY comment counts, not only the ones marked serious.
+ *
+ * Severity is the reviewer's guess. A "nitpick" that turns out to be a real bug
+ * still ships the bug, and deciding which comments deserve an answer is how
+ * comments go unanswered. So the rule is simple: every comment gets resolved or
+ * gets a reply saying why it is wrong.
+ */
+
+
+/** The first non-empty line of a block of text, shortened for one-line output. */
+function firstLine(text, limit = 140) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  return (lines.find((l) => l.trim().length > 0) ?? '').slice(0, limit);
+}
 
 function gh(args) {
   return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
@@ -79,89 +106,206 @@ function reviewBodies(owner, name, pr) {
   const reviews = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}/reviews`, '--paginate']) ?? [];
   return reviews
     .filter((r) => isReviewer(r.user?.login))
-    .map((r) => ({ id: r.id, body: r.body ?? '' }))
+    .map((r) => ({ id: r.id, body: r.body ?? '', at: Date.parse(r.submitted_at ?? '') || 0 }))
     .filter((r) => r.body.length > 0);
 }
 
-/** Issue-level comments, where CodeRabbit also posts summaries. */
-function issueComments(owner, name, pr) {
+/**
+ * What CodeRabbit is doing about the CURRENT commit.
+ *
+ * It posts its own check per commit, so that check is the honest answer to "has
+ * this version been reviewed". Both states matter and both must block:
+ *
+ * - 'working': a review is running right now. Answered comments from an EARLIER
+ *   commit do not cover the code being merged, and clearing on them would merge
+ *   in the window before the new review lands.
+ * - 'absent': no review, and no reviewer working on one.
+ */
+function reviewerState(owner, name, pr) {
+  try {
+    const pull = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}`]);
+    const sha = pull?.head?.sha;
+    if (!sha) return 'absent';
+
+    const isReviewerSignal = (label = '') => {
+      const text = label.toLowerCase();
+      return text.includes('coderabbit') && !text.includes(OWN_CHECK);
+    };
+
+    // CodeRabbit reports through the commit STATUS api, which is a different
+    // list from check runs. Looking in the wrong one made this gate think the
+    // review had finished while it was still pending.
+    const status = ghJson(['api', `repos/${owner}/${name}/commits/${sha}/status`]);
+    const statuses = (status?.statuses ?? []).filter((s) => isReviewerSignal(s.context));
+    if (statuses.some((s) => s.state === 'pending')) return 'working';
+    if (statuses.length > 0) return 'done';
+
+    // Some setups report as a check run instead; same question, other list.
+    const runs = ghJson(['api', `repos/${owner}/${name}/commits/${sha}/check-runs`, '--paginate']);
+    const checks = (runs?.check_runs ?? []).filter((r) => isReviewerSignal(r.name));
+    if (checks.length === 0) return 'absent';
+    return checks.every((r) => r.status === 'completed') ? 'done' : 'working';
+  } catch {
+    // Cannot tell. Say so rather than assume the happy answer.
+    return 'unknown';
+  }
+}
+
+/** Every comment on the pull request, with who wrote it. */
+function allComments(owner, name, pr) {
   const comments = ghJson(['api', `repos/${owner}/${name}/issues/${pr}/comments`, '--paginate']) ?? [];
-  return comments.filter((c) => isReviewer(c.user?.login)).map((c) => c.body ?? '');
+  return comments.map((c) => ({
+    author: c.user?.login ?? '',
+    body: c.body ?? '',
+    at: Date.parse(c.created_at ?? '') || 0,
+  }));
+}
+
+function sleepSeconds(seconds) {
+  // Synchronous on purpose: this script is a gate, not a server.
+  execFileSync(process.execPath, ['-e', `setTimeout(()=>{}, ${Math.round(seconds * 1000)})`]);
+}
+
+/**
+ * How long to wait for a review that is still running, in seconds.
+ *
+ * Without this the gate fails the moment it runs on a push (the review has not
+ * landed yet) and then depends on something re-running it later. When that
+ * re-run does not happen, the pull request can never merge: a gate that
+ * deadlocks protects nothing and gets switched off.
+ */
+function waitSeconds() {
+  const i = process.argv.indexOf('--wait');
+  if (i === -1) return 0;
+  const value = Number(process.argv[i + 1]);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/** Read everything the decision depends on, in one go. */
+function readPullRequest(owner, name, pr) {
+  const comments = allComments(owner, name, pr);
+  return {
+    threads: reviewThreads(owner, name, pr),
+    bodies: reviewBodies(owner, name, pr),
+    comments,
+    summaries: comments.filter((c) => isReviewer(c.author)),
+  };
+}
+
+/** Everything still waiting for an answer, worked out from one snapshot. */
+function collectBlockers(snapshot) {
+  const blockers = [];
+
+  for (const thread of snapshot.threads) {
+    const first = thread.comments?.nodes?.[0];
+    if (!first || !isReviewer(first.author?.login)) continue;
+    if (threadAnswered(thread, isReviewer)) continue;
+    blockers.push({
+      kind: 'inline',
+      where: `${first.path ?? '?'}:${first.line ?? '?'}`,
+      excerpt: firstLine(first.body),
+    });
+  }
+
+  // Findings raised inside a review body cannot be resolved and cannot be
+  // replied to, so they are answered once, explicitly, by a comment.
+  const raised = [
+    ...snapshot.bodies.map((r) => ({ kind: 'review-body', where: `review ${r.id}`, at: r.at, findings: bodyFindings(r.body) })),
+    ...snapshot.summaries.map((c) => ({ kind: 'summary-comment', where: 'summary', at: c.at, findings: bodyFindings(c.body) })),
+  ].filter((r) => r.findings.length > 0);
+
+  // The acknowledgement must be newer than the newest finding it clears.
+  const newestFinding = raised.reduce((newest, r) => Math.max(newest, r.at), 0);
+  if (!bodyFindingsAcknowledged(snapshot.comments, isReviewer, newestFinding)) {
+    for (const source of raised) {
+      for (const finding of source.findings) {
+        blockers.push({ kind: source.kind, where: source.where, excerpt: finding.slice(0, 140) });
+      }
+    }
+  }
+  return blockers;
 }
 
 function main() {
   const pr = Number(process.argv[2]);
   const asJson = process.argv.includes('--json');
   if (!Number.isInteger(pr) || pr <= 0) {
-    console.error('usage: node scripts/coderabbit-guard.mjs <pr-number> [--json]');
+    console.error('usage: node scripts/coderabbit-guard.mjs <pr-number> [--json] [--wait <seconds>]');
     process.exit(2);
   }
+  const say = asJson ? console.error : console.log;
 
-  let owner, name, threads, bodies, summaries;
+  let owner, name, snapshot, state;
   try {
     ({ owner, name } = repoSlug());
-    threads = reviewThreads(owner, name, pr);
-    bodies = reviewBodies(owner, name, pr);
-    summaries = issueComments(owner, name, pr);
+    snapshot = readPullRequest(owner, name, pr);
+    state = reviewerState(owner, name, pr);
   } catch (err) {
     // Could not ask GitHub. Not knowing is not the same as being clear.
-    console.error(`coderabbit-guard: could not read PR #${pr}: ${err.message.split('\n')[0]}`);
+    console.error(`coderabbit-guard: could not read PR #${pr}: ${firstLine(err.message)}`);
     process.exit(2);
   }
 
-  const blockers = [];
+  /**
+   * Has this reviewer said anything about THIS commit yet?
+   *
+   * If it has reviewed the pull request before but has posted nothing about the
+   * current commit, a review is expected and simply has not started. Reading the
+   * older review as approval is how the moments right after a push become a hole
+   * to merge through.
+   */
+  const expectsReview = () => state === 'absent' && snapshot.threads.length + snapshot.bodies.length > 0;
+  if (expectsReview()) state = 'working';
 
-  for (const thread of threads) {
-    const comments = thread.comments?.nodes ?? [];
-    const first = comments[0];
-    if (!first || !isReviewer(first.author?.login)) continue;
-    if (!SERIOUS.test(first.body ?? '')) continue;
-    // Resolved, or answered by a human reply: handled either way.
-    const answered = thread.isResolved || comments.slice(1).some((c) => !isReviewer(c.author?.login));
-    if (answered) continue;
-    blockers.push({
-      kind: 'inline',
-      where: `${first.path ?? '?'}:${first.line ?? '?'}`,
-      excerpt: (first.body ?? '').split('\n').find((l) => l.trim().length > 0)?.slice(0, 140) ?? '',
-    });
-  }
-
-  // Body findings cannot be "resolved" in GitHub's UI, so they are reported for
-  // a human to confirm rather than silently ignored.
-  for (const review of bodies) {
-    for (const line of review.body.split('\n')) {
-      if (SERIOUS.test(line) && line.trim().length > 0) {
-        blockers.push({ kind: 'review-body', where: `review ${review.id}`, excerpt: line.trim().slice(0, 140) });
-      }
-    }
-  }
-  for (const body of summaries) {
-    for (const line of body.split('\n')) {
-      if (SERIOUS.test(line) && line.trim().length > 0) {
-        blockers.push({ kind: 'summary-comment', where: 'summary', excerpt: line.trim().slice(0, 140) });
-      }
+  // A review in progress gets time to finish, and EVERYTHING is re-read after,
+  // so the verdict is never a mix of old comments and a new review.
+  const deadline = Date.now() + waitSeconds() * 1000;
+  while (state === 'working' && Date.now() < deadline) {
+    console.error('coderabbit-guard: CodeRabbit is still reviewing; waiting...');
+    sleepSeconds(20);
+    try {
+      snapshot = readPullRequest(owner, name, pr);
+      state = reviewerState(owner, name, pr);
+      if (expectsReview()) state = 'working';
+    } catch {
+      break; // the checks below fail safe
     }
   }
 
-  const reviewed = threads.length > 0 || bodies.length > 0 || summaries.length > 0;
+  const blockers = collectBlockers(snapshot);
+  const reviewed =
+    snapshot.threads.length > 0 || snapshot.bodies.length > 0 || snapshot.summaries.length > 0;
   if (asJson) {
-    console.log(JSON.stringify({ schemaVersion: 1, pr, reviewed, blockers }, null, 2));
+    console.log(JSON.stringify({ schemaVersion: 1, pr, reviewed, reviewerState: state, blockers }, null, 2));
   }
 
+  if (state === 'working') {
+    console.error(`coderabbit-guard: PR #${pr} BLOCKED: no finished CodeRabbit review for this commit.`);
+    console.error('Answered comments from an earlier commit do not cover this one.');
+    console.error('Wait for the review to appear and finish, then run this again.');
+    process.exit(1);
+  }
   if (!reviewed) {
-    console.error(`coderabbit-guard: PR #${pr} has no CodeRabbit review yet; nothing to clear.`);
+    if (state === 'done') {
+      console.error(`coderabbit-guard: PR #${pr} BLOCKED: CodeRabbit has not posted its review yet.`);
+      process.exit(1);
+    }
+    console.error(`coderabbit-guard: PR #${pr} has no CodeRabbit review, and CodeRabbit does not appear to be reviewing this repo.`);
     process.exit(2);
   }
   if (blockers.length === 0) {
-    console.log(`coderabbit-guard: PR #${pr} is clear (no unresolved critical or major findings).`);
+    say(`coderabbit-guard: PR #${pr} is clear (every CodeRabbit comment is resolved or answered).`);
     process.exit(0);
   }
 
-  console.error(`coderabbit-guard: PR #${pr} BLOCKED by ${blockers.length} unresolved finding(s):`);
+  console.error(`coderabbit-guard: PR #${pr} BLOCKED by ${blockers.length} unanswered comment(s):`);
   for (const b of blockers) console.error(`  [${b.kind}] ${b.where}  ${b.excerpt}`);
   console.error('');
-  console.error('Fix each one, push, then REPLY on that inline comment with the fix SHA.');
-  console.error('If a finding is wrong, reply saying why. A re-review does not clear these.');
+  for (const kind of [...new Set(blockers.map((b) => b.kind))]) {
+    console.error(`  ${kind}: ${remedyFor(kind)}`);
+  }
+  console.error('');
+  console.error('A later review does not clear these; it only covers new changes.');
   process.exit(1);
 }
 

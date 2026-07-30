@@ -37,9 +37,14 @@ jobs:
       - name: Check CodeRabbit findings
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Waits for a review that is still running rather than failing because it
+        # has not landed yet. Without waiting, this job fails on every push and
+        # then relies on something re-running it once the review appears; when
+        # that does not happen the pull request can never merge, and a gate that
+        # deadlocks gets switched off rather than fixed.
         run: |
           set +e
-          node scripts/coderabbit-guard.mjs "${{ steps.pr.outputs.number }}"
+          node scripts/coderabbit-guard.mjs "${{ steps.pr.outputs.number }}" --wait 900
           status=$?
           set -e
           case "$status" in
