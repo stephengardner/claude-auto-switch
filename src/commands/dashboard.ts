@@ -6,7 +6,7 @@ import { probeAll, type ProbeResult } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { renderDashboard, type DashboardAccount } from '../dashboard/render.js';
 import { toSnapshot } from '../dashboard/snapshot.js';
-import { dispatchKey } from '../dashboard/keys.js';
+import { dispatchKey, confirmKey } from '../dashboard/keys.js';
 import { openPrompt, promptKey, rejectPrompt, type PromptState } from '../dashboard/prompt.js';
 import path from 'node:path';
 import { configHome, profilesDir } from '../config/paths.js';
@@ -262,7 +262,12 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
      * position, which is not the account the box names.
      */
     promptTarget: DashboardAccount | null;
-  } = { notice: null, prompt: null, promptTarget: null, pendingLogin: null };
+    /**
+     * A yes/no question waiting for an answer. Signing in gives the screen away
+     * to a browser, and its key sits next to the movement keys, so it asks first.
+     */
+    confirm: { question: string; account: DashboardAccount } | null;
+  } = { notice: null, prompt: null, promptTarget: null, pendingLogin: null, confirm: null };
 
   /**
    * One keypress into the name box. Returns the box's next state, or null when it
@@ -292,6 +297,20 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
   const onKey = (d: Buffer): void => {
     try {
       const text = d.toString('utf8');
+      // A pending question takes the next key, whatever it is, so the answer
+      // cannot also trigger some other action.
+      if (ui.confirm) {
+        const asked = ui.confirm;
+        ui.confirm = null;
+        if (confirmKey(text, d[0]) === 'yes') {
+          // Queued rather than run here: signing in is interactive and this
+          // handler cannot wait. The loop runs it with the terminal handed back.
+          ui.pendingLogin = asked.account;
+          ui.notice = `signing in "${asked.account.name}"...`;
+        }
+        if (wake) wake();
+        return;
+      }
       if (ui.prompt) {
         ui.prompt = advancePrompt(ui.prompt, text, d[0], ui.promptTarget);
         if (!ui.prompt) ui.promptTarget = null;
@@ -307,10 +326,10 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       else if (r.action === 'toggle' && target) deps.onToggle(target);
       else if (r.action === 'rotate') deps.onRotate();
       else if (r.action === 'login' && target) {
-        // Queued rather than run here: signing in is interactive and this handler
-        // cannot wait for it. The loop performs it with the terminal handed back.
-        ui.pendingLogin = target;
-        ui.notice = `signing in "${target.name}"...`;
+        ui.confirm = {
+          question: `Sign in "${target.name}" again? The dashboard steps aside while you do.`,
+          account: target,
+        };
       }
       else if (r.action === 'add') {
         ui.prompt = openPrompt('add', 'name for the new account:');
@@ -385,6 +404,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         color: deps.color,
         interactive: true,
         selected,
+        ...(ui.confirm ? { confirm: ui.confirm.question } : {}),
         ...(ui.notice ? { notice: ui.notice } : {}),
         ...(ui.prompt
           ? {

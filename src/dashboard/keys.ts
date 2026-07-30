@@ -44,11 +44,19 @@ export function dispatchKey(
   if (key === 'f') return { selected, action: 'force' }; // instant switch (restarts the session)
   if (key === 'a') return { selected, action: 'add' }; // register another account
   if (key === 'n') return { selected, action: 'rename' }; // rename the highlighted one
-  // Sign this account in again, as itself or as a different account. Capital L
-  // on purpose: it hands the screen to a browser sign-in, so it should be hard
-  // to hit by accident while moving around.
-  if (key === 'L') return { selected, action: 'login' };
+  // Sign this account in again, as itself or as a different account. Either case:
+  // l sits right next to j and k, so a stray press while moving is likely, and
+  // that is handled by asking for confirmation rather than by hiding the key
+  // behind shift. A key nobody can find is not a safe key, it is a missing one.
+  if (key === 'l' || key === 'L') return { selected, action: 'login' };
   if (key === 'e') return { selected, action: 'toggle' };
   if (key === 'r') return { selected, action: 'rotate' };
   return { selected, action: 'none' };
+}
+
+/** Answer to a yes/no question in the dashboard. Anything but yes means no. */
+export function confirmKey(key: string, byte0?: number): 'yes' | 'no' {
+  if (key === 'y' || key === 'Y') return 'yes';
+  if (byte0 === 13 || byte0 === 10) return 'yes';
+  return 'no';
 }

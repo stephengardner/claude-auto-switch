@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { dispatchKey } from './keys.js';
+import { dispatchKey, confirmKey } from './keys.js';
 
 describe('dispatchKey', () => {
   it('quits on q, Ctrl-C, Ctrl-D', () => {
@@ -38,13 +38,39 @@ describe('dispatchKey', () => {
     expect(dispatchKey('z', undefined, 1, 3)).toEqual({ selected: 1, action: 'none' });
   });
 
-  it('L asks to sign the highlighted account in again', () => {
+  it('asks to sign the highlighted account in again, in EITHER case', () => {
+    // Lower case matters: it is what people actually press, and it is what was
+    // reported as broken. Hiding the action behind shift did not make it safe,
+    // it made it undiscoverable. Safety comes from the confirmation instead.
+    expect(dispatchKey('l', 108, 1, 3).action).toBe('login');
     expect(dispatchKey('L', 76, 1, 3).action).toBe('login');
   });
 
-  it('lower-case l does nothing, so the browser is not opened by a stray key', () => {
-    // Signing in hands the screen to a browser, so it should be hard to trigger
-    // while moving around with j/k.
-    expect(dispatchKey('l', 108, 1, 3).action).toBe('none');
+  it('does not move the selection when asking to sign in', () => {
+    expect(dispatchKey('l', 108, 2, 4).selected).toBe(2);
+  });
+});
+
+describe('confirmKey', () => {
+  it('takes y or Enter as yes', () => {
+    expect(confirmKey('y', 121)).toBe('yes');
+    expect(confirmKey('Y', 89)).toBe('yes');
+    expect(confirmKey('\r', 13)).toBe('yes');
+    expect(confirmKey('\n', 10)).toBe('yes');
+  });
+
+  it('treats everything else as no, including keys that mean something elsewhere', () => {
+    // The question takes the next key whatever it is, so answering it can never
+    // also trigger another action.
+    const others: Array<[string, number]> = [
+      ['n', 110],
+      ['q', 113],
+      ['j', 106],
+      ['\x1b', 27],
+      ['\x03', 3],
+    ];
+    for (const [key, byte0] of others) {
+      expect(confirmKey(key, byte0)).toBe('no');
+    }
   });
 });
