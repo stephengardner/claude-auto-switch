@@ -37,4 +37,14 @@ describe('dispatchKey', () => {
   it('ignores unknown keys', () => {
     expect(dispatchKey('z', undefined, 1, 3)).toEqual({ selected: 1, action: 'none' });
   });
+
+  it('L asks to sign the highlighted account in again', () => {
+    expect(dispatchKey('L', 76, 1, 3).action).toBe('login');
+  });
+
+  it('lower-case l does nothing, so the browser is not opened by a stray key', () => {
+    // Signing in hands the screen to a browser, so it should be hard to trigger
+    // while moving around with j/k.
+    expect(dispatchKey('l', 108, 1, 3).action).toBe('none');
+  });
 });

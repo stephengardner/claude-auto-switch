@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.26.0]
+
+### Added
+
+- **Sign an account in again from the dashboard.** Highlight it and press `L`.
+  The dashboard steps out of the way, the ordinary sign-in runs on the normal
+  screen (browser and all), and the dashboard comes back when it finishes. Use it
+  to re-authenticate an account whose login has died, or to point a profile at a
+  different account: sign out at claude.ai first, and the same duplicate refusal
+  applies as `ccx login`, so two profiles still cannot end up on one account.
+
+  It is a capital `L` on purpose. It hands the screen to a browser sign-in, so it
+  should be hard to hit while moving around with `j` and `k`.
+
+  While the sign-in runs the dashboard is not on screen, because it cannot be:
+  the sign-in needs the terminal it was holding. The screen says so, and says
+  that Ctrl-C gives up and returns you to your shell.
+
 ## [1.25.0]
 
 ### Fixed

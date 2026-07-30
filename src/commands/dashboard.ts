@@ -16,6 +16,7 @@ import { assertProfileName } from '../util/names.js';
 import { secureMkdir } from '../util/secret-file.js';
 import { appendEvent, readEvents, formatEvent } from '../events/log.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
+import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
 
@@ -163,6 +164,18 @@ export async function dashboardCommand(
         ? `renamed to "${result.to}" (${result.folderNote})`
         : `renamed "${result.from}" to "${result.to}"`;
     },
+    onLogin: async (target) => {
+      // Reuses the ordinary login command, so the dashboard gets the same
+      // duplicate refusal and the same identity recording as `ccx login`. Its
+      // output goes to the real screen, which the loop has handed back.
+      const code = await loginCommand(context, target.name);
+      pushEvent(code === 0 ? `signed in ${target.name}` : `sign-in for ${target.name} did not finish`);
+      // Health is now stale for this account: re-probe so the row tells the truth.
+      healths = await probeAll(listAccounts(context.ctx), { claude });
+      return code === 0
+        ? `signed "${target.name}" in again`
+        : `"${target.name}" was not signed in; see the messages above`;
+    },
     onRotate: () => {
       const active = getActive(context.ctx);
       const loggedIn = new Set(healths.filter((h) => h.loggedIn).map((h) => h.name));
@@ -200,6 +213,12 @@ interface LoopDeps {
    * and keep the box open so it can be corrected without retyping everything.
    */
   onName: (kind: 'add' | 'rename', text: string, selected: DashboardAccount | undefined) => string;
+  /**
+   * Sign an account in again, as itself or as a different account. Async and
+   * INTERACTIVE: it hands the screen to a browser sign-in, so the dashboard steps
+   * out of the way while it runs. Returns a line to show afterwards.
+   */
+  onLogin: (account: DashboardAccount) => Promise<string>;
 }
 
 /** Clear-screen refresh loop with a selection cursor; quits on q / Ctrl-C / Ctrl-D. */
@@ -229,6 +248,12 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     notice: string | null;
     prompt: PromptState | null;
     /**
+     * An interactive job the loop should run with the terminal handed back.
+     * Set from the keypress handler, which cannot await, and picked up by the
+     * loop, which can.
+     */
+    pendingLogin: DashboardAccount | null;
+    /**
      * The account the open box was opened FOR.
      *
      * Captured rather than re-read on submit: the rows are rebuilt every tick and
@@ -237,7 +262,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
      * position, which is not the account the box names.
      */
     promptTarget: DashboardAccount | null;
-  } = { notice: null, prompt: null, promptTarget: null };
+  } = { notice: null, prompt: null, promptTarget: null, pendingLogin: null };
 
   /**
    * One keypress into the name box. Returns the box's next state, or null when it
@@ -281,6 +306,12 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       else if (r.action === 'force' && target) deps.onForce(target);
       else if (r.action === 'toggle' && target) deps.onToggle(target);
       else if (r.action === 'rotate') deps.onRotate();
+      else if (r.action === 'login' && target) {
+        // Queued rather than run here: signing in is interactive and this handler
+        // cannot wait for it. The loop performs it with the terminal handed back.
+        ui.pendingLogin = target;
+        ui.notice = `signing in "${target.name}"...`;
+      }
       else if (r.action === 'add') {
         ui.prompt = openPrompt('add', 'name for the new account:');
         ui.promptTarget = null;
@@ -299,9 +330,36 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
 
   // Claiming it this way registers the restore with the process, so every way out
   // (including a crash or Ctrl-C) hands the terminal back in one piece.
-  const terminal = claimRawTerminal({ epilogue: SHOW_CURSOR + EXIT_ALT });
-  stdin.on('data', onKey);
-  out.write(ENTER_ALT + HIDE_CURSOR);
+  const claimScreen = (): { restore: () => void } => {
+    const handle = claimRawTerminal({ epilogue: SHOW_CURSOR + EXIT_ALT });
+    stdin.on('data', onKey);
+    out.write(ENTER_ALT + HIDE_CURSOR);
+    return handle;
+  };
+  let terminal = claimScreen();
+
+  /**
+   * Hand the terminal back, run something interactive, then take it again.
+   *
+   * Signing in opens a browser and prints to the screen, which cannot happen
+   * while the dashboard holds the terminal in raw mode on the alternate screen:
+   * the output would be invisible and the keystrokes would be eaten by the key
+   * handler. So the dashboard steps out entirely and comes back afterwards.
+   */
+  const withScreenHandedBack = async (lead: string, job: () => Promise<string>): Promise<string> => {
+    stdin.off('data', onKey);
+    terminal.restore();
+    // Printed AFTER the screen is handed back, not as a dashboard notice: the
+    // loop suspends before it would repaint, so a notice set here is never seen.
+    // On the ordinary screen it also sits directly above the sign-in output,
+    // which is where it makes sense.
+    out.write(`\n${lead}\n`);
+    try {
+      return await job();
+    } finally {
+      terminal = claimScreen();
+    }
+  };
 
   let lastProbe = Date.now();
   try {
@@ -309,6 +367,15 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       if (Date.now() - lastProbe > HEALTH_REPROBE_MS) {
         await deps.reprobe();
         lastProbe = Date.now();
+      }
+      if (ui.pendingLogin) {
+        const target = ui.pendingLogin;
+        ui.pendingLogin = null;
+        ui.notice = await withScreenHandedBack(
+          `Signing in "${target.name}". To use a DIFFERENT account, sign out at claude.ai first.\n` +
+            'The dashboard comes back when the sign-in finishes; Ctrl-C gives up and returns to your shell.',
+          () => deps.onLogin(target),
+        );
       }
       snap = build();
       clamp();
