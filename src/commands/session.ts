@@ -39,6 +39,8 @@ import {
 import { decideSaveBack } from '../accounts/save-back.js';
 import { takeLease, touchLease, releaseLease } from '../session/lease.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
+import { ensureLoginUsable, readinessMessage } from '../session/preflight.js';
+import { renewalIsDue, refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { withCredentialLock, withCredentialLockIfFree } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { appendEvent } from '../events/log.js';
@@ -427,6 +429,29 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     runSession: async (hotAccount, isContinue, runOptions) => {
       const account = accounts.find((a) => a.name === hotAccount.name);
       if (!account) return { kind: 'ok', exitCode: 1 };
+      // Check the login BEFORE copying it into the session. A login that merely
+      // expired is renewed here, which is safe precisely because nothing is using
+      // this account yet, and a login that is genuinely finished is named, with
+      // the command that fixes it, rather than turning into Claude saying you are
+      // logged out for no visible reason.
+      const readiness = await ensureLoginUsable({
+        hasLogin: () => hasLogin(account.dir),
+        renewalDue: () => renewalIsDue(account.dir),
+        renew: () => refreshCredentialIfExpired(account.dir),
+      });
+      if (readiness.state === 'renewed') {
+        logCredentialEvent(
+          { account: account.name, kind: 'renewed', detail: 'expired login renewed before starting' },
+          context.ctx,
+        );
+      } else if (readiness.state === 'needs-login') {
+        logCredentialEvent(
+          { account: account.name, kind: 'needs-login', detail: readiness.detail },
+          context.ctx,
+        );
+      }
+      const notice = readinessMessage(account.name, readiness);
+      if (notice) err(notice);
       activate(account);
       // Track the account we are actually on so the editor pointer follows it.
       setActive(account.name, context.ctx);

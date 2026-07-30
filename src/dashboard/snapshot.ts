@@ -23,7 +23,13 @@ export interface SnapshotInput {
   /** Account name -> subscription usage (0..1 utilization per window). */
   usage?: Map<
     string,
-    { fiveHour: number | null; sevenDay: number | null; models?: Array<{ name: string; utilization: number }> | null }
+    {
+      fiveHour: number | null;
+      sevenDay: number | null;
+      fiveHourReset?: number | null;
+      sevenDayReset?: number | null;
+      models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
+    }
   >;
   active: string | null;
   events: string[];

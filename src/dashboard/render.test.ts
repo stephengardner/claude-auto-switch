@@ -75,12 +75,13 @@ describe('renderDashboard (plain)', () => {
     expect(footer).not.toContain('pin'); // the old misleading label is gone
   });
 
-  it('shows the limit that will actually stop the account, blank when unknown', () => {
+  it('shows every window separately, not just the worst one', () => {
     const out = renderDashboard(
       snapshot([
         account({ name: 'hourly', usage: { fiveHour: 0.42, sevenDay: 0.09 } }),
-        // Comfortable by the hour and the week, but one model's window is spent:
-        // that is what stops you, so that is what the row must show.
+        // Comfortable by the hour and the week, but one model's window is spent.
+        // Both facts have to be visible: collapsing to the worst one hid the
+        // healthy numbers, and averaging hid the number that actually stops you.
         account({
           name: 'modelout',
           usage: { fiveHour: 0, sevenDay: 0.62, models: [{ name: 'Fable', utilization: 1 }] },
@@ -89,10 +90,87 @@ describe('renderDashboard (plain)', () => {
       ]),
       opts,
     );
-    expect(out).toContain('USAGE');
-    expect(out.split('\n').find((l) => l.includes('hourly'))!).toContain('5h 42%');
-    expect(out.split('\n').find((l) => l.includes('modelout'))!).toContain('Fable 100%');
-    expect(out.split('\n').find((l) => l.includes('nousage'))!).not.toContain('%');
+    expect(out).toContain('5H');
+    expect(out).toContain('WEEK');
+    expect(out).toContain('MODEL');
+
+    const hourly = out.split('\n').find((l) => l.includes('hourly'))!;
+    expect(hourly).toContain('42%');
+    expect(hourly).toContain('9%');
+
+    const modelout = out.split('\n').find((l) => l.includes('modelout'))!;
+    expect(modelout).toContain('0%'); // the hour, still fine
+    expect(modelout).toContain('62%'); // the week, still fine
+    expect(modelout).toContain('Fable 100%'); // and the one that stops you
+
+    // Nothing read yet reads as a dash, never as zero: "0%" would claim the
+    // account is completely free when the truth is that nobody has looked.
+    const nousage = out.split('\n').find((l) => l.startsWith('  nousage') || / nousage /.test(l))!;
+    expect(nousage).toContain('-');
+    expect(nousage).not.toContain('%');
+  });
+
+  it('spells out the highlighted account, including when each window returns', () => {
+    const now = 1_000_000;
+    const out = renderDashboard(
+      {
+        ...snapshot([
+          account({
+            name: 'work',
+            usage: {
+              fiveHour: 0.5,
+              sevenDay: 0.62,
+              fiveHourReset: now + 90 * 60_000,
+              sevenDayReset: now + 3 * 24 * 60 * 60_000,
+              models: [{ name: 'Fable', utilization: 1, resetsAt: now + 2 * 24 * 60 * 60_000 }],
+            },
+          }),
+        ]),
+        now,
+      },
+      { ...opts, interactive: true, selected: 0 },
+    );
+    const detail = out.split('\n').find((l) => l.includes('work:'))!;
+    expect(detail).toContain('5h 50%');
+    expect(detail).toContain('week 62%');
+    expect(detail).toContain('Fable 100%');
+    expect(detail).toContain('back in'); // and when it comes back
+  });
+
+  it('reads a long wait in days, not in dozens of hours', () => {
+    // A weekly window is days away, and "72h0m" is technically right and
+    // useless to read at a glance.
+    const now = 1_000_000;
+    const out = renderDashboard(
+      {
+        ...snapshot([
+          account({
+            name: 'work',
+            usage: {
+              fiveHour: 0.1,
+              sevenDay: 0.5,
+              sevenDayReset: now + 3 * 24 * 60 * 60_000,
+              fiveHourReset: now + 95 * 60_000,
+            },
+          }),
+        ]),
+        now,
+      },
+      { ...opts, interactive: true, selected: 0 },
+    );
+    const detail = out.split('\n').find((l) => l.includes('work:'))!;
+    expect(detail).toContain('back in 3d');
+    expect(detail).not.toContain('72h');
+    expect(detail).toContain('1h35m'); // hours keep their minutes
+  });
+
+  it('says so plainly when an account has never been read', () => {
+    const out = renderDashboard(snapshot([account({ name: 'fresh' })]), {
+      ...opts,
+      interactive: true,
+      selected: 0,
+    });
+    expect(out).toContain('no usage read yet');
   });
 
   it('marks the selected row with the cursor and the active row with a marker', () => {
