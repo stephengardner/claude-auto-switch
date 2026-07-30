@@ -34,12 +34,19 @@ export interface RenameResult {
   folderNote?: string;
 }
 
+export interface RenameDeps {
+  /** Injected in tests, to exercise the failure that moves a folder then cannot record it. */
+  saveRegistry?: typeof saveRegistry;
+}
+
 export function renameAccount(
   from: string,
   to: string,
   config: { profilesDir?: string },
   c: PathCtx = {},
+  deps: RenameDeps = {},
 ): RenameResult {
+  const persist = deps.saveRegistry ?? saveRegistry;
   const target = to.trim();
   assertProfileName(target);
   if (target === from) throw new RegistryError(`"${from}" already has that name`);
@@ -74,9 +81,24 @@ export function renameAccount(
     }
   }
 
+  const originalDir = account.dir;
   account.name = target;
   if (folderMoved) account.dir = destination;
-  saveRegistry(registry, c);
+  try {
+    persist(registry, c);
+  } catch (err) {
+    // The folder moved but the registry did not. Left alone, the account would
+    // still be recorded under its old name pointing at a folder that no longer
+    // exists, so its login would look lost. Put the folder back.
+    if (folderMoved) {
+      try {
+        renameSync(destination, originalDir);
+      } catch {
+        /* nothing better to do; the original failure is the one worth reporting */
+      }
+    }
+    throw err;
+  }
 
   // Everything else keyed by the name. Done after the registry write so a failure
   // here leaves a renamed account rather than an unrenamed one with moved history.

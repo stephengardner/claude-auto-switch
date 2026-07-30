@@ -219,20 +219,37 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
   // Held in an object rather than as two plain variables: both are only ever
   // assigned inside the keypress handler, and the compiler treats a variable it
   // never sees change as still holding its initial value.
-  const ui: { notice: string | null; prompt: PromptState | null } = { notice: null, prompt: null };
+  const ui: {
+    notice: string | null;
+    prompt: PromptState | null;
+    /**
+     * The account the open box was opened FOR.
+     *
+     * Captured rather than re-read on submit: the rows are rebuilt every tick and
+     * reindexed, so another `ccx` adding or removing an account between opening
+     * the box and pressing Enter would otherwise rename whatever now sits at that
+     * position, which is not the account the box names.
+     */
+    promptTarget: DashboardAccount | null;
+  } = { notice: null, prompt: null, promptTarget: null };
 
   /**
    * One keypress into the name box. Returns the box's next state, or null when it
    * is finished. Written as state-in/state-out so the flow stays readable.
    */
-  const advancePrompt = (state: PromptState, text: string, byte0?: number): PromptState | null => {
+  const advancePrompt = (
+    state: PromptState,
+    text: string,
+    byte0: number | undefined,
+    target: DashboardAccount | null,
+  ): PromptState | null => {
     const next = promptKey(state, text, byte0);
     if (next.status === 'cancel') return null;
     if (next.status !== 'submit') return next;
     const typed = next.text.trim();
     if (typed.length === 0) return null; // confirming an empty box just closes it
     try {
-      ui.notice = deps.onName(next.kind as 'add' | 'rename', typed, snap.accounts[selected]);
+      ui.notice = deps.onName(next.kind, typed, target ?? undefined);
       return null;
     } catch (err) {
       // Kept open with the reason, so a clash or a bad name can be fixed without
@@ -245,7 +262,8 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     try {
       const text = d.toString('utf8');
       if (ui.prompt) {
-        ui.prompt = advancePrompt(ui.prompt, text, d[0]);
+        ui.prompt = advancePrompt(ui.prompt, text, d[0], ui.promptTarget);
+        if (!ui.prompt) ui.promptTarget = null;
         if (wake) wake();
         return;
       }
@@ -257,10 +275,14 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       else if (r.action === 'force' && target) deps.onForce(target);
       else if (r.action === 'toggle' && target) deps.onToggle(target);
       else if (r.action === 'rotate') deps.onRotate();
-      else if (r.action === 'add') ui.prompt = openPrompt('add', 'name for the new account:');
-      else if (r.action === 'rename') {
+      else if (r.action === 'add') {
+        ui.prompt = openPrompt('add', 'name for the new account:');
+        ui.promptTarget = null;
+      } else if (r.action === 'rename') {
         if (!target) return;
+        // Captured with the label, so the box acts on the account it names.
         ui.prompt = openPrompt('rename', `new name for "${target.name}":`, '');
+        ui.promptTarget = target;
       } else if (r.action === 'none') return;
       ui.notice = null;
     } catch (err) {

@@ -118,6 +118,25 @@ describe('renameAccount', () => {
     expect(getAccount('two', c)?.dir).toBe(custom);
   });
 
+  it('puts the folder back if the registry write fails', () => {
+    // The dangerous order: the folder has already moved, then recording it fails.
+    // Left alone, the registry still says the old name and the old path, so the
+    // account looks intact while its login sits somewhere nothing points at.
+    const { c, home } = setup(['old']);
+    const boom = () => {
+      throw new Error('disk full');
+    };
+
+    expect(() => renameAccount('old', 'new', config, c, { saveRegistry: boom })).toThrow(
+      /disk full/,
+    );
+
+    // Back where it started, with the login where the registry still points.
+    expect(existsSync(path.join(home, 'profiles', 'old', '.credentials.json'))).toBe(true);
+    expect(existsSync(path.join(home, 'profiles', 'new'))).toBe(false);
+    expect(getAccount('old', c)?.dir).toBe(path.join(home, 'profiles', 'old'));
+  });
+
   it('keeps the folder when one with the new name already exists', () => {
     const { c, home } = setup(['old']);
     mkdirSync(path.join(home, 'profiles', 'taken'), { recursive: true });

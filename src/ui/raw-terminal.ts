@@ -28,7 +28,19 @@ export interface RawTerminalOptions {
   proc?: Pick<NodeJS.Process, 'on' | 'off'> & { exit?: (code?: number) => never };
 }
 
-const SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'];
+/**
+ * The conventional exit code for each signal: 128 plus the signal number. A
+ * supervisor and a shell `$?` check both read this, so reporting every signal as
+ * if it were SIGTERM would be a small lie in the one place people look.
+ */
+const SIGNAL_EXIT_CODES: Partial<Record<NodeJS.Signals, number>> = {
+  SIGHUP: 129,
+  SIGINT: 130,
+  SIGTERM: 143,
+  SIGBREAK: 149,
+};
+
+const SIGNALS = Object.keys(SIGNAL_EXIT_CODES) as NodeJS.Signals[];
 
 /**
  * Take the keyboard, and guarantee it is handed back.
@@ -71,8 +83,7 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
     restore();
     // Re-raise the default behaviour: having a handler suppressed it, and a
     // terminal program that swallows Ctrl-C is its own kind of broken.
-    const code = signal === 'SIGINT' ? 130 : 143;
-    (proc.exit ?? process.exit)(code);
+    (proc.exit ?? process.exit)(SIGNAL_EXIT_CODES[signal] ?? 143);
   }
 
   try {

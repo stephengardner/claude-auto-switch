@@ -3,6 +3,7 @@ import { spawn, type IPty } from 'node-pty';
 import { matchesCapText } from './cap-detect.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { writeSecretFile } from '../util/secret-file.js';
+import { normalizeExitCode } from './exit-code.js';
 import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
 
@@ -196,7 +197,11 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     };
     process.stdout.on('resize', onResize);
 
-    const exitSub = child.onExit(({ exitCode }) => {
+    const exitSub = child.onExit((report) => {
+      // Normalized here, at the only place a pty exit enters ccx: on Windows this
+      // report can arrive with no code and no signal at all, and passing that
+      // through told the shell "undefined", which reads as success.
+      const exitCode = normalizeExitCode(report);
       exited = true;
       exitSub.dispose();
       if (switchPoll) clearInterval(switchPoll);

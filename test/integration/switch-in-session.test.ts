@@ -9,10 +9,33 @@ import { runCommand } from '../../src/commands/run.js';
 import { setActive } from '../../src/state/active.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
 import { loadConfig } from '../../src/config/config.js';
+import { liveLeases } from '../../src/session/lease.js';
 import type { CliContext } from '../../src/context.js';
 
 const fakeClaude = fileURLToPath(new URL('../fake-claude/fake-claude.mjs', import.meta.url));
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Wait until something is actually true, rather than for a fixed number of
+ * milliseconds. A hosted runner under parallel load can be several times slower
+ * than a laptop, and a test that guesses a duration fails there for reasons that
+ * have nothing to do with the code. Returns the value so it can be asserted on.
+ */
+async function waitFor<T>(
+  what: string,
+  read: () => T,
+  ok: (value: T) => boolean,
+  timeoutMs = 8000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let last = read();
+  while (Date.now() < deadline) {
+    last = read();
+    if (ok(last)) return last;
+    await sleep(50);
+  }
+  throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}; last saw ${JSON.stringify(last)}`);
+}
 
 interface RunEntry {
   type: 'launch' | 'reread';
@@ -224,6 +247,61 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     // (the simulated ~30s re-read at run's end sees B), with no restart.
     const lastReread = runs.filter((r) => r.type === 'reread').pop();
     expect(lastReread?.marker).toBe('B');
+  });
+
+  it('announces the account in use while it runs, and stops when it ends', async () => {
+    // The protection that stops ccx signing you out mid-session: while a session
+    // runs, its account must be visible to anything that renews logins, because
+    // renewing REPLACES a login and would retire the token this session holds.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-lease-live-'));
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    setActive('A', context.ctx);
+
+    const running = runCommand(context, []);
+    const during = await waitFor(
+      'the session to announce account A',
+      () => liveLeases(context.ctx),
+      (leases) => leases.length === 1 && leases[0]?.account === 'A',
+    );
+    expect(during.map((l) => l.account)).toEqual(['A']);
+    // It must point at the folder the session actually reads its login from, so
+    // usage can be read from the live copy rather than the stale stored one.
+    expect(existsSync(path.join(during[0]?.configDir ?? '', '.credentials.json'))).toBe(true);
+
+    expect(await running).toBe(0);
+    // Released on the way out, so an idle account is not protected forever.
+    expect(liveLeases(context.ctx)).toEqual([]);
+  });
+
+  it('moves the announcement with a seamless switch, so only the live account is protected', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-lease-switch-'));
+    process.env.FAKE_CLAUDE_IDLE_MS = '3000';
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    const running = runCommand(context, []);
+    await waitFor(
+      'A to be announced',
+      () => liveLeases(context.ctx).map((l) => l.account),
+      (names) => names.join() === 'A',
+    );
+    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx);
+    // Exactly one, and it is B: the account left behind must be renewable again.
+    const after = await waitFor(
+      'the announcement to move to B',
+      () => liveLeases(context.ctx).map((l) => l.account),
+      (names) => names.join() === 'B',
+    );
+    expect(after).toEqual(['B']);
+
+    expect(await running).toBe(0);
+    expect(liveLeases(context.ctx)).toEqual([]);
   });
 
   it('force-now (restart): relaunches on the picked account with --continue', async () => {

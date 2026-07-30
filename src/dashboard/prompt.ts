@@ -4,13 +4,20 @@
  * Pure on purpose, like the key dispatcher next to it: typing, deleting and
  * confirming are decided here, so the behaviour can be tested without a
  * terminal. The dashboard only draws the result.
+ *
+ * Everything works on a CHUNK rather than a single key, because that is what a
+ * terminal delivers: typing at speed, or pasting, arrives as one blob holding
+ * several keystrokes. Acting on only the first byte of a chunk is how a hand
+ * rolled text box ends up impossible to confirm.
  */
 
 export type PromptStatus = 'editing' | 'submit' | 'cancel';
 
+/** What the box is being used for, which decides what submitting it does. */
+export type PromptKind = 'add' | 'rename';
+
 export interface PromptState {
-  /** What the prompt is for, so the caller knows what to do on submit. */
-  kind: string;
+  kind: PromptKind;
   /** The question shown to the operator. */
   label: string;
   text: string;
@@ -19,7 +26,7 @@ export interface PromptState {
   error?: string;
 }
 
-export function openPrompt(kind: string, label: string, text = ''): PromptState {
+export function openPrompt(kind: PromptKind, label: string, text = ''): PromptState {
   return { kind, label, text, status: 'editing' };
 }
 
@@ -33,53 +40,73 @@ const CTRL_U = 21;
 const SPACE = 32;
 
 /**
- * Apply one keypress, or one chunk of them.
+ * Apply a chunk of keypresses.
  *
- * Enter confirms, Escape and Ctrl-C cancel, Ctrl-U clears the line. Anything
- * printable is appended; control keys and escape sequences (arrow keys and the
- * like) are ignored rather than inserted as junk, which is what makes a hand
- * rolled text box feel broken.
+ * Enter confirms, Escape and Ctrl-C cancel, Ctrl-U clears the line, Backspace and
+ * Delete remove a character. Everything is applied in the order it arrived, so a
+ * chunk mixing editing and text behaves the same as typing it slowly. Control
+ * bytes and escape sequences (arrow keys and the like) are skipped rather than
+ * typed in as junk.
  */
 export function promptKey(state: PromptState, key: string, byte0?: number): PromptState {
   if (state.status !== 'editing') return state;
-  if (byte0 === CTRL_C) return { ...state, status: 'cancel' };
-  // A bare Escape cancels; Escape followed by more bytes is an arrow or function
-  // key, which must not cancel and must not be typed into the box either.
-  if (byte0 === ESCAPE) return key.length === 1 ? { ...state, status: 'cancel' } : state;
-  if (byte0 === CTRL_U) return { ...state, text: '', ...clearError(state) };
-  if (byte0 === BACKSPACE || byte0 === DELETE) {
-    return { ...state, text: state.text.slice(0, -1), ...clearError(state) };
+  // A chunk that IS a bare Escape cancels. A chunk that merely STARTS with one is
+  // an arrow or function key: it must neither cancel nor be typed.
+  if (byte0 === ESCAPE && key.length === 1) return { ...state, status: 'cancel' };
+
+  const chars = [...key];
+  let text = state.text;
+  let changed = false;
+
+  for (let i = 0; i < chars.length; i += 1) {
+    const ch = chars[i] as string;
+    const code = ch.codePointAt(0) ?? 0;
+
+    if (code === CTRL_C) return { ...state, status: 'cancel' };
+    if (code === CARRIAGE_RETURN || code === LINE_FEED) {
+      // Confirms with what was typed before it, and drops the rest of the chunk,
+      // which is what pressing Enter means.
+      return { ...state, text, status: 'submit', ...clearError(state) };
+    }
+    if (code === ESCAPE) {
+      // Skip the whole sequence, so an arrow key pressed mid-chunk does not leave
+      // its bracket and letter behind inside the name.
+      i = endOfEscapeSequence(chars, i);
+      continue;
+    }
+    if (code === CTRL_U) {
+      text = '';
+      changed = true;
+      continue;
+    }
+    if (code === BACKSPACE || code === DELETE) {
+      text = text.slice(0, -1);
+      changed = true;
+      continue;
+    }
+    if (code >= SPACE) {
+      text += ch;
+      changed = true;
+    }
+    // Any other control byte is ignored.
   }
 
-  // A single chunk can carry several keystrokes: typing at speed, or pasting,
-  // delivers the name and the Enter together. Confirming has to work then too, so
-  // an Enter anywhere in the chunk ends the box and keeps what came before it.
-  // Without this the box could not be confirmed at real typing speed at all.
-  const chars = [...key];
-  const enterAt = chars.findIndex(isEnter);
-  const typed = enterAt >= 0 ? chars.slice(0, enterAt) : chars;
-  const next: PromptState = {
-    ...state,
-    text: state.text + printableOnly(typed),
-    ...clearError(state),
-  };
-  if (enterAt >= 0) return { ...next, status: 'submit' };
-  return next.text === state.text ? state : next;
+  if (!changed) return state;
+  return { ...state, text, ...clearError(state) };
 }
 
-function isEnter(ch: string): boolean {
-  const code = ch.charCodeAt(0);
-  return code === CARRIAGE_RETURN || code === LINE_FEED;
-}
-
-/** Drop control characters, so a stray byte cannot end up inside a name. */
-function printableOnly(chars: string[]): string {
-  return chars
-    .filter((ch) => {
-      const code = ch.codePointAt(0) ?? 0;
-      return code >= SPACE && code !== DELETE;
-    })
-    .join('');
+/**
+ * Index of the last character of the escape sequence starting at `start`.
+ *
+ * Terminal sequences end at a letter or a tilde (`\x1b[A`, `\x1b[1;2C`, `\x1b[3~`),
+ * so the scan stops there. One that never terminates consumes the rest of the
+ * chunk, which is the safe reading: better to drop it than to type it in.
+ */
+function endOfEscapeSequence(chars: string[], start: number): number {
+  for (let i = start + 1; i < chars.length; i += 1) {
+    if (/[A-Za-z~]/.test(chars[i] as string)) return i;
+  }
+  return chars.length;
 }
 
 /** Typing again clears a complaint about the previous value. */

@@ -121,14 +121,6 @@ export async function refreshUsage(
   const renew =
     options.renew ?? ((accountDir: string) => refreshCredentialIfExpired(accountDir));
 
-  // Accounts a running session is using right now. Renewing one of those would
-  // rotate the token out from under the live session, which is what produces a
-  // sudden "Login expired" mid-work. Their live copy is read instead: it is the
-  // one Claude keeps fresh, so usage still updates without touching anything.
-  const inUse = new Map(
-    liveLeases(c, options.leaseOptions ?? {}).map((l) => [l.account, l] as const),
-  );
-
   const snapshot = readUsageSnapshot(c);
   const stale = accounts.filter((a) => {
     if (!hasLogin(a.dir)) return false;
@@ -136,6 +128,16 @@ export async function refreshUsage(
     return !entry || now() - entry.at > maxAge;
   });
   if (stale.length === 0) return snapshot;
+
+  // Accounts a running session is using right now. Renewing one of those would
+  // rotate the token out from under the live session, which is what produces a
+  // sudden "Login expired" mid-work. Their live copy is read instead: it is the
+  // one Claude keeps fresh, so usage still updates without touching anything.
+  // Looked up only once there is something to refresh, so the common no-op call
+  // does not pay for a directory listing and a parse per file.
+  const inUse = new Map(
+    liveLeases(c, options.leaseOptions ?? {}).map((l) => [l.account, l] as const),
+  );
 
   // Sequential, with a small gap: the usage endpoint has a small budget and
   // asking for several accounts at once gets most of them turned away.

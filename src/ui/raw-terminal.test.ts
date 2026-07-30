@@ -77,6 +77,23 @@ describe('claimRawTerminal', () => {
     expect(f.proc.exit).toHaveBeenCalledWith(130);
   });
 
+  it('reports the conventional exit code for each signal, not one for all', () => {
+    // 128 + signal number. A supervisor and a shell $? check both read this, so
+    // reporting every signal as if it were SIGTERM is a lie where people look.
+    for (const [signal, code] of [
+      ['SIGHUP', 129],
+      ['SIGINT', 130],
+      ['SIGTERM', 143],
+      ['SIGBREAK', 149],
+    ] as const) {
+      const f = fakes();
+      claimRawTerminal(f.opts);
+      f.fire(signal, signal);
+      expect(f.modes).toEqual([true, false]); // terminal handed back first
+      expect(f.proc.exit).toHaveBeenCalledWith(code);
+    }
+  });
+
   it('restores once, however many times it is asked', () => {
     const f = fakes();
     const t = claimRawTerminal(f.opts);
