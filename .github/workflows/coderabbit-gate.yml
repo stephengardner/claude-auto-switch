@@ -4,27 +4,36 @@ name: CodeRabbit gate
 # findings, so "the review is done" is something the repository checks rather
 # than something a person remembers to check.
 #
-# Runs only on pull requests, and treats "no review yet" as neutral rather than
-# a failure: a gate that fails for reasons unrelated to the code teaches people
-# to ignore it.
+# Treats "no review yet" as neutral rather than a failure: a gate that fails for
+# reasons unrelated to the code teaches people to ignore it.
+#
+# ONE RUN PER COMMIT, deliberately. A required check is satisfied only when every
+# check run of that name on the head commit is successful, so any extra run left
+# in a non-success state blocks the merge forever. Both obvious ways of getting
+# extra runs were tried here and both blocked a pull request that was genuinely
+# ready:
+#
+#   Re-running on every comment left FAILED runs behind, from the moments when
+#   findings were still open. PR #2 collected six and could not merge until each
+#   was re-run by hand.
+#
+#   Adding `concurrency: cancel-in-progress` then left CANCELLED runs behind
+#   instead, which count the same way. PR #4 blocked on exactly one of those.
+#
+# So the gate now fires only on the events that change the commit. Answering a
+# finding without changing code (a `guard-ack`, or explaining why something is a
+# false positive) needs the check refreshed afterwards:
+#
+#   gh run rerun --job "$(gh pr checks <pr> --json name,link ...)"   # or the UI
+#
+# Re-running UPDATES the existing check run rather than adding another, which is
+# why that path is safe and adding triggers is not. In the common case there is
+# nothing to do: fixing a finding means pushing a commit, and that starts a fresh
+# run on its own.
 
 on:
   pull_request:
-  # Re-run when a review lands or a reply resolves a thread, so the gate reflects
-  # the current state instead of the state at push time.
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  issue_comment:
-    types: [created, edited]
-
-# One gate run per pull request at a time. Without this, every comment and every
-# review event starts another run, and each one that failed while findings were
-# still open stays on the commit as a failing check forever. The pull request then
-# cannot merge even after the gate passes, because the old failures still count.
-# Superseded runs are cancelled instead of piling up.
-concurrency:
-  group: coderabbit-gate-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
-  cancel-in-progress: true
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -33,15 +42,13 @@ permissions:
 jobs:
   gate:
     name: coderabbit findings resolved
-    # issue_comment fires for plain issues too; only pull requests are relevant.
-    if: github.event_name != 'issue_comment' || github.event.issue.pull_request != null
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Work out which pull request this is
         id: pr
-        run: echo "number=${{ github.event.pull_request.number || github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+        run: echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
 
       - name: Check CodeRabbit findings
         env:
