@@ -1,0 +1,49 @@
+name: CodeRabbit gate
+
+# Blocks a pull request while CodeRabbit still has unresolved critical or major
+# findings, so "the review is done" is something the repository checks rather
+# than something a person remembers to check.
+#
+# Runs only on pull requests, and treats "no review yet" as neutral rather than
+# a failure: a gate that fails for reasons unrelated to the code teaches people
+# to ignore it.
+
+on:
+  pull_request:
+  # Re-run when a review lands or a reply resolves a thread, so the gate reflects
+  # the current state instead of the state at push time.
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate:
+    name: coderabbit findings resolved
+    # issue_comment fires for plain issues too; only pull requests are relevant.
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out which pull request this is
+        id: pr
+        run: echo "number=${{ github.event.pull_request.number || github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Check CodeRabbit findings
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          node scripts/coderabbit-guard.mjs "${{ steps.pr.outputs.number }}"
+          status=$?
+          set -e
+          case "$status" in
+            0) echo "Clear to merge." ;;
+            2) echo "::notice::No CodeRabbit review to check yet; not treating that as a failure." ;;
+            *) echo "::error::CodeRabbit still has unresolved critical or major findings."; exit 1 ;;
+          esac
