@@ -14,11 +14,17 @@ export interface DashboardAccount {
   /** Epoch ms the account is capped until, if currently capped. */
   cappedUntil?: number;
   priority: number;
-  /** Subscription usage (0..1 per window), including per-model weekly windows. */
+  /**
+   * Subscription usage (0..1 per window), including per-model weekly windows and
+   * when each window comes back. The reset times are carried through so the
+   * detail line can answer "when can I use this again" without another lookup.
+   */
   usage?: {
     fiveHour: number | null;
     sevenDay: number | null;
-    models?: Array<{ name: string; utilization: number }> | null;
+    fiveHourReset?: number | null;
+    sevenDayReset?: number | null;
+    models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
   };
 }
 
@@ -44,10 +50,19 @@ export interface RenderOptions {
 
 import { codes, paint } from '../ui/style.js';
 
+/**
+ * A wait, at the coarsest useful precision: minutes within the hour, hours
+ * within the day, then days. Weekly windows are days away, and printing those as
+ * "72h0m" is technically right and useless to read.
+ */
 function hhmm(epochMs: number, now: number): string {
   const mins = Math.max(0, Math.round((epochMs - now) / 60000));
   if (mins < 60) return `${mins}m`;
-  return `${Math.floor(mins / 60)}h${mins % 60}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h${mins % 60}m`;
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours === 0 ? `${days}d` : `${days}d${restHours}h`;
 }
 
 /** Plain status text for an account, most-important state first. */
@@ -66,39 +81,63 @@ function statusColor(a: DashboardAccount, now: number): string {
   return codes.green;
 }
 
-/**
- * The limit that will actually stop this account, e.g. `Fable 100%`.
- *
- * An account can sit at 0% for the hour and 62% for the week and still be
- * completely unusable because one model's weekly window is spent, so the row
- * shows whichever window is closest to its limit rather than a reassuring
- * average.
- */
-function bindingWindow(a: DashboardAccount): { label: string; used: number } | null {
-  const u = a.usage;
-  if (!u) return null;
-  const windows: Array<{ label: string; used: number }> = [];
-  if (typeof u.fiveHour === 'number') windows.push({ label: '5h', used: u.fiveHour });
-  if (typeof u.sevenDay === 'number') windows.push({ label: 'wk', used: u.sevenDay });
-  for (const m of u.models ?? []) {
-    if (typeof m.utilization === 'number') windows.push({ label: m.name, used: m.utilization });
-  }
-  if (windows.length === 0) return null;
-  return windows.reduce((worst, w) => (w.used > worst.used ? w : worst));
-}
 
 /** Plain usage text for an account: the binding window, or empty when unknown. */
-function usageText(a: DashboardAccount): string {
-  const binding = bindingWindow(a);
-  return binding ? `${binding.label} ${Math.round(binding.used * 100)}%` : '';
-}
-
-/** Red once the binding window is spent, yellow as it approaches. */
-function usageColor(a: DashboardAccount): string {
-  const used = bindingWindow(a)?.used ?? 0;
+/** The same scale everywhere: spent is red, nearly spent is amber. */
+function shadeFor(used: number | null): string {
+  if (used === null) return codes.dim;
   if (used >= 1) return codes.red;
   if (used >= 0.9) return codes.yellow;
   return codes.dim;
+}
+
+/** A window's utilization as a whole percent, or a dash when it is unknown. */
+function pct(used: number | null | undefined): string {
+  return typeof used === 'number' ? `${Math.round(used * 100)}%` : '-';
+}
+
+/**
+ * The per-model window that matters, which is the one closest to its limit.
+ *
+ * Shown by name (for example `Fable 100%`) rather than folded into an average:
+ * an account can be at 6% for the hour and still refuse to run Fable, and an
+ * average hides exactly the number that stops you.
+ */
+function worstModel(
+  a: DashboardAccount,
+): { name: string; utilization: number; resetsAt?: number | null } | null {
+  const models = (a.usage?.models ?? []).filter((m) => typeof m.utilization === 'number');
+  if (models.length === 0) return null;
+  return models.reduce((worst, m) => (m.utilization > worst.utilization ? m : worst));
+}
+
+function modelText(a: DashboardAccount): string {
+  const m = worstModel(a);
+  return m ? `${m.name} ${pct(m.utilization)}` : '-';
+}
+
+/**
+ * Everything known about the highlighted account, on one line: each window, what
+ * it is at, and when it comes back. The table gives the numbers at a glance; this
+ * answers "and when can I use it again" without a second command.
+ */
+function detailLine(a: DashboardAccount, now: number): string {
+  const u = a.usage;
+  if (!u) return `${a.name}: no usage read yet`;
+  const parts = [
+    `5h ${pct(u.fiveHour)}${resetSuffix(u.fiveHourReset, now)}`,
+    `week ${pct(u.sevenDay)}${resetSuffix(u.sevenDayReset, now)}`,
+  ];
+  for (const m of u.models ?? []) {
+    parts.push(`${m.name} ${pct(m.utilization)}${resetSuffix(m.resetsAt, now)}`);
+  }
+  return `${a.name}: ${parts.join('   ')}`;
+}
+
+/** " (back in 3h)" for a window that is in the future, otherwise nothing. */
+function resetSuffix(resetsAt: number | null | undefined, now: number): string {
+  if (typeof resetsAt !== 'number' || resetsAt <= now) return '';
+  return ` (back in ${hhmm(resetsAt, now)})`;
 }
 
 /** Render the full dashboard frame for the given snapshot. */
@@ -110,12 +149,19 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const emailW = Math.max('EMAIL'.length, ...accounts.map((a) => (a.email ?? '').length));
   const planW = Math.max('PLAN'.length, ...accounts.map((a) => (a.plan ?? '').length));
   const priW = 3;
-  const usageW = Math.max('USAGE'.length, ...accounts.map((a) => usageText(a).length));
+  // Three separate columns instead of one collapsed number. The old single
+  // column showed only whichever window was worst, so an account could read
+  // "Fable 100%" with no way to see that everything else was fine, or read "6%"
+  // while a model window was spent.
+  const fiveW = Math.max('5H'.length, ...accounts.map((a) => pct(a.usage?.fiveHour).length));
+  const weekW = Math.max('WEEK'.length, ...accounts.map((a) => pct(a.usage?.sevenDay).length));
+  const modelW = Math.max('MODEL'.length, ...accounts.map((a) => modelText(a).length));
   const statusW = Math.max('STATUS'.length, ...accounts.map((a) => statusText(a, now).length + 2));
 
   // Two-char gutter: selection cursor then active marker, both plain-text
   // visible so the active row is clear even without color.
-  const rowWidth = 3 + nameW + 2 + emailW + 2 + planW + 2 + priW + 2 + usageW + 2 + statusW;
+  const rowWidth =
+    3 + nameW + 2 + emailW + 2 + planW + 2 + priW + 2 + fiveW + 2 + weekW + 2 + modelW + 2 + statusW;
   const rule = paint('─'.repeat(rowWidth), codes.dim, color);
 
   const title = paint('claude-auto-switch', codes.bold, color);
@@ -123,7 +169,7 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const titleLine = `${title}   ${paint(`active: ${activeName}`, codes.dim, color)}`;
 
   const header = paint(
-    `   ${'ACCOUNT'.padEnd(nameW)}  ${'EMAIL'.padEnd(emailW)}  ${'PLAN'.padEnd(planW)}  ${'PRI'.padEnd(priW)}  ${'USAGE'.padEnd(usageW)}  STATUS`,
+    `   ${'ACCOUNT'.padEnd(nameW)}  ${'EMAIL'.padEnd(emailW)}  ${'PLAN'.padEnd(planW)}  ${'PRI'.padEnd(priW)}  ${'5H'.padEnd(fiveW)}  ${'WEEK'.padEnd(weekW)}  ${'MODEL'.padEnd(modelW)}  STATUS`,
     codes.dim,
     color,
   );
@@ -137,12 +183,27 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     const email = (a.email ?? '').padEnd(emailW);
     const plan = (a.plan ?? '').padEnd(planW);
     const pri = String(a.priority).padEnd(priW);
-    const usage = paint(usageText(a).padEnd(usageW), usageColor(a), color);
+    // Each window coloured on its own, so a spent model window is visible even
+    // when the hour and the week are healthy.
+    const five = paint(pct(a.usage?.fiveHour).padEnd(fiveW), shadeFor(a.usage?.fiveHour ?? null), color);
+    const week = paint(pct(a.usage?.sevenDay).padEnd(weekW), shadeFor(a.usage?.sevenDay ?? null), color);
+    const model = paint(
+      modelText(a).padEnd(modelW),
+      shadeFor(worstModel(a)?.utilization ?? null),
+      color,
+    );
     const dot = paint('●', statusColor(a, now), color);
-    return `${cursor}${active} ${name}  ${email}  ${plan}  ${pri}  ${usage}  ${dot} ${statusText(a, now)}`;
+    return `${cursor}${active} ${name}  ${email}  ${plan}  ${pri}  ${five}  ${week}  ${model}  ${dot} ${statusText(a, now)}`;
   });
 
   const lines = [titleLine, rule, header, ...rows, rule];
+
+  // Everything about the highlighted account, including when each window returns.
+  const highlighted = accounts[options.selected ?? 0];
+  if (options.interactive && highlighted) {
+    lines.push(paint(`  ${detailLine(highlighted, now)}`, codes.dim, color));
+    lines.push(rule);
+  }
 
   if (events.length > 0) {
     for (const e of events.slice(-5)) lines.push(paint(`  ${e}`, codes.dim, color));

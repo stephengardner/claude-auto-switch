@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.25.0]
+
+### Fixed
+
+- **A session no longer starts on a login that is already dead.** ccx would copy
+  a stored login into a new session and launch whatever the state of it, so an
+  account whose login had expired hours earlier produced a fresh session where
+  the first thing on screen was Claude saying you were logged out, with nothing
+  to explain it. The login is now checked first. If it only needs renewing, it is
+  renewed, which is safe at exactly that moment because nothing is using the
+  account yet. If it is genuinely finished, ccx says which account and gives you
+  the command that fixes it, instead of letting it look like a mystery sign-out.
+
+### Added
+
+- **The dashboard shows every usage window, not just the worst one.** There are
+  now separate columns for the 5-hour window, the weekly window, and the model
+  window closest to its limit (for example `Fable 100%`), each coloured on its
+  own. The single column it replaces showed only whichever number was worst, so
+  an account could read `Fable 100%` with no way to see that the hour and the
+  week were completely free, or read `6%` while a model window was spent.
+- **A detail line for the highlighted account**, spelling out each window and
+  when it comes back: `work: 5h 6% (back in 1h35m)   week 57% (back in 3d)
+  Fable 100% (back in 2d)`.
+- Long waits now read in days rather than dozens of hours: `back in 3d`, not
+  `back in 72h0m`.
+
 ## [1.24.0]
 
 ### Fixed
