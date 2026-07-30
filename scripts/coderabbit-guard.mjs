@@ -28,6 +28,13 @@ import {
 } from './coderabbit-findings.mjs';
 
 const REVIEWER = 'coderabbitai';
+/**
+ * This gate's own check name. It has to be excluded when looking for the
+ * reviewer's signal, because it also contains the word "coderabbit": without
+ * this, the gate reads ITSELF as the reviewer, sees its own success, and decides
+ * the review is finished. It did exactly that on its first real run.
+ */
+const OWN_CHECK = 'coderabbit findings resolved';
 
 /**
  * EVERY comment counts, not only the ones marked serious.
@@ -98,21 +105,43 @@ function reviewBodies(owner, name, pr) {
 }
 
 /**
- * Is CodeRabbit involved with this pull request at all?
+ * What CodeRabbit is doing about the CURRENT commit.
  *
- * It posts its own check while reviewing, so the check existing means a review
- * is coming. That matters: "no review yet" must then BLOCK, not pass, or a pull
- * request can be merged in the window before the review lands.
+ * It posts its own check per commit, so that check is the honest answer to "has
+ * this version been reviewed". Both states matter and both must block:
+ *
+ * - 'working': a review is running right now. Answered comments from an EARLIER
+ *   commit do not cover the code being merged, and clearing on them would merge
+ *   in the window before the new review lands.
+ * - 'absent': no review, and no reviewer working on one.
  */
-function reviewerIsWorking(owner, name, pr) {
+function reviewerState(owner, name, pr) {
   try {
     const pull = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}`]);
     const sha = pull?.head?.sha;
-    if (!sha) return false;
+    if (!sha) return 'absent';
+
+    const isReviewerSignal = (label = '') => {
+      const text = label.toLowerCase();
+      return text.includes('coderabbit') && !text.includes(OWN_CHECK);
+    };
+
+    // CodeRabbit reports through the commit STATUS api, which is a different
+    // list from check runs. Looking in the wrong one made this gate think the
+    // review had finished while it was still pending.
+    const status = ghJson(['api', `repos/${owner}/${name}/commits/${sha}/status`]);
+    const statuses = (status?.statuses ?? []).filter((s) => isReviewerSignal(s.context));
+    if (statuses.some((s) => s.state === 'pending')) return 'working';
+    if (statuses.length > 0) return 'done';
+
+    // Some setups report as a check run instead; same question, other list.
     const runs = ghJson(['api', `repos/${owner}/${name}/commits/${sha}/check-runs`, '--paginate']);
-    return (runs?.check_runs ?? []).some((r) => (r.name ?? '').toLowerCase().includes('coderabbit'));
+    const checks = (runs?.check_runs ?? []).filter((r) => isReviewerSignal(r.name));
+    if (checks.length === 0) return 'absent';
+    return checks.every((r) => r.status === 'completed') ? 'done' : 'working';
   } catch {
-    return false;
+    // Cannot tell. Say so rather than assume the happy answer.
+    return 'unknown';
   }
 }
 
@@ -176,13 +205,20 @@ function main() {
   }
 
   const reviewed = threads.length > 0 || bodies.length > 0 || summaries.length > 0;
+  const state = reviewerState(owner, name, pr);
   if (asJson) {
-    console.log(JSON.stringify({ schemaVersion: 1, pr, reviewed, blockers }, null, 2));
+    console.log(JSON.stringify({ schemaVersion: 1, pr, reviewed, reviewerState: state, blockers }, null, 2));
   }
 
+  // A review still running is not a passed review, even when every comment from
+  // the previous commit has been answered: those answers were about older code.
+  if (state === 'working') {
+    console.error(`coderabbit-guard: PR #${pr} BLOCKED: CodeRabbit is still reviewing this commit.`);
+    console.error('Answered comments from an earlier commit do not cover this one. Wait for it to finish.');
+    process.exit(1);
+  }
   if (!reviewed) {
-    if (reviewerIsWorking(owner, name, pr)) {
-      // The review is coming. Merging now would skip it entirely.
+    if (state === 'done') {
       console.error(`coderabbit-guard: PR #${pr} BLOCKED: CodeRabbit has not posted its review yet.`);
       console.error('Wait for the review, answer every comment, then this clears.');
       process.exit(1);
