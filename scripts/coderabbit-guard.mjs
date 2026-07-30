@@ -20,6 +20,12 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import {
+  bodyFindings,
+  bodyFindingsAcknowledged,
+  threadAnswered,
+  remedyFor,
+} from './coderabbit-findings.mjs';
 
 const REVIEWER = 'coderabbitai';
 
@@ -32,13 +38,6 @@ const REVIEWER = 'coderabbitai';
  * gets a reply saying why it is wrong.
  */
 
-/**
- * Headings CodeRabbit uses when it raises something inside a review body, where
- * GitHub offers no "resolve" button. Kept narrow so ordinary summary prose does
- * not read as a finding; widen it in LESSONS.md when a real review proves it too
- * narrow.
- */
-const BODY_FINDING = /(potential issue|refactor suggestion|nitpick|possible bug|security|outside diff range)/i;
 
 function gh(args) {
   return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
@@ -98,10 +97,29 @@ function reviewBodies(owner, name, pr) {
     .filter((r) => r.body.length > 0);
 }
 
-/** Issue-level comments, where CodeRabbit also posts summaries. */
-function issueComments(owner, name, pr) {
+/**
+ * Is CodeRabbit involved with this pull request at all?
+ *
+ * It posts its own check while reviewing, so the check existing means a review
+ * is coming. That matters: "no review yet" must then BLOCK, not pass, or a pull
+ * request can be merged in the window before the review lands.
+ */
+function reviewerIsWorking(owner, name, pr) {
+  try {
+    const pull = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}`]);
+    const sha = pull?.head?.sha;
+    if (!sha) return false;
+    const runs = ghJson(['api', `repos/${owner}/${name}/commits/${sha}/check-runs`, '--paginate']);
+    return (runs?.check_runs ?? []).some((r) => (r.name ?? '').toLowerCase().includes('coderabbit'));
+  } catch {
+    return false;
+  }
+}
+
+/** Every comment on the pull request, with who wrote it. */
+function allComments(owner, name, pr) {
   const comments = ghJson(['api', `repos/${owner}/${name}/issues/${pr}/comments`, '--paginate']) ?? [];
-  return comments.filter((c) => isReviewer(c.user?.login)).map((c) => c.body ?? '');
+  return comments.map((c) => ({ author: c.user?.login ?? '', body: c.body ?? '' }));
 }
 
 function main() {
@@ -112,12 +130,14 @@ function main() {
     process.exit(2);
   }
 
-  let owner, name, threads, bodies, summaries;
+  let owner, name, threads, bodies, summaries, humanComments;
   try {
     ({ owner, name } = repoSlug());
     threads = reviewThreads(owner, name, pr);
     bodies = reviewBodies(owner, name, pr);
-    summaries = issueComments(owner, name, pr);
+    const comments = allComments(owner, name, pr);
+    humanComments = comments;
+    summaries = comments.filter((c) => isReviewer(c.author)).map((c) => c.body);
   } catch (err) {
     // Could not ask GitHub. Not knowing is not the same as being clear.
     console.error(`coderabbit-guard: could not read PR #${pr}: ${err.message.split('\n')[0]}`);
@@ -130,9 +150,7 @@ function main() {
     const comments = thread.comments?.nodes ?? [];
     const first = comments[0];
     if (!first || !isReviewer(first.author?.login)) continue;
-    // Resolved, or answered by a human reply: handled either way.
-    const answered = thread.isResolved || comments.slice(1).some((c) => !isReviewer(c.author?.login));
-    if (answered) continue;
+    if (threadAnswered(thread, isReviewer)) continue;
     blockers.push({
       kind: 'inline',
       where: `${first.path ?? '?'}:${first.line ?? '?'}`,
@@ -140,19 +158,19 @@ function main() {
     });
   }
 
-  // Body findings cannot be "resolved" in GitHub's UI, so they are reported for
-  // a human to confirm rather than silently ignored.
-  for (const review of bodies) {
-    for (const line of review.body.split('\n')) {
-      if (BODY_FINDING.test(line) && line.trim().length > 0) {
-        blockers.push({ kind: 'review-body', where: `review ${review.id}`, excerpt: line.trim().slice(0, 140) });
+  // Findings raised inside a review body cannot be resolved and cannot be
+  // replied to, so they are answered once, explicitly, by a comment saying they
+  // have been read. Without that they would block the pull request forever.
+  const acknowledged = bodyFindingsAcknowledged(humanComments, isReviewer);
+  if (!acknowledged) {
+    for (const review of bodies) {
+      for (const finding of bodyFindings(review.body)) {
+        blockers.push({ kind: 'review-body', where: `review ${review.id}`, excerpt: finding.slice(0, 140) });
       }
     }
-  }
-  for (const body of summaries) {
-    for (const line of body.split('\n')) {
-      if (BODY_FINDING.test(line) && line.trim().length > 0) {
-        blockers.push({ kind: 'summary-comment', where: 'summary', excerpt: line.trim().slice(0, 140) });
+    for (const body of summaries) {
+      for (const finding of bodyFindings(body)) {
+        blockers.push({ kind: 'summary-comment', where: 'summary', excerpt: finding.slice(0, 140) });
       }
     }
   }
@@ -163,7 +181,13 @@ function main() {
   }
 
   if (!reviewed) {
-    console.error(`coderabbit-guard: PR #${pr} has no CodeRabbit review yet; nothing to clear.`);
+    if (reviewerIsWorking(owner, name, pr)) {
+      // The review is coming. Merging now would skip it entirely.
+      console.error(`coderabbit-guard: PR #${pr} BLOCKED: CodeRabbit has not posted its review yet.`);
+      console.error('Wait for the review, answer every comment, then this clears.');
+      process.exit(1);
+    }
+    console.error(`coderabbit-guard: PR #${pr} has no CodeRabbit review, and CodeRabbit does not appear to be reviewing this repo.`);
     process.exit(2);
   }
   if (blockers.length === 0) {
@@ -174,8 +198,11 @@ function main() {
   console.error(`coderabbit-guard: PR #${pr} BLOCKED by ${blockers.length} unanswered comment(s):`);
   for (const b of blockers) console.error(`  [${b.kind}] ${b.where}  ${b.excerpt}`);
   console.error('');
-  console.error('Fix each one, push, then REPLY on that inline comment with the fix SHA.');
-  console.error('If a finding is wrong, reply saying why. A re-review does not clear these.');
+  for (const kind of [...new Set(blockers.map((b) => b.kind))]) {
+    console.error(`  ${kind}: ${remedyFor(kind)}`);
+  }
+  console.error('');
+  console.error('A later review does not clear these; it only covers new changes.');
   process.exit(1);
 }
 
