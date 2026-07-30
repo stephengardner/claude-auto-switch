@@ -48,7 +48,56 @@ describe('runHotSwapSession', () => {
       notify: (m) => notes.push(m),
     };
     expect(await runHotSwapSession(deps)).toBe(1);
-    expect(notes.join(' ')).toContain('every account is capped');
+    expect(notes.join(' ')).toContain('every account has hit its limit');
+  });
+
+  it('starts anyway when the limits are about ONE MODEL, rather than refusing', async () => {
+    // Refusing here is what made an exhausted Fable window look like being
+    // signed out, even though the session works fine on another model.
+    const accounts = pool(['a']);
+    const runs: Array<{ account: string; ignoreLimits?: boolean }> = [];
+    const notes: string[] = [];
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => accounts.find((a) => !ex.has(a.name)) ?? null,
+      resolveAccount: (name) => accounts.find((a) => a.name === name) ?? null,
+      runSession: (account, _isContinue, options) => {
+        runs.push({ account: account.name, ...(options?.ignoreLimits ? { ignoreLimits: true } : {}) });
+        // The first run hits the model limit; the fallback run must not be
+        // watched for limits, or it would be ended by the same one.
+        return Promise.resolve(
+          options?.ignoreLimits
+            ? ({ kind: 'ok', exitCode: 0 } as SessionOutcome)
+            : ({ kind: 'capped', exitCode: 1, reason: 'Fable limit' } as SessionOutcome),
+        );
+      },
+      markCapped: () => {},
+      notify: (m) => notes.push(m),
+      lastResort: () => ({ account: accounts[0]!, message: 'every account is out of Fable' }),
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(0); // started, did not refuse
+    expect(runs).toEqual([{ account: 'a' }, { account: 'a', ignoreLimits: true }]);
+    expect(notes.join(' ')).toContain('out of Fable');
+  });
+
+  it('uses the fallback only once, then reports honestly', async () => {
+    const accounts = pool(['a']);
+    let fallbacks = 0;
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => accounts.find((a) => !ex.has(a.name)) ?? null,
+      resolveAccount: () => null,
+      runSession: () => Promise.resolve({ kind: 'capped', exitCode: 1 } as SessionOutcome),
+      markCapped: () => {},
+      notify: () => {},
+      lastResort: () => {
+        fallbacks += 1;
+        return { account: accounts[0]!, message: 'model limit' };
+      },
+    };
+    // The fallback run also reports capped; without the once-only guard this
+    // would loop forever.
+    expect(await runHotSwapSession(deps)).toBe(1);
+    expect(fallbacks).toBe(1);
   });
 
   it('exits normally without swapping when the first account does not cap', async () => {

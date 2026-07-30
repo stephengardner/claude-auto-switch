@@ -23,18 +23,39 @@ export function saveLedger(ledger: Ledger, c: PathCtx = {}): void {
 
 // -- pure operations (deterministic over an injected `now`) ----------------
 
-/** Is this account currently capped at time `now`? */
+function isActive(cap: { capUntil: number | null }, now: number): boolean {
+  return cap.capUntil === null || cap.capUntil > now;
+}
+
+/**
+ * Is this account unusable at time `now`?
+ *
+ * Only an account-wide limit makes an account unusable. A limit on ONE model
+ * leaves everything else about the account working, so it must not count here:
+ * treating it as unusable is what stops a session starting on a model that is
+ * perfectly available.
+ */
 export function isCapped(ledger: Ledger, account: string, now: number): boolean {
-  return ledger.caps.some(
-    (c) => c.account === account && (c.capUntil === null || c.capUntil > now),
+  return ledger.caps.some((c) => c.account === account && !c.model && isActive(c, now));
+}
+
+/** The set of accounts that cannot run at all at time `now`. */
+export function cappedNames(ledger: Ledger, now: number): Set<string> {
+  return new Set(ledger.caps.filter((c) => !c.model && isActive(c, now)).map((c) => c.account));
+}
+
+/** Accounts whose limit is only about `model` (they still work on other models). */
+export function modelCappedNames(ledger: Ledger, now: number, model?: string): Set<string> {
+  return new Set(
+    ledger.caps
+      .filter((c) => c.model && isActive(c, now) && (!model || c.model.toLowerCase() === model.toLowerCase()))
+      .map((c) => c.account),
   );
 }
 
-/** The set of accounts capped at time `now`. */
-export function cappedNames(ledger: Ledger, now: number): Set<string> {
-  return new Set(
-    ledger.caps.filter((c) => c.capUntil === null || c.capUntil > now).map((c) => c.account),
-  );
+/** Every account with any active limit, whatever its scope (for display). */
+export function allLimitedNames(ledger: Ledger, now: number): Set<string> {
+  return new Set(ledger.caps.filter((c) => isActive(c, now)).map((c) => c.account));
 }
 
 export interface MarkCappedInput {
@@ -45,6 +66,8 @@ export interface MarkCappedInput {
   resetAt?: number | null;
   /** Fallback window when no reset time is known. */
   backoffMinutes?: number;
+  /** Set when only ONE MODEL is out, rather than the whole account. */
+  model?: string;
 }
 
 /** Record (or replace) a cap for an account. Returns a new Ledger. */
@@ -61,9 +84,34 @@ export function markCapped(ledger: Ledger, input: MarkCappedInput): Ledger {
     capUntil,
     reason: input.reason ?? 'usage cap',
     at: input.now,
+    ...(input.model ? { model: input.model } : {}),
   };
 
   return { caps: [...ledger.caps.filter((c) => c.account !== input.account), record] };
+}
+
+/**
+ * When every current limit is about ONE MODEL rather than whole accounts, this
+ * describes it: the model, and the soonest it frees up.
+ *
+ * This is the difference between "you cannot work" and "you cannot work on this
+ * model". Treating the second as the first is how a Fable limit turns into an
+ * apparently unusable setup, when switching models would have carried on fine.
+ */
+export function modelOnlyLimit(
+  ledger: Ledger,
+  now: number,
+): { model: string; resetsAt: number | null } | null {
+  const active = ledger.caps.filter((c) => c.capUntil === null || c.capUntil > now);
+  if (active.length === 0) return null;
+  if (!active.every((c) => typeof c.model === 'string' && c.model.length > 0)) return null;
+  const model = active[0]!.model!;
+  if (!active.every((c) => c.model === model)) return null; // mixed models: not one story
+  const resets = active
+    .map((c) => c.capUntil)
+    .filter((t): t is number => typeof t === 'number')
+    .sort((a, b) => a - b);
+  return { model, resetsAt: resets[0] ?? null };
 }
 
 /** Drop caps whose window has passed. Returns a new Ledger. */

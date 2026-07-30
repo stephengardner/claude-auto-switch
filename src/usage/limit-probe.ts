@@ -32,6 +32,8 @@ export interface ModelWindow {
 
 export interface LimitProbeResult {
   verdict: LimitVerdict;
+  /** When only one model is out, its name (for example "Fable"). */
+  limitedModel?: string;
   /** Set when the endpoint asked us to back off (429), in ms. */
   retryAfterMs?: number;
   /** 0..1 utilization for the 5-hour session window. */
@@ -160,14 +162,28 @@ export async function probeLimit(
     // match it, so a Fable cap is not masked by a healthy all-models number.
     const named = models.find((m) => renderedText.toLowerCase().includes(m.name.toLowerCase()));
     if (named && named.utilization >= 1) {
-      return { ...usage, verdict: 'limited', detail: `${named.name} weekly at limit` };
+      // Scoped on purpose: this account still works on every other model.
+      return {
+        ...usage,
+        verdict: 'limited',
+        limitedModel: named.name,
+        detail: `${named.name} weekly at limit`,
+      };
     }
 
-    const limited =
-      (data.limits ?? []).some((l) => l.is_active !== false && isHit(l.percent, l.severity)) ||
-      (fiveHour !== undefined && fiveHour >= 1) ||
-      (sevenDay !== undefined && sevenDay >= 1);
-    return { ...usage, verdict: limited ? 'limited' : 'allowed' };
+    const accountWideOut =
+      (fiveHour !== undefined && fiveHour >= 1) || (sevenDay !== undefined && sevenDay >= 1);
+    if (accountWideOut) return { ...usage, verdict: 'limited' };
+
+    // A per-model window at its limit stops that model only, so name it.
+    const spentModel = models.find((m) => m.utilization >= 1);
+    if (spentModel) {
+      return { ...usage, verdict: 'limited', limitedModel: spentModel.name, detail: `${spentModel.name} at limit` };
+    }
+    const otherLimit = (data.limits ?? []).some(
+      (l) => l.is_active !== false && isHit(l.percent, l.severity),
+    );
+    return { ...usage, verdict: otherLimit ? 'limited' : 'allowed' };
   } catch (err) {
     return { verdict: 'unknown', detail: (err as Error).message };
   } finally {

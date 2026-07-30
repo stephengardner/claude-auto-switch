@@ -23,11 +23,23 @@ export interface HotSwapDeps {
    * Run one claude session (the real impl runs it inside a PTY). `isContinue`
    * resumes the same conversation (--continue) after a swap.
    */
-  runSession: (account: HotSwapAccount, isContinue: boolean) => Promise<SessionOutcome>;
+  runSession: (
+    account: HotSwapAccount,
+    isContinue: boolean,
+    options?: { ignoreLimits?: boolean },
+  ) => Promise<SessionOutcome>;
   /** Persist a cap so other sessions avoid the account too. */
   markCapped: (account: string, reason: string, resetAt: number | undefined) => void;
-  /** ccx status messages (routed to stderr, never stdout). */
+  /** ccx status messages (never stdout, and never into Claude's screen). */
   notify: (message: string) => void;
+  /**
+   * Somewhere to run when every account has hit a limit, used when those limits
+   * are about ONE MODEL rather than the accounts themselves. Refusing to start
+   * in that situation is wrong: the session works fine on another model, and
+   * declining to launch reads as being signed out instead of being told to
+   * switch models.
+   */
+  lastResort?: () => { account: HotSwapAccount; message: string } | null;
 }
 
 /**
@@ -45,12 +57,24 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
   // When the operator picks an account mid-session, we relaunch on THAT account
   // next (instead of the policy pick), resuming the same conversation.
   let forced: HotSwapAccount | null = null;
+  let triedLastResort = false;
 
   for (;;) {
     const account: HotSwapAccount | null = forced ?? deps.nextAccount(capped);
     forced = null;
     if (!account) {
-      deps.notify('every account is capped; try again after a reset');
+      // Out of accounts to rotate to. If what is exhausted is one model rather
+      // than the accounts, run anyway and let Claude say so: it can still work
+      // on another model. Watching for limits is off for that run, otherwise it
+      // would be ended immediately by the very limit we already know about.
+      const fallback = triedLastResort ? null : deps.lastResort?.();
+      if (fallback) {
+        triedLastResort = true;
+        deps.notify(fallback.message);
+        const outcome = await deps.runSession(fallback.account, !first, { ignoreLimits: true });
+        return outcome.exitCode;
+      }
+      deps.notify('every account has hit its limit; try again after a reset');
       return 1;
     }
 

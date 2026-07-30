@@ -7,13 +7,13 @@ import { readSwitchRequest, clearSwitchRequest, decideSwitch, writeSwitchRequest
 import { startProactiveRotation } from '../usage/proactive.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
-import { loadLedger, saveLedger, markCapped, cappedNames } from '../ledger/ledger.js';
+import { loadLedger, saveLedger, markCapped, cappedNames, modelOnlyLimit } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { runHotSwapSession } from '../launcher/hot-swap.js';
 import { runPtySession } from '../launcher/pty-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
-import { notifyAccountSwitch } from '../launcher/notify.js';
+import { notifyAccountSwitch, notifyTerminal } from '../launcher/notify.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
 import { probeLimit } from '../usage/limit-probe.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
@@ -170,12 +170,21 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
   let current: Account | null = null;
 
+  // Which model was out, when the limit was about one model rather than the
+  // whole account. Recorded with the limit so it never blocks other models.
+  let limitedModel: string | undefined;
+
   // Ground-truth cap check: rendered text only TRIGGERS this; the API decides.
   // Uses the SESSION credential (the live, possibly-refreshed token).
   const verifyCap = async (renderedText: string): Promise<boolean> => {
-    const verdict = context.verifyCap
-      ? await context.verifyCap(renderedText)
-      : (await probeLimit(sessionCreds, renderedText)).verdict;
+    let verdict: string;
+    if (context.verifyCap) {
+      verdict = await context.verifyCap(renderedText);
+    } else {
+      const probe = await probeLimit(sessionCreds, renderedText);
+      verdict = probe.verdict;
+      limitedModel = probe.limitedModel;
+    }
     if (verdict !== 'limited') {
       err(
         '[ccx] limit text on screen, but no account-wide cap is confirmed by the API; not switching. ' +
@@ -309,7 +318,26 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // The account the session is ACTUALLY on right now (may have moved via a
     // seamless swap), so a cap is attributed to the right account.
     currentAccount: () => current?.name ?? '',
-    runSession: async (hotAccount, isContinue) => {
+    // Every account has hit a limit. If those limits are about ONE MODEL, the
+    // session still works on another model, so start it and say which model is
+    // out. Refusing here is what made a Fable limit look like being signed out.
+    lastResort: () => {
+      const limit = modelOnlyLimit(loadLedger(context.ctx), Date.now());
+      if (!limit) return null;
+      const usable = accounts.filter((a) => a.enabled && hasLogin(a.dir));
+      const pick = usable.find((a) => a.name === getActive(context.ctx)) ?? usable[0];
+      if (!pick) return null;
+      const when = limit.resetsAt
+        ? ` It frees up ${new Date(limit.resetsAt).toLocaleString()}.`
+        : '';
+      return {
+        account: { name: pick.name, dir: pick.dir },
+        message:
+          `every account is out of ${limit.model}, but nothing else is limited.` +
+          `${when} Starting on "${pick.name}" anyway: switch models with /model to keep working.`,
+      };
+    },
+    runSession: async (hotAccount, isContinue, runOptions) => {
       const account = accounts.find((a) => a.name === hotAccount.name);
       if (!account) return { kind: 'ok', exitCode: 1 };
       activate(account);
@@ -351,6 +379,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         switchWatch,
         verifyCap,
         input: terminalInput,
+        ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
         ...(debugLog ? { debugLog } : {}),
       };
       const wantContinue = isContinue && !wantsContinue(args);
@@ -380,13 +409,17 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           resetAt: resetAt ?? null,
           backoffMinutes: context.config.rotation.defaultBackoffMinutes,
           reason,
+          ...(limitedModel ? { model: limitedModel } : {}),
         }),
         context.ctx,
       );
       logEvent(`${accountName} hit its limit`);
     },
     notify: (m) => {
-      err(`[ccx] ${m}`);
+      // NOT stderr: Claude owns the screen while a session runs, so writing
+      // there scribbles over the interface. The terminal notification draws
+      // nothing, and `ccx history` keeps the record.
+      notifyTerminal(`ccx: ${m}`);
       logEvent(m);
     },
   });
@@ -394,9 +427,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // No more sessions will run: stop watching usage and restore the terminal.
   proactive.stop();
   terminalInput.close();
-  // On exit, save any refreshed credential back to its account and remove the
-  // live credential from the shared session dir so nothing is left at rest.
+  // On exit, save any refreshed credential back to its account. The session's
+  // copy is deliberately LEFT in place: removing it makes anything that looks at
+  // this session afterwards report "not logged in", which sends you chasing a
+  // sign-in problem that does not exist. The same token already lives in the
+  // account folder with the same permissions, so removing it protected nothing.
   if (current) saveBack(current);
-  scrubSessionCreds();
   return exitCode;
 }

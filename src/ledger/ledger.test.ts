@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { markCapped, isCapped, cappedNames, clearExpired, clearAccount } from './ledger.js';
+import { markCapped, isCapped, cappedNames, clearExpired, clearAccount, modelCappedNames, allLimitedNames, modelOnlyLimit } from './ledger.js';
 import type { Ledger } from './ledger.schema.js';
 
 const empty: Ledger = { caps: [] };
@@ -41,5 +41,57 @@ describe('ledger', () => {
   it('clearAccount removes an account cap after a successful run', () => {
     const l = markCapped(empty, { account: 'a', now: 0, resetAt: 100 });
     expect(isCapped(clearAccount(l, 'a'), 'a', 50)).toBe(false);
+  });
+});
+
+describe('limits scoped to one model', () => {
+  const now = 1_000_000;
+  const later = now + 60 * 60_000;
+
+  it('does NOT make an account unusable: other models still work', () => {
+    // The bug this prevents: a spent Fable window stopped `claude --model opus`
+    // from starting at all, and reported it as being signed out.
+    const ledger = markCapped(
+      { caps: [] },
+      { account: 'work', now, resetAt: later, model: 'Fable' },
+    );
+    expect(isCapped(ledger, 'work', now)).toBe(false);
+    expect(cappedNames(ledger, now).has('work')).toBe(false);
+    // It is still recorded, for display and for steering rotation.
+    expect(modelCappedNames(ledger, now).has('work')).toBe(true);
+    expect(modelCappedNames(ledger, now, 'Fable').has('work')).toBe(true);
+    expect(modelCappedNames(ledger, now, 'Opus').has('work')).toBe(false);
+    expect(allLimitedNames(ledger, now).has('work')).toBe(true);
+  });
+
+  it('an account-wide limit still makes the account unusable', () => {
+    const ledger = markCapped({ caps: [] }, { account: 'work', now, resetAt: later });
+    expect(isCapped(ledger, 'work', now)).toBe(true);
+    expect(cappedNames(ledger, now).has('work')).toBe(true);
+    expect(modelCappedNames(ledger, now).has('work')).toBe(false);
+  });
+
+  it('modelOnlyLimit reports the model and soonest reset when every limit is that model', () => {
+    let ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    ledger = markCapped(ledger, { account: 'b', now, resetAt: later + 60_000, model: 'Fable' });
+    expect(modelOnlyLimit(ledger, now)).toEqual({ model: 'Fable', resetsAt: later });
+  });
+
+  it('modelOnlyLimit is null when anything is limited account-wide, or models differ', () => {
+    let mixed = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    mixed = markCapped(mixed, { account: 'b', now, resetAt: later }); // account-wide
+    expect(modelOnlyLimit(mixed, now)).toBeNull();
+
+    let twoModels = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    twoModels = markCapped(twoModels, { account: 'b', now, resetAt: later, model: 'Opus' });
+    expect(modelOnlyLimit(twoModels, now)).toBeNull();
+
+    expect(modelOnlyLimit({ caps: [] }, now)).toBeNull();
+  });
+
+  it('an expired model limit stops counting', () => {
+    const ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: now - 1, model: 'Fable' });
+    expect(modelOnlyLimit(ledger, now)).toBeNull();
+    expect(modelCappedNames(ledger, now).size).toBe(0);
   });
 });

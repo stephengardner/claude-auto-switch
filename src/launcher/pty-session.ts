@@ -30,6 +30,12 @@ export interface PtySessionOptions {
    */
   verifyCap?: (renderedText: string) => Promise<boolean>;
   /**
+   * Do not watch for usage limits during this run. Used for the deliberate
+   * "run anyway" case, where the limit is already known and the operator needs
+   * the session to start so they can switch models.
+   */
+  ignoreLimits?: boolean;
+  /**
    * The run's terminal input. Sessions borrow the operator's keyboard from this
    * owner rather than taking the terminal into raw mode themselves, so a swap
    * never toggles global terminal state mid-teardown.
@@ -142,6 +148,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // every account in turn. Verify against the API and only act when the
       // account is confirmed limited. Refuted matches back off briefly so a
       // replay cannot spam probes.
+      if (options.ignoreLimits) return;
       if (verifying || Date.now() < suppressUntil) return;
       const hit = matchesCapText(window);
       if (!hit) return;
