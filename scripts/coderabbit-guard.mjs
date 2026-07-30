@@ -246,6 +246,17 @@ function main() {
     process.exit(2);
   }
 
+  /**
+   * Has this reviewer said anything about THIS commit yet?
+   *
+   * If it has reviewed the pull request before but has posted nothing about the
+   * current commit, a review is expected and simply has not started. Reading the
+   * older review as approval is how the moments right after a push become a hole
+   * to merge through.
+   */
+  const expectsReview = () => state === 'absent' && snapshot.threads.length + snapshot.bodies.length > 0;
+  if (expectsReview()) state = 'working';
+
   // A review in progress gets time to finish, and EVERYTHING is re-read after,
   // so the verdict is never a mix of old comments and a new review.
   const deadline = Date.now() + waitSeconds() * 1000;
@@ -255,6 +266,7 @@ function main() {
     try {
       snapshot = readPullRequest(owner, name, pr);
       state = reviewerState(owner, name, pr);
+      if (expectsReview()) state = 'working';
     } catch {
       break; // the checks below fail safe
     }
@@ -268,8 +280,9 @@ function main() {
   }
 
   if (state === 'working') {
-    console.error(`coderabbit-guard: PR #${pr} BLOCKED: CodeRabbit is still reviewing this commit.`);
+    console.error(`coderabbit-guard: PR #${pr} BLOCKED: no finished CodeRabbit review for this commit.`);
     console.error('Answered comments from an earlier commit do not cover this one.');
+    console.error('Wait for the review to appear and finish, then run this again.');
     process.exit(1);
   }
   if (!reviewed) {
