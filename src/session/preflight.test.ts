@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ensureLoginUsable, readinessMessage } from './preflight.js';
+import { ensureLoginUsable, readinessMessage, swapMode } from './preflight.js';
 
 function deps(over: Partial<Parameters<typeof ensureLoginUsable>[0]> = {}) {
   return {
@@ -80,5 +80,23 @@ describe('ensureLoginUsable', () => {
     // actually matters.
     expect(readinessMessage('main', { state: 'ready' })).toBeNull();
     expect(readinessMessage('main', { state: 'renewed' })).toBeNull();
+  });
+});
+
+describe('swapMode', () => {
+  it('swaps in place when the target login is usable right now', () => {
+    expect(swapMode({ hasLogin: () => true, renewalDue: () => false })).toBe('in-place');
+  });
+
+  it('relaunches instead when the target login needs renewing', () => {
+    // The swap is synchronous, so nothing can be renewed during it. Swapping an
+    // expired login under a running Claude lands it on a dead token, which is the
+    // same sudden sign-out the pre-flight exists to prevent. Relaunching with
+    // --continue keeps the conversation and lets the start path renew first.
+    expect(swapMode({ hasLogin: () => true, renewalDue: () => true })).toBe('restart');
+  });
+
+  it('relaunches when the target has no login at all', () => {
+    expect(swapMode({ hasLogin: () => false, renewalDue: () => false })).toBe('restart');
   });
 });

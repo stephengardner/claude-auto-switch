@@ -39,7 +39,7 @@ import {
 import { decideSaveBack } from '../accounts/save-back.js';
 import { takeLease, touchLease, releaseLease } from '../session/lease.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
-import { ensureLoginUsable, readinessMessage } from '../session/preflight.js';
+import { ensureLoginUsable, readinessMessage, swapMode } from '../session/preflight.js';
 import { renewalIsDue, refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { withCredentialLock, withCredentialLockIfFree } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
@@ -441,7 +441,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       });
       if (readiness.state === 'renewed') {
         logCredentialEvent(
-          { account: account.name, kind: 'renewed', detail: 'expired login renewed before starting' },
+          {
+            account: account.name,
+            kind: 'renewed',
+            detail: 'expired login renewed before starting',
+          },
           context.ctx,
         );
       } else if (readiness.state === 'needs-login') {
@@ -490,9 +494,22 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         const target = accounts.find((a) => a.name === decision.switchTo);
         if (!target) return null;
         if (request?.mode === 'restart') return target.name; // end child, relaunch --continue
-        // Seamless: swap the credential file under the running claude. It re-reads
-        // within ~30s (its cache TTL), moving the SAME session to the new account
-        // with no restart and nothing lost.
+        // Seamless only when the target's login is usable right now. This swap is
+        // synchronous, so there is no chance to renew anything first, and swapping
+        // in an expired login lands the running session on a dead token. When it
+        // needs work, relaunch instead: --continue keeps the same conversation and
+        // the start path renews before handing it over.
+        if (
+          swapMode({
+            hasLogin: () => hasLogin(target.dir),
+            renewalDue: () => renewalIsDue(target.dir),
+          }) === 'restart'
+        ) {
+          err(
+            `[ccx] "${target.name}" needs its login refreshed first; continuing this conversation there`,
+          );
+          return target.name;
+        }
         activate(target);
         setActive(target.name, context.ctx);
         syncEditorPointerIfEnabled(context);

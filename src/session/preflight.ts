@@ -78,3 +78,24 @@ export function readinessMessage(account: string, readiness: LoginReadiness): st
       return null;
   }
 }
+
+/**
+ * Can a mid-session switch to this account be done in place?
+ *
+ * Swapping the credential under a running Claude is only safe when the target's
+ * login is usable RIGHT NOW: the swap is synchronous (it happens on the session's
+ * poll) so there is no opportunity to renew anything, and swapping in an expired
+ * login lands the running session on a dead token, which is the same "suddenly
+ * logged out" the pre-flight exists to prevent.
+ *
+ * When the login needs work, the answer is 'restart': ending the child and
+ * relaunching with --continue keeps the same conversation and routes the switch
+ * through the start path, which CAN renew first.
+ */
+export function swapMode(deps: {
+  hasLogin: () => boolean;
+  renewalDue: () => boolean;
+}): 'in-place' | 'restart' {
+  if (!deps.hasLogin()) return 'restart';
+  return deps.renewalDue() ? 'restart' : 'in-place';
+}
