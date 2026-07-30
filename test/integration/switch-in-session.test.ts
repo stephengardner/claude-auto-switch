@@ -276,6 +276,22 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(liveLeases(context.ctx)).toEqual([]);
   });
 
+  it('ends with the login saved back and the announcement given up', async () => {
+    // The ORDER of those two is pinned by handoff.test.ts, which can see the
+    // sequence; this only checks the end state a real session leaves behind.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-lease-shutdown-'));
+    process.env.FAKE_CLAUDE_IDLE_MS = '400';
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    setActive('A', context.ctx);
+
+    expect(await runCommand(context, [])).toBe(0);
+    // By the end, the announcement is gone AND the profile holds the session's
+    // login, which is only consistent with saving before releasing.
+    expect(liveLeases(context.ctx)).toEqual([]);
+    expect(existsSync(path.join(home, 'profiles', 'A', '.credentials.json'))).toBe(true);
+  });
+
   it('moves the announcement with a seamless switch, so only the live account is protected', async () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-lease-switch-'));
     process.env.FAKE_CLAUDE_IDLE_MS = '3000';

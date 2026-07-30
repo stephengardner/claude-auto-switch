@@ -3,11 +3,22 @@ import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
-import { readSwitchRequest, clearSwitchRequest, decideSwitch, writeSwitchRequest } from '../state/switch-request.js';
+import {
+  readSwitchRequest,
+  clearSwitchRequest,
+  decideSwitch,
+  writeSwitchRequest,
+} from '../state/switch-request.js';
 import { startProactiveRotation } from '../usage/proactive.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
-import { loadLedger, saveLedger, markCapped, cappedNames, modelOnlyLimit } from '../ledger/ledger.js';
+import {
+  loadLedger,
+  saveLedger,
+  markCapped,
+  cappedNames,
+  modelOnlyLimit,
+} from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { runHotSwapSession } from '../launcher/hot-swap.js';
@@ -27,6 +38,7 @@ import {
 } from '../accounts/credential-vault.js';
 import { decideSaveBack } from '../accounts/save-back.js';
 import { takeLease, touchLease, releaseLease } from '../session/lease.js';
+import { activateWithLease, finishWithLease } from '../session/handoff.js';
 import { withCredentialLock } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { appendEvent } from '../events/log.js';
@@ -82,7 +94,6 @@ function identityFields(accountDir: string): Record<string, unknown> {
   }
   return id;
 }
-
 
 /**
  * Build/refresh the session's .claude.json so the interactive app treats it as
@@ -213,7 +224,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // The session is signed out. Recording this is how "why was I asked to
       // sign in again?" becomes answerable later.
       logCredentialEvent(
-        { account: account.name, kind: 'signed-out', detail: 'session had no login; left the stored one alone' },
+        {
+          account: account.name,
+          kind: 'signed-out',
+          detail: 'session had no login; left the stored one alone',
+        },
         context.ctx,
       );
       return;
@@ -297,37 +312,40 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * instead of leaving the session on a half-applied account.
    */
   const activate = (account: Account): void => {
-    withCredentialLock(sessionDir, () => {
-      if (current && current.name !== account.name) saveBack(current);
-      const src = path.join(account.dir, CREDS);
-      // Always replace (or clear) the session credential so one account's login
-      // can never linger into another account's session.
-      try {
-        // A refused credential (missing, or signed out with empty tokens) must
-        // CLEAR the session, never leave the previous account's login in place:
-        // the session would keep running as that account while ccx believed it
-        // had moved, and its limit would then be blamed on the wrong account.
-        if (!existsSync(src) || !installCredential(sessionDir, src)) {
-          scrubSessionCreds();
-        }
-        // Stamp the account's identity (oauthAccount/userID) so the interactive
-        // app sees a logged-in account instead of prompting for login.
-        applyAccountIdentity(sessionDir, account.dir, context.ctx);
-        // What we just put there is by definition already in the profile, so it
-        // is not a change to mirror back.
-        mirroredStamp = credStamp();
-      } catch (e) {
-        rollbackCredential(sessionDir);
-        throw e;
-      }
+    // The ORDER of announce / copy / release is the safety property, so it lives
+    // in activateWithLease where tests pin it: announce first, copy second,
+    // release the old one last. Any gap between a login being in use and being
+    // announced is a gap where a renewer can retire it.
+    announced = activateWithLease(account.name, announced, {
+      takeLease: (name) => takeLease(name, sessionDir, context.ctx),
+      releaseLease: (name) => releaseLease(name, context.ctx),
+      install: () => {
+        withCredentialLock(sessionDir, () => {
+          if (current && current.name !== account.name) saveBack(current);
+          const src = path.join(account.dir, CREDS);
+          // Always replace (or clear) the session credential so one account's login
+          // can never linger into another account's session.
+          try {
+            // A refused credential (missing, or signed out with empty tokens) must
+            // CLEAR the session, never leave the previous account's login in place:
+            // the session would keep running as that account while ccx believed it
+            // had moved, and its limit would then be blamed on the wrong account.
+            if (!existsSync(src) || !installCredential(sessionDir, src)) {
+              scrubSessionCreds();
+            }
+            // Stamp the account's identity (oauthAccount/userID) so the interactive
+            // app sees a logged-in account instead of prompting for login.
+            applyAccountIdentity(sessionDir, account.dir, context.ctx);
+            // What we just put there is by definition already in the profile, so it
+            // is not a change to mirror back.
+            mirroredStamp = credStamp();
+          } catch (e) {
+            rollbackCredential(sessionDir);
+            throw e;
+          }
+        });
+      },
     });
-    // Tell everything else that this account's login is in use HERE, so nothing
-    // renews it behind our back: renewal rotates the token, which would sign
-    // this very session out mid-work. The previous account is released first, so
-    // only the account actually in use is protected.
-    if (announced && announced !== account.name) releaseLease(announced, context.ctx);
-    takeLease(account.name, sessionDir, context.ctx);
-    announced = account.name;
     current = account;
   };
 
@@ -357,7 +375,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
       const pinned = getActive(context.ctx);
       const eligible = accounts
-        .filter((a) => a.enabled && !excluding.has(a.name) && !capped.has(a.name) && hasLogin(a.dir))
+        .filter(
+          (a) => a.enabled && !excluding.has(a.name) && !capped.has(a.name) && hasLogin(a.dir),
+        )
         .sort((a, b) => a.priority - b.priority);
       // Start on the pinned account if it is still eligible, else lowest priority.
       const pick = (pinned ? eligible.find((a) => a.name === pinned) : undefined) ?? eligible[0];
@@ -487,13 +507,20 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
   // No more sessions will run: stop watching usage and restore the terminal.
   proactive.stop();
-  if (announced) releaseLease(announced, context.ctx);
   terminalInput.close();
   // On exit, save any refreshed credential back to its account. The session's
   // copy is deliberately LEFT in place: removing it makes anything that looks at
   // this session afterwards report "not logged in", which sends you chasing a
   // sign-in problem that does not exist. The same token already lives in the
   // account folder with the same permissions, so removing it protected nothing.
-  if (current) saveBack(current);
+  // Save the login back, THEN stop protecting it. The other order leaves a window
+  // where a renewer rotates the profile and the save then overwrites it with the
+  // session's older token, destroying the login it just renewed.
+  finishWithLease(announced, {
+    saveBack: () => {
+      if (current) saveBack(current);
+    },
+    releaseLease: (name) => releaseLease(name, context.ctx),
+  });
   return exitCode;
 }
