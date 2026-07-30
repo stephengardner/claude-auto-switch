@@ -39,7 +39,7 @@ import {
 import { decideSaveBack } from '../accounts/save-back.js';
 import { takeLease, touchLease, releaseLease } from '../session/lease.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
-import { withCredentialLock } from '../claude/locks.js';
+import { withCredentialLock, withCredentialLockIfFree } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { appendEvent } from '../events/log.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -292,8 +292,23 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   const mirrorSessionLoginToProfile = (account: Account): void => {
     const stamp = credStamp();
     if (!stamp || stamp === mirroredStamp) return;
-    mirroredStamp = stamp;
-    saveBack(account);
+    // Under the same lock that serializes credential refreshes, so this copy
+    // cannot run against a refresh that is part-way through writing.
+    //
+    // Try-only, never waiting: the lock's wait is a synchronous sleep loop of up
+    // to two seconds, and this runs on the poll that also relays the session's
+    // output, so waiting here would visibly freeze the terminal. A busy lock just
+    // means someone else is writing, which is precisely when skipping is right;
+    // the next tick picks it up, and the final save catches anything left.
+    withCredentialLockIfFree(sessionDir, () => {
+      // Re-read inside the lock: the file may have changed again between the
+      // check above and getting the lock, and the stamp has to describe what was
+      // actually copied or a later change would be treated as already mirrored.
+      const nowStamp = credStamp();
+      if (!nowStamp || nowStamp === mirroredStamp) return;
+      mirroredStamp = nowStamp;
+      saveBack(account);
+    });
   };
 
   /** Remove the live credential from the shared session dir so it never lingers. */
@@ -421,16 +436,24 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // Watch for an operator-requested switch to a DIFFERENT, usable account.
       // Seamless (default) swaps credentials under the running process; 'restart'
       // returns the name so the child is ended and the loop relaunches --continue.
+      /**
+       * Two jobs that must keep running for as long as the session is alive,
+       * both about not losing a login: say we are still using this account (so
+       * the no-renew protection stays in force), and copy a token Claude just
+       * refreshed back to the profile. Without the copy, the profile keeps the
+       * token Claude's refresh already retired, and the NEXT `claude` starts on
+       * a dead login and asks you to sign in.
+       *
+       * Deliberately separate from switchWatch: these ran inside it, and the
+       * poll skips switchWatch once a cap or a switch is pending, so the session
+       * went quiet exactly when it was still finishing up.
+       */
+      const onTick = (): void => {
+        if (!current) return;
+        touchLease(current.name, context.ctx);
+        mirrorSessionLoginToProfile(current);
+      };
       const switchWatch = (): string | null => {
-        // Two housekeeping jobs on the same tick, both about not losing a login:
-        // say we are still running (so the no-renew protection stays in force),
-        // and copy a token Claude just refreshed back to the profile. Without the
-        // copy, the profile keeps the token Claude's refresh already retired, and
-        // the NEXT `claude` starts on a dead login and asks you to sign in.
-        if (current) {
-          touchLease(current.name, context.ctx);
-          mirrorSessionLoginToProfile(current);
-        }
         const request = readSwitchRequest(context.ctx);
         const onNow = current?.name ?? account.name;
         const decision = decideSwitch(request, onNow, (name) => {
@@ -458,6 +481,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         configDir: sessionDir,
         env,
         switchWatch,
+        onTick,
         verifyCap,
         input: terminalInput,
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),

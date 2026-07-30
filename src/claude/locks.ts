@@ -122,6 +122,27 @@ export function acquireLockDir(lockDir: string, options: LockOptions = {}): Lock
  * Run `fn` while holding Claude's credential lock for `configDir` (best effort).
  * The lock is always released, including when `fn` throws.
  */
+/**
+ * Run `fn` under the credential lock, but ONLY if the lock is free right now.
+ * Returns false, without running `fn`, when something else holds it.
+ *
+ * For opportunistic work that runs on a timer. The wait inside acquireLockDir is
+ * a synchronous sleep loop (up to two seconds by default), so waiting there from
+ * a timer would stall whatever loop is driving it: on the session's poll that
+ * means freezing the terminal relay. Skipping and trying again on the next tick
+ * costs nothing.
+ */
+export function withCredentialLockIfFree(configDir: string, fn: () => void): boolean {
+  const lock = acquireLockDir(path.join(configDir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
+  if (!lock.held) return false;
+  try {
+    fn();
+  } finally {
+    lock.release();
+  }
+  return true;
+}
+
 export function withCredentialLock<T>(configDir: string, fn: () => T, options: LockOptions = {}): T {
   const lock = acquireLockDir(path.join(configDir, CREDENTIALS_LOCK_DIR), options);
   try {

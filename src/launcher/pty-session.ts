@@ -23,6 +23,12 @@ export interface PtySessionOptions {
    */
   switchWatch?: () => string | null;
   /**
+   * Run on every poll, before anything can short-circuit it. For work that must
+   * keep happening for as long as the session is alive, whatever else is going
+   * on: saying the account is still in use, and copying a refreshed login back.
+   */
+  onTick?: () => void;
+  /**
    * Called when cap-looking text renders, with that text; resolves true ONLY if
    * the account is actually limited (verified against the API). Rendered text
    * alone is untrustworthy: --continue and the resume picker REPLAY history,
@@ -83,8 +89,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     // launch, and the real one prints in the FIRST flush of output. Watching any
     // longer would let a REPLAYED conversation that merely contains that phrase
     // kill the session (the same trap as replayed cap text).
-    const watchNoConversation =
-      options.args.includes('--continue') || options.args.includes('-c');
+    const watchNoConversation = options.args.includes('--continue') || options.args.includes('-c');
     let totalOutput = 0;
 
     let weKilled = false;
@@ -118,6 +123,12 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     // --continue on the chosen account, in place.
     const switchPoll = options.switchWatch
       ? setInterval(() => {
+          // Housekeeping FIRST, and never behind the early return below. The
+          // session's "I am still using this account" heartbeat used to ride
+          // inside switchWatch, so the moment a cap or a pending switch short
+          // circuited this poll the session went quiet and its protection could
+          // lapse while it was still running.
+          options.onTick?.();
           if (capped || switching || noConversation) return;
           const target = options.switchWatch!();
           if (target) {

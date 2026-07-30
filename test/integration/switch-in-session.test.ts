@@ -271,6 +271,18 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     // usage can be read from the live copy rather than the stale stored one.
     expect(existsSync(path.join(during[0]?.configDir ?? '', '.credentials.json'))).toBe(true);
 
+    // And it must keep SAYING so. An announcement that is written once and never
+    // refreshed goes stale on its own, and the protection lapses with it while the
+    // session is still running.
+    const firstSeen = during[0]?.at ?? 0;
+    const refreshed = await waitFor(
+      'the announcement to be refreshed',
+      () => liveLeases(context.ctx)[0]?.at ?? 0,
+      (at) => at > firstSeen,
+      4000,
+    );
+    expect(refreshed).toBeGreaterThan(firstSeen);
+
     expect(await running).toBe(0);
     // Released on the way out, so an idle account is not protected forever.
     expect(liveLeases(context.ctx)).toEqual([]);
