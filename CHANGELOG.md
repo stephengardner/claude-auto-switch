@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.24.0]
+
+### Fixed
+
+- **"Login expired, please run /login" in the middle of working, having done
+  nothing.** This was ccx's fault, and here is the mechanism. Renewing a login
+  REPLACES it: the moment a new token is issued, the old one stops working. ccx
+  copies an account's login into a shared folder so it can swap accounts under a
+  running session, so while you work there are two copies of one login. Opening
+  the dashboard (or `ccx usage`, or proactive rotation) renews every account whose
+  numbers look stale, including the one you are using, and that renewal retired
+  the token the running session was holding. The evidence was three different
+  logins for one account sitting in three folders at once.
+
+  A session now says which account it is using, for as long as it runs. Anything
+  that renews logins skips those accounts and reads their usage from the session's
+  own copy, which is the fresher one anyway. The announcement is ignored once its
+  process is gone or it stops being refreshed, so a crashed session cannot block
+  renewals forever.
+
+- **The next terminal no longer starts on a dead login.** A token that Claude
+  refreshed mid-session used to reach the account's own folder only when the
+  session ended, so for as long as you kept working, that folder held a login that
+  had already been retired, and the next `claude` started on it and asked you to
+  sign in. The refreshed login is now copied back as soon as it changes.
+
+- **Quitting the dashboard no longer kills the terminal.** Exiting with the
+  terminal still in raw mode was measured to kill the shell in every trial, while
+  setting and restoring it was harmless in every trial. The dashboard did restore
+  it, but its keypress handler runs on its own stack, so an error raised while
+  handling a key ended the program without unwinding, leaving raw mode on. Errors
+  from a keypress are now shown in the dashboard instead of ending it, and the
+  restore is registered with the process itself, so a crash, a signal, and Ctrl-C
+  all hand the terminal back.
+
+### Added
+
+- **Add and rename accounts from the dashboard.** `a` asks for a name and
+  registers a new account; `n` renames the highlighted one. A rename moves its
+  limit history and usage numbers with it (leaving those behind read as "my usage
+  reset itself"), follows it with the active pointer, and renames the profile
+  folder to match, unless a session is using it, it lives somewhere custom, or the
+  name is taken, in which case it says why the folder stayed put.
+
 ## [1.23.0]
 
 ### Changed

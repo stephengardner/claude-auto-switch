@@ -5,6 +5,7 @@ import path from 'node:path';
 import { refreshUsage, readUsageSnapshot } from './usage-store.js';
 import type { LimitProbeResult } from './limit-probe.js';
 import { readCredentialEvents } from '../accounts/credential-log.js';
+import { takeLease } from '../session/lease.js';
 
 function setup(names: string[]) {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-usage-'));
@@ -115,6 +116,59 @@ describe('refreshUsage', () => {
     }
     await refreshUsage(accounts, c, { probe: () => Promise.resolve(result(0.1, 0.2)) });
     expect(readCredentialEvents(10, c)).toHaveLength(0);
+  });
+
+  it('never renews a login a running session is using, and reads that live copy', async () => {
+    // The whole reason leases exist. Renewing REPLACES a login, so renewing this
+    // one would sign the running session out mid-work: the operator sees
+    // "Login expired - please run /login" having done nothing.
+    const { c, accounts } = setup(['busy', 'idle']);
+    const sessionDir = path.join(
+      c.env.CLAUDE_AUTO_SWITCH_HOME as string,
+      'live-session',
+    );
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      path.join(sessionDir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'tok-live', refreshToken: 'rt-live' } }),
+      'utf8',
+    );
+    takeLease('busy', sessionDir, c);
+
+    const renewed: string[] = [];
+    const probedFiles: string[] = [];
+    const snap = await refreshUsage(accounts, c, {
+      probe: (file) => {
+        probedFiles.push(file);
+        return Promise.resolve(result(0.5, 0.6));
+      },
+      renew: (dir) => {
+        renewed.push(dir);
+        return Promise.resolve({ status: 'refreshed' });
+      },
+    });
+
+    expect(renewed.some((d) => d.includes('busy'))).toBe(false); // the live one: untouched
+    expect(renewed.some((d) => d.includes('idle'))).toBe(true); // an idle one is safe
+    // Usage still updates, read from the copy the session keeps fresh.
+    expect(probedFiles.some((f) => f.startsWith(sessionDir))).toBe(true);
+    expect(snap.accounts['busy']?.fiveHour).toBe(0.5);
+  });
+
+  it('resumes renewing once the session that was using it is gone', async () => {
+    const { c, accounts } = setup(['busy']);
+    takeLease('busy', path.join(c.env.CLAUDE_AUTO_SWITCH_HOME as string, 'gone'), c);
+    const renewed: string[] = [];
+    await refreshUsage(accounts, c, {
+      probe: () => Promise.resolve(result(0.1, 0.2)),
+      renew: (dir) => {
+        renewed.push(dir);
+        return Promise.resolve({ status: 'refreshed' });
+      },
+      // The session died without cleaning up. Protection must not outlive it.
+      leaseOptions: { isAlive: () => false },
+    });
+    expect(renewed).toHaveLength(1);
   });
 
   it('respects the TTL: fresh entries are not refetched', async () => {

@@ -36,6 +36,10 @@ export interface RenderOptions {
   interactive?: boolean;
   /** Index of the currently-selected row (for the live cursor). */
   selected?: number;
+  /** A message to show above the key hints (an error, or what just happened). */
+  notice?: string;
+  /** The name prompt, when the dashboard is asking for one. */
+  prompt?: { label: string; text: string; error?: string };
 }
 
 import { codes, paint } from '../ui/style.js';
@@ -145,9 +149,25 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     lines.push(rule);
   }
 
-  if (options.interactive) {
+  if (options.notice) {
+    lines.push(paint(`  ${options.notice}`, codes.yellow, color));
+  }
+
+  // While a name is being typed, the footer explains that box instead of the
+  // normal keys, because the normal keys do not apply until it is finished.
+  if (options.prompt) {
+    lines.push(`  ${options.prompt.label} ${options.prompt.text}█`);
+    if (options.prompt.error) {
+      lines.push(paint(`  ${options.prompt.error}`, codes.yellow, color));
+    }
+    lines.push(paint('  enter confirm  ·  esc cancel', codes.dim, color));
+  } else if (options.interactive) {
     lines.push(
-      paint('j/k move  ·  enter use  ·  f now  ·  e enable  ·  r rotate  ·  q quit', codes.dim, color),
+      paint(
+        'j/k move  ·  enter use  ·  f now  ·  a add  ·  n rename  ·  e enable  ·  r rotate  ·  q quit',
+        codes.dim,
+        color,
+      ),
     );
   }
 

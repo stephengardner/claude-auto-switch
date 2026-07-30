@@ -6,6 +6,7 @@ import { readToken } from '../daemon/token-store.js';
 import { hasUsableLogin } from '../accounts/credential-vault.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
+import { liveLeases, type LeaseOptions } from '../session/lease.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
 import { refreshCredentialIfExpired, renewalIsDue } from './oauth-refresh.js';
 
@@ -52,6 +53,18 @@ export function readUsageSnapshot(c: PathCtx = {}): UsageSnapshot {
   }
 }
 
+/**
+ * Persist a snapshot. Exported so renaming an account can move its numbers with
+ * it; without that, a rename looks like the usage history was thrown away.
+ */
+export function writeUsageSnapshot(snapshot: UsageSnapshot, c: PathCtx = {}): void {
+  try {
+    writeJsonFile(snapshotPath(c), snapshot);
+  } catch {
+    /* the cache is a convenience, never a hard failure */
+  }
+}
+
 export interface RefreshableAccount {
   name: string;
   dir: string;
@@ -64,6 +77,8 @@ export interface RefreshUsageOptions {
   probe?: (credentialsFile: string) => Promise<LimitProbeResult>;
   /** Delay between account fetches, to stay inside the endpoint's budget. */
   gapMs?: number;
+  /** Injected in tests: how "is a session using this account" is answered. */
+  leaseOptions?: LeaseOptions;
   /**
    * Renew an account's token before reading its usage. An account you are not
    * using goes stale within hours, and a stale token cannot report usage, which
@@ -106,6 +121,14 @@ export async function refreshUsage(
   const renew =
     options.renew ?? ((accountDir: string) => refreshCredentialIfExpired(accountDir));
 
+  // Accounts a running session is using right now. Renewing one of those would
+  // rotate the token out from under the live session, which is what produces a
+  // sudden "Login expired" mid-work. Their live copy is read instead: it is the
+  // one Claude keeps fresh, so usage still updates without touching anything.
+  const inUse = new Map(
+    liveLeases(c, options.leaseOptions ?? {}).map((l) => [l.account, l] as const),
+  );
+
   const snapshot = readUsageSnapshot(c);
   const stale = accounts.filter((a) => {
     if (!hasLogin(a.dir)) return false;
@@ -119,22 +142,22 @@ export async function refreshUsage(
   for (const account of stale) {
     let result: LimitProbeResult;
     try {
-      // Renewing rotates the login, so if another profile holds the SAME login
-      // this would end that one. Only the RENEWAL is skipped, not the account:
-      // reading usage does not need a fresh token, so the numbers still update
-      // and the entry still gets stamped. Recorded only when a renewal was
-      // actually due, otherwise every refresh would append the same line.
+      // Two reasons never to renew, both of which END a login rather than
+      // refreshing it. In both cases only the RENEWAL is skipped, not the
+      // account: reading usage does not need us to renew anything, so the
+      // numbers still update and the entry still gets stamped. The reason is
+      // recorded only when a renewal was actually due, otherwise every refresh
+      // would append the same line forever.
+      const lease = inUse.get(account.name);
       const siblings = renewalWouldBreakOthers(account, accounts);
-      const mayRenew = siblings.length === 0;
-      if (!mayRenew && renewalIsDue(account.dir)) {
-        logCredentialEvent(
-          {
-            account: account.name,
-            kind: 'refused',
-            detail: `not renewed: shares a login with ${siblings.join(', ')}; renewing would end theirs`,
-          },
-          c,
-        );
+      const refusal = lease
+        ? `not renewed: a running session (pid ${lease.pid}) is using this login; renewing would sign it out`
+        : siblings.length > 0
+          ? `not renewed: shares a login with ${siblings.join(', ')}; renewing would end theirs`
+          : null;
+      const mayRenew = refusal === null;
+      if (refusal && renewalIsDue(account.dir)) {
+        logCredentialEvent({ account: account.name, kind: 'refused', detail: refusal }, c);
       }
       // Renewal rotates the token, so it is the single most likely reason a
       // login stops working. Record what happened, with the reason.
@@ -152,7 +175,9 @@ export async function refreshUsage(
           c,
         );
       }
-      result = await probe(path.join(account.dir, '.credentials.json'));
+      // The live session's copy is the one being kept fresh, so for a leased
+      // account that is the file to read. The profile's copy may be older.
+      result = await probe(path.join(lease?.configDir ?? account.dir, '.credentials.json'));
     } catch {
       result = { verdict: 'unknown' };
     }

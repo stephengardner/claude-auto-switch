@@ -226,6 +226,24 @@ function collectBlockers(snapshot) {
   return blockers;
 }
 
+/**
+ * Exit with the verdict stated in words on the LAST line.
+ *
+ * The exit code alone is not enough to rely on: a caller who pipes this command
+ * (even `| head`, to shorten the output) reads the PIPE's exit code, not this
+ * one, and a BLOCKED run then looks like a pass. That mistake merged a pull
+ * request once and nearly did so again, so the verdict is also printed where it
+ * cannot be mistaken for anything else.
+ */
+function verdict(code, label) {
+  console.error(`coderabbit-guard: VERDICT ${label} (exit ${code})`);
+  if (code !== 0) {
+    console.error("If you piped this command, $? is the pipe's exit code, not this one.");
+    console.error('Run it alone:  guard > out.txt; echo "GATE:$?"; cat out.txt');
+  }
+  process.exit(code);
+}
+
 function main() {
   const pr = Number(process.argv[2]);
   const asJson = process.argv.includes('--json');
@@ -283,19 +301,19 @@ function main() {
     console.error(`coderabbit-guard: PR #${pr} BLOCKED: no finished CodeRabbit review for this commit.`);
     console.error('Answered comments from an earlier commit do not cover this one.');
     console.error('Wait for the review to appear and finish, then run this again.');
-    process.exit(1);
+    verdict(1, 'BLOCKED');
   }
   if (!reviewed) {
     if (state === 'done') {
       console.error(`coderabbit-guard: PR #${pr} BLOCKED: CodeRabbit has not posted its review yet.`);
-      process.exit(1);
+      verdict(1, 'BLOCKED');
     }
     console.error(`coderabbit-guard: PR #${pr} has no CodeRabbit review, and CodeRabbit does not appear to be reviewing this repo.`);
-    process.exit(2);
+    verdict(2, 'UNKNOWN (stop and look)');
   }
   if (blockers.length === 0) {
     say(`coderabbit-guard: PR #${pr} is clear (every CodeRabbit comment is resolved or answered).`);
-    process.exit(0);
+    verdict(0, 'CLEAR');
   }
 
   console.error(`coderabbit-guard: PR #${pr} BLOCKED by ${blockers.length} unanswered comment(s):`);
@@ -306,7 +324,7 @@ function main() {
   }
   console.error('');
   console.error('A later review does not clear these; it only covers new changes.');
-  process.exit(1);
+  verdict(1, 'BLOCKED');
 }
 
 main();
