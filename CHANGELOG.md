@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.26.1]
+
+### Fixed
+
+- **The dashboard sign-in key works in lower case.** It was capital `L` only, so
+  pressing `l` did nothing at all, which is what people press and what was
+  reported. Hiding the action behind shift did not make it safe, it made it
+  impossible to find.
+
+  The reason for the capital was real (`l` sits next to `j` and `k`, so a stray
+  press while moving would have handed the screen to a browser), and it is now
+  handled properly: either case asks `Sign in "name" again? [y/N]` first. `y` or
+  Enter goes ahead, any other key cancels and leaves everything as it was.
+
 ## [1.26.0]
 
 ### Added

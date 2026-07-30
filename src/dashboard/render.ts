@@ -44,6 +44,8 @@ export interface RenderOptions {
   selected?: number;
   /** A message to show above the key hints (an error, or what just happened). */
   notice?: string;
+  /** A yes/no question waiting for an answer, shown instead of the key hints. */
+  confirm?: string;
   /** The name prompt, when the dashboard is asking for one. */
   prompt?: { label: string; text: string; error?: string };
 }
@@ -210,6 +212,12 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     lines.push(rule);
   }
 
+  // The question replaces the key hints while it is up, because those keys do
+  // not apply until it is answered.
+  if (options.confirm) {
+    lines.push(paint(`  ${options.confirm}  [y/N]`, codes.yellow, color));
+  }
+
   if (options.notice) {
     lines.push(paint(`  ${options.notice}`, codes.yellow, color));
   }
@@ -222,10 +230,12 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
       lines.push(paint(`  ${options.prompt.error}`, codes.yellow, color));
     }
     lines.push(paint('  enter confirm  ·  esc cancel', codes.dim, color));
+  } else if (options.confirm) {
+    lines.push(paint('  y confirm  ·  any other key cancels', codes.dim, color));
   } else if (options.interactive) {
     lines.push(
       paint(
-        'j/k move  ·  enter use  ·  f now  ·  a add  ·  n rename  ·  L sign in  ·  e enable  ·  r rotate  ·  q quit',
+        'j/k move  ·  enter use  ·  f now  ·  a add  ·  n rename  ·  l sign in  ·  e enable  ·  r rotate  ·  q quit',
         codes.dim,
         color,
       ),
