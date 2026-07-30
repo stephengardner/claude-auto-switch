@@ -63,6 +63,7 @@ function readRuns(runsLog: string): RunEntry[] {
  *
  * Deliberately noisy about it: a silently skipped test reads as a passing one.
  */
+let ptyProblem = '';
 function canSpawnPty(): boolean {
   try {
     const probe = spawn(process.execPath, ['-e', 'process.exit(0)'], {
@@ -78,7 +79,10 @@ function canSpawnPty(): boolean {
       /* already gone */
     }
     return true;
-  } catch {
+  } catch (err) {
+    // Recorded and printed, so a skip explains itself instead of leaving the
+    // next person to guess (that guessing is what this file cost once already).
+    ptyProblem = (err as Error).message;
     return false;
   }
 }
@@ -86,8 +90,8 @@ function canSpawnPty(): boolean {
 const PTY_AVAILABLE = canSpawnPty();
 if (!PTY_AVAILABLE) {
   console.warn(
-    '[skipped] real-pseudo-terminal switch tests: this environment will not allocate one, ' +
-      'so the in-session switch paths are NOT covered here.',
+    `[skipped] real-terminal switch tests: this machine would not open one (${ptyProblem}). ` +
+      'The in-session switch paths are NOT covered here.',
   );
 }
 
