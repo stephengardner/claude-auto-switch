@@ -28,6 +28,12 @@ describe('spotting a finding in a review body', () => {
     expect(isBodyFinding('🧹 Nitpick comments (3)')).toBe(true);
     // The real thing is wrapped in a blockquote and an HTML summary tag.
     expect(isBodyFinding('> <summary>⚠️ Outside diff range comments (2)</summary><blockquote>')).toBe(true);
+    // The sections are often COMBINED. Missing this let every finding under that
+    // heading through the gate silently.
+    expect(isBodyFinding('🧹 Outside diff range and nitpick comments (5)')).toBe(true);
+    expect(
+      isBodyFinding('> <summary>🧹 Outside diff range and nitpick comments (5)</summary><blockquote>'),
+    ).toBe(true);
   });
 
   it('does NOT match ordinary prose that merely mentions those words', () => {

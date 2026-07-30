@@ -26,8 +26,14 @@ const SEVERITY_BADGE = /_[^\w_\n]*(critical|major|minor|nitpick)[^\w_\n]*_/i;
  * A heading STARTS the line (after markdown, a blockquote marker, an HTML
  * summary tag, or an icon), so a sentence that merely mentions "nitpick
  * comments" is not mistaken for the section that contains them.
+ *
+ * Words are allowed between the phrase and "comments", because the sections are
+ * often combined: "Outside diff range and nitpick comments (5)". Requiring
+ * "comments" to follow immediately let every finding under that heading through,
+ * which is the worse kind of mistake: missing findings is silent, where blocking
+ * wrongly at least complains.
  */
-const SECTION_HEADING = /^[\s>*_#-]*(?:<summary>)?[^\w<\n]*(outside diff range|nitpick)\s+comments?\b/i;
+const SECTION_HEADING = /^[\s>*_#-]*(?:<summary>)?[^\w<\n]*(?:outside diff range|nitpick)\b[\w\s]*\bcomments?\b/i;
 
 /** Does this single line of a review body raise something? */
 export function isBodyFinding(line) {
