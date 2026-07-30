@@ -46,6 +46,12 @@ const OWN_CHECK = 'coderabbit findings resolved';
  */
 
 
+/** The first non-empty line of a block of text, shortened for one-line output. */
+function firstLine(text, limit = 140) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  return (lines.find((l) => l.trim().length > 0) ?? '').slice(0, limit);
+}
+
 function gh(args) {
   return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
 }
@@ -155,85 +161,127 @@ function allComments(owner, name, pr) {
   }));
 }
 
-function main() {
-  const pr = Number(process.argv[2]);
-  const asJson = process.argv.includes('--json');
-  if (!Number.isInteger(pr) || pr <= 0) {
-    console.error('usage: node scripts/coderabbit-guard.mjs <pr-number> [--json]');
-    process.exit(2);
-  }
+function sleepSeconds(seconds) {
+  // Synchronous on purpose: this script is a gate, not a server.
+  execFileSync(process.execPath, ['-e', `setTimeout(()=>{}, ${Math.round(seconds * 1000)})`]);
+}
 
-  let owner, name, threads, bodies, summaries, humanComments;
-  try {
-    ({ owner, name } = repoSlug());
-    threads = reviewThreads(owner, name, pr);
-    bodies = reviewBodies(owner, name, pr);
-    const comments = allComments(owner, name, pr);
-    humanComments = comments;
-    summaries = comments.filter((c) => isReviewer(c.author));
-  } catch (err) {
-    // Could not ask GitHub. Not knowing is not the same as being clear.
-    console.error(`coderabbit-guard: could not read PR #${pr}: ${err.message.split('\n')[0]}`);
-    process.exit(2);
-  }
+/**
+ * How long to wait for a review that is still running, in seconds.
+ *
+ * Without this the gate fails the moment it runs on a push (the review has not
+ * landed yet) and then depends on something re-running it later. When that
+ * re-run does not happen, the pull request can never merge: a gate that
+ * deadlocks protects nothing and gets switched off.
+ */
+function waitSeconds() {
+  const i = process.argv.indexOf('--wait');
+  if (i === -1) return 0;
+  const value = Number(process.argv[i + 1]);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
 
+/** Read everything the decision depends on, in one go. */
+function readPullRequest(owner, name, pr) {
+  const comments = allComments(owner, name, pr);
+  return {
+    threads: reviewThreads(owner, name, pr),
+    bodies: reviewBodies(owner, name, pr),
+    comments,
+    summaries: comments.filter((c) => isReviewer(c.author)),
+  };
+}
+
+/** Everything still waiting for an answer, worked out from one snapshot. */
+function collectBlockers(snapshot) {
   const blockers = [];
 
-  for (const thread of threads) {
-    const comments = thread.comments?.nodes ?? [];
-    const first = comments[0];
+  for (const thread of snapshot.threads) {
+    const first = thread.comments?.nodes?.[0];
     if (!first || !isReviewer(first.author?.login)) continue;
     if (threadAnswered(thread, isReviewer)) continue;
     blockers.push({
       kind: 'inline',
       where: `${first.path ?? '?'}:${first.line ?? '?'}`,
-      excerpt: (first.body ?? '').split('\n').find((l) => l.trim().length > 0)?.slice(0, 140) ?? '',
+      excerpt: firstLine(first.body),
     });
   }
 
   // Findings raised inside a review body cannot be resolved and cannot be
-  // replied to, so they are answered once, explicitly, by a comment saying they
-  // have been read. Without that they would block the pull request forever.
+  // replied to, so they are answered once, explicitly, by a comment.
   const raised = [
-    ...bodies.map((r) => ({ kind: 'review-body', where: `review ${r.id}`, at: r.at, findings: bodyFindings(r.body) })),
-    ...summaries.map((c) => ({ kind: 'summary-comment', where: 'summary', at: c.at, findings: bodyFindings(c.body) })),
+    ...snapshot.bodies.map((r) => ({ kind: 'review-body', where: `review ${r.id}`, at: r.at, findings: bodyFindings(r.body) })),
+    ...snapshot.summaries.map((c) => ({ kind: 'summary-comment', where: 'summary', at: c.at, findings: bodyFindings(c.body) })),
   ].filter((r) => r.findings.length > 0);
 
-  // The acknowledgement must be newer than the newest finding it is clearing.
+  // The acknowledgement must be newer than the newest finding it clears.
   const newestFinding = raised.reduce((newest, r) => Math.max(newest, r.at), 0);
-  const acknowledged = bodyFindingsAcknowledged(humanComments, isReviewer, newestFinding);
-  if (!acknowledged) {
+  if (!bodyFindingsAcknowledged(snapshot.comments, isReviewer, newestFinding)) {
     for (const source of raised) {
       for (const finding of source.findings) {
         blockers.push({ kind: source.kind, where: source.where, excerpt: finding.slice(0, 140) });
       }
     }
   }
+  return blockers;
+}
 
-  const reviewed = threads.length > 0 || bodies.length > 0 || summaries.length > 0;
-  const state = reviewerState(owner, name, pr);
+function main() {
+  const pr = Number(process.argv[2]);
+  const asJson = process.argv.includes('--json');
+  if (!Number.isInteger(pr) || pr <= 0) {
+    console.error('usage: node scripts/coderabbit-guard.mjs <pr-number> [--json] [--wait <seconds>]');
+    process.exit(2);
+  }
+  const say = asJson ? console.error : console.log;
+
+  let owner, name, snapshot, state;
+  try {
+    ({ owner, name } = repoSlug());
+    snapshot = readPullRequest(owner, name, pr);
+    state = reviewerState(owner, name, pr);
+  } catch (err) {
+    // Could not ask GitHub. Not knowing is not the same as being clear.
+    console.error(`coderabbit-guard: could not read PR #${pr}: ${firstLine(err.message)}`);
+    process.exit(2);
+  }
+
+  // A review in progress gets time to finish, and EVERYTHING is re-read after,
+  // so the verdict is never a mix of old comments and a new review.
+  const deadline = Date.now() + waitSeconds() * 1000;
+  while (state === 'working' && Date.now() < deadline) {
+    console.error('coderabbit-guard: CodeRabbit is still reviewing; waiting...');
+    sleepSeconds(20);
+    try {
+      snapshot = readPullRequest(owner, name, pr);
+      state = reviewerState(owner, name, pr);
+    } catch {
+      break; // the checks below fail safe
+    }
+  }
+
+  const blockers = collectBlockers(snapshot);
+  const reviewed =
+    snapshot.threads.length > 0 || snapshot.bodies.length > 0 || snapshot.summaries.length > 0;
   if (asJson) {
     console.log(JSON.stringify({ schemaVersion: 1, pr, reviewed, reviewerState: state, blockers }, null, 2));
   }
 
-  // A review still running is not a passed review, even when every comment from
-  // the previous commit has been answered: those answers were about older code.
   if (state === 'working') {
     console.error(`coderabbit-guard: PR #${pr} BLOCKED: CodeRabbit is still reviewing this commit.`);
-    console.error('Answered comments from an earlier commit do not cover this one. Wait for it to finish.');
+    console.error('Answered comments from an earlier commit do not cover this one.');
     process.exit(1);
   }
   if (!reviewed) {
     if (state === 'done') {
       console.error(`coderabbit-guard: PR #${pr} BLOCKED: CodeRabbit has not posted its review yet.`);
-      console.error('Wait for the review, answer every comment, then this clears.');
       process.exit(1);
     }
     console.error(`coderabbit-guard: PR #${pr} has no CodeRabbit review, and CodeRabbit does not appear to be reviewing this repo.`);
     process.exit(2);
   }
   if (blockers.length === 0) {
-    console.log(`coderabbit-guard: PR #${pr} is clear (every CodeRabbit comment is resolved or answered).`);
+    say(`coderabbit-guard: PR #${pr} is clear (every CodeRabbit comment is resolved or answered).`);
     process.exit(0);
   }
 
