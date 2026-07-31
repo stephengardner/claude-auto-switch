@@ -14,6 +14,8 @@
  * touch the terminal's mode.
  */
 
+import { createEscapeBuffer } from './escape-buffer.js';
+
 type Writer = (data: string) => void;
 
 export interface TerminalInput {
@@ -34,10 +36,19 @@ export function openTerminalInput(stream: NodeJS.ReadStream = process.stdin): Te
   let target: Writer | null = null;
   let closed = false;
 
+  // Normalize Enter: terminals may send \r\n or a lone \n, but the TUI submits
+  // on \r. Without this, typing works but Enter never sends (MinTTY).
+  const forEnter = (text: string): string => text.replace(/\r?\n/g, '\r');
+
+  // Escape sequences are reassembled before being forwarded. A chunk boundary in
+  // the middle of one used to deliver its halves as two separate writes, and the
+  // reader then showed the tail as typed text: mouse reports turning up in the
+  // prompt as "35;112;43M" with their ESC[< prefix gone.
+  const buffer = createEscapeBuffer((held) => target?.(forEnter(held)));
+
   const onData = (d: Buffer): void => {
-    // Normalize Enter: terminals may send \r\n or a lone \n, but the TUI submits
-    // on \r. Without this, typing works but Enter never sends (MinTTY).
-    target?.(d.toString('utf8').replace(/\r?\n/g, '\r'));
+    const ready = buffer.push(d.toString('utf8'));
+    if (ready) target?.(forEnter(ready));
   };
 
   // A real Windows console reports isTTY; Git Bash/MinTTY does not but still
@@ -62,6 +73,9 @@ export function openTerminalInput(stream: NodeJS.ReadStream = process.stdin): Te
       closed = true;
       target = null;
       stdin.off('data', onData);
+      // Drops anything held mid-sequence, which is right at shutdown, and stops
+      // its flush timer so nothing is left able to fire after the run has ended.
+      buffer.drain();
       try {
         if (stdin.isTTY) stdin.setRawMode?.(false);
       } catch {

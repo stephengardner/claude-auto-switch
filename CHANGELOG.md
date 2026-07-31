@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.28.1]
+
+### Fixed
+
+- **Stray characters like `35;112;43M` no longer appear in Claude's input.**
+  Those were mouse-motion reports with their `ESC[<` prefix missing. ccx relays
+  your keystrokes to Claude, and the terminal delivers input in whatever chunks
+  it likes, so a report split across two of them was forwarded as two separate
+  writes. The reader then swallowed the prefix and showed the rest as if you had
+  typed it. Motion tracking produces a flood of these, which is why it kept
+  happening.
+
+  The relay now reassembles a sequence before forwarding it, holding back a chunk
+  that ends part-way through one. A lone Escape keypress looks exactly like the
+  start of a sequence, so anything held is released shortly after if nothing
+  follows, and Escape still works.
+
 ## [1.28.0]
 
 ### Fixed
