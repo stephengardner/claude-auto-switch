@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.28.0]
+
+### Fixed
+
+- **ccx no longer writes into Claude's interface.** While a session runs, Claude
+  owns the screen, so anything ccx printed landed inside its interface. That is
+  exactly what those `[ccx]` lines appearing mid-conversation were.
+
+  The worst of them fired whenever limit-looking text rendered and the API then
+  refuted it, which includes a conversation that merely TALKS about rate limits,
+  so it looked like it was appearing for no reason. It was.
+
+  While a session is up, ccx now speaks through the terminal notification and
+  title, which draw nothing, and through the event log that `ccx dashboard` and
+  `ccx history` read. The one thing still printed is a login problem found before
+  the session starts, which is worth interrupting for. The per-session
+  `session on "name"` line is gone entirely: the account is already in Claude's
+  status line (`ccx statusline`) and in the terminal title.
+
+### Changed
+
+- **`ccx usage` is properly coloured.** Every window below 90 percent used to
+  render the same grey, so a page of numbers read as one flat block and an
+  account at 5 percent looked like one at 85. Usage is now on a four-band scale
+  (green with room, amber getting tight, red nearly gone, bright red spent), the
+  filled part of each bar carries the colour while the remainder stays dim, and
+  the closing recommendation is highlighted because it is the line you act on.
+
 ## [1.27.0]
 
 ### Added

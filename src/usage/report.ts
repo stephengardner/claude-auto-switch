@@ -1,4 +1,4 @@
-import { codes, paint } from '../ui/style.js';
+import { codes, paint, shadeForUsed } from '../ui/style.js';
 
 /**
  * The full usage picture for every account, written to be read at a glance.
@@ -51,13 +51,8 @@ export function bar(used: number | null, size: number): string {
   return '█'.repeat(filled) + '░'.repeat(size - filled);
 }
 
-/** Spent is red, nearly spent amber, otherwise plain. */
-function shade(used: number | null): string {
-  if (used === null) return codes.dim;
-  if (used >= 1) return codes.red;
-  if (used >= 0.9) return codes.yellow;
-  return codes.dim;
-}
+/** Plenty of room reads green, tight reads amber, spent reads red. */
+const shade = shadeForUsed;
 
 export function percent(used: number | null): string {
   return used === null ? '  ?' : `${Math.round(used * 100)}%`.padStart(4);
@@ -113,6 +108,18 @@ export function roomiest(accounts: UsageAccount[]): UsageAccount[] {
     });
 }
 
+/**
+ * The used part carries the colour and the remainder stays dim, so how full a
+ * window is can be read without stopping to look at the number.
+ */
+function paintBar(used: number | null, size: number, color: boolean): string {
+  const drawn = bar(used, size);
+  if (!color || used === null) return paint(drawn, codes.dim, color);
+  const filled = drawn.replace(/░+$/u, '');
+  const empty = drawn.slice(filled.length);
+  return paint(filled, shade(used), color) + paint(empty, codes.dim, color);
+}
+
 export function renderUsageReport(
   accounts: UsageAccount[],
   now: number,
@@ -148,12 +155,12 @@ export function renderUsageReport(
       const wait = humanWait(w.resetsAt, now);
       const spent = w.used !== null && w.used >= 1;
       const tail = spent
-        ? paint(wait ? `SPENT, back in ${wait}` : 'SPENT', codes.red, color)
+        ? paint(wait ? `SPENT, back in ${wait}` : 'SPENT', `${codes.bold}${codes.brightRed}`, color)
         : wait
           ? paint(`back in ${wait}`, codes.dim, color)
           : '';
       lines.push(
-        `    ${w.label.padEnd(labelW)}  ${paint(bar(w.used, barSize), shade(w.used), color)} ` +
+        `    ${paint(w.label.padEnd(labelW), codes.cyan, color)}  ${paintBar(w.used, barSize, color)} ` +
           `${paint(percent(w.used), shade(w.used), color)}   ${tail}`.trimEnd(),
       );
     }
@@ -186,7 +193,7 @@ export function renderUsageReport(
     const binding = accountWideBinding(top.windows as UsageWindow[]);
     lines.push(
       paint('Most room right now: ', codes.dim, color) +
-        paint(top.name, codes.bold, color) +
+        paint(top.name, `${codes.bold}${codes.brightGreen}`, color) +
         paint(
           binding ? `  (${binding.label} at ${percent(binding.used).trim()}, its tightest)` : '',
           codes.dim,
