@@ -45,8 +45,13 @@ describe('splitTrailingPartial', () => {
     // them as plain two-byte escapes would let them split as mouse reports did.
     for (const kind of ['P', 'X', '^', '_']) {
       const partial = `${ESC}${kind}payload`;
-      expect(splitTrailingPartial(partial).pending).toBe(partial);
-      expect(splitTrailingPartial(`${partial}${ST}`).pending).toBe('');
+      // Both halves asserted: checking only what is held would miss a version
+      // that held the right thing and mangled what it forwarded.
+      expect(splitTrailingPartial(partial)).toEqual({ ready: '', pending: partial });
+      expect(splitTrailingPartial(`${partial}${ST}`)).toEqual({
+        ready: `${partial}${ST}`,
+        pending: '',
+      });
     }
   });
 
@@ -57,7 +62,7 @@ describe('splitTrailingPartial', () => {
     expect(splitTrailingPartial(`${ESC}]0;title${BEL}`).pending).toBe('');
     for (const kind of ['P', 'X', '^', '_']) {
       const withBel = `${ESC}${kind}pay${BEL}load`;
-      expect(splitTrailingPartial(withBel).pending).toBe(withBel);
+      expect(splitTrailingPartial(withBel)).toEqual({ ready: '', pending: withBel });
     }
   });
 
