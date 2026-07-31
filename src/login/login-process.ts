@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import type { StartAuthLogin } from './login.js';
 
 const URL_RE = /(https?:\/\/\S+)/;
@@ -48,5 +48,19 @@ export const spawnAuthLogin: StartAuthLogin = (invoker, args, env) => {
   return {
     urlHint: () => urlPromise,
     done: () => donePromise,
+    // Nothing could stop this process before, so a sign-in nobody finishes held
+    // the caller forever. On Windows the whole tree has to go: the CLI opens
+    // helpers of its own, and killing only the parent leaves them holding on.
+    cancel: () => {
+      try {
+        if (process.platform === 'win32' && child.pid) {
+          execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+          return;
+        }
+        child.kill();
+      } catch {
+        /* already gone */
+      }
+    },
   };
 };

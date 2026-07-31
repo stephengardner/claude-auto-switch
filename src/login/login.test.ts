@@ -12,6 +12,10 @@ function deps(scenario: {
   before?: string | null;
   after?: string | null;
   notices?: string[];
+  /** Never resolves, to stand in for a sign-in nobody finishes. */
+  neverFinishes?: boolean;
+  timeoutMs?: number;
+  cancelled?: { yes: boolean };
 }): LoginDeps {
   let asked = 0;
   return {
@@ -19,7 +23,11 @@ function deps(scenario: {
     debugPort: 9222,
     startAuthLogin: () => ({
       urlHint: () => Promise.resolve(scenario.url),
-      done: () => Promise.resolve(scenario.exitCode),
+      done: () =>
+        scenario.neverFinishes ? new Promise<number>(() => {}) : Promise.resolve(scenario.exitCode),
+      cancel: () => {
+        if (scenario.cancelled) scenario.cancelled.yes = true;
+      },
     }),
     browser: {
       authorize: () => Promise.resolve(scenario.outcome),
@@ -29,6 +37,7 @@ function deps(scenario: {
       return asked === 1 ? (scenario.before ?? null) : (scenario.after ?? null);
     },
     ...(scenario.notices ? { notify: (m: string) => scenario.notices!.push(m) } : {}),
+    ...(scenario.timeoutMs !== undefined ? { timeoutMs: scenario.timeoutMs } : {}),
   };
 }
 
@@ -89,6 +98,46 @@ describe('loginAccount', () => {
     );
     expect(r.ok).toBe(false);
     expect(r.detail).toContain('exited 3');
+  });
+
+  it('does not describe a success as failed', async () => {
+    // The path this whole change is about: the browser step failed, the person
+    // finished by hand. "ok: logged in (failed)" reads as a contradiction.
+    const r = await loginAccount(
+      account,
+      deps({ outcome: 'failed', exitCode: 0, before: 'old', after: 'new' }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.detail).not.toContain('failed');
+    expect(r.detail).toContain('manually');
+  });
+
+  it('GIVES UP on a sign-in nobody finishes, and stops the process', async () => {
+    // Without a bound this waited forever, which matters most from the dashboard:
+    // it hands its screen away while the sign-in runs.
+    const cancelled = { yes: false };
+    const r = await loginAccount(
+      account,
+      deps({ outcome: 'failed', exitCode: 0, neverFinishes: true, timeoutMs: 40, cancelled }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('gave up waiting');
+    expect(cancelled.yes).toBe(true); // and it did not leave the process running
+  });
+
+  it('still counts a sign-in finished just before the wait ran out', async () => {
+    const r = await loginAccount(
+      account,
+      deps({
+        outcome: 'failed',
+        exitCode: 0,
+        neverFinishes: true,
+        timeoutMs: 40,
+        before: null,
+        after: 'new',
+      }),
+    );
+    expect(r.ok).toBe(true);
   });
 
   it('reports an unchanged but working login as fine, not as a failure', async () => {

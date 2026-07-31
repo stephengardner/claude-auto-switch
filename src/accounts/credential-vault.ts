@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { sha256Fingerprint } from '../util/fingerprint.js';
 import path from 'node:path';
 import { copySecretFile } from '../util/secret-file.js';
 
@@ -32,7 +32,7 @@ export function credentialFingerprint(dir: string): string | null {
     };
     const material = parsed.claudeAiOauth?.refreshToken ?? parsed.claudeAiOauth?.accessToken;
     if (typeof material !== 'string' || material.length === 0) return null;
-    return createHash('sha256').update(material).digest('hex').slice(0, 16);
+    return sha256Fingerprint(material);
   } catch {
     return null;
   }
