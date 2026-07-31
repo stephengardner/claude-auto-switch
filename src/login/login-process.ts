@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import type { StartAuthLogin } from './login.js';
 
 const URL_RE = /(https?:\/\/\S+)/;
@@ -54,7 +54,15 @@ export const spawnAuthLogin: StartAuthLogin = (invoker, args, env) => {
     cancel: () => {
       try {
         if (process.platform === 'win32' && child.pid) {
-          execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+          // Non-blocking on purpose. This is called from a caller that is waiting
+          // to return, so a synchronous kill would hold everything up until
+          // taskkill exits, including the dashboard loop that relays the screen.
+          // Unref'd so the killer itself can never keep the process alive.
+          const killer = execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], () => {});
+          killer.on('error', () => {
+            /* taskkill missing or refused: nothing better to do */
+          });
+          killer.unref?.();
           return;
         }
         child.kill();
