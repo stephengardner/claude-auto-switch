@@ -41,13 +41,23 @@ describe('splitTrailingPartial', () => {
   });
 
   it('holds every kind of string sequence until its terminator', () => {
-    // DCS, SOS, PM and APC end the same way OSC does. Treating them as plain
-    // two-byte escapes would let them split exactly as the mouse reports did.
+    // DCS, SOS, PM and APC run until a terminator just as OSC does. Treating
+    // them as plain two-byte escapes would let them split as mouse reports did.
     for (const kind of ['P', 'X', '^', '_']) {
       const partial = `${ESC}${kind}payload`;
       expect(splitTrailingPartial(partial).pending).toBe(partial);
-      expect(splitTrailingPartial(`${partial}${BEL}`).pending).toBe('');
       expect(splitTrailingPartial(`${partial}${ST}`).pending).toBe('');
+    }
+  });
+
+  it('ends on BEL for OSC only, since a BEL elsewhere is just payload', () => {
+    // Only OSC takes BEL as a terminator, and that is an xterm compatibility
+    // rule. Accepting it for the others would cut a sequence short on a BEL byte
+    // inside its payload and forward the fragment: the same bug, better hidden.
+    expect(splitTrailingPartial(`${ESC}]0;title${BEL}`).pending).toBe('');
+    for (const kind of ['P', 'X', '^', '_']) {
+      const withBel = `${ESC}${kind}pay${BEL}load`;
+      expect(splitTrailingPartial(withBel).pending).toBe(withBel);
     }
   });
 

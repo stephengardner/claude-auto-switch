@@ -21,8 +21,10 @@ const ESC = '\x1b';
 const BEL = '\x07';
 /** String Terminator: Escape followed by a backslash. */
 const ST = `${ESC}\\`;
+/** Operating System Command, the one string kind that also ends on BEL. */
+const OSC = ']';
 /** Introducers whose content runs until a terminator rather than a fixed length. */
-const STRING_KINDS = new Set([']', 'P', 'X', '^', '_']);
+const STRING_KINDS = new Set([OSC, 'P', 'X', '^', '_']);
 
 /**
  * Split text into what is safe to forward now and a trailing part-sequence.
@@ -51,11 +53,17 @@ function isComplete(seq: string): boolean {
     return false;
   }
 
-  // The string kinds all run until a terminator rather than for a fixed length:
+  // The string kinds run until a terminator rather than for a fixed length:
   // OSC (]), DCS (P), SOS (X), PM (^) and APC (_). Treating any of them as a
   // plain two-byte escape would let it split exactly the way the mouse reports
   // were splitting, which is the whole bug this file exists for.
-  if (STRING_KINDS.has(kind)) return seq.includes(BEL) || seq.includes(ST);
+  //
+  // Only OSC ends on BEL. That is an xterm compatibility rule, not a general
+  // one, and applying it to the others would end a sequence early on a BEL byte
+  // that is simply part of its payload, forwarding the fragment: the same bug
+  // again, harder to spot.
+  if (kind === OSC) return seq.includes(BEL) || seq.includes(ST);
+  if (STRING_KINDS.has(kind)) return seq.includes(ST);
 
   // SS3 (ESC O A, the arrow keys on some terminals) needs one more byte.
   if (kind === 'O') return seq.length >= 3;

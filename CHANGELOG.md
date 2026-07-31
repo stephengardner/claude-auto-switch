@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.28.2]
+
+### Fixed
+
+- **Every kind of escape sequence is now held, not only some of them.** The
+  reassembly added in 1.28.1 covered CSI and OSC but let DCS, SOS, PM and APC
+  fall through as if they were two-byte escapes, so those could still be cut in
+  half and forwarded in pieces.
+
+  Only OSC ends on a BEL character, which is an xterm compatibility rule rather
+  than a general one. Applying it to the others would end a sequence early on a
+  BEL byte that is simply part of its payload, forwarding the fragment: the same
+  bug again, and harder to notice.
+
 ## [1.28.1]
 
 ### Fixed
@@ -21,8 +35,7 @@ semantic versioning.
   start of a sequence, so anything held is released shortly after if nothing
   follows, and Escape still works.
 
-  Every kind that can split is handled: CSI (arrow keys, mouse reports), the
-  string kinds that run until a terminator (OSC, DCS, SOS, PM, APC), and SS3.
+
 
 ## [1.28.0]
 
