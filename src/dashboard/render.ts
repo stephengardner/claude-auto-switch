@@ -61,10 +61,10 @@ function hhmm(epochMs: number, now: number): string {
   const mins = Math.max(0, Math.round((epochMs - now) / 60000));
   if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h${mins % 60}m`;
+  if (hours < 24) return `${hours}h ${mins % 60}m`;
   const days = Math.floor(hours / 24);
   const restHours = hours % 24;
-  return restHours === 0 ? `${days}d` : `${days}d${restHours}h`;
+  return restHours === 0 ? `${days}d` : `${days}d ${restHours}h`;
 }
 
 /** Plain status text for an account, most-important state first. */

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { spawnAuthLogin } from './login-process.js';
 
 /**
@@ -18,18 +19,23 @@ describe('spawnAuthLogin', () => {
     proc.cancel?.();
   });
 
-  it('CANCELLING RETURNS IMMEDIATELY, rather than waiting on the kill', async () => {
+  it('does not cancel with a BLOCKING kill', () => {
     // The caller of cancel() is waiting to return, and on the dashboard it is
-    // also the loop that relays the screen. A synchronous kill held all of that
-    // up until the killer exited.
-    const proc = spawnAuthLogin(nodeInvoker, longRunning, {});
-    await proc.urlHint();
-
-    const startedAt = Date.now();
-    proc.cancel?.();
-    const took = Date.now() - startedAt;
-
-    expect(took).toBeLessThan(150);
+    // also the loop that relays the screen, so a synchronous kill holds all of
+    // that up until the killer exits.
+    //
+    // Checked by reading the source rather than by timing, deliberately. The
+    // first version of this test measured how long cancel() took and failed on
+    // 2 runs in 4: starting a process on Windows can take most of a second even
+    // when the call itself does not block, so wall clock cannot separate the two
+    // cases. A test that flakes is worse than no test, because it teaches people
+    // that red means nothing.
+    const source = readFileSync(new URL('./login-process.ts', import.meta.url), 'utf8');
+    expect(source).not.toMatch(/execFileSync|spawnSync|execSync/);
+    // Scoped to the KILLER specifically. A bare /unref/ also matched the URL
+    // timer in the same file, so the assertion passed with killer.unref removed.
+    expect(source).toMatch(/const killer\s*=\s*execFile\(\s*['"]taskkill['"]/);
+    expect(source).toMatch(/killer\.unref\?\.\(\)/);
   });
 
   it('actually ends the process, so a give-up does not leave it running', async () => {

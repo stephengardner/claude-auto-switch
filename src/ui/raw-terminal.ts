@@ -20,12 +20,20 @@ export interface RawTerminal {
 }
 
 export interface RawTerminalOptions {
+  /**
+   * Called instead of ending the process when a signal arrives, so an owner with
+   * its own loop can wind down cleanly rather than being cut off mid-frame.
+   */
+  onEnd?: (signal: NodeJS.Signals) => void;
   /** Written once on the way out, for cursor and screen restore sequences. */
   epilogue?: string;
   stdin?: NodeJS.ReadStream & { setRawMode?: (v: boolean) => void };
   stdout?: { write: (s: string) => unknown };
   /** Injected in tests instead of the real process. */
-  proc?: Pick<NodeJS.Process, 'on' | 'off'> & { exit?: (code?: number) => never };
+  proc?: Pick<NodeJS.Process, 'on' | 'off'> & {
+    exit?: (code?: number) => never;
+    kill?: (pid: number, signal?: NodeJS.Signals) => void;
+  };
 }
 
 /**
@@ -52,6 +60,7 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
   const stdin = options.stdin ?? (process.stdin as RawTerminalOptions['stdin'])!;
   const stdout = options.stdout ?? process.stdout;
   const proc = options.proc ?? process;
+  const onEnd = options.onEnd;
 
   let restored = false;
   const restore = (): void => {
@@ -80,9 +89,27 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
 
   // A signal would otherwise end the process with the terminal still raw.
   function onSignal(signal: NodeJS.Signals): void {
-    restore();
-    // Re-raise the default behaviour: having a handler suppressed it, and a
-    // terminal program that swallows Ctrl-C is its own kind of broken.
+    restore(); // hand the terminal back FIRST, whatever happens next
+    // Then let the signal do what it would have done. Calling process.exit here
+    // instead ends the program from inside a signal handler, which skips the
+    // caller's own teardown and, on Windows, races the console being torn down.
+    // Re-raising after removing our handler gives the ordinary behaviour and the
+    // ordinary exit status, which is what a shell expects to see.
+    if (onEnd) {
+      onEnd(signal); // the owner wants to wind down on its own terms
+      return;
+    }
+    // Falls back whenever re-raising is not actually possible, including when
+    // there is no kill to call: optional chaining would otherwise swallow the
+    // call silently and the program would neither exit nor re-raise.
+    try {
+      if (typeof proc.kill === 'function') {
+        proc.kill(process.pid, signal);
+        return;
+      }
+    } catch {
+      /* could not re-raise; fall through to the plain exit below */
+    }
     (proc.exit ?? process.exit)(SIGNAL_EXIT_CODES[signal] ?? 143);
   }
 

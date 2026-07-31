@@ -161,7 +161,7 @@ describe('renderDashboard (plain)', () => {
     const detail = out.split('\n').find((l) => l.includes('work:'))!;
     expect(detail).toContain('back in 3d');
     expect(detail).not.toContain('72h');
-    expect(detail).toContain('1h35m'); // hours keep their minutes
+    expect(detail).toContain('1h 35m'); // hours keep their minutes
   });
 
   it('says so plainly when an account has never been read', () => {

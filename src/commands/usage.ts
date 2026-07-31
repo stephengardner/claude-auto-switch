@@ -1,22 +1,12 @@
 import { listAccounts } from '../accounts/registry.js';
+import { getActive } from '../state/active.js';
 import { refreshUsage } from '../usage/usage-store.js';
+import { renderUsageReport, type UsageAccount } from '../usage/report.js';
 import type { CliContext } from '../context.js';
 
-function pct(v: number | null): string {
-  return v === null ? '  ?' : `${Math.round(v * 100)}%`.padStart(3);
-}
-
-function resetIn(reset: number | null, now: number): string {
-  if (!reset || reset <= now) return '';
-  const mins = Math.round((reset - now) / 60000);
-  if (mins < 60) return `${mins}m`;
-  const h = Math.floor(mins / 60);
-  return h < 48 ? `${h}h${mins % 60}m` : `${Math.floor(h / 24)}d`;
-}
-
 /**
- * Print real per-account subscription usage (5-hour + weekly), fetched from the
- * unified rate-limit signal (one minimal request per account, TTL-cached).
+ * Print the full usage picture: every window for every account, what is closest
+ * to stopping each one, and where there is room right now.
  */
 export async function usageCommand(context: CliContext): Promise<number> {
   const accounts = listAccounts(context.ctx);
@@ -32,28 +22,39 @@ export async function usageCommand(context: CliContext): Promise<number> {
     return 0;
   }
 
-  const nameW = Math.max(7, ...accounts.map((a) => a.name.length));
-  context.out(`${'ACCOUNT'.padEnd(nameW)}   5h     weekly   per-model (weekly)`);
-  for (const a of accounts) {
+  const active = getActive(context.ctx);
+  const rows: UsageAccount[] = accounts.map((a) => {
     const u = snap.accounts[a.name];
-    if (!u || (u.fiveHour === null && u.sevenDay === null)) {
-      context.out(`${a.name.padEnd(nameW)}   (no usage data)`);
-      continue;
-    }
-    const models = (u.models ?? [])
-      .map((m) => {
-        const r = resetIn(m.resetsAt ?? null, now);
-        return `${m.name} ${pct(m.utilization).trim()}${r ? ` (${r})` : ''}`;
-      })
-      .join(', ');
-    const fiveReset = resetIn(u.fiveHourReset, now);
-    const weekReset = resetIn(u.sevenDayReset, now);
-    context.out(
-      `${a.name.padEnd(nameW)}   ${pct(u.fiveHour)}    ${pct(u.sevenDay)}     ${models || '-'}`,
-    );
-    context.out(
-      `${''.padEnd(nameW)}   ${fiveReset ? `resets ${fiveReset}` : ''}${fiveReset && weekReset ? ' / ' : ''}${weekReset ? `wk ${weekReset}` : ''}`,
-    );
-  }
+    // Per-model data counts too: an account can have a model window read while
+    // the account-wide ones are unknown, and calling that "nothing read" hides
+    // real numbers we already have.
+    const known =
+      u && (u.fiveHour !== null || u.sevenDay !== null || (u.models ?? []).length > 0);
+    return {
+      name: a.name,
+      email: a.email,
+      plan: a.plan,
+      active: a.name === active,
+      windows: known
+        ? [
+            { label: '5-hour', used: u.fiveHour, resetsAt: u.fiveHourReset },
+            { label: 'weekly', used: u.sevenDay, resetsAt: u.sevenDayReset },
+            ...(u.models ?? []).map((m) => ({
+              label: m.name,
+              used: m.utilization,
+              resetsAt: m.resetsAt ?? null,
+              modelOnly: true,
+            })),
+          ]
+        : null,
+    };
+  });
+
+  context.out(
+    renderUsageReport(rows, now, {
+      color: process.stdout.isTTY === true,
+      ...(process.stdout.columns ? { width: process.stdout.columns } : {}),
+    }),
+  );
   return 0;
 }
