@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.26.3]
+
+### Fixed
+
+- **A flaky test of our own.** The check that cancelling a sign-in does not block
+  measured how long the call took, and failed on 2 runs in 4: starting a process
+  on Windows can take most of a second even when the call itself does not block,
+  so wall clock cannot separate the two cases. It now reads the source instead,
+  which is deterministic and pins the same decision. A test that flakes is worse
+  than no test, because it teaches people that red means nothing.
+
 ## [1.26.2]
 
 ### Fixed
