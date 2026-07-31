@@ -46,6 +46,7 @@ export async function loginCommand(
     browser: cdpBrowserAuthorizer,
     startAuthLogin: spawnAuthLogin,
     debugPort: context.config.browser.debugPort,
+    notify: (m) => context.out(`  ${m}`),
   };
 
   let allOk = true;

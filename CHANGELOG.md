@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.26.2]
+
+### Fixed
+
+- **A sign-in that worked is no longer reported as failed.** ccx judged a sign-in
+  by whether it could drive the browser, and gave up the moment it could not,
+  without waiting. So finishing the sign-in by hand, which is exactly what the
+  message on screen told you to do, always ended with "did not finish" and
+  "was not signed in", while the account was signed in and working.
+
+  The verdict now comes from what actually ended up stored: a new login means it
+  worked, whatever the browser step or the exit code said, and no new login means
+  it did not, even if the helper exited cleanly. An account that was already
+  signed in and unchanged reports that, rather than failure. When the browser
+  cannot be driven, ccx says so and then waits, instead of walking away from a
+  sign-in that is still in progress.
+
 ## [1.26.1]
 
 ### Fixed

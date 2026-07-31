@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { copySecretFile } from '../util/secret-file.js';
 
@@ -14,6 +15,28 @@ import { copySecretFile } from '../util/secret-file.js';
 
 export const CREDENTIALS_FILE = '.credentials.json';
 const PREVIOUS_FILE = '.credentials.prev.json';
+
+/**
+ * A short, comparable fingerprint of the login stored in `dir`, or null when
+ * there is none. Used to tell whether a sign-in actually produced a NEW login,
+ * which is the only reliable way to judge one: the browser step can fail while
+ * the person finishes the sign-in by hand, and it can appear to succeed while
+ * nothing was written.
+ *
+ * Never returns the token itself.
+ */
+export function credentialFingerprint(dir: string): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(credentialPath(dir), 'utf8')) as {
+      claudeAiOauth?: { refreshToken?: string; accessToken?: string };
+    };
+    const material = parsed.claudeAiOauth?.refreshToken ?? parsed.claudeAiOauth?.accessToken;
+    if (typeof material !== 'string' || material.length === 0) return null;
+    return createHash('sha256').update(material).digest('hex').slice(0, 16);
+  } catch {
+    return null;
+  }
+}
 
 export function credentialPath(dir: string): string {
   return path.join(dir, CREDENTIALS_FILE);
