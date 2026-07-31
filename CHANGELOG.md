@@ -21,6 +21,9 @@ semantic versioning.
   start of a sequence, so anything held is released shortly after if nothing
   follows, and Escape still works.
 
+  Every kind that can split is handled: CSI (arrow keys, mouse reports), the
+  string kinds that run until a terminator (OSC, DCS, SOS, PM, APC), and SS3.
+
 ## [1.28.0]
 
 ### Fixed

@@ -18,6 +18,11 @@
  */
 
 const ESC = '\x1b';
+const BEL = '\x07';
+/** String Terminator: Escape followed by a backslash. */
+const ST = `${ESC}\\`;
+/** Introducers whose content runs until a terminator rather than a fixed length. */
+const STRING_KINDS = new Set([']', 'P', 'X', '^', '_']);
 
 /**
  * Split text into what is safe to forward now and a trailing part-sequence.
@@ -46,8 +51,11 @@ function isComplete(seq: string): boolean {
     return false;
   }
 
-  // OSC: ESC ] ... terminated by BEL or by ESC \.
-  if (kind === ']') return seq.includes('\x07') || seq.includes(`${ESC}\\`);
+  // The string kinds all run until a terminator rather than for a fixed length:
+  // OSC (]), DCS (P), SOS (X), PM (^) and APC (_). Treating any of them as a
+  // plain two-byte escape would let it split exactly the way the mouse reports
+  // were splitting, which is the whole bug this file exists for.
+  if (STRING_KINDS.has(kind)) return seq.includes(BEL) || seq.includes(ST);
 
   // SS3 (ESC O A, the arrow keys on some terminals) needs one more byte.
   if (kind === 'O') return seq.length >= 3;

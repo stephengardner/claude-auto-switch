@@ -3,6 +3,8 @@ import { splitTrailingPartial, createEscapeBuffer } from './escape-buffer.js';
 
 const ESC = '\x1b';
 const BEL = '\x07';
+/** String Terminator: Escape followed by a backslash. */
+const ST = `${ESC}\\`;
 
 /** A mouse-motion report, the kind that flooded and leaked into the prompt. */
 const MOUSE = `${ESC}[<35;112;43M`;
@@ -36,6 +38,24 @@ describe('splitTrailingPartial', () => {
     expect(splitTrailingPartial(`${ESC}]0;title`).pending).toBe(`${ESC}]0;title`);
     expect(splitTrailingPartial(`${ESC}]0;title${BEL}`).pending).toBe('');
     expect(splitTrailingPartial(`${ESC}]0;title${ESC}\\`).pending).toBe('');
+  });
+
+  it('holds every kind of string sequence until its terminator', () => {
+    // DCS, SOS, PM and APC end the same way OSC does. Treating them as plain
+    // two-byte escapes would let them split exactly as the mouse reports did.
+    for (const kind of ['P', 'X', '^', '_']) {
+      const partial = `${ESC}${kind}payload`;
+      expect(splitTrailingPartial(partial).pending).toBe(partial);
+      expect(splitTrailingPartial(`${partial}${BEL}`).pending).toBe('');
+      expect(splitTrailingPartial(`${partial}${ST}`).pending).toBe('');
+    }
+  });
+
+  it('reassembles a DCS sequence split across chunks', () => {
+    const flushed: string[] = [];
+    const buffer = createEscapeBuffer((t) => flushed.push(t), { setTimer: () => 1, clearTimer: () => {} });
+    expect(buffer.push(`${ESC}Psome`)).toBe('');
+    expect(buffer.push(`data${ST}`)).toBe(`${ESC}Psomedata${ST}`);
   });
 
   it('needs the third byte of an SS3 arrow key', () => {
