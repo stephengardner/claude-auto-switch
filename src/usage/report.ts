@@ -72,10 +72,10 @@ export function humanWait(resetsAt: number | null, now: number): string {
   const mins = Math.round((resetsAt - now) / 60_000);
   if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h${String(mins % 60).padStart(2, '0')}m`;
+  if (hours < 24) return `${hours}h ${String(mins % 60).padStart(2, '0')}m`;
   const days = Math.floor(hours / 24);
   const rest = hours % 24;
-  return rest === 0 ? `${days}d` : `${days}d${rest}h`;
+  return rest === 0 ? `${days}d` : `${days}d ${rest}h`;
 }
 
 /**

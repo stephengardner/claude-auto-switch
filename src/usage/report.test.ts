@@ -53,9 +53,9 @@ describe('bar', () => {
 describe('humanWait', () => {
   it('uses minutes, then hours, then days', () => {
     expect(humanWait(inMinutes(45), NOW)).toBe('45m');
-    expect(humanWait(inMinutes(117), NOW)).toBe('1h57m');
+    expect(humanWait(inMinutes(117), NOW)).toBe('1h 57m');
     expect(humanWait(inMinutes(60 * 24 * 5), NOW)).toBe('5d');
-    expect(humanWait(inMinutes(60 * 26), NOW)).toBe('1d2h');
+    expect(humanWait(inMinutes(60 * 26), NOW)).toBe('1d 2h');
   });
 
   it('says nothing about a window that is already back', () => {
@@ -129,7 +129,7 @@ describe('renderUsageReport', () => {
     expect(out).toContain('weekly');
     expect(out).toContain('Fable');
     expect(out).toContain('27%');
-    expect(out).toContain('back in 1h57m');
+    expect(out).toContain('back in 1h 57m');
     expect(out).toContain('work@example.com');
     expect(out).toContain('max');
   });
