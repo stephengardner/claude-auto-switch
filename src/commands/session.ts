@@ -183,6 +183,26 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   const logEvent = (m: string): void => appendEvent(home, m, Date.now());
   const debugLog = process.env.CAS_DEBUG ? path.join(sessionDir, 'session-debug.log') : undefined;
 
+  /**
+   * True while Claude owns the screen. Anything ccx writes to stderr then lands
+   * INSIDE Claude's interface, which is why those [ccx] lines appeared to insert
+   * themselves into the UI at random: they were doing exactly that.
+   */
+  let claudeOwnsScreen = false;
+
+  /**
+   * Tell the operator something, by whichever channel does not wreck the screen.
+   *
+   * While a session runs that means the terminal's own notification and title,
+   * which draw nothing, plus the event log that `ccx dashboard` and `ccx history`
+   * read. Between sessions, when nothing owns the screen, plain stderr.
+   */
+  const notice = (message: string): void => {
+    logEvent(message);
+    if (claudeOwnsScreen) notifyTerminal(`ccx: ${message}`);
+    else err(`[ccx] ${message}`);
+  };
+
   let current: Account | null = null;
   /**
    * The account name we announced as in use.
@@ -209,9 +229,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       limitedModel = probe.limitedModel;
     }
     if (verdict !== 'limited') {
-      err(
-        '[ccx] limit text on screen, but no account-wide cap is confirmed by the API; not switching. ' +
-          'If this is a per-model limit, switch accounts yourself: ccx use <name> (or Enter in ccx dashboard).',
+      // This fires whenever limit-looking text renders and the API refutes it,
+      // which includes a conversation that merely TALKS about rate limits. Far
+      // too noisy for the screen; the log is where it belongs.
+      notice(
+        'limit text on screen, but no account-wide cap is confirmed; not switching. ' +
+          'For a per-model limit, switch yourself: ccx use <name>',
       );
     }
     return verdict === 'limited';
@@ -253,7 +276,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       accountName: account.name,
     });
     if (!decision.save) {
-      err(`[ccx] ${decision.reason}`);
+      notice(decision.reason);
       return;
     }
     try {
@@ -377,8 +400,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     buildProactiveDeps(context, {
       current: () => current?.name ?? null,
       requestSwitch: (account, reason) => {
-        err(`[ccx] ${reason}; moving to "${account}" before this account runs out`);
-        logEvent(`proactive switch to ${account}`);
+        notice(`${reason}; moving to "${account}" before this account runs out`);
         setActive(account, context.ctx);
         syncEditorPointerIfEnabled(context);
         writeSwitchRequest(account, Date.now(), 'seamless', context.ctx);
@@ -454,8 +476,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           context.ctx,
         );
       }
-      const notice = readinessMessage(account.name, readiness);
-      if (notice) err(notice);
+      // Printed plainly: this happens BEFORE the session starts, so nothing owns
+      // the screen yet and it is the one moment a sign-in problem is worth
+      // interrupting for.
+      const readinessNote = readinessMessage(account.name, readiness);
+      if (readinessNote) err(readinessNote);
       activate(account);
       // Track the account we are actually on so the editor pointer follows it.
       setActive(account.name, context.ctx);
@@ -505,16 +530,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
             renewalDue: () => renewalIsDue(target.dir),
           }) === 'restart'
         ) {
-          err(
-            `[ccx] "${target.name}" needs its login refreshed first; continuing this conversation there`,
-          );
+          notice(`"${target.name}" needs its login refreshed first; continuing it there`);
           return target.name;
         }
         activate(target);
         setActive(target.name, context.ctx);
         syncEditorPointerIfEnabled(context);
-        logEvent(`switching to ${target.name} in place`);
-        err(`[ccx] switching to "${target.name}" (no restart; takes effect within ~30s)`);
+        notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
         notifyAccountSwitch(target.name, 'switched in place');
         return null;
       };
@@ -531,22 +553,31 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       };
       const wantContinue = isContinue && !wantsContinue(args);
 
-      err(`[ccx] session on "${account.name}"`);
+      // Not printed: which account you are on shows in Claude's status line
+      // (`ccx statusline`) and in the terminal title, and a line per session
+      // start was the most frequent of the [ccx] messages cluttering the screen.
       logEvent(`session on ${account.name}`);
       // Claude owns the screen from here, so tell the operator through the
       // terminal itself (a notification / title change draws nothing).
       notifyAccountSwitch(account.name, isContinue ? 'continued here' : 'session start');
-      const outcome = await runPtySession({
-        ...base,
-        args: wantContinue ? [...args, '--continue'] : args,
-      });
-      // If we tried to resume but the new account has no saved conversation,
-      // start a fresh session on it instead of dead-ending.
-      if (outcome.kind === 'no-conversation') {
-        err('[ccx] no conversation to resume on this account; starting fresh');
-        return runPtySession({ ...base, args });
+      // From here until it returns, the screen belongs to Claude, so anything
+      // ccx has to say goes through `notice` rather than onto the screen.
+      claudeOwnsScreen = true;
+      try {
+        const outcome = await runPtySession({
+          ...base,
+          args: wantContinue ? [...args, '--continue'] : args,
+        });
+        // If we tried to resume but the new account has no saved conversation,
+        // start a fresh session on it instead of dead-ending.
+        if (outcome.kind === 'no-conversation') {
+          notice('no conversation to resume on this account; starting fresh');
+          return await runPtySession({ ...base, args });
+        }
+        return outcome;
+      } finally {
+        claudeOwnsScreen = false;
       }
-      return outcome;
     },
     markCapped: (accountName, reason, resetAt) => {
       saveLedger(

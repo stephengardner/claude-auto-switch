@@ -242,7 +242,7 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(launches[0]?.marker).toBe('A'); // launched on A
     // The seamless swap fired (deterministic: logged to the event stream)...
     const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
-    expect(events).toContain('switching to B in place');
+    expect(events).toContain('switching to \\"B\\"');
     // ...and it swapped the credential file to B underneath the running process
     // (the simulated ~30s re-read at run's end sees B), with no restart.
     const lastReread = runs.filter((r) => r.type === 'reread').pop();
