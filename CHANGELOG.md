@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.27.0]
+
+### Added
+
+- **`ccx usage` rewritten as a full report.** Every window for every account, with
+  a bar, a percentage and when it comes back, then a line naming which window is
+  actually closest to stopping that account, and finally where there is most room
+  right now. The old output was a cramped table with the reset times on a second
+  line, which left you to work out the useful part yourself.
+
+  It is careful about one distinction the old version got wrong: a spent MODEL
+  window (Fable, say) stops that model, not the account. Those accounts are still
+  offered as places to work, with the model caveat spelled out, instead of being
+  written off.
+
+### Fixed
+
+- **Ctrl-C in the dashboard now ends it exactly the way `q` does.** The signal
+  handler called `process.exit` from inside itself, which skips the caller own
+  teardown and, on Windows, races the console being torn down. It now hands the
+  terminal back and then lets the signal do its ordinary job, and the dashboard
+  winds its loop down rather than being cut off mid-frame.
+
 ## [1.26.3]
 
 ### Fixed

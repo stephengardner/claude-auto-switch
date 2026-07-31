@@ -350,7 +350,13 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
   // Claiming it this way registers the restore with the process, so every way out
   // (including a crash or Ctrl-C) hands the terminal back in one piece.
   const claimScreen = (): { restore: () => void } => {
-    const handle = claimRawTerminal({ epilogue: SHOW_CURSOR + EXIT_ALT });
+    const handle = claimRawTerminal({
+      epilogue: SHOW_CURSOR + EXIT_ALT,
+      // A signal winds the loop down through its own exit path instead of
+      // cutting the program off mid-frame, so the screen is always handed back
+      // the same way whether you press q or the terminal sends a signal.
+      onEnd: () => stop(),
+    });
     stdin.on('data', onKey);
     out.write(ENTER_ALT + HIDE_CURSOR);
     return handle;

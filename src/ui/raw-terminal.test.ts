@@ -30,6 +30,7 @@ function fakes() {
       return proc;
     },
     exit: vi.fn() as unknown as (code?: number) => never,
+    kill: vi.fn(),
   };
   const fire = (event: string, ...args: unknown[]): void => {
     for (const fn of handlers.get(event) ?? []) fn(...args);
@@ -69,17 +70,44 @@ describe('claimRawTerminal', () => {
     expect(f.modes).toEqual([true, false]);
   });
 
-  it('gives it back on Ctrl-C, then exits rather than swallowing the signal', () => {
+  it('gives it back on Ctrl-C, rather than swallowing the signal', () => {
+    // Superseded in detail by the re-raise test below: what matters at this
+    // level is that the terminal is handed back and the signal is not eaten.
     const f = fakes();
     claimRawTerminal(f.opts);
     f.fire('SIGINT', 'SIGINT');
     expect(f.modes).toEqual([true, false]);
-    expect(f.proc.exit).toHaveBeenCalledWith(130);
+    expect(f.proc.kill).toHaveBeenCalled();
+  });
+
+  it('re-raises the signal rather than exiting from inside the handler', () => {
+    // Ending the program from a signal handler skips the caller own teardown
+    // and, on Windows, races the console being torn down. Re-raising gives the
+    // ordinary behaviour and the ordinary exit status.
+    const f = fakes();
+    claimRawTerminal(f.opts);
+    f.fire('SIGINT', 'SIGINT');
+    expect(f.modes).toEqual([true, false]); // terminal handed back first
+    expect(f.proc.kill).toHaveBeenCalledWith(process.pid, 'SIGINT');
+    expect(f.proc.exit).not.toHaveBeenCalled();
+  });
+
+  it('lets an owner wind down on its own terms instead', () => {
+    const f = fakes();
+    const ended: string[] = [];
+    claimRawTerminal({ ...f.opts, onEnd: (s) => ended.push(s) });
+    f.fire('SIGINT', 'SIGINT');
+    expect(ended).toEqual(['SIGINT']);
+    expect(f.modes).toEqual([true, false]); // still handed back first
+    expect(f.proc.kill).not.toHaveBeenCalled();
+    expect(f.proc.exit).not.toHaveBeenCalled();
   });
 
   it('reports the conventional exit code for each signal, not one for all', () => {
     // 128 + signal number. A supervisor and a shell $? check both read this, so
     // reporting every signal as if it were SIGTERM is a lie where people look.
+    // Only reached when re-raising is not possible; then the conventional
+    // 128+signal code still stands in.
     for (const [signal, code] of [
       ['SIGHUP', 129],
       ['SIGINT', 130],
@@ -87,6 +115,9 @@ describe('claimRawTerminal', () => {
       ['SIGBREAK', 149],
     ] as const) {
       const f = fakes();
+      f.proc.kill = vi.fn(() => {
+        throw new Error('cannot signal');
+      });
       claimRawTerminal(f.opts);
       f.fire(signal, signal);
       expect(f.modes).toEqual([true, false]); // terminal handed back first
