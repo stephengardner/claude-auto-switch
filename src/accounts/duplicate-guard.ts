@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { sha256Fingerprint } from '../util/fingerprint.js';
 import { credentialPath } from './credential-vault.js';
 
 /**
@@ -21,9 +21,7 @@ export interface ProfileLike {
 }
 
 /** A short, comparable fingerprint of a token, so tokens never get logged. */
-function fingerprint(token: string): string {
-  return createHash('sha256').update(token).digest('hex').slice(0, 16);
-}
+const fingerprint = (token: string): string => sha256Fingerprint(token);
 
 interface Tokens {
   access?: string;
