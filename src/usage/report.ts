@@ -172,7 +172,12 @@ export function renderUsageReport(
   }
 
   const best = roomiest(accounts);
-  if (best.length === 0) {
+  const anythingRead = accounts.some((a) => a.windows && bindingWindow(a.windows));
+  if (!anythingRead) {
+    lines.push(
+      paint('No usage has been read yet, so there is nothing to compare.', codes.dim, color),
+    );
+  } else if (best.length === 0) {
     lines.push(
       paint('Every account has hit an account-wide limit. Check the reset times above.', codes.yellow, color),
     );

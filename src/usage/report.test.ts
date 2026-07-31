@@ -181,6 +181,12 @@ describe('renderUsageReport', () => {
     expect(out).toContain('Every account has hit an account-wide limit');
   });
 
+  it('does not confuse "never read" with "everything is at its limit"', () => {
+    const out = renderUsageReport([account({ windows: null })], NOW, plain);
+    expect(out).toContain('No usage has been read yet');
+    expect(out).not.toContain('hit an account-wide limit');
+  });
+
   it('reports an unread account honestly rather than as empty usage', () => {
     const out = renderUsageReport([account({ windows: null })], NOW, plain);
     expect(out).toContain('no usage read yet');

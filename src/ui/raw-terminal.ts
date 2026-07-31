@@ -99,11 +99,18 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
       onEnd(signal); // the owner wants to wind down on its own terms
       return;
     }
+    // Falls back whenever re-raising is not actually possible, including when
+    // there is no kill to call: optional chaining would otherwise swallow the
+    // call silently and the program would neither exit nor re-raise.
     try {
-      proc.kill?.(process.pid, signal);
+      if (typeof proc.kill === 'function') {
+        proc.kill(process.pid, signal);
+        return;
+      }
     } catch {
-      (proc.exit ?? process.exit)(SIGNAL_EXIT_CODES[signal] ?? 143);
+      /* could not re-raise; fall through to the plain exit below */
     }
+    (proc.exit ?? process.exit)(SIGNAL_EXIT_CODES[signal] ?? 143);
   }
 
   try {

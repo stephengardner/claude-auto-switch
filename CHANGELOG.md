@@ -22,10 +22,12 @@ semantic versioning.
 ### Fixed
 
 - **Ctrl-C in the dashboard now ends it exactly the way `q` does.** The signal
-  handler called `process.exit` from inside itself, which skips the caller own
+  handler called `process.exit` from inside itself, which skips the caller's own
   teardown and, on Windows, races the console being torn down. It now hands the
-  terminal back and then lets the signal do its ordinary job, and the dashboard
-  winds its loop down rather than being cut off mid-frame.
+  terminal back first, then hands control to whoever claimed it: the dashboard
+  winds its loop down through its normal exit path rather than being cut off
+  mid-frame, and where there is no such owner the signal is re-raised, falling
+  back to the conventional 128+signal exit code if it cannot be.
 
 ## [1.26.3]
 

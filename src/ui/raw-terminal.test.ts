@@ -103,6 +103,17 @@ describe('claimRawTerminal', () => {
     expect(f.proc.exit).not.toHaveBeenCalled();
   });
 
+  it('still ends the program when the process cannot be signalled at all', () => {
+    // Optional chaining on a missing kill would swallow the call, leaving the
+    // program neither exiting nor re-raising: stuck after a Ctrl-C.
+    const f = fakes();
+    delete (f.proc as { kill?: unknown }).kill;
+    claimRawTerminal(f.opts);
+    f.fire('SIGINT', 'SIGINT');
+    expect(f.modes).toEqual([true, false]);
+    expect(f.proc.exit).toHaveBeenCalledWith(130);
+  });
+
   it('reports the conventional exit code for each signal, not one for all', () => {
     // 128 + signal number. A supervisor and a shell $? check both read this, so
     // reporting every signal as if it were SIGTERM is a lie where people look.

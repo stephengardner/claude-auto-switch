@@ -25,7 +25,11 @@ export async function usageCommand(context: CliContext): Promise<number> {
   const active = getActive(context.ctx);
   const rows: UsageAccount[] = accounts.map((a) => {
     const u = snap.accounts[a.name];
-    const known = u && (u.fiveHour !== null || u.sevenDay !== null);
+    // Per-model data counts too: an account can have a model window read while
+    // the account-wide ones are unknown, and calling that "nothing read" hides
+    // real numbers we already have.
+    const known =
+      u && (u.fiveHour !== null || u.sevenDay !== null || (u.models ?? []).length > 0);
     return {
       name: a.name,
       email: a.email,
