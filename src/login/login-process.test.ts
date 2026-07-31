@@ -32,8 +32,10 @@ describe('spawnAuthLogin', () => {
     // that red means nothing.
     const source = readFileSync(new URL('./login-process.ts', import.meta.url), 'utf8');
     expect(source).not.toMatch(/execFileSync|spawnSync|execSync/);
-    expect(source).toMatch(/execFile\(/); // the non-blocking one
-    expect(source).toMatch(/unref/); // and the killer cannot hold the process open
+    // Scoped to the KILLER specifically. A bare /unref/ also matched the URL
+    // timer in the same file, so the assertion passed with killer.unref removed.
+    expect(source).toMatch(/const killer\s*=\s*execFile\(\s*['"]taskkill['"]/);
+    expect(source).toMatch(/killer\.unref\?\.\(\)/);
   });
 
   it('actually ends the process, so a give-up does not leave it running', async () => {
