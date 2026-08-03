@@ -13,6 +13,15 @@
  */
 
 export interface SaveBackInput {
+  /**
+   * Who the session's credential ACTUALLY belongs to, confirmed against the API.
+   *
+   * The decisive input when present, because it is the only one that cannot lag.
+   * Everything else here is read from files Claude writes, and after a mid-session
+   * /login the credential changes BEFORE the identity file beside it does, so the
+   * stale identity still matches the old account and a wrong write sails through.
+   */
+  confirmedOwner?: string | null;
   /** The account the session is logged in as right now, per its config. */
   sessionEmail: string | null;
   /** The address recorded for this profile when it was registered. */
@@ -35,12 +44,53 @@ export type SaveBackDecision = { save: true } | { save: false; reason: string };
  * the address comparison could not be made, rather than only when the session
  * has no address.
  *
- * Unknown is treated as allowed: with nothing to compare, refusing every write
- * would throw away renewed tokens for every profile that has no recorded
- * address, which is its own way of causing sign-in prompts.
+ * Unknown REFUSES. This used to allow the write, on the reasoning that refusing
+ * would throw away renewed tokens. That reasoning was wrong, and the operator
+ * paid for it: running /login inside a session writes the new credential into the
+ * shared session folder, and the identity file Claude keeps beside it is not
+ * updated at the same instant. The copy back therefore compared a stale identity,
+ * found nothing to disagree with, and wrote the NEW account's login into the OLD
+ * account's profile. Two profiles ended up holding one account, their stored
+ * limits were then read from the wrong place, and the operator was capped out of
+ * accounts that had room.
+ *
+ * The trade is not symmetric. Refusing loses a refreshed token, which the next
+ * sign-in restores. Allowing overwrites a login with someone else's, which
+ * silently corrupts the account map and cannot be undone from local state. So
+ * anything short of a positive match is refused.
  */
 export function decideSaveBack(input: SaveBackInput): SaveBackDecision {
   const { sessionEmail, accountEmail, sessionIdentity, accountIdentity, accountName } = input;
+
+  // Settled here when we know it, whatever the local files claim.
+  if (input.confirmedOwner !== undefined) {
+    if (!input.confirmedOwner) {
+      return {
+        save: false,
+        reason:
+          `could not confirm who this login belongs to, so "${accountName}" is left alone`,
+      };
+    }
+    if (!accountEmail) {
+      // We know whose login this is and nothing to compare it against. Falling
+      // through to the stale file comparisons here would defeat the whole point
+      // of having asked.
+      return {
+        save: false,
+        reason:
+          `this login belongs to ${input.confirmedOwner} and "${accountName}" has no recorded ` +
+          'account to check it against, so it is left alone',
+      };
+    }
+    return input.confirmedOwner.toLowerCase() === accountEmail.toLowerCase()
+      ? { save: true }
+      : {
+          save: false,
+          reason:
+            `this login belongs to ${input.confirmedOwner}, not "${accountName}" ` +
+            `(${accountEmail}); leaving that account's stored login untouched`,
+        };
+  }
 
   if (sessionEmail && accountEmail) {
     if (sessionEmail.toLowerCase() !== accountEmail.toLowerCase()) {
@@ -54,11 +104,19 @@ export function decideSaveBack(input: SaveBackInput): SaveBackDecision {
     return { save: true };
   }
 
-  if (sessionIdentity && accountIdentity && sessionIdentity !== accountIdentity) {
-    return {
-      save: false,
-      reason: `session is now a different account than "${accountName}"; not overwriting its login`,
-    };
+  if (sessionIdentity && accountIdentity) {
+    return sessionIdentity === accountIdentity
+      ? { save: true }
+      : {
+          save: false,
+          reason: `session is now a different account than "${accountName}"; not overwriting its login`,
+        };
   }
-  return { save: true };
+
+  return {
+    save: false,
+    reason:
+      `cannot confirm this session is still "${accountName}", so its stored login is left ` +
+      'alone. Signing in as a different account mid-session is exactly when this matters',
+  };
 }

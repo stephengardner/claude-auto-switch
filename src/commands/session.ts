@@ -37,6 +37,7 @@ import {
   hasUsableLogin,
 } from '../accounts/credential-vault.js';
 import { decideSaveBack } from '../accounts/save-back.js';
+import { fetchTokenOwner } from '../accounts/identity-check.js';
 import { takeLease, touchLease, releaseLease } from '../session/lease.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
 import { ensureLoginUsable, readinessMessage, swapMode } from '../session/preflight.js';
@@ -240,8 +241,8 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     return verdict === 'limited';
   };
 
-  const saveBack = (account: Account): void => {
-    if (!existsSync(sessionCreds)) return;
+  const saveBack = (account: Account, confirmedOwner?: string | null): boolean => {
+    if (!existsSync(sessionCreds)) return false;
     // Never propagate a corrupt credential: a killed or partial OAuth refresh
     // can leave the session credential empty or malformed, and overwriting a
     // good login with that is the worst outcome (installCredential re-checks).
@@ -256,7 +257,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         },
         context.ctx,
       );
-      return;
+      return false;
     }
     // Identity guard. The session's config tracks whoever it is logged in as
     // right now, so if that is not this profile's account, writing the
@@ -269,6 +270,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // The decision itself lives in decideSaveBack, where it can be tested. It
     // was inline here, untested, and a gap in it went unnoticed for that reason.
     const decision = decideSaveBack({
+      ...(confirmedOwner !== undefined ? { confirmedOwner } : {}),
       sessionEmail: sessionIdentityEmail(sessionDir),
       ...(account.email ? { accountEmail: account.email } : {}),
       sessionIdentity: identityKey(sessionDir),
@@ -276,14 +278,20 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       accountName: account.name,
     });
     if (!decision.save) {
-      notice(decision.reason);
-      return;
+      // Log ONLY, never the screen, whoever owns it. This is ccx explaining an
+      // internal decision the operator cannot act on mid-session, it can fire on
+      // every credential change, and it was landing in Claude's interface. If it
+      // matters, `ccx doctor` reports the same mismatch properly.
+      logEvent(decision.reason);
+      return false;
     }
     try {
       // Keeps the account's previous credential as a rollback cushion.
       installCredential(account.dir, sessionCreds);
+      return true;
     } catch {
       /* best effort: preserve a refreshed token back to the account */
+      return false;
     }
   };
 
@@ -301,6 +309,8 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   };
   /** The fingerprint of the credential we last copied to the profile. */
   let mirroredStamp = '';
+  /** The fingerprint of a credential whose owner is being confirmed right now. */
+  let checkingStamp = '';
 
   /**
    * Copy a login Claude just refreshed back to the account's own folder.
@@ -330,9 +340,36 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // check above and getting the lock, and the stamp has to describe what was
       // actually copied or a later change would be treated as already mirrored.
       const nowStamp = credStamp();
-      if (!nowStamp || nowStamp === mirroredStamp) return;
-      mirroredStamp = nowStamp;
-      saveBack(account);
+      if (!nowStamp || nowStamp === mirroredStamp || nowStamp === checkingStamp) return;
+      // Claimed as IN FLIGHT rather than done, so the same credential is not
+      // checked twice, and a check that fails to reach the API leaves it able to
+      // be tried again instead of being skipped for the rest of the session.
+      checkingStamp = nowStamp;
+
+      // Ask who this login actually belongs to before copying it anywhere. The
+      // local identity file lags a mid-session /login, so it still names the OLD
+      // account at this moment and would wave the new account's login straight
+      // into the wrong profile. Only the API can answer without lagging.
+      //
+      // Affordable because it runs on a CHANGED credential, not on every tick: a
+      // refresh every few hours, or a sign-in. Not awaited, because the poll that
+      // called this also relays the screen.
+      void fetchTokenOwner(sessionDir)
+        .then((owner) => {
+          // The answer belongs to the credential that was READ, and another one
+          // may have replaced it while we asked. Saving now would attribute this
+          // owner to a login nobody checked, which is the bug in miniature.
+          if (credStamp() !== nowStamp) return;
+          if (saveBack(account, owner)) mirroredStamp = nowStamp;
+        })
+        .catch(() => {
+          // Could not reach the API. Left unmarked on purpose so a later tick can
+          // try again; a network blip should not mean a refreshed token is never
+          // written back for the rest of the session.
+        })
+        .finally(() => {
+          if (checkingStamp === nowStamp) checkingStamp = '';
+        });
     });
   };
 

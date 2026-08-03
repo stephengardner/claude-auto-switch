@@ -74,6 +74,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       env: cleanEnv({ CLAUDE_CONFIG_DIR: options.configDir, ...(options.env ?? {}) }),
     });
 
+    const startedAt = Date.now();
     let capped: { reason?: string; resetAt?: number } | null = null;
     let noConversation = false;
     let window = '';
@@ -209,6 +210,10 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     process.stdout.on('resize', onResize);
 
     const exitSub = child.onExit((report) => {
+      // Taken here, when the child actually ended. Finalization can wait for a
+      // trailing flush and an in-flight limit check, which would be counted as
+      // session time it did not run for.
+      const ranMs = Date.now() - startedAt;
       // Normalized here, at the only place a pty exit enters ccx: on Windows this
       // report can arrive with no code and no signal at all, and passing that
       // through told the shell "undefined", which reads as success.
@@ -242,12 +247,12 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         }
         resolve(
           switching
-            ? { kind: 'switch', exitCode, switchTo: switching }
+            ? { kind: 'switch', exitCode, switchTo: switching, ranMs }
             : capped
-              ? { kind: 'capped', exitCode, reason: capped.reason, resetAt: capped.resetAt }
+              ? { kind: 'capped', exitCode, reason: capped.reason, resetAt: capped.resetAt, ranMs }
               : noConversation
-                ? { kind: 'no-conversation', exitCode }
-                : { kind: 'ok', exitCode },
+                ? { kind: 'no-conversation', exitCode, ranMs }
+                : { kind: 'ok', exitCode, ranMs },
         );
       };
 
