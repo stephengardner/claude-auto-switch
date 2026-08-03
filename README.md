@@ -206,8 +206,10 @@ you which applies to your machine.
 ## Your credentials stay yours
 
 There is no server of ours and no telemetry. ccx talks to Anthropic for exactly
-two things, both about your own accounts: reading your usage, and renewing your
-own login when it goes stale. Nothing else leaves your machine.
+three things, all about your own accounts: reading your usage, renewing your own
+login when it goes stale, and asking which account a login belongs to. That last
+one is what stops a login being copied into the wrong account, and it is asked
+only when a stored login changes. Nothing else leaves your machine.
 
 Each account's login is the same one Claude Code already saves, kept in its own
 folder under `~/.claude-auto-switch/`, written owner-only, and never committed.

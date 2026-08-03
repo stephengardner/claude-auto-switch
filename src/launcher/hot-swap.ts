@@ -85,6 +85,15 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
         triedLastResort = true;
         deps.notify(fallback.message);
         const outcome = await deps.runSession(fallback.account, !first, { ignoreLimits: true });
+        // The last resort is chosen for having ROOM, which says nothing about
+        // whether its stored login still works. A dead one here must take the
+        // same path as anywhere else, or it returns the dead session's exit code
+        // and the operator is told nothing about why.
+        if (outcome.kind === 'needs-login') {
+          needsLogin.add(fallback.account.name);
+          deps.notify(`"${fallback.account.name}" needs signing in again; trying another account...`);
+          continue;
+        }
         return outcome.exitCode;
       }
       if (needsLogin.size > 0 && capped.size === 0) {

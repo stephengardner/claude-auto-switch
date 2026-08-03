@@ -244,4 +244,29 @@ describe('runHotSwapSession', () => {
     expect(all).toContain('ccx login');
     expect(all).not.toContain('after a reset');
   });
+
+  it('handles a dead login on the LAST-RESORT account too', async () => {
+    // The last resort is picked for having room, which says nothing about
+    // whether its login still works. Returning its exit code straight out would
+    // hand back the dead session's status and explain nothing.
+    const accounts = pool(['a']);
+    const said: string[] = [];
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => accounts.find((x) => !ex.has(x.name)) ?? null,
+      resolveAccount: (name) => accounts.find((x) => x.name === name) ?? null,
+      lastResort: () => ({ account: { name: 'fallback', dir: '/d/f' }, message: 'model window only' }),
+      runSession: (account) =>
+        Promise.resolve(
+          account.name === 'a'
+            ? ({ kind: 'capped', exitCode: 1, reason: 'usage cap' } as SessionOutcome)
+            : ({ kind: 'needs-login', exitCode: 1 } as SessionOutcome),
+        ),
+      markCapped: () => {},
+      notify: (m) => said.push(m),
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(1);
+    const all = said.join(' | ');
+    expect(all).toContain('"fallback" needs signing in again');
+  });
 });
