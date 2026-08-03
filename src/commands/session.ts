@@ -37,6 +37,7 @@ import {
   hasUsableLogin,
 } from '../accounts/credential-vault.js';
 import { decideSaveBack } from '../accounts/save-back.js';
+import { fetchTokenOwner } from '../accounts/identity-check.js';
 import { takeLease, touchLease, releaseLease } from '../session/lease.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
 import { ensureLoginUsable, readinessMessage, swapMode } from '../session/preflight.js';
@@ -240,7 +241,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     return verdict === 'limited';
   };
 
-  const saveBack = (account: Account): void => {
+  const saveBack = (account: Account, confirmedOwner?: string | null): void => {
     if (!existsSync(sessionCreds)) return;
     // Never propagate a corrupt credential: a killed or partial OAuth refresh
     // can leave the session credential empty or malformed, and overwriting a
@@ -269,6 +270,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // The decision itself lives in decideSaveBack, where it can be tested. It
     // was inline here, untested, and a gap in it went unnoticed for that reason.
     const decision = decideSaveBack({
+      ...(confirmedOwner !== undefined ? { confirmedOwner } : {}),
       sessionEmail: sessionIdentityEmail(sessionDir),
       ...(account.email ? { accountEmail: account.email } : {}),
       sessionIdentity: identityKey(sessionDir),
@@ -336,7 +338,21 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const nowStamp = credStamp();
       if (!nowStamp || nowStamp === mirroredStamp) return;
       mirroredStamp = nowStamp;
-      saveBack(account);
+      // Ask who this login actually belongs to before copying it anywhere. The
+      // local identity file lags a mid-session /login, so it still names the OLD
+      // account at this moment and would wave the new account's login straight
+      // into the wrong profile. Only the API can answer this without lagging.
+      //
+      // Affordable because it runs on a CHANGED credential, not on every tick: a
+      // refresh every few hours, or a sign-in. Fire and forget, since the poll
+      // that called this also relays the screen and must not wait.
+      void fetchTokenOwner(sessionDir)
+        .then((owner) => saveBack(account, owner))
+        .catch(() => {
+          // Could not confirm: refuse rather than guess. saveBack with no owner
+          // falls through to the checks that now fail closed.
+          saveBack(account, null);
+        });
     });
   };
 

@@ -21,8 +21,13 @@ semantic versioning.
   wrong place, and being capped out of accounts that had room, which forces
   another `/login` and goes round again.
 
-  The check now refuses unless it can positively confirm the session is still
-  that account. The two outcomes were never symmetric: refusing loses a refreshed
+  The check now asks the API who the credential actually belongs to before
+  copying it anywhere, and that answer decides. It is the only input that cannot
+  lag: refusing merely when the identity is unknown was not enough, because the
+  stale file names the OLD account, which MATCHES, so the wrong write sailed
+  through. The call is affordable because it happens on a credential that
+  changed, not on every check: a refresh every few hours, or a sign-in. Anything
+  it cannot confirm is refused. The two outcomes were never symmetric: refusing loses a refreshed
   token, which the next sign-in restores, while allowing overwrites a login with
   someone else's and corrupts the account map in a way local state cannot undo.
 

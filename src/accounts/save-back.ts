@@ -13,6 +13,15 @@
  */
 
 export interface SaveBackInput {
+  /**
+   * Who the session's credential ACTUALLY belongs to, confirmed against the API.
+   *
+   * The decisive input when present, because it is the only one that cannot lag.
+   * Everything else here is read from files Claude writes, and after a mid-session
+   * /login the credential changes BEFORE the identity file beside it does, so the
+   * stale identity still matches the old account and a wrong write sails through.
+   */
+  confirmedOwner?: string | null;
   /** The account the session is logged in as right now, per its config. */
   sessionEmail: string | null;
   /** The address recorded for this profile when it was registered. */
@@ -52,6 +61,18 @@ export type SaveBackDecision = { save: true } | { save: false; reason: string };
  */
 export function decideSaveBack(input: SaveBackInput): SaveBackDecision {
   const { sessionEmail, accountEmail, sessionIdentity, accountIdentity, accountName } = input;
+
+  // Settled here when we know it, whatever the local files claim.
+  if (input.confirmedOwner && accountEmail) {
+    return input.confirmedOwner.toLowerCase() === accountEmail.toLowerCase()
+      ? { save: true }
+      : {
+          save: false,
+          reason:
+            `this login belongs to ${input.confirmedOwner}, not "${accountName}" ` +
+            `(${accountEmail}); leaving that account's stored login untouched`,
+        };
+  }
 
   if (sessionEmail && accountEmail) {
     if (sessionEmail.toLowerCase() !== accountEmail.toLowerCase()) {

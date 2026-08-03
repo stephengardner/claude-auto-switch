@@ -73,6 +73,40 @@ describe('decideSaveBack', () => {
     expect(d.save).toBe(true);
   });
 
+  it('BLOCKS a mid-session /login from writing into the wrong profile', () => {
+    // The exact reported failure. After /login as someone else, the credential
+    // has already changed while the identity file beside it still names the OLD
+    // account, so the stale comparison MATCHES and waves the wrong login through.
+    // Only the confirmed owner sees the truth.
+    const d = decideSaveBack({
+      ...base,
+      confirmedOwner: 'newperson@example.com', // who the credential really is
+      sessionEmail: 'me@example.com', // stale: still the old account
+      accountEmail: 'me@example.com', // so this comparison would have passed
+    });
+    expect(d.save).toBe(false);
+    if (d.save) throw new Error('unreachable');
+    expect(d.reason).toContain('newperson@example.com');
+  });
+
+  it('allows the write when the confirmed owner is the account', () => {
+    expect(
+      decideSaveBack({
+        ...base,
+        confirmedOwner: 'me@example.com',
+        accountEmail: 'me@example.com',
+        sessionEmail: 'stale@example.com', // ignored: the API knows better
+      }).save,
+    ).toBe(true);
+  });
+
+  it('refuses when the owner could not be confirmed at all', () => {
+    // Offline, or the token was rejected. Guessing is what caused this.
+    expect(
+      decideSaveBack({ ...base, confirmedOwner: null, accountEmail: 'me@example.com' }).save,
+    ).toBe(false);
+  });
+
   it('REFUSES when it cannot confirm, because that is when /login bites', () => {
     // This allowed the write once, and the operator paid for it: running /login
     // inside a session writes the new credential before Claude updates the
