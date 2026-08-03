@@ -63,7 +63,25 @@ export function decideSaveBack(input: SaveBackInput): SaveBackDecision {
   const { sessionEmail, accountEmail, sessionIdentity, accountIdentity, accountName } = input;
 
   // Settled here when we know it, whatever the local files claim.
-  if (input.confirmedOwner && accountEmail) {
+  if (input.confirmedOwner !== undefined) {
+    if (!input.confirmedOwner) {
+      return {
+        save: false,
+        reason:
+          `could not confirm who this login belongs to, so "${accountName}" is left alone`,
+      };
+    }
+    if (!accountEmail) {
+      // We know whose login this is and nothing to compare it against. Falling
+      // through to the stale file comparisons here would defeat the whole point
+      // of having asked.
+      return {
+        save: false,
+        reason:
+          `this login belongs to ${input.confirmedOwner} and "${accountName}" has no recorded ` +
+          'account to check it against, so it is left alone',
+      };
+    }
     return input.confirmedOwner.toLowerCase() === accountEmail.toLowerCase()
       ? { save: true }
       : {

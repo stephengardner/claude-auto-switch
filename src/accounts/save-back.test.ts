@@ -100,6 +100,21 @@ describe('decideSaveBack', () => {
     ).toBe(true);
   });
 
+  it('refuses when the owner is known but the account has nothing to check against', () => {
+    // Falling through to the stale file comparisons here would defeat the whole
+    // point of having asked the API in the first place.
+    const d = decideSaveBack({
+      ...base,
+      confirmedOwner: 'someone@example.com',
+      sessionEmail: 'stale@example.com',
+      sessionIdentity: 'uuid-a',
+      accountIdentity: 'uuid-a', // would have matched and allowed the write
+    });
+    expect(d.save).toBe(false);
+    if (d.save) throw new Error('unreachable');
+    expect(d.reason).toContain('no recorded account');
+  });
+
   it('refuses when the owner could not be confirmed at all', () => {
     // Offline, or the token was rejected. Guessing is what caused this.
     expect(

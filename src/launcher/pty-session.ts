@@ -210,6 +210,10 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     process.stdout.on('resize', onResize);
 
     const exitSub = child.onExit((report) => {
+      // Taken here, when the child actually ended. Finalization can wait for a
+      // trailing flush and an in-flight limit check, which would be counted as
+      // session time it did not run for.
+      const ranMs = Date.now() - startedAt;
       // Normalized here, at the only place a pty exit enters ccx: on Windows this
       // report can arrive with no code and no signal at all, and passing that
       // through told the shell "undefined", which reads as success.
@@ -241,7 +245,6 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
             /* best effort */
           }
         }
-        const ranMs = Date.now() - startedAt;
         resolve(
           switching
             ? { kind: 'switch', exitCode, switchTo: switching, ranMs }
