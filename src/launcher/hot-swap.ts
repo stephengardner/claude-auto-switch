@@ -4,7 +4,7 @@ export interface HotSwapAccount {
 }
 
 export interface SessionOutcome {
-  kind: 'ok' | 'capped' | 'no-conversation' | 'switch';
+  kind: 'ok' | 'capped' | 'no-conversation' | 'switch' | 'needs-login';
   exitCode: number;
   reason?: string;
   resetAt?: number;
@@ -59,6 +59,12 @@ export interface HotSwapDeps {
  */
 export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
   const capped = new Set<string>();
+  /**
+   * Accounts whose stored login is dead: it cannot be renewed and the server
+   * rejects it. Skipped like a capped one, but NOT recorded as capped, because
+   * nothing is exhausted and the fix is a sign-in rather than a wait.
+   */
+  const needsLogin = new Set<string>();
   let first = true;
   // When the operator picks an account mid-session, we relaunch on THAT account
   // next (instead of the policy pick), resuming the same conversation.
@@ -66,7 +72,8 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
   let triedLastResort = false;
 
   for (;;) {
-    const account: HotSwapAccount | null = forced ?? deps.nextAccount(capped);
+    const account: HotSwapAccount | null =
+      forced ?? deps.nextAccount(new Set([...capped, ...needsLogin]));
     forced = null;
     if (!account) {
       // Out of accounts to rotate to. If what is exhausted is one model rather
@@ -78,13 +85,42 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
         triedLastResort = true;
         deps.notify(fallback.message);
         const outcome = await deps.runSession(fallback.account, !first, { ignoreLimits: true });
+        // The last resort is chosen for having ROOM, which says nothing about
+        // whether its stored login still works. A dead one here must take the
+        // same path as anywhere else, or it returns the dead session's exit code
+        // and the operator is told nothing about why.
+        if (outcome.kind === 'needs-login') {
+          needsLogin.add(fallback.account.name);
+          deps.notify(`"${fallback.account.name}" needs signing in again; trying another account...`);
+          continue;
+        }
         return outcome.exitCode;
+      }
+      if (needsLogin.size > 0 && capped.size === 0) {
+        // Nothing is exhausted; the logins are simply finished. Saying "try again
+        // after a reset" here would send the operator away to wait for something
+        // that will never happen on its own.
+        deps.notify(
+          `these accounts need signing in again: ${[...needsLogin].join(', ')}. ` +
+            `Run: ccx login ${[...needsLogin][0]}`,
+        );
+        return 1;
       }
       deps.notify('every account has hit its limit; try again after a reset');
       return 1;
     }
 
     const outcome = await deps.runSession(account, !first);
+
+    if (outcome.kind === 'needs-login') {
+      // Its stored login is finished, so starting here would hand Claude a dead
+      // token and produce "Login expired" with nothing to act on. Try the next
+      // account instead. `first` is deliberately not advanced: nothing ran, so
+      // the next attempt is still the first real session and must not resume.
+      needsLogin.add(account.name);
+      deps.notify(`"${account.name}" needs signing in again; trying another account...`);
+      continue;
+    }
     first = false;
 
     if (outcome.kind === 'capped') {

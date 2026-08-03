@@ -4,6 +4,49 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.31.0]
+
+### Fixed
+
+- **ccx writes nothing to the terminal while Claude owns it. Nothing at all.**
+  The `[ccx]` messages were moved off the screen in 1.28.0 by sending them as a
+  terminal notification instead, on the reasoning that an escape sequence renders
+  nothing and is therefore safe. That reasoning was wrong.
+
+  It renders nothing, but it is still bytes pushed into a terminal that is
+  mid-draw. Land them inside a sequence Claude is writing and the terminal's
+  parser is left half-way through one: text comes out garbled and overlapping,
+  and the terminal can be left in a mode Claude is not expecting, so mouse
+  reports arrive as ordinary typed text (`5;200;7M` appearing in the prompt).
+
+  The rule is now absolute and enforced in one place rather than at each call
+  site, because a rule checked at four call sites is one that gets missed at the
+  fifth. While another program owns the terminal, every notification, title
+  change and message goes to the log only. `ccx dashboard` and `ccx history`
+  are where they are read.
+
+## [1.30.0]
+
+### Fixed
+
+- **A broken account is rotated past, not blocked on.** ccx would start a session
+  on an account whose stored login was finished, because the check for "has a
+  login" only looked for token material and an expired token still has some. The
+  session then began on a dead token, Claude said `Login expired`, and there was
+  nothing on screen to act on.
+
+  That turned into a loop. Signing in from inside the session put the new login
+  in the session folder, ccx correctly refused to copy someone else's account
+  into that profile, the profile kept its dead login, and the next session did
+  the same thing again.
+
+  An account whose login cannot be renewed and is rejected by the server is now
+  skipped, exactly like one that has hit its limit, and the next account is used
+  instead. It is deliberately NOT recorded as capped: nothing is exhausted, and a
+  cap would keep it out of rotation for hours over something a sign-in fixes.
+  When every login is finished, the message says to sign in and names the
+  command, rather than telling you to wait for a reset that will never come.
+
 ## [1.29.0]
 
 ### Fixed

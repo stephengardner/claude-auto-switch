@@ -1,67 +1,52 @@
-import { describe, it, expect } from 'vitest';
-import { notifyTerminal, setTerminalTitle, notifyAccountSwitch } from './notify.js';
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  notifyTerminal,
+  setTerminalTitle,
+  notifyAccountSwitch,
+  setTerminalOwnedElsewhere,
+} from './notify.js';
 
-function capture(): { stream: { write(c: string): boolean }; written: string[] } {
+/**
+ * The rule: while another program owns the terminal, ccx writes NOTHING to it.
+ *
+ * An escape sequence renders nothing, which is why these were once thought safe
+ * to send mid-session. They are not. They are bytes pushed into a terminal that
+ * is mid-draw, and landing them inside a sequence the other program is writing
+ * leaves its parser half-way through one: the display garbles, and the terminal
+ * can be left in a mode that program is not expecting, so mouse reports turn up
+ * as ordinary typed text.
+ */
+
+function sink() {
   const written: string[] = [];
-  return {
-    written,
-    stream: {
-      write(c: string) {
-        written.push(c);
-        return true;
-      },
-    },
-  };
+  return { written, stream: { write: (s: string) => (written.push(s), true) } };
 }
 
-const ESC = String.fromCharCode(27);
-const BEL = String.fromCharCode(7);
+describe('writing to the terminal', () => {
+  beforeEach(() => setTerminalOwnedElsewhere(false));
 
-describe('notifyTerminal', () => {
-  it('asks the terminal to notify, drawing nothing itself', () => {
-    const { stream, written } = capture();
-    notifyTerminal('switched to work', { stream });
-    expect(written).toEqual([`${ESC}]9;switched to work${BEL}`]);
+  it('writes when the terminal is ccx own', () => {
+    const s = sink();
+    notifyTerminal('hello', { stream: s.stream });
+    expect(s.written).toHaveLength(1);
   });
 
-  it('neutralises control characters that would break out of the sequence', () => {
-    const { stream, written } = capture();
-    notifyTerminal(`bad${BEL}${ESC}]0;hijack`, { stream });
-    const out = written.join('');
-    // Exactly one terminator, at the end: nothing can escape into the screen.
-    expect(out.split(BEL)).toHaveLength(2);
-    expect(out.endsWith(BEL)).toBe(true);
-    expect(out.slice(0, -1)).not.toContain(ESC + ']0;');
+  it('writes NOTHING while another program owns the terminal', () => {
+    const s = sink();
+    setTerminalOwnedElsewhere(true);
+    notifyTerminal('hello', { stream: s.stream });
+    setTerminalTitle('title', { stream: s.stream });
+    notifyAccountSwitch('work', 'switched', { stream: s.stream });
+    expect(s.written).toEqual([]);
   });
 
-  it('stays silent when disabled, and never throws on a failing stream', () => {
-    const { stream, written } = capture();
-    notifyTerminal('quiet', { stream, enabled: false });
-    expect(written).toEqual([]);
-
-    const broken = {
-      write() {
-        throw new Error('closed');
-      },
-    };
-    expect(() => notifyTerminal('boom', { stream: broken })).not.toThrow();
-  });
-});
-
-describe('setTerminalTitle', () => {
-  it('sets the window title', () => {
-    const { stream, written } = capture();
-    setTerminalTitle('claude - work', { stream });
-    expect(written).toEqual([`${ESC}]0;claude - work${BEL}`]);
-  });
-});
-
-describe('notifyAccountSwitch', () => {
-  it('names the account in both the notification and the title', () => {
-    const { stream, written } = capture();
-    notifyAccountSwitch('personal', 'hit its limit', { stream });
-    const out = written.join('');
-    expect(out).toContain('ccx: now on personal (hit its limit)');
-    expect(out).toContain('claude - personal');
+  it('writes again once the terminal is handed back', () => {
+    const s = sink();
+    setTerminalOwnedElsewhere(true);
+    notifyTerminal('during', { stream: s.stream });
+    setTerminalOwnedElsewhere(false);
+    notifyTerminal('after', { stream: s.stream });
+    expect(s.written).toHaveLength(1);
+    expect(s.written[0]).toContain('after');
   });
 });

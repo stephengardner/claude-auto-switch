@@ -27,17 +27,34 @@ function midSessionRegion(): string {
 }
 
 describe('what ccx says while Claude owns the screen', () => {
-  it('routes messages through notice(), which does not draw on the screen', () => {
+  it('sends a mid-session message to the LOG and nowhere else', () => {
+    // Not even an escape sequence. It renders nothing, but it is still bytes
+    // pushed into a terminal that is mid-draw, which garbles the display and can
+    // leave the terminal in a mode Claude is not expecting.
     expect(source).toMatch(/const notice = \(message: string\): void => \{/);
-    expect(source).toMatch(/if \(claudeOwnsScreen\) notifyTerminal/);
+    const start = source.indexOf('const notice = (message: string): void => {');
+    const body = source.slice(start, source.indexOf('};', start));
+    expect(body).toContain('logEvent(message)');
+    expect(body).toContain('if (!claudeOwnsScreen)');
+    expect(body).not.toContain('notifyTerminal');
   });
 
-  it('marks the screen as Claude own for exactly as long as the session runs', () => {
+  it('goes silent on the terminal for exactly as long as Claude owns it', () => {
+    // The flag and the terminal silence are set together, so they cannot drift
+    // apart and leave ccx writing while it believes it is quiet.
+    expect(source).toMatch(/const takeScreen = \(owned: boolean\): void => \{/);
+    const start = source.indexOf('const takeScreen = (owned: boolean): void => {');
+    const body = source.slice(start, source.indexOf('};', start));
+    expect(body).toContain('claudeOwnsScreen = owned');
+    expect(body).toContain('setTerminalOwnedElsewhere(owned)');
+  });
+
+  it('takes the screen for exactly as long as the session runs', () => {
     const region = midSessionRegion();
-    expect(region).toContain('claudeOwnsScreen = true;');
-    // Cleared in a finally, so a session that throws does not leave ccx believing
-    // the screen is still taken and silently swallowing everything afterwards.
-    expect(region).toMatch(/finally \{\s*claudeOwnsScreen = false;/);
+    expect(region).toContain('takeScreen(true);');
+    // Released in a finally, so a session that throws does not leave ccx mute
+    // and believing the screen is still taken.
+    expect(region).toMatch(/finally \{\s*takeScreen\(false\);/);
   });
 
   it('writes to the screen for ONE thing only: a login problem before launch', () => {

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="569" height="471" viewBox="0 0 569 471" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
+  <rect width="569" height="471" rx="10" fill="#1b1e24"/>
+  <rect width="569" height="32" rx="10" fill="#22262e"/>
+  <rect y="22" width="569" height="10" fill="#22262e"/>
+  <circle cx="21" cy="16" r="5.5" fill="#ec6a5f"/>
+  <circle cx="40" cy="16" r="5.5" fill="#f4bf50"/>
+  <circle cx="59" cy="16" r="5.5" fill="#61c454"/>
+  <text x="284.5" y="20.5" fill="#8b93a1" font-size="12" text-anchor="middle">ccx usage</text>
+  <text x="22.0" y="52" fill="#56b6c2" font-weight="600" xml:space="preserve">work  ·  work@example.com  ·  max</text><text x="316.0" y="52" fill="#56b6c2" xml:space="preserve">ACTIVE</text>
+  <text x="55.6" y="73" fill="#56b6c2" xml:space="preserve">5-hour </text><text x="131.2" y="73" fill="#b6e3a1" xml:space="preserve">████████</text><text x="198.4" y="73" fill="#dcdfe4" opacity="0.6" xml:space="preserve">░░░░░░░░░░░░░░░░</text><text x="341.2" y="73" fill="#b6e3a1" xml:space="preserve"> 34%</text><text x="400.0" y="73" fill="#dcdfe4" opacity="0.6" xml:space="preserve">back in 1h 28m</text>
+  <text x="55.6" y="94" fill="#56b6c2" xml:space="preserve">weekly </text><text x="131.2" y="94" fill="#b6e3a1" xml:space="preserve">█████</text><text x="173.2" y="94" fill="#dcdfe4" opacity="0.6" xml:space="preserve">░░░░░░░░░░░░░░░░░░░</text><text x="341.2" y="94" fill="#b6e3a1" xml:space="preserve"> 22%</text><text x="400.0" y="94" fill="#dcdfe4" opacity="0.6" xml:space="preserve">back in 3d 14h</text>
+  <text x="55.6" y="115" fill="#56b6c2" xml:space="preserve">Fable  </text><text x="131.2" y="115" fill="#b6e3a1" xml:space="preserve">█</text><text x="139.6" y="115" fill="#dcdfe4" opacity="0.6" xml:space="preserve">░░░░░░░░░░░░░░░░░░░░░░░</text><text x="341.2" y="115" fill="#b6e3a1" xml:space="preserve">  5%</text><text x="400.0" y="115" fill="#dcdfe4" opacity="0.6" xml:space="preserve">back in 2d</text>
+  <text x="22.0" y="136" fill="#dcdfe4" opacity="0.6" xml:space="preserve">    -&gt; 5-hour is closest to its limit at 34%</text>
+  
+  <text x="22.0" y="178" fill="#dcdfe4" font-weight="600" xml:space="preserve">personal  ·  personal@example.com  ·  max</text>
+  <text x="55.6" y="199" fill="#56b6c2" xml:space="preserve">5-hour </text><text x="131.2" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve">░░░░░░░░░░░░░░░░░░░░░░░░</text><text x="341.2" y="199" fill="#b6e3a1" xml:space="preserve">  0%</text><text x="400.0" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve">back in 1h 28m</text>
+  <text x="55.6" y="220" fill="#56b6c2" xml:space="preserve">weekly </text><text x="131.2" y="220" fill="#f5d98b" xml:space="preserve">████████████████</text><text x="265.6" y="220" fill="#dcdfe4" opacity="0.6" xml:space="preserve">░░░░░░░░</text><text x="341.2" y="220" fill="#f5d98b" xml:space="preserve"> 68%</text><text x="400.0" y="220" fill="#dcdfe4" opacity="0.6" xml:space="preserve">back in 3d 14h</text>
+  <text x="55.6" y="241" fill="#56b6c2" xml:space="preserve">Fable  </text><text x="131.2" y="241" fill="#ff7b86" xml:space="preserve">████████████████████████</text><text x="341.2" y="241" fill="#ff7b86" xml:space="preserve">100%</text><text x="400.0" y="241" fill="#ff7b86" font-weight="600" xml:space="preserve">SPENT, back in 2d</text>
+  <text x="22.0" y="262" fill="#dcdfe4" opacity="0.6" xml:space="preserve">    -&gt; Fable is spent; other models still work on this account</text>
+  
+  <text x="22.0" y="304" fill="#dcdfe4" font-weight="600" xml:space="preserve">spare  ·  spare@example.com  ·  max</text>
+  <text x="55.6" y="325" fill="#56b6c2" xml:space="preserve">5-hour </text><text x="131.2" y="325" fill="#dcdfe4" opacity="0.6" xml:space="preserve">░░░░░░░░░░░░░░░░░░░░░░░░</text><text x="341.2" y="325" fill="#b6e3a1" xml:space="preserve">  0%</text><text x="400.0" y="325" fill="#dcdfe4" opacity="0.6" xml:space="preserve">back in 1h 28m</text>
+  <text x="55.6" y="346" fill="#56b6c2" xml:space="preserve">weekly </text><text x="131.2" y="346" fill="#b6e3a1" xml:space="preserve">█</text><text x="139.6" y="346" fill="#dcdfe4" opacity="0.6" xml:space="preserve">░░░░░░░░░░░░░░░░░░░░░░░</text><text x="341.2" y="346" fill="#b6e3a1" xml:space="preserve">  3%</text><text x="400.0" y="346" fill="#dcdfe4" opacity="0.6" xml:space="preserve">back in 3d 14h</text>
+  <text x="55.6" y="367" fill="#56b6c2" xml:space="preserve">Fable  </text><text x="131.2" y="367" fill="#dcdfe4" opacity="0.6" xml:space="preserve">░░░░░░░░░░░░░░░░░░░░░░░░</text><text x="341.2" y="367" fill="#b6e3a1" xml:space="preserve">  0%</text><text x="400.0" y="367" fill="#dcdfe4" opacity="0.6" xml:space="preserve">back in 2d</text>
+  <text x="22.0" y="388" fill="#dcdfe4" opacity="0.6" xml:space="preserve">    -&gt; weekly is closest to its limit at 3%</text>
+  
+  <text x="22.0" y="430" fill="#dcdfe4" opacity="0.6" xml:space="preserve">Most room right now: </text><text x="198.4" y="430" fill="#b6e3a1" font-weight="600" xml:space="preserve">spare</text><text x="240.4" y="430" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  (weekly at 3%, its tightest)</text>
+</svg>
