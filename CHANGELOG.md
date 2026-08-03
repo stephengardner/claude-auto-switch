@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.30.0]
+
+### Fixed
+
+- **A broken account is rotated past, not blocked on.** ccx would start a session
+  on an account whose stored login was finished, because the check for "has a
+  login" only looked for token material and an expired token still has some. The
+  session then began on a dead token, Claude said `Login expired`, and there was
+  nothing on screen to act on.
+
+  That turned into a loop. Signing in from inside the session put the new login
+  in the session folder, ccx correctly refused to copy someone else's account
+  into that profile, the profile kept its dead login, and the next session did
+  the same thing again.
+
+  An account whose login cannot be renewed and is rejected by the server is now
+  skipped, exactly like one that has hit its limit, and the next account is used
+  instead. It is deliberately NOT recorded as capped: nothing is exhausted, and a
+  cap would keep it out of rotation for hours over something a sign-in fixes.
+  When every login is finished, the message says to sign in and names the
+  command, rather than telling you to wait for a reset that will never come.
+
 ## [1.29.0]
 
 ### Fixed

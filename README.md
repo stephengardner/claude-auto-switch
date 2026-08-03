@@ -11,6 +11,8 @@ and carries your conversation with it. You never think about it again.
 It runs on your own machine against your own accounts. There is no server of
 ours, and no telemetry.
 
+![The ccx dashboard: every account, what it has left, and which one is in use](docs/img/dashboard.svg)
+
 ## Install and go
 
 ```
@@ -74,22 +76,20 @@ Already have a status line? Keep it: `ccx statusline --wrap <your command>` runs
 yours and adds ccx to the end. Add `--compact` to drop the account name if your
 line already shows it. `ccx statusline --install` prints the snippet.
 
-**On demand.** `ccx usage` shows every account:
+**On demand.** `ccx usage` spells out every window on every account, what is
+closest to stopping each one, and where there is room right now:
 
-```
-ACCOUNT       5h     weekly   per-model (weekly)
-work          14%     9%      Fable 16% (3d)
-              resets 3h7m / wk 3d
-personal      21%    44%      Fable 78% (5d)
-              resets 1h19m / wk 5d
-```
+![ccx usage: every window per account, with a bar, a percentage and when it comes back](docs/img/usage.svg)
 
-**Live.** `ccx dashboard` is a running view of every account, with keys to switch
-(`enter`), switch instantly (`f`), enable or disable (`e`), rotate (`r`).
+Look at `personal` there. It is at 0% for the hour and 68% for the week, and it
+still cannot run Fable, because that one model's window is spent. A single
+"usage" number would hide that in one direction or the other, so ccx never shows
+one: it names the window that will actually stop you, and it keeps offering that
+account for the models that still work.
 
-A useful thing this reveals: an account can be at 2% for the hour and still be
-unable to work, because one model's weekly window is spent. ccx always shows and
-acts on the limit that will actually stop you, not the most flattering number.
+**Live.** `ccx dashboard` is a running view of the same thing, with keys to act
+on it: `enter` to switch, `f` to switch instantly, `a` to add an account, `n` to
+rename one, `l` to sign one in again, `e` to enable or disable, `r` to rotate.
 
 ## What you get
 
@@ -103,7 +103,16 @@ acts on the limit that will actually stop you, not the most flattering number.
   were, whether you launch Claude through ccx or not.
 - **Careful with your logins.** Credentials are written whole or not at all, the
   previous one is always kept, and a signed-out or damaged credential is never
-  written over a good account.
+  written over a good account. Before a login is copied into an account, ccx
+  asks Anthropic who it belongs to, so signing in as someone else mid-session
+  cannot land in the wrong account.
+- **It checks before it starts, not after.** A login that has expired is renewed
+  before the session begins. One that is genuinely finished is named, with the
+  command that fixes it, instead of turning into Claude saying you are logged
+  out for no visible reason.
+- **It stays out of your way.** While Claude is running it owns the screen, so
+  ccx says nothing there: it uses the terminal's own notification, the window
+  title, and a log you can read later with `ccx history`.
 - **Honest about what it can see.** `ccx doctor` asks Anthropic who each profile
   is really signed in as, which is the only way to catch a profile holding the
   wrong account or two profiles sharing one login.
@@ -153,6 +162,9 @@ want them.
 | `ccx login <name>` / `--all` | Sign a stale account back in |
 | `ccx remove <name>` | Remove an account (`--purge` also deletes its folder) |
 | `ccx setup` | Shows your next step, wherever you are in setup |
+| `ccx history` | What ccx has done to your logins, and when |
+| `ccx cap <name>` | Mark an account limited by hand, or `--clear` one that is not |
+| `ccx daemon install` | Always-on rotation, including outside a terminal |
 | `ccx run -- <args>` | Run a one-off through ccx without installing the shim |
 
 ## Configuration

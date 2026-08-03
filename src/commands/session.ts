@@ -513,6 +513,14 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           context.ctx,
         );
       }
+      // A finished login means this account cannot work at all. Starting here
+      // would hand Claude a dead token, which shows up as "Login expired" with
+      // nothing to act on, so the account is reported as needing a sign-in and
+      // the swap loop moves to the next one. Rotating past a broken account is
+      // the whole point of the tool; blocking on it is not.
+      if (readiness.state === 'needs-login') {
+        return { kind: 'needs-login', exitCode: 1, reason: readiness.detail };
+      }
       // Printed plainly: this happens BEFORE the session starts, so nothing owns
       // the screen yet and it is the one moment a sign-in problem is worth
       // interrupting for.
