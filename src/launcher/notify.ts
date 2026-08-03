@@ -15,6 +15,26 @@ const ESC = String.fromCharCode(27);
 const BEL = String.fromCharCode(7);
 
 /**
+ * True while another program owns the terminal.
+ *
+ * Nothing here writes while that is set. An escape sequence RENDERS nothing,
+ * which is why these were thought safe, but it is still bytes pushed into a
+ * terminal that is mid-draw: land them inside a sequence the other program is
+ * writing and its parser is left half-way through one, which garbles the display
+ * and can leave the terminal in a mode that program is not expecting. Mouse
+ * reports then arrive as ordinary typed text.
+ *
+ * Held HERE rather than checked by each caller, because a rule enforced at four
+ * call sites is a rule that will be missed at the fifth.
+ */
+let terminalOwnedElsewhere = false;
+
+/** Mark the terminal as owned (or not) by a program ccx is running. */
+export function setTerminalOwnedElsewhere(owned: boolean): void {
+  terminalOwnedElsewhere = owned;
+}
+
+/**
  * Replace control characters, which would end the escape sequence early and
  * spill raw text onto the screen, and keep the message short.
  */
@@ -39,7 +59,7 @@ export interface NotifyOptions {
  * iTerm2 surface as a notification and other terminals ignore.
  */
 export function notifyTerminal(message: string, options: NotifyOptions = {}): void {
-  if (options.enabled === false) return;
+  if (options.enabled === false || terminalOwnedElsewhere) return;
   const stream = options.stream ?? process.stderr;
   try {
     stream.write(`${ESC}]9;${sanitize(message)}${BEL}`);
@@ -53,7 +73,7 @@ export function notifyTerminal(message: string, options: NotifyOptions = {}): vo
  * is a hint rather than a guarantee; harmless where it does not stick.
  */
 export function setTerminalTitle(message: string, options: NotifyOptions = {}): void {
-  if (options.enabled === false) return;
+  if (options.enabled === false || terminalOwnedElsewhere) return;
   const stream = options.stream ?? process.stderr;
   try {
     stream.write(`${ESC}]0;${sanitize(message)}${BEL}`);

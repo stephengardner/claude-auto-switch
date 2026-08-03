@@ -24,7 +24,11 @@ import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config
 import { runHotSwapSession } from '../launcher/hot-swap.js';
 import { runPtySession } from '../launcher/pty-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
-import { notifyAccountSwitch, notifyTerminal } from '../launcher/notify.js';
+import {
+  notifyAccountSwitch,
+  notifyTerminal,
+  setTerminalOwnedElsewhere,
+} from '../launcher/notify.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
 import { probeLimit } from '../usage/limit-probe.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
@@ -199,9 +203,18 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * read. Between sessions, when nothing owns the screen, plain stderr.
    */
   const notice = (message: string): void => {
+    // While Claude owns the terminal this goes to the LOG and nowhere else.
+    // Writing anything, even an escape sequence that renders nothing, pushes
+    // bytes into a terminal that is mid-draw and corrupts what is on screen.
+    // `ccx dashboard` and `ccx history` are where these are read.
     logEvent(message);
-    if (claudeOwnsScreen) notifyTerminal(`ccx: ${message}`);
-    else err(`[ccx] ${message}`);
+    if (!claudeOwnsScreen) err(`[ccx] ${message}`);
+  };
+
+  /** Claude has the terminal from here; ccx stays off it until told otherwise. */
+  const takeScreen = (owned: boolean): void => {
+    claudeOwnsScreen = owned;
+    setTerminalOwnedElsewhere(owned);
   };
 
   let current: Account | null = null;
@@ -607,7 +620,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       notifyAccountSwitch(account.name, isContinue ? 'continued here' : 'session start');
       // From here until it returns, the screen belongs to Claude, so anything
       // ccx has to say goes through `notice` rather than onto the screen.
-      claudeOwnsScreen = true;
+      takeScreen(true);
       try {
         const outcome = await runPtySession({
           ...base,
@@ -621,7 +634,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         }
         return outcome;
       } finally {
-        claudeOwnsScreen = false;
+        takeScreen(false);
       }
     },
     markCapped: (accountName, reason, resetAt) => {
