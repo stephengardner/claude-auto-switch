@@ -8,6 +8,12 @@ export interface SessionOutcome {
   exitCode: number;
   reason?: string;
   resetAt?: number;
+  /**
+   * How long the session ran. Used to refuse a cap for a session that ended too
+   * fast to have hit one: those are startup failures, and believing them once
+   * capped every account the operator had.
+   */
+  ranMs?: number;
   /** For kind 'switch': the account the operator asked to switch to, in place. */
   switchTo?: string;
 }

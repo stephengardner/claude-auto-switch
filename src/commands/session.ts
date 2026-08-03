@@ -276,7 +276,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       accountName: account.name,
     });
     if (!decision.save) {
-      notice(decision.reason);
+      // Log ONLY, never the screen, whoever owns it. This is ccx explaining an
+      // internal decision the operator cannot act on mid-session, it can fire on
+      // every credential change, and it was landing in Claude's interface. If it
+      // matters, `ccx doctor` reports the same mismatch properly.
+      logEvent(decision.reason);
       return;
     }
     try {

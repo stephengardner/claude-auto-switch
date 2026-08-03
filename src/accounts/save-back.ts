@@ -35,9 +35,20 @@ export type SaveBackDecision = { save: true } | { save: false; reason: string };
  * the address comparison could not be made, rather than only when the session
  * has no address.
  *
- * Unknown is treated as allowed: with nothing to compare, refusing every write
- * would throw away renewed tokens for every profile that has no recorded
- * address, which is its own way of causing sign-in prompts.
+ * Unknown REFUSES. This used to allow the write, on the reasoning that refusing
+ * would throw away renewed tokens. That reasoning was wrong, and the operator
+ * paid for it: running /login inside a session writes the new credential into the
+ * shared session folder, and the identity file Claude keeps beside it is not
+ * updated at the same instant. The copy back therefore compared a stale identity,
+ * found nothing to disagree with, and wrote the NEW account's login into the OLD
+ * account's profile. Two profiles ended up holding one account, their stored
+ * limits were then read from the wrong place, and the operator was capped out of
+ * accounts that had room.
+ *
+ * The trade is not symmetric. Refusing loses a refreshed token, which the next
+ * sign-in restores. Allowing overwrites a login with someone else's, which
+ * silently corrupts the account map and cannot be undone from local state. So
+ * anything short of a positive match is refused.
  */
 export function decideSaveBack(input: SaveBackInput): SaveBackDecision {
   const { sessionEmail, accountEmail, sessionIdentity, accountIdentity, accountName } = input;
@@ -54,11 +65,19 @@ export function decideSaveBack(input: SaveBackInput): SaveBackDecision {
     return { save: true };
   }
 
-  if (sessionIdentity && accountIdentity && sessionIdentity !== accountIdentity) {
-    return {
-      save: false,
-      reason: `session is now a different account than "${accountName}"; not overwriting its login`,
-    };
+  if (sessionIdentity && accountIdentity) {
+    return sessionIdentity === accountIdentity
+      ? { save: true }
+      : {
+          save: false,
+          reason: `session is now a different account than "${accountName}"; not overwriting its login`,
+        };
   }
-  return { save: true };
+
+  return {
+    save: false,
+    reason:
+      `cannot confirm this session is still "${accountName}", so its stored login is left ` +
+      'alone. Signing in as a different account mid-session is exactly when this matters',
+  };
 }

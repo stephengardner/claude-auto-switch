@@ -74,6 +74,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       env: cleanEnv({ CLAUDE_CONFIG_DIR: options.configDir, ...(options.env ?? {}) }),
     });
 
+    const startedAt = Date.now();
     let capped: { reason?: string; resetAt?: number } | null = null;
     let noConversation = false;
     let window = '';
@@ -240,14 +241,15 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
             /* best effort */
           }
         }
+        const ranMs = Date.now() - startedAt;
         resolve(
           switching
-            ? { kind: 'switch', exitCode, switchTo: switching }
+            ? { kind: 'switch', exitCode, switchTo: switching, ranMs }
             : capped
-              ? { kind: 'capped', exitCode, reason: capped.reason, resetAt: capped.resetAt }
+              ? { kind: 'capped', exitCode, reason: capped.reason, resetAt: capped.resetAt, ranMs }
               : noConversation
-                ? { kind: 'no-conversation', exitCode }
-                : { kind: 'ok', exitCode },
+                ? { kind: 'no-conversation', exitCode, ranMs }
+                : { kind: 'ok', exitCode, ranMs },
         );
       };
 

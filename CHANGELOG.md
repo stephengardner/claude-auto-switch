@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.29.0]
+
+### Fixed
+
+- **Signing in from inside a session can no longer overwrite the wrong account's
+  login.** This is the one that hurt. Running `/login` in a running session makes
+  Claude write the new credential into the shared session folder, and ccx copies
+  a changed credential back to the account it believes it is on. The check meant
+  to stop a wrong copy compared the identity file Claude keeps beside the
+  credential, which is not updated at the same instant, so it compared a stale
+  identity, found nothing to disagree with, and wrote the NEW account's login
+  into the OLD account's profile.
+
+  The result was two profiles holding one account, limits then read from the
+  wrong place, and being capped out of accounts that had room, which forces
+  another `/login` and goes round again.
+
+  The check now refuses unless it can positively confirm the session is still
+  that account. The two outcomes were never symmetric: refusing loses a refreshed
+  token, which the next sign-in restores, while allowing overwrites a login with
+  someone else's and corrupts the account map in a way local state cannot undo.
+
+- **The identity-mismatch message no longer reaches the screen.** It can fire on
+  every credential change, it explains an internal decision that cannot be acted
+  on mid-session, and it was appearing inside Claude's interface. It goes to the
+  log; `ccx doctor` reports the same mismatch properly.
+
 ## [1.28.2]
 
 ### Fixed

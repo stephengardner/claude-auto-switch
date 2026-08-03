@@ -73,10 +73,25 @@ describe('decideSaveBack', () => {
     expect(d.save).toBe(true);
   });
 
-  it('allows the write when there is nothing to compare', () => {
-    // Refusing on unknown would discard a renewed token for every profile with
-    // no recorded address, which causes the sign-in prompts this exists to stop.
-    expect(decideSaveBack({ ...base }).save).toBe(true);
-    expect(decideSaveBack({ ...base, sessionEmail: 'me@example.com' }).save).toBe(true);
+  it('REFUSES when it cannot confirm, because that is when /login bites', () => {
+    // This allowed the write once, and the operator paid for it: running /login
+    // inside a session writes the new credential before Claude updates the
+    // identity file beside it, so the check compared a stale identity, found
+    // nothing to disagree with, and wrote the NEW account's login into the OLD
+    // account's profile. Two profiles then held one account.
+    //
+    // Refusing loses a refreshed token, which the next sign-in restores.
+    // Allowing corrupts the account map and cannot be undone locally.
+    expect(decideSaveBack({ ...base }).save).toBe(false);
+    expect(decideSaveBack({ ...base, sessionEmail: 'me@example.com' }).save).toBe(false);
+    expect(decideSaveBack({ ...base, accountEmail: 'me@example.com' }).save).toBe(false);
+    expect(decideSaveBack({ ...base, sessionIdentity: 'uuid-a' }).save).toBe(false);
+  });
+
+  it('says why it refused, naming the account', () => {
+    const d = decideSaveBack({ ...base });
+    if (d.save) throw new Error('unreachable');
+    expect(d.reason).toContain('work');
+    expect(d.reason).toContain('cannot confirm');
   });
 });

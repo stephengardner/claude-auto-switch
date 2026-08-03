@@ -50,6 +50,18 @@ describe('what ccx says while Claude owns the screen', () => {
     expect(region).toContain('err(readinessNote)');
   });
 
+  it('never puts the identity-guard message on the screen, whoever owns it', () => {
+    // Reported twice. It can fire on every credential change, the operator
+    // cannot act on it mid-session, and it was landing in Claude's interface.
+    // Log only: `ccx doctor` reports the same mismatch properly.
+    const idx = source.indexOf('if (!decision.save) {');
+    expect(idx).toBeGreaterThan(0);
+    const branch = source.slice(idx, idx + 600);
+    expect(branch).toContain('logEvent(decision.reason)');
+    expect(branch).not.toContain('err(');
+    expect(branch).not.toContain('notice(decision.reason)');
+  });
+
   it('keeps the noisiest message off the screen specifically', () => {
     // This is the one that fires when a conversation merely mentions rate limits.
     const idx = source.indexOf('limit text on screen');
