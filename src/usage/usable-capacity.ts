@@ -1,4 +1,5 @@
 import type { UsageEntry } from './usage-store.js';
+import { windowIsOpen } from './window-open.js';
 
 /**
  * Reading a cached usage entry as CURRENT capacity rather than as history.
@@ -20,23 +21,12 @@ export interface UsableCapacity {
   accountWideOut: boolean;
 }
 
-/**
- * Whether a stored number still describes an open window.
- *
- * No reset time means no evidence the limit lifted, so the number stands. That
- * is the conservative direction: the cost of believing it is one rotation, and
- * the cost of ignoring it is starting a session straight into a limit.
- */
-function stillApplies(resetsAt: number | null | undefined, now: number): boolean {
-  return typeof resetsAt !== 'number' || resetsAt > now;
-}
-
 function windowIsOut(
   utilization: number | null | undefined,
   resetsAt: number | null | undefined,
   now: number,
 ): boolean {
-  return typeof utilization === 'number' && utilization >= 1 && stillApplies(resetsAt, now);
+  return typeof utilization === 'number' && utilization >= 1 && windowIsOpen(resetsAt, now);
 }
 
 /** What an account can still be asked to do, according to `entry`, right now. */
@@ -46,7 +36,7 @@ export function usableCapacity(entry: UsageEntry | undefined, now: number): Usab
     // Dropping an expired entry makes that model "unmeasured", which the chooser
     // already treats as room worth trying. That is the right answer here: the
     // window reset, so the only honest statement is that we do not know.
-    if (stillApplies(model.resetsAt, now)) models[model.name] = model.utilization;
+    if (windowIsOpen(model.resetsAt, now)) models[model.name] = model.utilization;
   }
   return {
     models,

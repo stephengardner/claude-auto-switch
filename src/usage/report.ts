@@ -1,3 +1,4 @@
+import { windowIsOpen } from './window-open.js';
 import { codes, paint, shadeForUsed } from '../ui/style.js';
 
 /**
@@ -77,8 +78,10 @@ export function humanWait(resetsAt: number | null, now: number): string {
  * The window closest to its limit: the one that will actually stop you. An
  * average across windows hides exactly this, which is the number that matters.
  */
-export function bindingWindow(windows: UsageWindow[]): UsageWindow | null {
-  const known = windows.filter((w) => typeof w.used === 'number');
+export function bindingWindow(windows: UsageWindow[], now: number): UsageWindow | null {
+  // A window past its reset is not a constraint any more, so it cannot be the
+  // one that stops you, however high its recorded number is.
+  const known = windows.filter((w) => typeof w.used === 'number' && windowIsOpen(w.resetsAt, now));
   if (known.length === 0) return null;
   return known.reduce((worst, w) => ((w.used ?? 0) > (worst.used ?? 0) ? w : worst));
 }
@@ -88,8 +91,8 @@ export function bindingWindow(windows: UsageWindow[]): UsageWindow | null {
  * ones. This is the "can I work here at all" question: a spent model window
  * stops that model, not the account.
  */
-export function accountWideBinding(windows: UsageWindow[]): UsageWindow | null {
-  return bindingWindow(windows.filter((w) => !w.modelOnly));
+export function accountWideBinding(windows: UsageWindow[], now: number): UsageWindow | null {
+  return bindingWindow(windows.filter((w) => !w.modelOnly), now);
 }
 
 /**
@@ -97,13 +100,13 @@ export function accountWideBinding(windows: UsageWindow[]): UsageWindow | null {
  * Judging on every window would hide an account that is perfectly usable and
  * merely out of one model, which is the common case.
  */
-export function roomiest(accounts: UsageAccount[]): UsageAccount[] {
+export function roomiest(accounts: UsageAccount[], now: number): UsageAccount[] {
   return accounts
-    .filter((a) => a.windows && accountWideBinding(a.windows))
-    .filter((a) => (accountWideBinding(a.windows as UsageWindow[])?.used ?? 1) < 1)
+    .filter((a) => a.windows && accountWideBinding(a.windows, now))
+    .filter((a) => (accountWideBinding(a.windows as UsageWindow[], now)?.used ?? 1) < 1)
     .sort((x, y) => {
-      const bx = accountWideBinding(x.windows as UsageWindow[])?.used ?? 1;
-      const by = accountWideBinding(y.windows as UsageWindow[])?.used ?? 1;
+      const bx = accountWideBinding(x.windows as UsageWindow[], now)?.used ?? 1;
+      const by = accountWideBinding(y.windows as UsageWindow[], now)?.used ?? 1;
       return bx - by;
     });
 }
@@ -165,7 +168,7 @@ export function renderUsageReport(
       );
     }
 
-    const binding = bindingWindow(account.windows);
+    const binding = bindingWindow(account.windows, now);
     if (binding) {
       const spentNow = (binding.used ?? 0) >= 1;
       const note = spentNow
@@ -178,8 +181,8 @@ export function renderUsageReport(
     lines.push('');
   }
 
-  const best = roomiest(accounts);
-  const anythingRead = accounts.some((a) => a.windows && bindingWindow(a.windows));
+  const best = roomiest(accounts, now);
+  const anythingRead = accounts.some((a) => a.windows && bindingWindow(a.windows, now));
   if (!anythingRead) {
     lines.push(
       paint('No usage has been read yet, so there is nothing to compare.', codes.dim, color),
@@ -190,7 +193,7 @@ export function renderUsageReport(
     );
   } else {
     const top = best[0] as UsageAccount;
-    const binding = accountWideBinding(top.windows as UsageWindow[]);
+    const binding = accountWideBinding(top.windows as UsageWindow[], now);
     lines.push(
       paint('Most room right now: ', codes.dim, color) +
         paint(top.name, `${codes.bold}${codes.brightGreen}`, color) +

@@ -79,16 +79,36 @@ describe('which window binds', () => {
   ];
 
   it('is the one closest to its limit, models included', () => {
-    expect(bindingWindow(windows)?.label).toBe('Fable');
+    expect(bindingWindow(windows, NOW)?.label).toBe('Fable');
   });
 
   it('ignores model windows when asking whether the ACCOUNT can work', () => {
     // A spent model stops that model, not the account.
-    expect(accountWideBinding(windows)?.label).toBe('weekly');
+    expect(accountWideBinding(windows, NOW)?.label).toBe('weekly');
+  });
+
+  it('SKIPS a window whose reset has already passed', () => {
+    // It records a limit that has lifted, so it cannot be the thing that stops
+    // you, and naming it would send you off a usable account.
+    const expired = [
+      { label: '5-hour', used: 0.1, resetsAt: null },
+      { label: 'Fable', used: 1, resetsAt: NOW - 1_000, modelOnly: true },
+    ];
+    expect(bindingWindow(expired, NOW)?.label).toBe('5-hour');
+  });
+
+  it('SUGGESTS an account again once its account-wide window has reset', () => {
+    const lifted = account({
+      name: 'lifted',
+      windows: [{ label: 'weekly', used: 1, resetsAt: NOW - 1 }],
+    });
+    // Spent on paper, but the window reopened, so it is somewhere to go.
+    expect(roomiest([lifted], NOW)).toEqual([]);
+    expect(bindingWindow(lifted.windows as never, NOW)).toBeNull();
   });
 
   it('is nothing when no window has been read', () => {
-    expect(bindingWindow([{ label: '5-hour', used: null, resetsAt: null }])).toBeNull();
+    expect(bindingWindow([{ label: '5-hour', used: null, resetsAt: null }], NOW)).toBeNull();
   });
 });
 
@@ -96,7 +116,7 @@ describe('roomiest', () => {
   it('ranks by the tightest account-wide window', () => {
     const busy = account({ name: 'busy', windows: [{ label: 'weekly', used: 0.8, resetsAt: null }] });
     const free = account({ name: 'free', windows: [{ label: 'weekly', used: 0.1, resetsAt: null }] });
-    expect(roomiest([busy, free]).map((a) => a.name)).toEqual(['free', 'busy']);
+    expect(roomiest([busy, free], NOW).map((a) => a.name)).toEqual(['free', 'busy']);
   });
 
   it('STILL SUGGESTS an account that is only out of one model', () => {
@@ -109,16 +129,16 @@ describe('roomiest', () => {
         { label: 'Fable', used: 1, resetsAt: null, modelOnly: true },
       ],
     });
-    expect(roomiest([modelOut]).map((a) => a.name)).toEqual(['model-out']);
+    expect(roomiest([modelOut], NOW).map((a) => a.name)).toEqual(['model-out']);
   });
 
   it('does not suggest an account whose account-wide window is spent', () => {
     const spent = account({ name: 'spent', windows: [{ label: 'weekly', used: 1, resetsAt: null }] });
-    expect(roomiest([spent])).toEqual([]);
+    expect(roomiest([spent], NOW)).toEqual([]);
   });
 
   it('does not suggest an account nothing has been read for', () => {
-    expect(roomiest([account({ name: 'unknown', windows: null })])).toEqual([]);
+    expect(roomiest([account({ name: 'unknown', windows: null })], NOW)).toEqual([]);
   });
 });
 

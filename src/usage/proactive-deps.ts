@@ -2,10 +2,28 @@ import { listAccounts } from '../accounts/registry.js';
 import { loadLedger, cappedNames } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
 import { hasUsableLogin } from '../accounts/credential-vault.js';
-import { refreshUsage } from './usage-store.js';
+import { refreshUsage, type UsageEntry } from './usage-store.js';
 import type { ProactiveDeps } from './proactive.js';
 import type { UsageLike } from './headroom.js';
 import type { CliContext } from '../context.js';
+
+/**
+ * Turn a stored usage entry into what the policy reads.
+ *
+ * Exported and pure because the reset times are the whole point: without them a
+ * window that has already lifted still reads as a limit. That wiring is easy to
+ * drop by accident and impossible to notice from the policy's own tests, which
+ * build their input by hand.
+ */
+export function toUsageLike(entry: UsageEntry): UsageLike {
+  return {
+    fiveHour: entry.fiveHour,
+    sevenDay: entry.sevenDay,
+    fiveHourReset: entry.fiveHourReset,
+    sevenDayReset: entry.sevenDayReset,
+    ...(entry.models ? { models: entry.models } : {}),
+  };
+}
 
 /**
  * Wire the proactive-rotation policy to real account state. Shared by a running
@@ -40,11 +58,7 @@ export function buildProactiveDeps(
       const snapshot = await refreshUsage(listAccounts(context.ctx), context.ctx);
       const map = new Map<string, UsageLike>();
       for (const [name, entry] of Object.entries(snapshot.accounts)) {
-        map.set(name, {
-          fiveHour: entry.fiveHour,
-          sevenDay: entry.sevenDay,
-          ...(entry.models ? { models: entry.models } : {}),
-        });
+        map.set(name, toUsageLike(entry));
       }
       return map;
     },
