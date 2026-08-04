@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.32.1]
+
+### Fixed
+
+- **A usage limit that has already reset is no longer treated as a live limit.**
+  Usage figures are cached, and a number only climbs while its window is open, so
+  a figure past its own reset time is not merely old, it is wrong: it reports
+  "spent" about a limit that has already lifted.
+
+  This was visible in several places at once. `ccx usage` painted such a window
+  red as SPENT and named it as the thing stopping you; it left recovered accounts
+  out of "most room right now"; the dashboard kept a column pinned at the number
+  a model hit before its window rolled over, and could even name the wrong model
+  as the tightest; and the status line inside Claude reported a model as spent
+  for an account that was free.
+
+  Rows for a window that has reset now read empty and say "reset since it was
+  last read", so the change in the number is explained rather than silent.
+
+  Rotation is affected too, and that is the part that cost real work: proactive
+  rotation and the background daemon both decided where to move from these
+  figures. An account whose usage cannot be read keeps its last known numbers
+  while its fetch time is refreshed, so a dead or unreadable account could look
+  permanently capped. A check based on how old the entry is would never have
+  caught that; the reset time is the only honest signal, and every stored window
+  carries one.
+
+- **"No usage has been read yet" no longer appears for accounts that have been
+  read.** Whether anything was measured and whether a limit is currently in
+  force are different questions, and answering the first with the second sent you
+  looking for a fault that did not exist. A run that read only per-model figures
+  now says so, rather than claiming every account has hit an account-wide limit.
+
 ## [1.32.0]
 
 ### Added
