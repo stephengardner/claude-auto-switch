@@ -160,6 +160,10 @@ function allComments(owner, name, pr) {
     author: c.user?.login ?? '',
     body: c.body ?? '',
     at: Date.parse(c.created_at ?? '') || 0,
+    // CodeRabbit edits its summary comment in place, so when it last CHANGED is
+    // a different question from when it appeared, and the pause notice lives in
+    // that comment.
+    updatedAt: Date.parse(c.updated_at ?? c.created_at ?? '') || 0,
   }));
 }
 

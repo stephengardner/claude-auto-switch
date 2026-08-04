@@ -114,11 +114,32 @@ export function remedyFor(kind) {
  * be able to stall the gate, or to steer it.
  */
 export function reviewsArePaused(comments, isReviewer) {
-  return (comments ?? []).some(
+  const list = comments ?? [];
+  // The notice lives in a comment CodeRabbit edits in place, so it stays in the
+  // thread for good. Its age has to come from the last edit, not from when the
+  // comment first appeared.
+  const notices = list.filter(
     (c) =>
       isReviewer(c.author ?? '') &&
       /review paused by coderabbit|automatically paused this review/i.test(c.body ?? ''),
   );
+  if (notices.length === 0) return false;
+  const pausedAt = Math.max(0, ...notices.map((c) => c.updatedAt ?? c.at ?? 0));
+  // A notice with no usable time cannot be shown to have been lifted, and
+  // guessing "lifted" would merge unreviewed work. Stay paused.
+  if (pausedAt === 0) return true;
+
+  // Asking it to resume or to review lifts the pause. Without this the gate
+  // would block forever once a branch had ever been paused, because the notice
+  // never leaves the thread, and a gate that cannot be satisfied gets switched
+  // off rather than obeyed.
+  const liftedAt = Math.max(
+    0,
+    ...list
+      .filter((c) => !isReviewer(c.author ?? '') && /@coderabbitai\s+(resume|review)\b/i.test(c.body ?? ''))
+      .map((c) => c.updatedAt ?? c.at ?? 0),
+  );
+  return pausedAt > liftedAt;
 }
 
 /**

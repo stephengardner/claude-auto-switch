@@ -210,6 +210,40 @@ describe('hasSubstantiveReviewFor', () => {
 });
 
 describe('reviewsArePaused', () => {
+  const paused = (at: number) => ({ author: REVIEWER, body: PAUSED_COMMENT, updatedAt: at });
+  const asked = (at: number, what = 'review') => ({
+    author: 'stephengardner',
+    body: `@coderabbitai ${what}`,
+    updatedAt: at,
+  });
+
+  it('is lifted by a later request to resume or review', () => {
+    // The notice never leaves the thread, because it lives in a comment
+    // CodeRabbit edits in place. Without this the gate would block forever on
+    // any branch that had ever been paused, and a gate that cannot be satisfied
+    // gets switched off rather than obeyed.
+    expect(reviewsArePaused([paused(100), asked(200)], isReviewer)).toBe(false);
+    expect(reviewsArePaused([paused(100), asked(200, 'resume')], isReviewer)).toBe(false);
+  });
+
+  it('is NOT lifted by a request that came before the pause', () => {
+    expect(reviewsArePaused([asked(100), paused(200)], isReviewer)).toBe(true);
+  });
+
+  it('uses the last EDIT of the notice, not when the comment first appeared', () => {
+    // The summary comment is old and rewritten constantly; created_at would say
+    // the pause is ancient and always lifted.
+    const editedLater = { author: REVIEWER, body: PAUSED_COMMENT, at: 100, updatedAt: 300 };
+    expect(reviewsArePaused([editedLater, asked(200)], isReviewer)).toBe(true);
+  });
+
+  it('ignores a resume asked for by the reviewer itself', () => {
+    // Its own auto-reply quotes the command back, which must not clear a pause
+    // it has just declared.
+    const selfAsk = { author: REVIEWER, body: '@coderabbitai resume', updatedAt: 200 };
+    expect(reviewsArePaused([paused(100), selfAsk], isReviewer)).toBe(true);
+  });
+
   it('sees the pause CodeRabbit actually posted', () => {
     expect(reviewsArePaused([{ author: REVIEWER, body: PAUSED_COMMENT }], isReviewer)).toBe(true);
   });
