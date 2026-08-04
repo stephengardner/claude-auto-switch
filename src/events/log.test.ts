@@ -47,6 +47,22 @@ describe('a message that repeats', () => {
     );
   });
 
+  it('ignores a count that is not a whole number above one', () => {
+    // Only a corrupted or hand-edited line produces these, and carrying one
+    // through would render "(x2.5)" or serialise Infinity back out as null.
+    const h = home();
+    const lines = [
+      { at: 1000, msg: 'fraction', count: 2.5 },
+      { at: 2000, msg: 'infinite', count: Number.POSITIVE_INFINITY },
+      { at: 3000, msg: 'negative', count: -5 },
+      { at: 4000, msg: 'texty', count: '9' },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join('\n');
+    writeFileSync(eventsFilePath(h), `${lines}\n`, 'utf8');
+    for (const record of readEvents(h, 10)) expect(record.count).toBeUndefined();
+  });
+
   it('reads records written before counts existed', () => {
     // Old lines have no count field; they must still read as a single event.
     const h = home();

@@ -38,7 +38,12 @@ export function readEvents(configHome: string, limit = 5): EventRecord[] {
         out.push({
           at: r.at,
           msg: r.msg,
-          ...(typeof r.count === 'number' && r.count > 1 ? { count: r.count } : {}),
+          // A count has to be a whole number above one. Anything else came from
+          // a corrupted or hand-edited line, and carrying it through would show
+          // "(x2.5)" to the operator, or serialise Infinity back out as null.
+          ...(Number.isSafeInteger(r.count) && (r.count as number) > 1
+            ? { count: r.count as number }
+            : {}),
         });
       }
     } catch {

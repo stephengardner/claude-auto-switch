@@ -20,8 +20,9 @@ semantic versioning.
   history survives alongside it. Only consecutive repeats collapse, so the order
   of events is never rewritten.
 
-  Appending is cheaper too. The whole file is rewritten on every event, so a
-  loop was rewriting a 200 line file twice a second.
+  Each event still rewrites the file, so a repeating message still costs one
+  small write apiece. What changed is the size: the file being rewritten holds
+  one collapsed record rather than two hundred copies of the same line.
 
 ## [1.32.2]
 
