@@ -373,7 +373,15 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // may have replaced it while we asked. Saving now would attribute this
           // owner to a login nobody checked, which is the bug in miniature.
           if (credStamp() !== nowStamp) return;
-          if (saveBack(account, owner)) mirroredStamp = nowStamp;
+          saveBack(account, owner);
+          // Marked as HANDLED whether it was written or refused. A refusal is a
+          // settled answer about THIS credential: nothing about it will change
+          // until the file does, so asking again can only produce the same
+          // refusal. Marking only on success meant an unchanged credential the
+          // guard refused was re-checked on every tick, which is an API call
+          // twice a second for as long as the session lasts. It froze the
+          // machine and filled the log with 200 identical lines in 104 seconds.
+          mirroredStamp = nowStamp;
         })
         .catch(() => {
           // Could not reach the API. Left unmarked on purpose so a later tick can

@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.31.1]
+
+### Fixed
+
+- **A refused credential is no longer re-checked forever.** Before copying a
+  login into an account, ccx asks Anthropic who it belongs to. That answer was
+  recorded as handled only when the copy went ahead, so a login the guard
+  REFUSED was asked about again on the very next tick, and the next, twice a
+  second for as long as the session ran. Every one of those is a network call.
+  It locked the machine up and wrote 200 identical lines to the log in 104
+  seconds.
+
+  A refusal is a settled answer about that particular login: nothing about it can
+  change until the file does, so asking again can only produce the same refusal.
+  It is now recorded as handled either way. A network failure is still left
+  retryable, because in that case nothing was decided.
+
 ## [1.31.0]
 
 ### Fixed
