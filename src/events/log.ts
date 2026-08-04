@@ -11,8 +11,14 @@ const FILE = 'events.jsonl';
 const MAX = 200;
 
 export interface EventRecord {
+  /** When this event last happened. */
   at: number;
   msg: string;
+  /**
+   * How many times in a row this same message has arrived. Absent means once,
+   * so records written before this existed still read correctly.
+   */
+  count?: number;
 }
 
 export function eventsFilePath(configHome: string): string {
@@ -28,7 +34,18 @@ export function readEvents(configHome: string, limit = 5): EventRecord[] {
     if (!line.trim()) continue;
     try {
       const r = JSON.parse(line) as Partial<EventRecord>;
-      if (typeof r.at === 'number' && typeof r.msg === 'string') out.push({ at: r.at, msg: r.msg });
+      if (typeof r.at === 'number' && typeof r.msg === 'string') {
+        out.push({
+          at: r.at,
+          msg: r.msg,
+          // A count has to be a whole number above one. Anything else came from
+          // a corrupted or hand-edited line, and carrying it through would show
+          // "(x2.5)" to the operator, or serialise Infinity back out as null.
+          ...(Number.isSafeInteger(r.count) && (r.count as number) > 1
+            ? { count: r.count as number }
+            : {}),
+        });
+      }
     } catch {
       /* skip a malformed line */
     }
@@ -36,10 +53,25 @@ export function readEvents(configHome: string, limit = 5): EventRecord[] {
   return out.slice(-limit);
 }
 
-/** Append one event, keeping only the most recent MAX. */
+/**
+ * Append one event, keeping only the most recent MAX.
+ *
+ * A message identical to the one before it COLLAPSES into that record, bumping
+ * a count and the time rather than adding a line. This log is bounded, so
+ * without it a caller stuck in a loop empties the window of everything else:
+ * that has happened twice, once filling all 200 entries with a single line, and
+ * both times it blinded `ccx dashboard` and `ccx history` exactly when they were
+ * the tools being reached for. Collapsing keeps the information that something
+ * is repeating, and the count says how much.
+ */
 export function appendEvent(configHome: string, msg: string, now: number): void {
   const records = readEvents(configHome, MAX);
-  records.push({ at: now, msg });
+  const previous = records[records.length - 1];
+  if (previous && previous.msg === msg) {
+    records[records.length - 1] = { at: now, msg, count: (previous.count ?? 1) + 1 };
+  } else {
+    records.push({ at: now, msg });
+  }
   const body = records
     .slice(-MAX)
     .map((r) => JSON.stringify(r))
@@ -47,10 +79,15 @@ export function appendEvent(configHome: string, msg: string, now: number): void 
   writeSecretFile(eventsFilePath(configHome), `${body}\n`);
 }
 
-/** Format an event as `HH:MM  message` in local time. */
+/**
+ * Format an event as `HH:MM  message` in local time, with a repeat count when
+ * the same thing has happened more than once in a row. The time shown is the
+ * LAST occurrence, which is the one you want when asking "is this still going".
+ */
 export function formatEvent(r: EventRecord): string {
   const d = new Date(r.at);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}  ${r.msg}`;
+  const repeat = r.count && r.count > 1 ? ` (x${r.count})` : '';
+  return `${hh}:${mm}  ${r.msg}${repeat}`;
 }

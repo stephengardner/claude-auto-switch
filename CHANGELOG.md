@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.32.3]
+
+### Fixed
+
+- **One repeating message can no longer empty the event log.** `ccx dashboard`
+  and `ccx history` read a bounded log of the last 200 events, so anything stuck
+  repeating used to push every other event out of it. That happened twice, once
+  filling all 200 entries with a single line, and both times it blinded exactly
+  the tools you reach for when something is wrong.
+
+  A message identical to the one before it now collapses into that entry with a
+  count and the time of the most recent occurrence, shown as `(x200)`. Nothing
+  is hidden: "this is happening, and a lot" is still there, and the rest of the
+  history survives alongside it. Only consecutive repeats collapse, so the order
+  of events is never rewritten.
+
+  Each event still rewrites the file, so a repeating message still costs one
+  small write apiece. What changed is the size: the file being rewritten holds
+  one collapsed record rather than two hundred copies of the same line.
+
 ## [1.32.2]
 
 ### Fixed
