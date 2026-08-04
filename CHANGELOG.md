@@ -28,7 +28,17 @@ semantic versioning.
 
   The chosen model is applied to the session that starts, not merely announced,
   and it stays applied for the rest of the run: a model that ran out does not
-  come back within a session, so re-checking it would only churn.
+  come back within a session, so re-checking it would only churn. That includes
+  the fresh retry after a resume finds no conversation, which used to fall back
+  to the model that had just run out.
+
+  Model preference applies only when a model is actually in play (`--model` or a
+  pin in `settings.json`). With nothing pinned, Claude picks its own default and
+  ccx cannot read which one, so those sessions rotate on account capacity alone
+  rather than having a model imposed on them.
+
+- Fixed: "starting fresh" after a failed resume kept the `--continue` you typed,
+  so it repeated the same resume instead of starting fresh.
 
 ## [1.31.1]
 

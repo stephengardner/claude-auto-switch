@@ -12,6 +12,26 @@
  */
 
 /**
+ * Both spellings a command line can use for this flag. `--model=fable` and
+ * `--model fable` mean the same thing to the parser, so anything that removes
+ * one has to remove the other, or the spent model survives and wins.
+ *
+ * `--fallback-model` is deliberately NOT matched: it is a different setting,
+ * it belongs to the operator, and it is not the flag being rotated.
+ */
+const MODEL_FLAG = '--model';
+const MODEL_EQUALS = '--model=';
+
+/**
+ * A model name never starts with `-`, so a token that does is the NEXT option,
+ * not this flag's value. Swallowing it would quietly drop something like
+ * `--continue` and change what the session does.
+ */
+function isValue(token: string | undefined): token is string {
+  return typeof token === 'string' && token.length > 0 && !token.startsWith('-');
+}
+
+/**
  * Return `args` with `--model` set to `model`, replacing any value already there.
  *
  * Replacing rather than appending matters: an explicit `--model fable` is
@@ -21,19 +41,30 @@
 export function withModel(args: string[], model: string): string[] {
   const out: string[] = [];
   for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === '--model') {
-      i += 1; // drop the value that followed it too
+    const arg = args[i] as string;
+    if (arg === MODEL_FLAG) {
+      if (isValue(args[i + 1])) i += 1; // drop its value too, but only if it HAS one
       continue;
     }
-    out.push(args[i] as string);
+    if (arg.startsWith(MODEL_EQUALS)) continue;
+    out.push(arg);
   }
-  out.push('--model', model);
+  out.push(MODEL_FLAG, model);
   return out;
 }
 
-/** The value of `--model` in `args`, or null when it is not there. */
+/** The value of `--model` in `args`, in either spelling, or null when absent. */
 export function modelInArgs(args: string[]): string | null {
-  const at = args.indexOf('--model');
-  const value = at === -1 ? undefined : args[at + 1];
-  return typeof value === 'string' && value.length > 0 ? value : null;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i] as string;
+    if (arg === MODEL_FLAG) {
+      const next = args[i + 1];
+      return isValue(next) ? next : null;
+    }
+    if (arg.startsWith(MODEL_EQUALS)) {
+      const value = arg.slice(MODEL_EQUALS.length);
+      return value.length > 0 ? value : null;
+    }
+  }
+  return null;
 }

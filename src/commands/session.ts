@@ -33,7 +33,8 @@ import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.
 import { probeLimit } from '../usage/limit-probe.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
-import { withModel } from '../usage/model-args.js';
+import { withModel, modelInArgs } from '../usage/model-args.js';
+import { wantsContinue, withoutContinue } from '../launcher/continue-args.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import {
   installCredential,
@@ -100,15 +101,13 @@ function seedSessionSettings(sessionDir: string, accounts: Account[]): void {
  * more explicit of the two.
  */
 function sessionModel(sessionDir: string, args: string[]): string | null {
-  const flag = args.indexOf('--model');
-  if (flag !== -1 && args[flag + 1]) return args[flag + 1] as string;
+  // Same parser the rewriting uses, so a spelling one accepts cannot be a
+  // spelling the other misses.
+  const fromArgs = modelInArgs(args);
+  if (fromArgs) return fromArgs;
   const settings = readJsonSafe(path.join(sessionDir, 'settings.json'));
   const model = settings?.model;
   return typeof model === 'string' && model.length > 0 ? model : null;
-}
-
-function wantsContinue(args: string[]): boolean {
-  return args.includes('--continue') || args.includes('-c');
 }
 
 function readJsonSafe(file: string): Record<string, unknown> | null {
@@ -539,7 +538,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // changed, and then in the configured order.
       const rotation = context.config.rotation;
       const model = chosenModel ?? sessionModel(sessionDir, args);
-      if (rotation.preferSameModel && ordered.length > 0) {
+      // Only when a model is actually in play. With nothing pinned, Claude picks
+      // its own default and ccx cannot read it, so choosing an account for some
+      // preference model's headroom would pick on one model and run another.
+      // Imposing the preference instead would silently change everyone's model,
+      // which nobody asked for. Plain account rotation is the honest answer.
+      if (rotation.preferSameModel && model && ordered.length > 0) {
         const snapshot = readUsageSnapshot(context.ctx);
         const choice = chooseAccountForModel(
           model,
@@ -566,7 +570,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
             // model and not applying it is worse than not choosing: the session
             // keeps running the one that just ran out while the operator has
             // been told it moved.
-            if (choice.changedModel && model) {
+            if (choice.changedModel) {
               chosenModel = choice.model;
               notice(modelChangeMessage(choice, model));
             }
@@ -740,7 +744,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         // start a fresh session on it instead of dead-ending.
         if (outcome.kind === 'no-conversation') {
           notice('no conversation to resume on this account; starting fresh');
-          return await runPtySession({ ...base, args });
+          // modelArgs, not args: this account was chosen for its room on the
+          // CHOSEN model, so a fresh start on the old one would walk straight
+          // back into the limit we just rotated away from. And drop the resume
+          // flag the operator may have typed, or "fresh" would just repeat the
+          // resume that found nothing.
+          return await runPtySession({ ...base, args: withoutContinue(modelArgs) });
         }
         return outcome;
       } finally {

@@ -198,6 +198,12 @@ only when no account has room on the model in use: the default moves you to Opus
 once Fable is gone everywhere, and it says so when it happens. Set
 `preferSameModel` to false to rotate on account limits alone.
 
+This applies only when a model is actually in play, meaning you passed
+`--model` or pinned one in your session `settings.json`. With nothing pinned,
+Claude picks its own default, ccx has no way to read which one that is, and
+imposing a model you never asked for would be the wrong answer. Those sessions
+rotate on account capacity alone.
+
 
 - `priorityOrder`: which accounts to prefer, in order (for example, burn the
   personal one first and save work for last).
