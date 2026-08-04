@@ -87,31 +87,28 @@ describe('what ccx says while Claude owns the screen', () => {
     expect(line).toContain('notice');
   });
 
-  it('settles a checked credential whether it was saved or REFUSED', () => {
-    // The freeze. The ownership answer is an API call, and marking the
-    // credential handled only on a successful save meant a refused one was
-    // re-checked on every tick: twice a second, for the whole session. It filled
-    // the log with 200 identical lines in 104 seconds and locked the machine up.
-    //
-    // A refusal is a settled answer about THIS credential. Nothing about it can
-    // change until the file does, so asking again can only produce the same
-    // refusal.
-    const start = source.indexOf('void fetchTokenOwner(sessionDir)');
-    expect(start).toBeGreaterThan(0);
-    const block = source.slice(start, start + 1600);
-    // Unconditional, not gated on saveBack's return value.
-    expect(block).toContain('saveBack(account, owner);');
-    expect(block).not.toContain('if (saveBack(account, owner)) mirroredStamp');
+  it('uses the tested mirror rules rather than its own bookkeeping', () => {
+    // The behaviour itself is pinned in mirror-state.test.ts, where it can be
+    // exercised properly: check twice, refuse, retry, out-of-order answers. What
+    // matters here is that the session actually routes through those rules,
+    // because a second copy of this bookkeeping is how it went wrong twice.
+    expect(source).toContain("from '../session/mirror-state.js'");
+    expect(source).toContain('shouldCheck(mirror,');
+    expect(source).toContain('beginCheck(mirror,');
+    expect(source).toContain('finishCheck(mirror,');
+    expect(source).toContain('abandonCheck(mirror,');
+    // No stamp variables of its own: one place decides, not two.
+    expect(source).not.toContain('mirroredStamp');
+    expect(source).not.toContain('checkingStamp');
   });
 
-  it('leaves a credential retryable when the API could not be reached', () => {
-    // Different from a refusal: nothing was decided, so a network blip must not
-    // mean a refreshed token is never written back for the rest of the session.
+  it('records the API answer through finishCheck, not by hand', () => {
+    // finishCheck is what distinguishes a settled answer (written or refused)
+    // from a retryable failure. Assigning around it is how the freeze happened.
     const start = source.indexOf('void fetchTokenOwner(sessionDir)');
-    const block = source.slice(start, start + 2000);
-    const cat = block.indexOf('.catch(');
-    expect(cat).toBeGreaterThan(0);
-    const handler = block.slice(cat, block.indexOf('.finally(', cat));
-    expect(handler).not.toContain('mirroredStamp = nowStamp');
+    expect(start).toBeGreaterThan(0);
+    const block = source.slice(start, start + 1200);
+    expect(block).toContain('finishCheck(mirror, nowStamp, saveBack(account, owner))');
+    expect(block).toContain('abandonCheck(mirror, nowStamp)');
   });
 });

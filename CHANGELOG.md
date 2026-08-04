@@ -18,8 +18,9 @@ semantic versioning.
 
   A refusal is a settled answer about that particular login: nothing about it can
   change until the file does, so asking again can only produce the same refusal.
-  It is now recorded as handled either way. A network failure is still left
-  retryable, because in that case nothing was decided.
+  It is now recorded as handled either way. A failed disk write and an
+  unreachable API are still retried, because neither of those settled anything,
+  and treating them as settled would leave a refreshed token unsaved.
 
 ## [1.31.0]
 

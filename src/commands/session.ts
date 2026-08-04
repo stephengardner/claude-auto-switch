@@ -41,6 +41,14 @@ import {
   hasUsableLogin,
 } from '../accounts/credential-vault.js';
 import { decideSaveBack } from '../accounts/save-back.js';
+import {
+  freshMirrorState,
+  shouldCheck,
+  beginCheck,
+  finishCheck,
+  abandonCheck,
+  type SaveOutcome,
+} from '../session/mirror-state.js';
 import { fetchTokenOwner } from '../accounts/identity-check.js';
 import { takeLease, touchLease, releaseLease } from '../session/lease.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
@@ -254,8 +262,17 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     return verdict === 'limited';
   };
 
-  const saveBack = (account: Account, confirmedOwner?: string | null): boolean => {
-    if (!existsSync(sessionCreds)) return false;
+  /**
+   * What happened to a save-back, from the caller's point of view.
+   *
+   * 'settled' means there is nothing more to do for THIS credential: it was
+   * written, or it was refused, and a refusal cannot change until the file does.
+   * 'retry' means the attempt failed for a reason that might not repeat, so the
+   * next poll should try again rather than skip it.
+   */
+  const saveBack = (account: Account, confirmedOwner?: string | null): SaveOutcome => {
+    // Nothing there to copy. A later tick may find one.
+    if (!existsSync(sessionCreds)) return 'retry';
     // Never propagate a corrupt credential: a killed or partial OAuth refresh
     // can leave the session credential empty or malformed, and overwriting a
     // good login with that is the worst outcome (installCredential re-checks).
@@ -270,7 +287,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         },
         context.ctx,
       );
-      return false;
+      // The session is signed out. Nothing to write, and nothing that a later
+      // poll would write either, until the file changes.
+      return 'settled';
     }
     // Identity guard. The session's config tracks whoever it is logged in as
     // right now, so if that is not this profile's account, writing the
@@ -296,15 +315,18 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // every credential change, and it was landing in Claude's interface. If it
       // matters, `ccx doctor` reports the same mismatch properly.
       logEvent(decision.reason);
-      return false;
+      // A refusal is a settled answer about this credential: asking again can
+      // only produce the same refusal, and re-asking is what froze the machine.
+      return 'settled';
     }
     try {
       // Keeps the account's previous credential as a rollback cushion.
       installCredential(account.dir, sessionCreds);
-      return true;
+      return 'settled';
     } catch {
-      /* best effort: preserve a refreshed token back to the account */
-      return false;
+      // A local write failure, not a decision. It might not repeat, and giving
+      // up here would leave a refreshed token unsaved until the process exits.
+      return 'retry';
     }
   };
 
@@ -320,10 +342,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       return '';
     }
   };
-  /** The fingerprint of the credential we last copied to the profile. */
-  let mirroredStamp = '';
-  /** The fingerprint of a credential whose owner is being confirmed right now. */
-  let checkingStamp = '';
+  /**
+   * Which credential has already been dealt with, and which is being looked up.
+   * The rules live in mirror-state.ts, where they are tested on their own: this
+   * bookkeeping has been got wrong in both directions and each mistake was
+   * expensive.
+   */
+  let mirror = freshMirrorState();
 
   /**
    * Copy a login Claude just refreshed back to the account's own folder.
@@ -338,8 +363,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * never written over a good one.
    */
   const mirrorSessionLoginToProfile = (account: Account): void => {
-    const stamp = credStamp();
-    if (!stamp || stamp === mirroredStamp) return;
+    // Cheap pre-check before taking the lock; the same rule is applied again
+    // inside it, because the file can change in between.
+    if (!shouldCheck(mirror, credStamp())) return;
     // Under the same lock that serializes credential refreshes, so this copy
     // cannot run against a refresh that is part-way through writing.
     //
@@ -353,11 +379,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // check above and getting the lock, and the stamp has to describe what was
       // actually copied or a later change would be treated as already mirrored.
       const nowStamp = credStamp();
-      if (!nowStamp || nowStamp === mirroredStamp || nowStamp === checkingStamp) return;
+      if (!shouldCheck(mirror, nowStamp)) return;
       // Claimed as IN FLIGHT rather than done, so the same credential is not
-      // checked twice, and a check that fails to reach the API leaves it able to
-      // be tried again instead of being skipped for the rest of the session.
-      checkingStamp = nowStamp;
+      // looked up twice while one answer is still coming back.
+      mirror = beginCheck(mirror, nowStamp);
 
       // Ask who this login actually belongs to before copying it anywhere. The
       // local identity file lags a mid-session /login, so it still names the OLD
@@ -373,23 +398,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // may have replaced it while we asked. Saving now would attribute this
           // owner to a login nobody checked, which is the bug in miniature.
           if (credStamp() !== nowStamp) return;
-          saveBack(account, owner);
-          // Marked as HANDLED whether it was written or refused. A refusal is a
-          // settled answer about THIS credential: nothing about it will change
-          // until the file does, so asking again can only produce the same
-          // refusal. Marking only on success meant an unchanged credential the
-          // guard refused was re-checked on every tick, which is an API call
-          // twice a second for as long as the session lasts. It froze the
-          // machine and filled the log with 200 identical lines in 104 seconds.
-          mirroredStamp = nowStamp;
+          mirror = finishCheck(mirror, nowStamp, saveBack(account, owner));
         })
         .catch(() => {
-          // Could not reach the API. Left unmarked on purpose so a later tick can
-          // try again; a network blip should not mean a refreshed token is never
-          // written back for the rest of the session.
-        })
-        .finally(() => {
-          if (checkingStamp === nowStamp) checkingStamp = '';
+          // Could not reach the API, so nothing was decided and the credential
+          // stays eligible for another try. A network blip must not mean a
+          // refreshed token is never written back for the rest of the session.
+          mirror = abandonCheck(mirror, nowStamp);
         });
     });
   };
@@ -436,7 +451,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
             applyAccountIdentity(sessionDir, account.dir, context.ctx);
             // What we just put there is by definition already in the profile, so it
             // is not a change to mirror back.
-            mirroredStamp = credStamp();
+            mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
           } catch (e) {
             rollbackCredential(sessionDir);
             throw e;
