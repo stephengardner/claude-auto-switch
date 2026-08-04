@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.32.4]
+
+### Fixed
+
+- **An event log that is ALREADY full of repeats is readable again.** 1.32.3
+  collapsed a repeating message as it was written, which stops the log being
+  emptied in future but does nothing for a log that has already been emptied.
+  That is the log worth rescuing: two hundred copies of one line, with every
+  real event pushed out, and nothing improving until all two hundred age out.
+
+  Repeats are now folded when the log is READ as well, so an already-stormed log
+  shows one entry with its count immediately, without rewriting a file you may
+  still be watching. The limit counts things that happened rather than copies of
+  one of them, so asking for the last five events no longer spends all five on a
+  single repeat.
+
 ## [1.32.3]
 
 ### Fixed

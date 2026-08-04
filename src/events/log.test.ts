@@ -47,6 +47,37 @@ describe('a message that repeats', () => {
     );
   });
 
+  it('RESCUES a log that was already filled with separate repeats', () => {
+    // The case the write-side collapse cannot help with, and the one that
+    // matters most in practice: a log written before collapsing existed is
+    // already 200 separate lines, and every real event has been pushed out.
+    // Folding on read makes it readable again immediately.
+    const h = home();
+    const lines = [
+      JSON.stringify({ at: 1, msg: 'session on second' }),
+      ...Array.from({ length: 199 }, (_, i) => JSON.stringify({ at: 100 + i, msg: 'the same complaint' })),
+    ].join('\n');
+    writeFileSync(eventsFilePath(h), `${lines}\n`, 'utf8');
+
+    const records = readEvents(h, 200);
+    expect(records).toHaveLength(2);
+    expect(records[0]?.msg).toBe('session on second');
+    expect(records[1]?.count).toBe(199);
+    // The time shown is the most recent occurrence.
+    expect(records[1]?.at).toBe(298);
+  });
+
+  it('counts the LIMIT in things that happened, not copies of one of them', () => {
+    // Asking for the last 5 events should not spend all five on one repeat.
+    const h = home();
+    const lines = [
+      ...Array.from({ length: 50 }, (_, i) => JSON.stringify({ at: i, msg: 'noise' })),
+      JSON.stringify({ at: 900, msg: 'a real event' }),
+    ].join('\n');
+    writeFileSync(eventsFilePath(h), `${lines}\n`, 'utf8');
+    expect(readEvents(h, 5).map((r) => r.msg)).toEqual(['noise', 'a real event']);
+  });
+
   it('ignores a count that is not a whole number above one', () => {
     // Only a corrupted or hand-edited line produces these, and carrying one
     // through would render "(x2.5)" or serialise Infinity back out as null.

@@ -25,7 +25,39 @@ export function eventsFilePath(configHome: string): string {
   return path.join(configHome, FILE);
 }
 
-/** Read the last `limit` events, oldest first, skipping any malformed lines. */
+/**
+ * Fold consecutive identical messages into one record, summing their counts and
+ * keeping the most recent time.
+ *
+ * Applied on READ as well as on write, because a log written before collapsing
+ * existed is already full of separate lines, and that is exactly the log worth
+ * rescuing: a window holding two hundred copies of one message shows nothing
+ * else until every one of them ages out. Folding on read makes it readable
+ * immediately, without rewriting a file the operator may still be watching.
+ */
+function foldRepeats(records: EventRecord[]): EventRecord[] {
+  const out: EventRecord[] = [];
+  for (const record of records) {
+    const previous = out[out.length - 1];
+    if (previous && previous.msg === record.msg) {
+      out[out.length - 1] = {
+        at: record.at,
+        msg: record.msg,
+        count: (previous.count ?? 1) + (record.count ?? 1),
+      };
+    } else {
+      out.push(record);
+    }
+  }
+  return out;
+}
+
+/**
+ * Read the last `limit` events, oldest first, skipping any malformed lines.
+ *
+ * The limit counts records AFTER folding repeats, so asking for five events
+ * gives five things that happened rather than five copies of one of them.
+ */
 export function readEvents(configHome: string, limit = 5): EventRecord[] {
   const file = eventsFilePath(configHome);
   if (!existsSync(file)) return [];
@@ -50,7 +82,7 @@ export function readEvents(configHome: string, limit = 5): EventRecord[] {
       /* skip a malformed line */
     }
   }
-  return out.slice(-limit);
+  return foldRepeats(out).slice(-limit);
 }
 
 /**
