@@ -8,7 +8,7 @@ import { logCredentialEvent } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { liveLeases, type LeaseOptions } from '../session/lease.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
-import { refreshCredentialIfExpired, renewalIsDue, expiredLongerThan } from './oauth-refresh.js';
+import { refreshCredentialIfExpired, renewalIsDue, expiredLongerThan, type RefreshOutcome } from './oauth-refresh.js';
 import { editorPointerAccount } from '../editor/junction.js';
 
 /**
@@ -91,7 +91,7 @@ export interface RefreshUsageOptions {
    * using goes stale within hours, and a stale token cannot report usage, which
    * would hide exactly the accounts rotation wants to move to.
    */
-  renew?: (accountDir: string) => Promise<{ status: string; detail?: string }>;
+  renew?: (accountDir: string) => Promise<RefreshOutcome>;
 }
 
 /**
@@ -187,7 +187,10 @@ export async function refreshUsage(
       const renewal = mayRenew ? await renew(account.dir) : { status: 'not-needed' as const };
       if (renewal.status === 'refreshed') {
         logCredentialEvent({ account: account.name, kind: 'renewed' }, c);
-      } else if (renewal.status === 'needs-login') {
+      } else if (renewal.status === 'needs-login' && !renewal.alreadyKnown) {
+        // Only the FIRST refusal for a given login is recorded. The answer
+        // cannot change until the credential does, so repeating it every few
+        // minutes buries the log that is read to work out why a login broke.
         logCredentialEvent(
           { account: account.name, kind: 'needs-login', detail: renewal.detail ?? 'renewal refused' },
           c,
