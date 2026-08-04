@@ -6,6 +6,7 @@ import { writeSecretFile } from '../util/secret-file.js';
 import { normalizeExitCode } from './exit-code.js';
 import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
+import { wantsContinue } from './continue-args.js';
 
 export interface PtySessionOptions {
   claude: ClaudeInvoker;
@@ -90,7 +91,9 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     // launch, and the real one prints in the FIRST flush of output. Watching any
     // longer would let a REPLAYED conversation that merely contains that phrase
     // kill the session (the same trap as replayed cap text).
-    const watchNoConversation = options.args.includes('--continue') || options.args.includes('-c');
+    // Shared with the retry that strips these flags, so the check that decides
+    // "this was a resume" and the code that undoes a resume cannot disagree.
+    const watchNoConversation = wantsContinue(options.args);
     let totalOutput = 0;
 
     let weKilled = false;

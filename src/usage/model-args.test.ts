@@ -90,6 +90,13 @@ describe('modelInArgs', () => {
     expect(modelInArgs(['--model', '--continue'])).toBeNull();
   });
 
+  it('rejects an option-like value in the equals form too', () => {
+    // Both spellings must reject the same things, or `--model=--continue` gets
+    // mistaken for a real pin while `--model --continue` does not.
+    expect(modelInArgs(['--model=--continue'])).toBeNull();
+    expect(modelInArgs(['--model=-c'])).toBeNull();
+  });
+
   it('is not fooled by --fallback-model', () => {
     expect(modelInArgs(['--fallback-model', 'sonnet'])).toBeNull();
     expect(modelInArgs(['--fallback-model=sonnet'])).toBeNull();

@@ -62,8 +62,10 @@ export function modelInArgs(args: string[]): string | null {
       return isValue(next) ? next : null;
     }
     if (arg.startsWith(MODEL_EQUALS)) {
+      // Same test as the spaced form, so one spelling cannot accept a value the
+      // other rejects and get mistaken for a real pin.
       const value = arg.slice(MODEL_EQUALS.length);
-      return value.length > 0 ? value : null;
+      return isValue(value) ? value : null;
     }
   }
   return null;
