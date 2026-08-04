@@ -51,6 +51,7 @@ export interface RenderOptions {
 }
 
 import { codes, paint } from '../ui/style.js';
+import { effectiveUtilization } from '../usage/window-open.js';
 
 /**
  * A wait, at the coarsest useful precision: minutes within the hour, hours
@@ -107,15 +108,34 @@ function pct(used: number | null | undefined): string {
  */
 function worstModel(
   a: DashboardAccount,
+  now: number,
 ): { name: string; utilization: number; resetsAt?: number | null } | null {
   const models = (a.usage?.models ?? []).filter((m) => typeof m.utilization === 'number');
   if (models.length === 0) return null;
-  return models.reduce((worst, m) => (m.utilization > worst.utilization ? m : worst));
+  // Ranked on usage as it stands now, so a window that has already reset does
+  // not keep the column pinned at the number it hit before it rolled over.
+  const at = (m: { utilization: number; resetsAt?: number | null }): number =>
+    effectiveUtilization(m.utilization, m.resetsAt, now) ?? 0;
+  return models.reduce((worst, m) => (at(m) > at(worst) ? m : worst));
 }
 
-function modelText(a: DashboardAccount): string {
-  const m = worstModel(a);
-  return m ? `${m.name} ${pct(m.utilization)}` : '-';
+/** The worst model's usage as it stands now, for colouring the MODEL column. */
+function modelUsedNow(a: DashboardAccount, now: number): number | null {
+  const m = worstModel(a, now);
+  return m ? effectiveUtilization(m.utilization, m.resetsAt, now) : null;
+}
+
+/** The account-wide numbers as they stand now, so a reset window reads empty. */
+function fiveHourNow(a: DashboardAccount, now: number): number | null {
+  return effectiveUtilization(a.usage?.fiveHour, a.usage?.fiveHourReset, now);
+}
+function weekNow(a: DashboardAccount, now: number): number | null {
+  return effectiveUtilization(a.usage?.sevenDay, a.usage?.sevenDayReset, now);
+}
+
+function modelText(a: DashboardAccount, now: number): string {
+  const m = worstModel(a, now);
+  return m ? `${m.name} ${pct(effectiveUtilization(m.utilization, m.resetsAt, now))}` : '-';
 }
 
 /**
@@ -127,11 +147,13 @@ function detailLine(a: DashboardAccount, now: number): string {
   const u = a.usage;
   if (!u) return `${a.name}: no usage read yet`;
   const parts = [
-    `5h ${pct(u.fiveHour)}${resetSuffix(u.fiveHourReset, now)}`,
-    `week ${pct(u.sevenDay)}${resetSuffix(u.sevenDayReset, now)}`,
+    `5h ${pct(effectiveUtilization(u.fiveHour, u.fiveHourReset, now))}${resetSuffix(u.fiveHourReset, now)}`,
+    `week ${pct(effectiveUtilization(u.sevenDay, u.sevenDayReset, now))}${resetSuffix(u.sevenDayReset, now)}`,
   ];
   for (const m of u.models ?? []) {
-    parts.push(`${m.name} ${pct(m.utilization)}${resetSuffix(m.resetsAt, now)}`);
+    parts.push(
+      `${m.name} ${pct(effectiveUtilization(m.utilization, m.resetsAt, now))}${resetSuffix(m.resetsAt, now)}`,
+    );
   }
   return `${a.name}: ${parts.join('   ')}`;
 }
@@ -155,9 +177,9 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // column showed only whichever window was worst, so an account could read
   // "Fable 100%" with no way to see that everything else was fine, or read "6%"
   // while a model window was spent.
-  const fiveW = Math.max('5H'.length, ...accounts.map((a) => pct(a.usage?.fiveHour).length));
-  const weekW = Math.max('WEEK'.length, ...accounts.map((a) => pct(a.usage?.sevenDay).length));
-  const modelW = Math.max('MODEL'.length, ...accounts.map((a) => modelText(a).length));
+  const fiveW = Math.max('5H'.length, ...accounts.map((a) => pct(fiveHourNow(a, now)).length));
+  const weekW = Math.max('WEEK'.length, ...accounts.map((a) => pct(weekNow(a, now)).length));
+  const modelW = Math.max('MODEL'.length, ...accounts.map((a) => modelText(a, now).length));
   const statusW = Math.max('STATUS'.length, ...accounts.map((a) => statusText(a, now).length + 2));
 
   // Two-char gutter: selection cursor then active marker, both plain-text
@@ -187,11 +209,11 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     const pri = String(a.priority).padEnd(priW);
     // Each window coloured on its own, so a spent model window is visible even
     // when the hour and the week are healthy.
-    const five = paint(pct(a.usage?.fiveHour).padEnd(fiveW), shadeFor(a.usage?.fiveHour ?? null), color);
-    const week = paint(pct(a.usage?.sevenDay).padEnd(weekW), shadeFor(a.usage?.sevenDay ?? null), color);
+    const five = paint(pct(fiveHourNow(a, now)).padEnd(fiveW), shadeFor(fiveHourNow(a, now)), color);
+    const week = paint(pct(weekNow(a, now)).padEnd(weekW), shadeFor(weekNow(a, now)), color);
     const model = paint(
-      modelText(a).padEnd(modelW),
-      shadeFor(worstModel(a)?.utilization ?? null),
+      modelText(a, now).padEnd(modelW),
+      shadeFor(modelUsedNow(a, now)),
       color,
     );
     const dot = paint('●', statusColor(a, now), color);

@@ -1,4 +1,4 @@
-import { windowIsOpen } from './window-open.js';
+import { windowIsOpen, effectiveUtilization } from './window-open.js';
 import { codes, paint, shadeForUsed } from '../ui/style.js';
 
 /**
@@ -89,8 +89,7 @@ export function humanWait(resetsAt: number | null, now: number): string {
  * as an unknown.
  */
 export function effectiveUsed(w: UsageWindow, now: number): number | null {
-  if (typeof w.used !== 'number') return null;
-  return windowIsOpen(w.resetsAt, now) ? w.used : 0;
+  return effectiveUtilization(w.used, w.resetsAt, now);
 }
 
 /**

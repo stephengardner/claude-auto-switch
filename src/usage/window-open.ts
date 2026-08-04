@@ -25,3 +25,24 @@
 export function windowIsOpen(resetsAt: number | null | undefined, now: number): boolean {
   return typeof resetsAt !== 'number' || resetsAt > now;
 }
+
+/**
+ * A recorded utilization as it stands NOW.
+ *
+ * Three states, and conflating any two of them produces a wrong answer:
+ * nothing measured is null (and null is not zero), a measured window that has
+ * since reset constrains nothing, and a measured window still open keeps its
+ * number. The middle case is positive information: the window began again at
+ * empty, so it counts as room rather than as an unknown.
+ *
+ * Takes the two values rather than a window object because the same rule has to
+ * serve several shapes: report windows, dashboard rows and policy snapshots.
+ */
+export function effectiveUtilization(
+  used: number | null | undefined,
+  resetsAt: number | null | undefined,
+  now: number,
+): number | null {
+  if (typeof used !== 'number') return null;
+  return windowIsOpen(resetsAt, now) ? used : 0;
+}
