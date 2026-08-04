@@ -232,9 +232,24 @@ export function renderUsageReport(
   // limit is currently in force. An account whose windows have all reset has
   // been read, and saying otherwise sends the operator looking for a fault.
   const anythingRead = accounts.some((a) => hasReading(a.windows));
+  // Ranking is decided on account-wide windows alone, so a run that read only
+  // per-model numbers has nothing to rank. Without this, such a run falls
+  // through to the "everything is spent" line and reports a limit that was
+  // never read, sending the operator to look up reset times that do not exist.
+  const accountWideRead = accounts.some((a) =>
+    hasReading((a.windows ?? []).filter((w) => !w.modelOnly)),
+  );
   if (!anythingRead) {
     lines.push(
       paint('No usage has been read yet, so there is nothing to compare.', codes.dim, color),
+    );
+  } else if (!accountWideRead) {
+    lines.push(
+      paint(
+        'Only per-model usage has been read, so there is nothing to compare account by account.',
+        codes.dim,
+        color,
+      ),
     );
   } else if (best.length === 0) {
     lines.push(

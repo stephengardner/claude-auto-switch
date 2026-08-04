@@ -231,6 +231,28 @@ describe('renderUsageReport', () => {
     expect(out).toContain('0%');
   });
 
+  it('does not claim an account-wide limit when only a MODEL window was read', () => {
+    // Ranking uses account-wide windows only, so reading nothing but per-model
+    // numbers leaves nothing to rank. Falling through to the exhausted-limit
+    // line would report a limit nobody measured.
+    const out = renderUsageReport(
+      [
+        account({
+          name: 'model-only',
+          windows: [
+            { label: '5-hour', used: null, resetsAt: null },
+            { label: 'Fable', used: 0.4, resetsAt: null, modelOnly: true },
+          ],
+        }),
+      ],
+      NOW,
+      plain,
+    );
+    expect(out).not.toContain('Every account has hit an account-wide limit');
+    expect(out).not.toContain('No usage has been read yet');
+    expect(out).toContain('Only per-model usage has been read');
+  });
+
   it('quotes the SAME number in the summary as in the row it came from', () => {
     // Caught by rendering the real snapshot: the row read 0% for a window that
     // had reset while the closing line still quoted its old 7%, so the report
