@@ -86,4 +86,29 @@ describe('what ccx says while Claude owns the screen', () => {
     const line = source.slice(source.lastIndexOf('\n', source.lastIndexOf('(', idx)), idx);
     expect(line).toContain('notice');
   });
+
+  it('uses the tested mirror rules rather than its own bookkeeping', () => {
+    // The behaviour itself is pinned in mirror-state.test.ts, where it can be
+    // exercised properly: check twice, refuse, retry, out-of-order answers. What
+    // matters here is that the session actually routes through those rules,
+    // because a second copy of this bookkeeping is how it went wrong twice.
+    expect(source).toContain("from '../session/mirror-state.js'");
+    expect(source).toContain('shouldCheck(mirror,');
+    expect(source).toContain('beginCheck(mirror,');
+    expect(source).toContain('finishCheck(mirror,');
+    expect(source).toContain('abandonCheck(mirror,');
+    // No stamp variables of its own: one place decides, not two.
+    expect(source).not.toContain('mirroredStamp');
+    expect(source).not.toContain('checkingStamp');
+  });
+
+  it('records the API answer through finishCheck, not by hand', () => {
+    // finishCheck is what distinguishes a settled answer (written or refused)
+    // from a retryable failure. Assigning around it is how the freeze happened.
+    const start = source.indexOf('void fetchTokenOwner(sessionDir)');
+    expect(start).toBeGreaterThan(0);
+    const block = source.slice(start, start + 1200);
+    expect(block).toContain('finishCheck(mirror, nowStamp, saveBack(account, owner))');
+    expect(block).toContain('abandonCheck(mirror, nowStamp)');
+  });
 });
