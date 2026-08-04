@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { listAccounts } from '../accounts/registry.js';
@@ -39,6 +39,7 @@ import {
   identityKey,
   sessionIdentityEmail,
   hasUsableLogin,
+  credentialFingerprint,
 } from '../accounts/credential-vault.js';
 import { decideSaveBack } from '../accounts/save-back.js';
 import {
@@ -331,17 +332,15 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   };
 
   /**
-   * A cheap fingerprint of the session's credential file, so a change can be
-   * spotted without reading or parsing it on every tick.
+   * Identifies the login stored in the session folder, by its CONTENT.
+   *
+   * Was modification time and size, which is not identity: a replacement of the
+   * same size written within the filesystem's timestamp resolution looks
+   * identical, and the mirror would then skip the ownership check and treat a
+   * different login as one it had already settled. A hash of the token cannot
+   * collide that way, and never exposes the token itself.
    */
-  const credStamp = (): string => {
-    try {
-      const st = statSync(sessionCreds);
-      return `${st.mtimeMs}:${st.size}`;
-    } catch {
-      return '';
-    }
-  };
+  const credStamp = (): string => credentialFingerprint(sessionDir) ?? '';
   /**
    * Which credential has already been dealt with, and which is being looked up.
    * The rules live in mirror-state.ts, where they are tested on their own: this
@@ -394,11 +393,25 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // called this also relays the screen.
       void fetchTokenOwner(sessionDir)
         .then((owner) => {
-          // The answer belongs to the credential that was READ, and another one
-          // may have replaced it while we asked. Saving now would attribute this
-          // owner to a login nobody checked, which is the bug in miniature.
-          if (credStamp() !== nowStamp) return;
-          mirror = finishCheck(mirror, nowStamp, saveBack(account, owner));
+          // The answer belongs to the credential that was READ, and the file can
+          // change while the API is being asked. So the lock is taken AGAIN here
+          // and the check is repeated inside it: checking outside the lock leaves
+          // a window between "still the same" and the copy, and a login that
+          // arrived in that window would be written under someone else's
+          // confirmed identity.
+          //
+          // Try-only, as everywhere on this poll: a busy lock means someone else
+          // is writing, and the next tick picks it up because the credential is
+          // left unsettled.
+          const ran = withCredentialLockIfFree(sessionDir, () => {
+            if (credStamp() !== nowStamp) {
+              // Superseded. Not settled: whatever replaced it still needs a look.
+              mirror = abandonCheck(mirror, nowStamp);
+              return;
+            }
+            mirror = finishCheck(mirror, nowStamp, saveBack(account, owner));
+          });
+          if (!ran) mirror = abandonCheck(mirror, nowStamp);
         })
         .catch(() => {
           // Could not reach the API, so nothing was decided and the credential
