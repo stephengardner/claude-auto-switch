@@ -25,7 +25,47 @@ export function eventsFilePath(configHome: string): string {
   return path.join(configHome, FILE);
 }
 
-/** Read the last `limit` events, oldest first, skipping any malformed lines. */
+/**
+ * Fold consecutive identical messages into one record, summing their counts and
+ * keeping the most recent time.
+ *
+ * Applied on READ as well as on write, because a log written before collapsing
+ * existed is already full of separate lines, and that is exactly the log worth
+ * rescuing: a window holding two hundred copies of one message shows nothing
+ * else until every one of them ages out. Folding on read makes it readable
+ * immediately, without rewriting a file the operator may still be watching.
+ */
+function foldRepeats(records: EventRecord[]): EventRecord[] {
+  const out: EventRecord[] = [];
+  for (const record of records) {
+    const previous = out[out.length - 1];
+    if (previous && previous.msg === record.msg) {
+      // Clamped, because the sum of two counts read from a file can leave the
+      // safe-integer range, and a count that is not a safe integer is dropped on
+      // the next read, turning "a great many" into "once". No real log reaches
+      // this (the file holds 200 records, so it would take quadrillions of
+      // appends), but the input is a file and anything can write one. Clamping
+      // rather than splitting the record because past that size the difference
+      // between two counts carries no meaning worth preserving.
+      const total = (previous.count ?? 1) + (record.count ?? 1);
+      out[out.length - 1] = {
+        at: record.at,
+        msg: record.msg,
+        count: Number.isSafeInteger(total) ? total : Number.MAX_SAFE_INTEGER,
+      };
+    } else {
+      out.push(record);
+    }
+  }
+  return out;
+}
+
+/**
+ * Read the last `limit` events, oldest first, skipping any malformed lines.
+ *
+ * The limit counts records AFTER folding repeats, so asking for five events
+ * gives five things that happened rather than five copies of one of them.
+ */
 export function readEvents(configHome: string, limit = 5): EventRecord[] {
   const file = eventsFilePath(configHome);
   if (!existsSync(file)) return [];
@@ -50,7 +90,7 @@ export function readEvents(configHome: string, limit = 5): EventRecord[] {
       /* skip a malformed line */
     }
   }
-  return out.slice(-limit);
+  return foldRepeats(out).slice(-limit);
 }
 
 /**
@@ -68,7 +108,15 @@ export function appendEvent(configHome: string, msg: string, now: number): void 
   const records = readEvents(configHome, MAX);
   const previous = records[records.length - 1];
   if (previous && previous.msg === msg) {
-    records[records.length - 1] = { at: now, msg, count: (previous.count ?? 1) + 1 };
+    // Clamped for the same reason as the fold on read: a count that leaves the
+    // safe-integer range is dropped when read back, turning a long run into a
+    // single event.
+    const total = (previous.count ?? 1) + 1;
+    records[records.length - 1] = {
+      at: now,
+      msg,
+      count: Number.isSafeInteger(total) ? total : Number.MAX_SAFE_INTEGER,
+    };
   } else {
     records.push({ at: now, msg });
   }
