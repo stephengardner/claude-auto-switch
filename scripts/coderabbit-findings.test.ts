@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error -- plain JavaScript helper, shared with the CI script
-import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused, hasSubstantiveReviewFor } from './coderabbit-findings.mjs';
+import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused, hasSubstantiveReviewFor, isReviewerLogin } from './coderabbit-findings.mjs';
 
 /**
  * These decide whether a pull request may merge, so both directions matter:
@@ -8,7 +8,9 @@ import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, 
  * work for no reason. Both have already happened here.
  */
 
-const isReviewer = (login: string) => login.toLowerCase().startsWith('coderabbitai');
+// The real identity check, not a copy of it: a duplicate here would keep passing
+// after the real one changed, which is how a gate's tests stop testing the gate.
+const isReviewer = isReviewerLogin;
 const REVIEWER = 'coderabbitai[bot]';
 
 describe('spotting a finding in a review body', () => {
@@ -166,6 +168,36 @@ const PAUSED_COMMENT = [
   '',
   '<!-- end of auto-generated comment: review paused by coderabbit.ai -->',
 ].join('\n');
+
+describe('isReviewerLogin', () => {
+  it('accepts BOTH spellings GitHub uses for the same bot', () => {
+    // Not decoration: REST renders this actor as "coderabbitai[bot]" and
+    // GraphQL renders it as "coderabbitai". Inline findings are read through
+    // GraphQL, so allowing only the REST form would silently stop counting them,
+    // which fails in the direction that merges bugs.
+    expect(isReviewerLogin('coderabbitai[bot]')).toBe(true);
+    expect(isReviewerLogin('coderabbitai')).toBe(true);
+    expect(isReviewerLogin('CodeRabbitAI[bot]')).toBe(true);
+  });
+
+  it('REJECTS a login that merely starts with the reviewer name', () => {
+    // GitHub logins are first come, first served, so this was registerable. A
+    // prefix test would have let it satisfy the gate, or block it with a forged
+    // pause notice.
+    expect(isReviewerLogin('coderabbitai-fake')).toBe(false);
+    expect(isReviewerLogin('coderabbitai-bot')).toBe(false);
+    expect(isReviewerLogin('coderabbitai2')).toBe(false);
+    expect(isReviewerLogin('coderabbitai[bot]x')).toBe(false);
+  });
+
+  it('rejects anyone else, and missing input', () => {
+    expect(isReviewerLogin('notcoderabbitai')).toBe(false);
+    expect(isReviewerLogin('stephengardner')).toBe(false);
+    expect(isReviewerLogin('')).toBe(false);
+    expect(isReviewerLogin(undefined)).toBe(false);
+    expect(isReviewerLogin(null)).toBe(false);
+  });
+});
 
 describe('hasSubstantiveReviewFor', () => {
   const HEAD = 'bb086dcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';

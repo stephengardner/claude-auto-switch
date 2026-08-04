@@ -143,6 +143,27 @@ export function reviewsArePaused(comments, isReviewer) {
 }
 
 /**
+ * The reviewer's identity, matched EXACTLY.
+ *
+ * This used to be a `startsWith('coderabbitai')` prefix test, which trusts any
+ * account whose name begins that way. GitHub logins are first come, first
+ * served, so `coderabbitai-fake` was registerable and would have been believed
+ * by everything below: it could post a "review" that satisfied the gate, or a
+ * pause notice that blocked it.
+ *
+ * BOTH spellings are needed, and the pair is not decoration. GitHub's REST API
+ * renders this bot as `coderabbitai[bot]` while its GraphQL API renders the same
+ * actor as `coderabbitai`, and the gate reads inline findings through GraphQL.
+ * Allowing only the REST form would quietly stop every inline finding being
+ * counted, which fails in the direction that merges bugs.
+ */
+const REVIEWER_LOGINS = new Set(['coderabbitai[bot]', 'coderabbitai']);
+
+export function isReviewerLogin(login) {
+  return REVIEWER_LOGINS.has(String(login ?? '').trim().toLowerCase());
+}
+
+/**
  * Has the reviewer actually reviewed THIS commit?
  *
  * Two things that look alike have to be told apart:

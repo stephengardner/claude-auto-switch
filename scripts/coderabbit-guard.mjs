@@ -27,9 +27,9 @@ import {
   remedyFor,
   reviewsArePaused,
   hasSubstantiveReviewFor,
+  isReviewerLogin,
 } from './coderabbit-findings.mjs';
 
-const REVIEWER = 'coderabbitai';
 /**
  * This gate's own check name. It has to be excluded when looking for the
  * reviewer's signal, because it also contains the word "coderabbit": without
@@ -68,9 +68,9 @@ function repoSlug() {
   return { owner: owner.login, name };
 }
 
-function isReviewer(login = '') {
-  return login.toLowerCase().startsWith(REVIEWER);
-}
+// Exact identity, not a prefix: see isReviewerLogin for why a prefix was unsafe
+// and why two spellings are required.
+const isReviewer = isReviewerLogin;
 
 /**
  * Review threads with their resolution state. GraphQL is the only place GitHub
