@@ -4,6 +4,49 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.32.0]
+
+### Added
+
+- **Rotation follows the model you are using.** A per-model limit stops that
+  model, not the account, so moving to another account whose Fable is also spent
+  solves nothing. When the model in use runs out, ccx now looks for an account
+  that still has room on THAT model first.
+
+  Only when no account has any is the model changed, and then it follows a
+  preference order rather than whatever happens to be free. The default is Fable
+  then Opus, and it says so when it happens rather than quietly moving you.
+
+  Both parts are configurable in `~/.claude-auto-switch/config.json`:
+
+  ```json
+  { "rotation": { "modelPreference": ["fable", "opus"], "preferSameModel": true } }
+  ```
+
+  Set `preferSameModel` to false to rotate on account limits alone, which is how
+  ccx behaved before this existed.
+
+  The chosen model is applied to the session that starts, not merely announced,
+  and it stays applied for the rest of the run: a model that ran out does not
+  come back within a session, so re-checking it would only churn. That includes
+  the fresh retry after a resume finds no conversation, which used to fall back
+  to the model that had just run out.
+
+  Model preference applies only when a model is actually in play (`--model` or a
+  pin in `settings.json`). With nothing pinned, Claude picks its own default and
+  ccx cannot read which one, so those sessions rotate on account capacity alone
+  rather than having a model imposed on them.
+
+  Cached usage is read as current capacity rather than as history. Every stored
+  number carries the time its window resets, and one past its own reset says
+  "spent" about a limit that has already lifted, so it is ignored instead of
+  acted on. Without this, a snapshot taken before a reset would move a session
+  off a model that was available again, and announce a limit that no longer
+  existed.
+
+- Fixed: "starting fresh" after a failed resume kept the `--continue` you typed,
+  so it repeated the same resume instead of starting fresh.
+
 ## [1.31.1]
 
 ### Fixed

@@ -116,6 +116,11 @@ rename one, `l` to sign one in again, `e` to enable or disable, `r` to rotate.
 - **Honest about what it can see.** `ccx doctor` asks Anthropic who each profile
   is really signed in as, which is the only way to catch a profile holding the
   wrong account or two profiles sharing one login.
+- **It follows the model you are on.** A spent model window stops that model, not
+  the account, so ccx looks for another account that still has room on the SAME
+  model before it considers anything else. Only when none does will it change
+  model, in a configurable order (Fable then Opus by default), and it tells you
+  when that happens.
 - **Optional: move before you run out.** Off by default. `ccx proactive on` hands
   the session to a roomier account as the current one approaches its limit,
   rather than waiting to hit the wall.
@@ -176,12 +181,29 @@ Everything works with no config. To tune it, add an optional
 {
   "priorityOrder": ["personal", "work"],
   "rotation": {
+    "modelPreference": ["fable", "opus"],
+    "preferSameModel": true,
     "defaultBackoffMinutes": 300,
     "proactivePercent": 0,
     "usageCheckSeconds": 300
   }
 }
 ```
+
+Two of those decide how rotation treats models. `preferSameModel` (on by
+default) makes ccx look for another account with room on the model you are
+using before it considers anything else, because a spent model window stops that
+model rather than the account. `modelPreference` is the order it works through
+only when no account has room on the model in use: the default moves you to Opus
+once Fable is gone everywhere, and it says so when it happens. Set
+`preferSameModel` to false to rotate on account limits alone.
+
+This applies only when a model is actually in play, meaning you passed
+`--model` or pinned one in your session `settings.json`. With nothing pinned,
+Claude picks its own default, ccx has no way to read which one that is, and
+imposing a model you never asked for would be the wrong answer. Those sessions
+rotate on account capacity alone.
+
 
 - `priorityOrder`: which accounts to prefer, in order (for example, burn the
   personal one first and save work for last).

@@ -31,6 +31,11 @@ import {
 } from '../launcher/notify.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
 import { probeLimit } from '../usage/limit-probe.js';
+import { readUsageSnapshot } from '../usage/usage-store.js';
+import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
+import { withModel, modelInArgs } from '../usage/model-args.js';
+import { wantsContinue, withoutContinue } from '../launcher/continue-args.js';
+import { usableCapacity } from '../usage/usable-capacity.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import {
   installCredential,
@@ -89,8 +94,21 @@ function seedSessionSettings(sessionDir: string, accounts: Account[]): void {
   }
 }
 
-function wantsContinue(args: string[]): boolean {
-  return args.includes('--continue') || args.includes('-c');
+/**
+ * The model this session is running, or null when nothing pins one.
+ *
+ * Read from the settings file the session dir uses, which is where the model pin
+ * lives, and from `--model` on the command line, which wins because it is the
+ * more explicit of the two.
+ */
+function sessionModel(sessionDir: string, args: string[]): string | null {
+  // Same parser the rewriting uses, so a spelling one accepts cannot be a
+  // spelling the other misses.
+  const fromArgs = modelInArgs(args);
+  if (fromArgs) return fromArgs;
+  const settings = readJsonSafe(path.join(sessionDir, 'settings.json'));
+  const model = settings?.model;
+  return typeof model === 'string' && model.length > 0 ? model : null;
 }
 
 function readJsonSafe(file: string): Record<string, unknown> | null {
@@ -203,6 +221,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * themselves into the UI at random: they were doing exactly that.
    */
   let claudeOwnsScreen = false;
+  /**
+   * The model rotation moved to, once the one in use ran out everywhere. Kept
+   * for the rest of the run so later rotations start from the model actually in
+   * use rather than the one that is already spent.
+   */
+  let chosenModel: string | null = null;
 
   /**
    * Tell the operator something, by whichever channel does not wreck the screen.
@@ -505,7 +529,58 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         )
         .sort((a, b) => a.priority - b.priority);
       // Start on the pinned account if it is still eligible, else lowest priority.
-      const pick = (pinned ? eligible.find((a) => a.name === pinned) : undefined) ?? eligible[0];
+      const ordered = pinned
+        ? [...eligible.filter((a) => a.name === pinned), ...eligible.filter((a) => a.name !== pinned)]
+        : eligible;
+
+      // Prefer an account that still has room on the MODEL in use. A per-model
+      // limit stops that model, not the account, so rotating to one whose Fable
+      // is also spent solves nothing. Only when no account has any is the model
+      // changed, and then in the configured order.
+      const rotation = context.config.rotation;
+      const model = chosenModel ?? sessionModel(sessionDir, args);
+      // Only when a model is actually in play. With nothing pinned, Claude picks
+      // its own default and ccx cannot read it, so choosing an account for some
+      // preference model's headroom would pick on one model and run another.
+      // Imposing the preference instead would silently change everyone's model,
+      // which nobody asked for. Plain account rotation is the honest answer.
+      if (rotation.preferSameModel && model && ordered.length > 0) {
+        const snapshot = readUsageSnapshot(context.ctx);
+        const now = Date.now();
+        const choice = chooseAccountForModel(
+          model,
+          ordered.map((a) => {
+            // Read as CURRENT capacity, not as history: a cached number past its
+            // own reset says "spent" about a limit that has already lifted, and
+            // acting on it moves the session off a model it could still use. An
+            // account-wide window that is genuinely closed makes every model
+            // unusable, so it belongs in the candidate too.
+            const capacity = usableCapacity(snapshot.accounts[a.name], now);
+            return {
+              name: a.name,
+              models: capacity.models,
+              ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
+            };
+          }),
+          rotation.modelPreference,
+        );
+        if (choice) {
+          const picked = ordered.find((a) => a.name === choice.account);
+          if (picked) {
+            // Remembered so the session is actually STARTED on it. Choosing a
+            // model and not applying it is worse than not choosing: the session
+            // keeps running the one that just ran out while the operator has
+            // been told it moved.
+            if (choice.changedModel) {
+              chosenModel = choice.model;
+              notice(modelChangeMessage(choice, model));
+            }
+            return { name: picked.name, dir: picked.dir };
+          }
+        }
+      }
+
+      const pick = ordered[0];
       return pick ? { name: pick.name, dir: pick.dir } : null;
     },
     resolveAccount: (name) => {
@@ -658,15 +733,24 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // ccx has to say goes through `notice` rather than onto the screen.
       takeScreen(true);
       try {
+        // The chosen model is applied here, and stays applied for later
+        // rotations in this run: once Fable is gone it does not come back
+        // within a session, so re-checking it every time would only churn.
+        const modelArgs = chosenModel ? withModel(args, chosenModel) : args;
         const outcome = await runPtySession({
           ...base,
-          args: wantContinue ? [...args, '--continue'] : args,
+          args: wantContinue ? [...modelArgs, '--continue'] : modelArgs,
         });
         // If we tried to resume but the new account has no saved conversation,
         // start a fresh session on it instead of dead-ending.
         if (outcome.kind === 'no-conversation') {
           notice('no conversation to resume on this account; starting fresh');
-          return await runPtySession({ ...base, args });
+          // modelArgs, not args: this account was chosen for its room on the
+          // CHOSEN model, so a fresh start on the old one would walk straight
+          // back into the limit we just rotated away from. And drop the resume
+          // flag the operator may have typed, or "fresh" would just repeat the
+          // resume that found nothing.
+          return await runPtySession({ ...base, args: withoutContinue(modelArgs) });
         }
         return outcome;
       } finally {

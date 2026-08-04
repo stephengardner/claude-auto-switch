@@ -80,6 +80,13 @@ if (runsLog) {
 }
 process.stdout.write(`fake-claude ran: ${args.join(' ')}\n`);
 
+// Simulate a resume that has nothing to resume. Only on --continue, exactly as
+// the real CLI does, so the fresh retry that follows does NOT emit it again and
+// the test cannot loop.
+if (process.env.FAKE_CLAUDE_NO_CONVERSATION && (args.includes('--continue') || args.includes('-c'))) {
+  process.stdout.write('No conversation found to continue\n');
+}
+
 // Simulate a --continue replay re-rendering the PREVIOUS account's cap message.
 // The watcher must NOT treat this as a fresh cap while the user has not typed
 // (that is the false-cap cascade this guards against).

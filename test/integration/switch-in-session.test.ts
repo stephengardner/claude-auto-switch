@@ -123,6 +123,7 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     delete process.env.FAKE_CLAUDE_IDLE_MS;
     delete process.env.FAKE_CLAUDE_RUNS_LOG;
     delete process.env.FAKE_CLAUDE_EMIT_CAP;
+    delete process.env.FAKE_CLAUDE_NO_CONVERSATION;
   });
 
   it('replayed cap text is refuted by the API check: no false cap, no cascade', async () => {
@@ -354,5 +355,336 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(launches[0]?.args).not.toContain('--continue');
     expect(launches[1]?.marker).toBe('B'); // relaunched on B
     expect(launches[1]?.args).toContain('--continue'); // same conversation continued
+  });
+
+  it('starts on an account that still has the MODEL in use, not merely a working one', async () => {
+    // The operator's case, end to end through the real session path: a Fable
+    // session must skip an account whose Fable is spent, even though that
+    // account is otherwise perfectly healthy and comes first by priority.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-model-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '600';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'fable-spent');
+    await loginAccount(context, home, 'fable-free');
+    setActive('fable-spent', context.ctx);
+
+    // The session is pinned to Fable, the way a real one is. The folder is made
+    // here because the run creates it, and seedSettings leaves an existing file
+    // alone, so this is the pin a real session would already have.
+    mkdirSync(path.join(home, 'session'), { recursive: true });
+    writeFileSync(
+      path.join(home, 'session', 'settings.json'),
+      JSON.stringify({ model: 'claude-fable-5[1m]' }),
+      'utf8',
+    );
+    const now = Date.now();
+    const usage = (fable: number) => ({
+      fiveHour: 0.1,
+      sevenDay: 0.2,
+      fiveHourReset: now + 3600_000,
+      sevenDayReset: now + 86_400_000,
+      models: [{ name: 'Fable', utilization: fable, resetsAt: now + 86_400_000 }],
+      at: now,
+    });
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({ accounts: { 'fable-spent': usage(1), 'fable-free': usage(0.1) } }),
+      'utf8',
+    );
+
+    expect(await runCommand(context, [])).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(1);
+    // NOT the pinned account: its Fable is gone, so starting there would hit the
+    // limit immediately, which is the whole point of the feature.
+    expect(launches[0]?.marker).toBe('fable-free');
+  });
+
+  it('starts on the pinned account when it still has the model', async () => {
+    // The other half: model preference must not drag a session off an account
+    // that is perfectly usable, or it would be churning for no reason.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-model-stay-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '600';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'pinned');
+    await loginAccount(context, home, 'other');
+    setActive('pinned', context.ctx);
+    mkdirSync(path.join(home, 'session'), { recursive: true });
+    writeFileSync(
+      path.join(home, 'session', 'settings.json'),
+      JSON.stringify({ model: 'claude-fable-5[1m]' }),
+      'utf8',
+    );
+    const now = Date.now();
+    const usage = (fable: number) => ({
+      fiveHour: 0,
+      sevenDay: 0,
+      fiveHourReset: null,
+      sevenDayReset: null,
+      models: [{ name: 'Fable', utilization: fable, resetsAt: null }],
+      at: now,
+    });
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      // The other account has MORE room, and that is deliberately not a reason
+      // to move: staying put beats churn.
+      JSON.stringify({ accounts: { pinned: usage(0.7), other: usage(0.01) } }),
+      'utf8',
+    );
+
+    expect(await runCommand(context, [])).toBe(0);
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches[0]?.marker).toBe('pinned');
+  });
+
+  it('APPLIES the fallback model, not just announces it', async () => {
+    // Choosing a model and not applying it is worse than not choosing one: the
+    // session would keep running the model that just ran out while the operator
+    // has been told it moved. So the launch itself must carry it.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-model-apply-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '600';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'only');
+    setActive('only', context.ctx);
+    mkdirSync(path.join(home, 'session'), { recursive: true });
+    writeFileSync(
+      path.join(home, 'session', 'settings.json'),
+      JSON.stringify({ model: 'claude-fable-5[1m]' }),
+      'utf8',
+    );
+    const now = Date.now();
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({
+        accounts: {
+          only: {
+            fiveHour: 0.1,
+            sevenDay: 0.2,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            // Fable gone, so the only way to work is another model.
+            models: [{ name: 'Fable', utilization: 1, resetsAt: null }],
+            at: now,
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    expect(await runCommand(context, [])).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(1);
+    const args = launches[0]?.args ?? [];
+    expect(args).toContain('--model');
+    expect(args[args.indexOf('--model') + 1]).toBe('opus');
+  });
+
+  it('keeps the fallback model on the fresh retry after a failed resume', async () => {
+    // The retry used to reuse the ORIGINAL args, so a session that had just
+    // moved Fable-to-Opus restarted on Fable: straight back into the limit it
+    // had rotated away from.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-model-retry-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '600';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    process.env.FAKE_CLAUDE_NO_CONVERSATION = '1';
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'only');
+    setActive('only', context.ctx);
+    mkdirSync(path.join(home, 'session'), { recursive: true });
+    writeFileSync(
+      path.join(home, 'session', 'settings.json'),
+      JSON.stringify({ model: 'claude-fable-5[1m]' }),
+      'utf8',
+    );
+    const now = Date.now();
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({
+        accounts: {
+          only: {
+            fiveHour: 0.1,
+            sevenDay: 0.2,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            models: [{ name: 'Fable', utilization: 1, resetsAt: null }],
+            at: now,
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    // --continue is what makes the fake report nothing to resume.
+    expect(await runCommand(context, ['--continue'])).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    // The resume attempt, then the fresh retry.
+    expect(launches.length).toBeGreaterThanOrEqual(2);
+    const retry = launches[launches.length - 1]?.args ?? [];
+    expect(retry).toContain('--model');
+    expect(retry[retry.indexOf('--model') + 1]).toBe('opus');
+    // And it really is the FRESH one, not another resume.
+    expect(retry).not.toContain('--continue');
+  });
+
+  it('does NOT move off a model whose limit has already reset', async () => {
+    // Taken from a real snapshot: Fable recorded at 100% with a reset time that
+    // has since passed. The window reopened, so moving the session to Opus and
+    // announcing a Fable limit would both be wrong.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-model-expired-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '600';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'pinned');
+    // A second, obviously usable account, so a wrong rotation has somewhere to
+    // go and the test can actually catch it.
+    await loginAccount(context, home, 'spare');
+    setActive('pinned', context.ctx);
+    mkdirSync(path.join(home, 'session'), { recursive: true });
+    writeFileSync(
+      path.join(home, 'session', 'settings.json'),
+      JSON.stringify({ model: 'claude-fable-5[1m]' }),
+      'utf8',
+    );
+    const now = Date.now();
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({
+        accounts: {
+          pinned: {
+            fiveHour: 0.07,
+            sevenDay: 0,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            models: [{ name: 'Fable', utilization: 1, resetsAt: now - 3_600_000 }],
+            at: now - 6_000_000,
+          },
+          spare: {
+            fiveHour: 0,
+            sevenDay: 0,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            models: [{ name: 'Fable', utilization: 0.1, resetsAt: now + 3_600_000 }],
+            at: now,
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    expect(await runCommand(context, [])).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(1);
+    // Stayed put: the expired number is not a reason to leave an account.
+    expect(launches[0]?.marker).toBe('pinned');
+    // And no --model at all: nothing changed, so nothing is imposed.
+    expect(launches[0]?.args ?? []).not.toContain('--model');
+  });
+
+  it('imposes NO model when the session has not pinned one', async () => {
+    // With nothing pinned, Claude picks its own default and ccx cannot read it.
+    // Forcing the first preference would silently move everyone onto Fable, so
+    // rotation falls back to plain account capacity and adds no --model.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-model-unpinned-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '600';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'pinned');
+    // Somewhere a wrong rotation could go, so "no model imposed" is not the
+    // only thing this proves.
+    await loginAccount(context, home, 'spare');
+    setActive('pinned', context.ctx);
+    // Deliberately no settings.json model pin and no --model argument.
+    const now = Date.now();
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({
+        accounts: {
+          pinned: {
+            fiveHour: 0.1,
+            sevenDay: 0.2,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            // Spent, and genuinely so, but nothing is running on Fable here.
+            models: [{ name: 'Fable', utilization: 1, resetsAt: null }],
+            at: now,
+          },
+          spare: {
+            fiveHour: 0,
+            sevenDay: 0,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            models: [{ name: 'Fable', utilization: 0.1, resetsAt: now + 3_600_000 }],
+            at: now,
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    expect(await runCommand(context, [])).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(1);
+    // With no model in play, a spent Fable number is not a reason to move.
+    expect(launches[0]?.marker).toBe('pinned');
+    expect(launches[0]?.args ?? []).not.toContain('--model');
+  });
+
+  it('does not touch the model when the one in use still has room', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-model-keep-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '600';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'only');
+    setActive('only', context.ctx);
+    mkdirSync(path.join(home, 'session'), { recursive: true });
+    writeFileSync(
+      path.join(home, 'session', 'settings.json'),
+      JSON.stringify({ model: 'claude-fable-5[1m]' }),
+      'utf8',
+    );
+    const now = Date.now();
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({
+        accounts: {
+          only: {
+            fiveHour: 0,
+            sevenDay: 0,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            models: [{ name: 'Fable', utilization: 0.3, resetsAt: null }],
+            at: now,
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    expect(await runCommand(context, [])).toBe(0);
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    // No --model forced on: the session keeps whatever it was already using.
+    expect(launches[0]?.args ?? []).not.toContain('--model');
   });
 });
