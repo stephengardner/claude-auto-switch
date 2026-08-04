@@ -550,8 +550,11 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
 
     const context = makeContext(home);
-    await loginAccount(context, home, 'only');
-    setActive('only', context.ctx);
+    await loginAccount(context, home, 'pinned');
+    // A second, obviously usable account, so a wrong rotation has somewhere to
+    // go and the test can actually catch it.
+    await loginAccount(context, home, 'spare');
+    setActive('pinned', context.ctx);
     mkdirSync(path.join(home, 'session'), { recursive: true });
     writeFileSync(
       path.join(home, 'session', 'settings.json'),
@@ -563,13 +566,21 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
       path.join(home, 'usage-snapshot.json'),
       JSON.stringify({
         accounts: {
-          only: {
+          pinned: {
             fiveHour: 0.07,
             sevenDay: 0,
             fiveHourReset: null,
             sevenDayReset: null,
             models: [{ name: 'Fable', utilization: 1, resetsAt: now - 3_600_000 }],
             at: now - 6_000_000,
+          },
+          spare: {
+            fiveHour: 0,
+            sevenDay: 0,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            models: [{ name: 'Fable', utilization: 0.1, resetsAt: now + 3_600_000 }],
+            at: now,
           },
         },
       }),
@@ -580,7 +591,9 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
 
     const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
     expect(launches).toHaveLength(1);
-    // No --model at all: nothing changed, so nothing is imposed.
+    // Stayed put: the expired number is not a reason to leave an account.
+    expect(launches[0]?.marker).toBe('pinned');
+    // And no --model at all: nothing changed, so nothing is imposed.
     expect(launches[0]?.args ?? []).not.toContain('--model');
   });
 
@@ -594,20 +607,32 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
 
     const context = makeContext(home);
-    await loginAccount(context, home, 'only');
-    setActive('only', context.ctx);
+    await loginAccount(context, home, 'pinned');
+    // Somewhere a wrong rotation could go, so "no model imposed" is not the
+    // only thing this proves.
+    await loginAccount(context, home, 'spare');
+    setActive('pinned', context.ctx);
     // Deliberately no settings.json model pin and no --model argument.
     const now = Date.now();
     writeFileSync(
       path.join(home, 'usage-snapshot.json'),
       JSON.stringify({
         accounts: {
-          only: {
+          pinned: {
             fiveHour: 0.1,
             sevenDay: 0.2,
             fiveHourReset: null,
             sevenDayReset: null,
+            // Spent, and genuinely so, but nothing is running on Fable here.
             models: [{ name: 'Fable', utilization: 1, resetsAt: null }],
+            at: now,
+          },
+          spare: {
+            fiveHour: 0,
+            sevenDay: 0,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            models: [{ name: 'Fable', utilization: 0.1, resetsAt: now + 3_600_000 }],
             at: now,
           },
         },
@@ -619,6 +644,8 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
 
     const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
     expect(launches).toHaveLength(1);
+    // With no model in play, a spent Fable number is not a reason to move.
+    expect(launches[0]?.marker).toBe('pinned');
     expect(launches[0]?.args ?? []).not.toContain('--model');
   });
 
