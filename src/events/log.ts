@@ -40,10 +40,18 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
   for (const record of records) {
     const previous = out[out.length - 1];
     if (previous && previous.msg === record.msg) {
+      // Clamped, because the sum of two counts read from a file can leave the
+      // safe-integer range, and a count that is not a safe integer is dropped on
+      // the next read, turning "a great many" into "once". No real log reaches
+      // this (the file holds 200 records, so it would take quadrillions of
+      // appends), but the input is a file and anything can write one. Clamping
+      // rather than splitting the record because past that size the difference
+      // between two counts carries no meaning worth preserving.
+      const total = (previous.count ?? 1) + (record.count ?? 1);
       out[out.length - 1] = {
         at: record.at,
         msg: record.msg,
-        count: (previous.count ?? 1) + (record.count ?? 1),
+        count: Number.isSafeInteger(total) ? total : Number.MAX_SAFE_INTEGER,
       };
     } else {
       out.push(record);
@@ -100,7 +108,15 @@ export function appendEvent(configHome: string, msg: string, now: number): void 
   const records = readEvents(configHome, MAX);
   const previous = records[records.length - 1];
   if (previous && previous.msg === msg) {
-    records[records.length - 1] = { at: now, msg, count: (previous.count ?? 1) + 1 };
+    // Clamped for the same reason as the fold on read: a count that leaves the
+    // safe-integer range is dropped when read back, turning a long run into a
+    // single event.
+    const total = (previous.count ?? 1) + 1;
+    records[records.length - 1] = {
+      at: now,
+      msg,
+      count: Number.isSafeInteger(total) ? total : Number.MAX_SAFE_INTEGER,
+    };
   } else {
     records.push({ at: now, msg });
   }

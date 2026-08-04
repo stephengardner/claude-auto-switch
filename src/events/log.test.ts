@@ -67,6 +67,26 @@ describe('a message that repeats', () => {
     expect(records[1]?.at).toBe(298);
   });
 
+  it('clamps a folded count rather than letting it lose precision', () => {
+    // Two persisted counts can sum past the safe-integer range, and a count that
+    // is not a safe integer gets dropped on the next read, turning "a great
+    // many" into "once". Unreachable by appending, but this reads a file.
+    const h = home();
+    const huge = Number.MAX_SAFE_INTEGER;
+    const lines = [
+      JSON.stringify({ at: 1, msg: 'many', count: huge }),
+      JSON.stringify({ at: 2, msg: 'many', count: 5 }),
+    ].join('\n');
+    writeFileSync(eventsFilePath(h), `${lines}\n`, 'utf8');
+
+    const [record] = readEvents(h, 10);
+    expect(record?.count).toBe(Number.MAX_SAFE_INTEGER);
+    expect(Number.isSafeInteger(record?.count)).toBe(true);
+    // And it survives a round trip, rather than reading back as a single event.
+    appendEvent(h, 'many', 3);
+    expect(readEvents(h, 10)[0]?.count).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
   it('counts the LIMIT in things that happened, not copies of one of them', () => {
     // Asking for the last 5 events should not spend all five on one repeat.
     const h = home();
