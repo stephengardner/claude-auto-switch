@@ -4,7 +4,7 @@ import { getActive } from '../state/active.js';
 import { listAccounts } from '../accounts/registry.js';
 import { hasUsableLogin } from '../accounts/credential-vault.js';
 import { configHome } from '../config/paths.js';
-import { effectiveUtilization } from '../usage/window-open.js';
+import { effectiveUtilization, windowIsOpen } from '../usage/window-open.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import type { CliContext } from '../context.js';
 
@@ -146,7 +146,17 @@ export function statuslineSegment(context: CliContext, options: StatuslineOption
   // account that is free: alarming and wrong, which is as bad here as
   // reassuring and wrong.
   const usedNow = (w: Window): number => effectiveUtilization(w.used, w.resetsAt, now) ?? 0;
-  const binding = windows.reduce((a, b) => (usedNow(b) > usedNow(a) ? b : a));
+  // On a tie an OPEN window wins, because an expired one is not a constraint at
+  // all and naming it reports a limit that is not running. Ties are the normal
+  // case once expired windows read as empty, and the first window listed would
+  // otherwise win by accident of ordering.
+  const beats = (b: Window, a: Window): boolean => {
+    if (usedNow(b) !== usedNow(a)) return usedNow(b) > usedNow(a);
+    return windowIsOpen(b.resetsAt, now) && !windowIsOpen(a.resetsAt, now);
+  };
+  // Reduce keeps the first when nothing beats it, so an all-expired account
+  // still names a window rather than falling over.
+  const binding = windows.reduce((a, b) => (beats(b, a) ? b : a));
 
   const left = Math.max(0, 1 - usedNow(binding));
   const resets = until(binding.resetsAt, now);
