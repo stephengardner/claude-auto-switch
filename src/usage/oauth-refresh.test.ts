@@ -80,6 +80,33 @@ describe('a login the endpoint has already refused', () => {
     expect(calls).toBe(1);
   });
 
+  it('IS asked again when the file changes but the token does not', async () => {
+    // The memo is keyed on the whole credential, not just the token. Hashing
+    // only the token would be more precise, but a credential repaired in a way
+    // that leaves the token in place would then stay refused until the process
+    // restarted, and being stuck costs more than a repeated request.
+    const dir = account({ accessToken: 'old', refreshToken: 'r-same', expiresAt: now() - HOUR });
+    let calls = 0;
+    const dead: typeof fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
+    }) as unknown as typeof fetch;
+
+    expect((await refreshCredentialIfExpired(dir, { now, fetchImpl: dead })).status).toBe('needs-login');
+    expect(calls).toBe(1);
+
+    // Same refreshToken, different file contents.
+    writeFileSync(
+      credentialPath(dir),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'repaired', refreshToken: 'r-same', expiresAt: now() - HOUR },
+      }),
+      'utf8',
+    );
+    expect((await refreshCredentialIfExpired(dir, { now, fetchImpl: dead })).status).toBe('needs-login');
+    expect(calls).toBe(2);
+  });
+
   it('does NOT remember a transient failure, so a blip stays retryable', async () => {
     const dir = account({ accessToken: 'old', refreshToken: 'r-blip', expiresAt: now() - HOUR });
     let calls = 0;

@@ -109,8 +109,10 @@ export async function refreshCredentialIfExpired(
   const file = credentialPath(accountDir);
 
   let raw: Record<string, unknown>;
+  let fileText: string;
   try {
-    raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    fileText = readFileSync(file, 'utf8');
+    raw = JSON.parse(fileText) as Record<string, unknown>;
   } catch {
     return { status: 'unavailable', detail: 'no readable credential' };
   }
@@ -125,7 +127,14 @@ export async function refreshCredentialIfExpired(
   // changes it. Asking the token endpoint a second time cannot get a different
   // answer, so do not: it costs a request per check and buries the credential
   // log, which is the first thing anyone reads to work out why a login broke.
-  const identity = sha256Fingerprint(refreshToken);
+  //
+  // Keyed on the WHOLE file rather than the refresh token alone. Hashing just
+  // the token is more precise, since the token is the thing the endpoint
+  // rejected, but it fails in the worse direction: a credential repaired in any
+  // way that leaves the token in place would stay refused until the process
+  // restarted. Re-asking a few times costs a request; being stuck costs a
+  // working account.
+  const identity = sha256Fingerprint(fileText);
   if (alreadyRefused(identity)) {
     return {
       status: 'needs-login',
