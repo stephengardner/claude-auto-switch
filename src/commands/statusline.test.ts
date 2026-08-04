@@ -67,6 +67,23 @@ describe('statuslineCommand', () => {
     expect(lines[0]).toBe('work Fable 22% left');
   });
 
+  it('does NOT report a model as spent once its window has reset', async () => {
+    // This line sits inside Claude's interface the whole time it runs. Showing
+    // "Fable spent" for a window that reset hours ago is alarming and wrong,
+    // which is as bad here as reassuring and wrong.
+    const { context, lines } = setup('work', {
+      work: entry({
+        fiveHour: 0.1,
+        sevenDay: 0.2,
+        models: [{ name: 'Fable', utilization: 1, resetsAt: Date.now() - 3600_000 }],
+      }),
+    });
+    expect(await statuslineCommand(context)).toBe(0);
+    expect(lines[0]).not.toContain('spent');
+    // The week is now the tightest window that is actually running.
+    expect(lines[0]).toBe('work week 80% left');
+  });
+
   it('says "spent" and shows the reset once a window is exhausted', async () => {
     const { context, lines } = setup('work', {
       work: entry({

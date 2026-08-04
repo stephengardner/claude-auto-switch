@@ -4,6 +4,7 @@ import { getActive } from '../state/active.js';
 import { listAccounts } from '../accounts/registry.js';
 import { hasUsableLogin } from '../accounts/credential-vault.js';
 import { configHome } from '../config/paths.js';
+import { effectiveUtilization } from '../usage/window-open.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import type { CliContext } from '../context.js';
 
@@ -137,12 +138,18 @@ export function statuslineSegment(context: CliContext, options: StatuslineOption
   const name = options.compact ? '' : active;
   if (!entry) return name || 'ccx';
 
+  const now = Date.now();
   const windows = windowsOf(entry);
   if (windows.length === 0) return name || 'ccx';
-  const binding = windows.reduce((a, b) => (b.used > a.used ? b : a));
+  // Judged on usage as it stands now. A window past its reset records a limit
+  // that has ended, and reporting it would put a spent model on screen for an
+  // account that is free: alarming and wrong, which is as bad here as
+  // reassuring and wrong.
+  const usedNow = (w: Window): number => effectiveUtilization(w.used, w.resetsAt, now) ?? 0;
+  const binding = windows.reduce((a, b) => (usedNow(b) > usedNow(a) ? b : a));
 
-  const left = Math.max(0, 1 - binding.used);
-  const resets = until(binding.resetsAt, Date.now());
+  const left = Math.max(0, 1 - usedNow(binding));
+  const resets = until(binding.resetsAt, now);
   const amount = left <= 0 ? `${binding.label} spent` : `${binding.label} ${pct(left)} left`;
   // The reset time is noise while there is plenty of room, and the only thing
   // that matters once there is not.
