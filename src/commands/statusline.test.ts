@@ -67,6 +67,46 @@ describe('statuslineCommand', () => {
     expect(lines[0]).toBe('work Fable 22% left');
   });
 
+  it('does NOT report a model as spent once its window has reset', async () => {
+    // This line sits inside Claude's interface the whole time it runs. Showing
+    // "Fable spent" for a window that reset hours ago is alarming and wrong,
+    // which is as bad here as reassuring and wrong.
+    const { context, lines } = setup('work', {
+      work: entry({
+        fiveHour: 0.1,
+        sevenDay: 0.2,
+        models: [{ name: 'Fable', utilization: 1, resetsAt: Date.now() - 3600_000 }],
+      }),
+    });
+    expect(await statuslineCommand(context)).toBe(0);
+    expect(lines[0]).not.toContain('spent');
+    // The week is now the tightest window that is actually running.
+    expect(lines[0]).toBe('work week 80% left');
+  });
+
+  it('names an OPEN window rather than an expired one when both read empty', async () => {
+    // Once expired windows read as empty, ties are the normal case, and a plain
+    // "greater than" keeps whichever was listed first. That would name a window
+    // which is not running at all as the thing constraining you.
+    const { context, lines } = setup('work', {
+      work: entry({
+        fiveHour: 1,
+        fiveHourReset: Date.now() - 1000, // expired, so effectively 0
+        sevenDay: 0, // open, also 0
+      }),
+    });
+    expect(await statuslineCommand(context)).toBe(0);
+    expect(lines[0]).toBe('work week 100% left');
+  });
+
+  it('still names something when every window has expired', async () => {
+    const { context, lines } = setup('work', {
+      work: entry({ fiveHour: 1, fiveHourReset: Date.now() - 1000 }),
+    });
+    expect(await statuslineCommand(context)).toBe(0);
+    expect(lines[0]).toBe('work 5h 100% left');
+  });
+
   it('says "spent" and shows the reset once a window is exhausted', async () => {
     const { context, lines } = setup('work', {
       work: entry({

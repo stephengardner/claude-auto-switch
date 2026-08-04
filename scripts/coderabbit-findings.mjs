@@ -100,3 +100,90 @@ export function remedyFor(kind) {
   }
   return `Read the findings in the review body, then comment "${BODY_ACK}" on the pull request.`;
 }
+
+/**
+ * Has CodeRabbit stopped reviewing this branch by itself?
+ *
+ * It pauses automatic reviews when a branch takes several commits in a row, and
+ * says so in a comment of its own. While paused it still leaves a green
+ * "Review completed" status on the head from its LAST pass, so the status alone
+ * reads exactly like a clean review of the current commit. That pair is a hole
+ * to merge unreviewed work through, and it is why this exists.
+ *
+ * Only the reviewer's own comments count. A human quoting the notice must not
+ * be able to stall the gate, or to steer it.
+ */
+export function reviewsArePaused(comments, isReviewer) {
+  const list = comments ?? [];
+  // The notice lives in a comment CodeRabbit edits in place, so it stays in the
+  // thread for good. Its age has to come from the last edit, not from when the
+  // comment first appeared.
+  const notices = list.filter(
+    (c) =>
+      isReviewer(c.author ?? '') &&
+      /review paused by coderabbit|automatically paused this review/i.test(c.body ?? ''),
+  );
+  if (notices.length === 0) return false;
+  const pausedAt = Math.max(0, ...notices.map((c) => c.updatedAt ?? c.at ?? 0));
+  // A notice with no usable time cannot be shown to have been lifted, and
+  // guessing "lifted" would merge unreviewed work. Stay paused.
+  if (pausedAt === 0) return true;
+
+  // Asking it to resume or to review lifts the pause. Without this the gate
+  // would block forever once a branch had ever been paused, because the notice
+  // never leaves the thread, and a gate that cannot be satisfied gets switched
+  // off rather than obeyed.
+  const liftedAt = Math.max(
+    0,
+    ...list
+      .filter((c) => !isReviewer(c.author ?? '') && /@coderabbitai\s+(resume|review)\b/i.test(c.body ?? ''))
+      .map((c) => c.updatedAt ?? c.at ?? 0),
+  );
+  return pausedAt > liftedAt;
+}
+
+/**
+ * The reviewer's identity, matched EXACTLY.
+ *
+ * This used to be a `startsWith('coderabbitai')` prefix test, which trusts any
+ * account whose name begins that way. GitHub logins are first come, first
+ * served, so `coderabbitai-fake` was registerable and would have been believed
+ * by everything below: it could post a "review" that satisfied the gate, or a
+ * pause notice that blocked it.
+ *
+ * BOTH spellings are needed, and the pair is not decoration. GitHub's REST API
+ * renders this bot as `coderabbitai[bot]` while its GraphQL API renders the same
+ * actor as `coderabbitai`, and the gate reads inline findings through GraphQL.
+ * Allowing only the REST form would quietly stop every inline finding being
+ * counted, which fails in the direction that merges bugs.
+ */
+const REVIEWER_LOGINS = new Set(['coderabbitai[bot]', 'coderabbitai']);
+
+export function isReviewerLogin(login) {
+  return REVIEWER_LOGINS.has(String(login ?? '').trim().toLowerCase());
+}
+
+/**
+ * Has the reviewer actually reviewed THIS commit?
+ *
+ * Two things that look alike have to be told apart:
+ *
+ * - a real review, which carries the commit it was written against and has a
+ *   body
+ * - a record created merely by replying to an inline comment, which has NO body
+ *   and is stamped with whatever the head happened to be at that moment
+ *
+ * Counting the second would mean answering an old finding makes the newest
+ * commits look reviewed, which is the false green this exists to stop, arriving
+ * by a different route from the paused-review one.
+ */
+export function hasSubstantiveReviewFor(reviews, sha, isReviewer) {
+  if (!sha) return false;
+  return (reviews ?? []).some(
+    (r) =>
+      isReviewer(r.user?.login ?? '') &&
+      r.commit_id === sha &&
+      String(r.body ?? '').trim().length > 0,
+  );
+}
+

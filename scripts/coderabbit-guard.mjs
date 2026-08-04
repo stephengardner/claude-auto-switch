@@ -25,9 +25,11 @@ import {
   bodyFindingsAcknowledged,
   threadAnswered,
   remedyFor,
+  reviewsArePaused,
+  hasSubstantiveReviewFor,
+  isReviewerLogin,
 } from './coderabbit-findings.mjs';
 
-const REVIEWER = 'coderabbitai';
 /**
  * This gate's own check name. It has to be excluded when looking for the
  * reviewer's signal, because it also contains the word "coderabbit": without
@@ -66,9 +68,9 @@ function repoSlug() {
   return { owner: owner.login, name };
 }
 
-function isReviewer(login = '') {
-  return login.toLowerCase().startsWith(REVIEWER);
-}
+// Exact identity, not a prefix: see isReviewerLogin for why a prefix was unsafe
+// and why two spellings are required.
+const isReviewer = isReviewerLogin;
 
 /**
  * Review threads with their resolution state. GraphQL is the only place GitHub
@@ -158,6 +160,10 @@ function allComments(owner, name, pr) {
     author: c.user?.login ?? '',
     body: c.body ?? '',
     at: Date.parse(c.created_at ?? '') || 0,
+    // CodeRabbit edits its summary comment in place, so when it last CHANGED is
+    // a different question from when it appeared, and the pause notice lives in
+    // that comment.
+    updatedAt: Date.parse(c.updated_at ?? c.created_at ?? '') || 0,
   }));
 }
 
@@ -181,6 +187,31 @@ function waitSeconds() {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+/**
+ * Has CodeRabbit posted an actual review OF the current head commit?
+ *
+ * Reviews carry the commit they were written against, so this answers a
+ * different question from "is there a green status": a status can be left over
+ * from an earlier pass, a review cannot.
+ *
+ * An EMPTY body does not count. Replying to inline comments creates review
+ * records with no body of their own, stamped with whatever the head is at that
+ * moment, so answering an old finding would otherwise look like a fresh review
+ * of code nobody has read. That is the same false green this check exists to
+ * stop, arriving by a different route.
+ */
+function hasReviewForHead(owner, name, pr) {
+  try {
+    const pull = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}`]);
+    const sha = pull?.head?.sha;
+    if (!sha) return false;
+    const reviews = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}/reviews`, '--paginate']) ?? [];
+    return hasSubstantiveReviewFor(reviews, sha, isReviewer);
+  } catch {
+    return false; // cannot tell, so do not claim it was reviewed
+  }
+}
+
 /** Read everything the decision depends on, in one go. */
 function readPullRequest(owner, name, pr) {
   const comments = allComments(owner, name, pr);
@@ -189,6 +220,7 @@ function readPullRequest(owner, name, pr) {
     bodies: reviewBodies(owner, name, pr),
     comments,
     summaries: comments.filter((c) => isReviewer(c.author)),
+    paused: reviewsArePaused(comments, isReviewer),
   };
 }
 
@@ -301,6 +333,16 @@ function main() {
     console.error(`coderabbit-guard: PR #${pr} BLOCKED: no finished CodeRabbit review for this commit.`);
     console.error('Answered comments from an earlier commit do not cover this one.');
     console.error('Wait for the review to appear and finish, then run this again.');
+    verdict(1, 'BLOCKED');
+  }
+  // Paused with nothing covering this commit is the false green: the head shows
+  // "Review completed" from an earlier pass while the newest commits have not
+  // been looked at. Answered comments from those earlier passes do not cover
+  // them either, so every other signal here reads clear.
+  if (snapshot.paused && !hasReviewForHead(owner, name, pr)) {
+    console.error(`coderabbit-guard: PR #${pr} BLOCKED: CodeRabbit has PAUSED reviews on this branch.`);
+    console.error('The green status on the head is from its last pass, not a review of this commit.');
+    console.error('Comment "@coderabbitai review" on the pull request, then run this again.');
     verdict(1, 'BLOCKED');
   }
   if (!reviewed) {

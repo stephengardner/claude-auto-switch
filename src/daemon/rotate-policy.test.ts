@@ -6,8 +6,8 @@ function usage(fiveHour: number, opts: Partial<UsageSnapshot> = {}): UsageSnapsh
   return {
     fiveHourPct: fiveHour,
     sevenDayPct: opts.sevenDayPct ?? 0,
-    fiveHourResetsAt: null,
-    sevenDayResetsAt: null,
+    fiveHourResetsAt: opts.fiveHourResetsAt ?? null,
+    sevenDayResetsAt: opts.sevenDayResetsAt ?? null,
     retryAfter: opts.retryAfter ?? null,
     fetchedAt: null,
     stale: false,
@@ -17,6 +17,54 @@ function usage(fiveHour: number, opts: Partial<UsageSnapshot> = {}): UsageSnapsh
 function acct(name: string, u: UsageSnapshot | null): AccountUsage {
   return { name, usage: u };
 }
+
+const T0 = Date.UTC(2026, 7, 4, 12, 0, 0);
+
+describe('a window that has reset is not a cap', () => {
+  it('does NOT rotate off an account whose 5-hour window has already reset', () => {
+    // Claude's own usage cache can sit at 100% after the window rolled over,
+    // and the daemon runs unattended, so believing it benches a healthy account.
+    const decision = decideRotation({
+      active: 'a',
+      accounts: [
+        acct('a', usage(100, { fiveHourResetsAt: T0 - 1 })),
+        acct('b', usage(0)),
+      ],
+      threshold: 95,
+      now: T0,
+    });
+    expect(decision.shouldRotate).toBe(false);
+  });
+
+  it('still rotates when the window is genuinely open', () => {
+    const decision = decideRotation({
+      active: 'a',
+      accounts: [
+        acct('a', usage(100, { fiveHourResetsAt: T0 + 1 })),
+        acct('b', usage(0)),
+      ],
+      threshold: 95,
+      now: T0,
+    });
+    expect(decision.shouldRotate).toBe(true);
+    expect(decision.target).toBe('b');
+  });
+
+  it('prefers an account whose spent window has reset over one still capped', () => {
+    const decision = decideRotation({
+      active: 'active',
+      accounts: [
+        acct('active', usage(100, { fiveHourResetsAt: T0 + 1 })),
+        // Recorded at 90 but that window is over, so it has full room again.
+        acct('recovered', usage(90, { fiveHourResetsAt: T0 - 1 })),
+        acct('busy', usage(80)),
+      ],
+      threshold: 95,
+      now: T0,
+    });
+    expect(decision.target).toBe('recovered');
+  });
+});
 
 describe('decideRotation', () => {
   it('does not rotate when the active account has headroom', () => {

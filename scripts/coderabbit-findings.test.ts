@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error -- plain JavaScript helper, shared with the CI script
-import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK } from './coderabbit-findings.mjs';
+import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused, hasSubstantiveReviewFor, isReviewerLogin } from './coderabbit-findings.mjs';
 
 /**
  * These decide whether a pull request may merge, so both directions matter:
@@ -8,7 +8,10 @@ import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, 
  * work for no reason. Both have already happened here.
  */
 
-const isReviewer = (login: string) => login.toLowerCase().startsWith('coderabbitai');
+// The real identity check, not a copy of it: a duplicate here would keep passing
+// after the real one changed, which is how a gate's tests stop testing the gate.
+const isReviewer = isReviewerLogin;
+const REVIEWER = 'coderabbitai[bot]';
 
 describe('spotting a finding in a review body', () => {
   it('matches the severity badges CodeRabbit actually uses', () => {
@@ -148,5 +151,162 @@ describe('what it tells you to do', () => {
     expect(remedyFor('inline')).toContain('reply on that inline comment');
     expect(remedyFor('review-body')).toContain(BODY_ACK);
     expect(remedyFor('summary-comment')).toContain(BODY_ACK);
+  });
+});
+
+/**
+ * CodeRabbit pauses itself on a busy branch and says so in a comment, while
+ * still leaving a green "Review completed" status on the head from its previous
+ * pass. On PR 15 that pair made the gate report CLEAR with the newest two
+ * commits never looked at, so these assert the exact wording it posted.
+ */
+const PAUSED_COMMENT = [
+  '> [!TIP]',
+  '> It looks like this branch is under active development. To avoid overwhelming',
+  '> you with review comments due to an influx of new commits, CodeRabbit has',
+  '> automatically paused this review.',
+  '',
+  '<!-- end of auto-generated comment: review paused by coderabbit.ai -->',
+].join('\n');
+
+describe('isReviewerLogin', () => {
+  it('accepts BOTH spellings GitHub uses for the same bot', () => {
+    // Not decoration: REST renders this actor as "coderabbitai[bot]" and
+    // GraphQL renders it as "coderabbitai". Inline findings are read through
+    // GraphQL, so allowing only the REST form would silently stop counting them,
+    // which fails in the direction that merges bugs.
+    expect(isReviewerLogin('coderabbitai[bot]')).toBe(true);
+    expect(isReviewerLogin('coderabbitai')).toBe(true);
+    expect(isReviewerLogin('CodeRabbitAI[bot]')).toBe(true);
+  });
+
+  it('REJECTS a login that merely starts with the reviewer name', () => {
+    // GitHub logins are first come, first served, so this was registerable. A
+    // prefix test would have let it satisfy the gate, or block it with a forged
+    // pause notice.
+    expect(isReviewerLogin('coderabbitai-fake')).toBe(false);
+    expect(isReviewerLogin('coderabbitai-bot')).toBe(false);
+    expect(isReviewerLogin('coderabbitai2')).toBe(false);
+    expect(isReviewerLogin('coderabbitai[bot]x')).toBe(false);
+  });
+
+  it('rejects anyone else, and missing input', () => {
+    expect(isReviewerLogin('notcoderabbitai')).toBe(false);
+    expect(isReviewerLogin('stephengardner')).toBe(false);
+    expect(isReviewerLogin('')).toBe(false);
+    expect(isReviewerLogin(undefined)).toBe(false);
+    expect(isReviewerLogin(null)).toBe(false);
+  });
+});
+
+describe('hasSubstantiveReviewFor', () => {
+  const HEAD = 'bb086dcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const OLD = '15e4087bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const review = (over: Record<string, unknown> = {}) => ({
+    user: { login: REVIEWER },
+    commit_id: HEAD,
+    body: 'Actionable comments posted: 1',
+    ...over,
+  });
+
+  it('counts a real review of this commit', () => {
+    expect(hasSubstantiveReviewFor([review()], HEAD, isReviewer)).toBe(true);
+  });
+
+  it('does NOT count an empty record, which is what a reply leaves behind', () => {
+    // Replying to an inline comment creates a review record with no body,
+    // stamped with whatever the head is at that moment. Counting it would mean
+    // answering an old finding makes the newest commits look reviewed.
+    expect(hasSubstantiveReviewFor([review({ body: '' })], HEAD, isReviewer)).toBe(false);
+    expect(hasSubstantiveReviewFor([review({ body: '   ' })], HEAD, isReviewer)).toBe(false);
+    expect(hasSubstantiveReviewFor([review({ body: null })], HEAD, isReviewer)).toBe(false);
+  });
+
+  it('does NOT count a real review of an EARLIER commit', () => {
+    expect(hasSubstantiveReviewFor([review({ commit_id: OLD })], HEAD, isReviewer)).toBe(false);
+  });
+
+  it('does not count a review by anyone other than the reviewer', () => {
+    expect(
+      hasSubstantiveReviewFor([review({ user: { login: 'stephengardner' } })], HEAD, isReviewer),
+    ).toBe(false);
+  });
+
+  it('says no rather than yes when there is nothing to go on', () => {
+    // Not knowing must never read as approval.
+    expect(hasSubstantiveReviewFor([], HEAD, isReviewer)).toBe(false);
+    expect(hasSubstantiveReviewFor(undefined, HEAD, isReviewer)).toBe(false);
+    expect(hasSubstantiveReviewFor([review()], '', isReviewer)).toBe(false);
+    expect(hasSubstantiveReviewFor([review()], undefined, isReviewer)).toBe(false);
+  });
+});
+
+describe('reviewsArePaused', () => {
+  const paused = (at: number) => ({ author: REVIEWER, body: PAUSED_COMMENT, updatedAt: at });
+  const asked = (at: number, what = 'review') => ({
+    author: 'stephengardner',
+    body: `@coderabbitai ${what}`,
+    updatedAt: at,
+  });
+
+  it('is lifted by a later request to resume or review', () => {
+    // The notice never leaves the thread, because it lives in a comment
+    // CodeRabbit edits in place. Without this the gate would block forever on
+    // any branch that had ever been paused, and a gate that cannot be satisfied
+    // gets switched off rather than obeyed.
+    expect(reviewsArePaused([paused(100), asked(200)], isReviewer)).toBe(false);
+    expect(reviewsArePaused([paused(100), asked(200, 'resume')], isReviewer)).toBe(false);
+  });
+
+  it('is NOT lifted by a request that came before the pause', () => {
+    expect(reviewsArePaused([asked(100), paused(200)], isReviewer)).toBe(true);
+  });
+
+  it('uses the last EDIT of the notice, not when the comment first appeared', () => {
+    // The summary comment is old and rewritten constantly; created_at would say
+    // the pause is ancient and always lifted.
+    const editedLater = { author: REVIEWER, body: PAUSED_COMMENT, at: 100, updatedAt: 300 };
+    expect(reviewsArePaused([editedLater, asked(200)], isReviewer)).toBe(true);
+  });
+
+  it('ignores a resume asked for by the reviewer itself', () => {
+    // Its own auto-reply quotes the command back, which must not clear a pause
+    // it has just declared.
+    const selfAsk = { author: REVIEWER, body: '@coderabbitai resume', updatedAt: 200 };
+    expect(reviewsArePaused([paused(100), selfAsk], isReviewer)).toBe(true);
+  });
+
+  it('sees the pause CodeRabbit actually posted', () => {
+    expect(reviewsArePaused([{ author: REVIEWER, body: PAUSED_COMMENT }], isReviewer)).toBe(true);
+  });
+
+  it('sees it from the machine marker alone, not only the prose', () => {
+    // The prose is wording that may change; the marker is structural.
+    const body = '<!-- end of auto-generated comment: review paused by coderabbit.ai -->';
+    expect(reviewsArePaused([{ author: REVIEWER, body }], isReviewer)).toBe(true);
+  });
+
+  it('is false for an ordinary review summary', () => {
+    expect(
+      reviewsArePaused(
+        [
+          { author: REVIEWER, body: 'Actionable comments posted: 2' },
+          { author: REVIEWER, body: '<!-- walkthrough_start -->' },
+        ],
+        isReviewer,
+      ),
+    ).toBe(false);
+  });
+
+  it('ignores the same words from someone who is not the reviewer', () => {
+    // Quoting the notice in a human comment must not stall the gate, nor steer it.
+    expect(reviewsArePaused([{ author: 'stephengardner', body: PAUSED_COMMENT }], isReviewer)).toBe(
+      false,
+    );
+  });
+
+  it('is false with no comments, and survives a comment with no body', () => {
+    expect(reviewsArePaused([], isReviewer)).toBe(false);
+    expect(reviewsArePaused([{ author: REVIEWER }], isReviewer)).toBe(false);
   });
 });

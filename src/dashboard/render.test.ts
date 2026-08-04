@@ -20,6 +20,106 @@ function snapshot(accounts: DashboardAccount[], events: string[] = []): Dashboar
   return { accounts, events, now: NOW, refreshMs: 3000 };
 }
 
+describe('a window that has reset', () => {
+  const opts = { color: false as const };
+
+  it('does not keep the MODEL column pinned at the number it hit', () => {
+    // The dashboard is the surface people actually look at. Showing Fable at
+    // 100% for a window that reset hours ago is the same wrong answer the
+    // report used to give, and it reads as "do not use this account".
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'lifted',
+          usage: {
+            fiveHour: 0,
+            sevenDay: 0,
+            models: [{ name: 'Fable', utilization: 1, resetsAt: NOW - 1 }],
+          },
+        }),
+      ]),
+      opts,
+    );
+    expect(out).toContain('Fable 0%');
+    expect(out).not.toContain('Fable 100%');
+  });
+
+  it('still shows a model window that is genuinely spent', () => {
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'spent',
+          usage: {
+            fiveHour: 0,
+            sevenDay: 0,
+            models: [{ name: 'Fable', utilization: 1, resetsAt: NOW + 60_000 }],
+          },
+        }),
+      ]),
+      opts,
+    );
+    expect(out).toContain('Fable 100%');
+  });
+
+  it('picks the worst model by CURRENT usage, not by the highest recorded', () => {
+    // Fable recorded higher, but its window is over, so Opus is the one that
+    // can still stop you.
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'mixed',
+          usage: {
+            fiveHour: 0,
+            sevenDay: 0,
+            models: [
+              { name: 'Fable', utilization: 1, resetsAt: NOW - 1 },
+              { name: 'Opus', utilization: 0.5, resetsAt: NOW + 60_000 },
+            ],
+          },
+        }),
+      ]),
+      opts,
+    );
+    expect(out).toContain('Opus 50%');
+  });
+
+  it('names the OPEN model when an expired one is listed first and both read empty', () => {
+    // Same tie as the report: both normalise to 0, so the first listed would win
+    // by accident and the column would name a model that is not running.
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'tie',
+          usage: {
+            fiveHour: 0,
+            sevenDay: 0,
+            models: [
+              { name: 'Fable', utilization: 1, resetsAt: NOW - 1 }, // expired
+              { name: 'Opus', utilization: 0, resetsAt: NOW + 60_000 }, // open
+            ],
+          },
+        }),
+      ]),
+      opts,
+    );
+    expect(out).toContain('Opus 0%');
+    expect(out).not.toContain('Fable');
+  });
+
+  it('reads the account-wide columns as empty once they reset', () => {
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'lifted',
+          usage: { fiveHour: 1, sevenDay: 1, fiveHourReset: NOW - 1, sevenDayReset: NOW - 1 },
+        }),
+      ]),
+      opts,
+    );
+    expect(out).not.toContain('100%');
+  });
+});
+
 describe('renderDashboard (plain)', () => {
   const opts = { color: false as const };
 

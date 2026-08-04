@@ -1,3 +1,4 @@
+import { windowIsOpen, effectiveUtilization, bindsHarder } from './window-open.js';
 import { codes, paint, shadeForUsed } from '../ui/style.js';
 
 /**
@@ -74,13 +75,46 @@ export function humanWait(resetsAt: number | null, now: number): string {
 }
 
 /**
+ * How much of a window is used RIGHT NOW.
+ *
+ * Three states, and conflating any two of them produces a wrong report:
+ *
+ * - nothing measured: null, and null is not zero
+ * - measured, but the window has since reset: the recorded number describes a
+ *   limit that has ended, so it constrains nothing now
+ * - measured and still open: the number stands
+ *
+ * The middle case is positive information, not missing information. A window
+ * that reset began again at empty, which is why it counts as room rather than
+ * as an unknown.
+ */
+export function effectiveUsed(w: UsageWindow, now: number): number | null {
+  return effectiveUtilization(w.used, w.resetsAt, now);
+}
+
+/**
+ * Whether anything at all has been measured for these windows.
+ *
+ * Deliberately independent of whether any window is still in force: an account
+ * whose limits have all reset HAS been read, and reporting "nothing read yet"
+ * for it would be false.
+ */
+export function hasReading(windows: UsageWindow[] | null | undefined): boolean {
+  return (windows ?? []).some((w) => typeof w.used === 'number');
+}
+
+/**
  * The window closest to its limit: the one that will actually stop you. An
  * average across windows hides exactly this, which is the number that matters.
+ *
+ * Judged on usage as it stands now, so a window that has reset sinks to the
+ * bottom instead of being reported as the constraint.
  */
-export function bindingWindow(windows: UsageWindow[]): UsageWindow | null {
+export function bindingWindow(windows: UsageWindow[], now: number): UsageWindow | null {
   const known = windows.filter((w) => typeof w.used === 'number');
   if (known.length === 0) return null;
-  return known.reduce((worst, w) => ((w.used ?? 0) > (worst.used ?? 0) ? w : worst));
+  // Ties go to a window that is still open; see bindsHarder.
+  return known.reduce((worst, w) => (bindsHarder(w, worst, now) ? w : worst));
 }
 
 /**
@@ -88,8 +122,8 @@ export function bindingWindow(windows: UsageWindow[]): UsageWindow | null {
  * ones. This is the "can I work here at all" question: a spent model window
  * stops that model, not the account.
  */
-export function accountWideBinding(windows: UsageWindow[]): UsageWindow | null {
-  return bindingWindow(windows.filter((w) => !w.modelOnly));
+export function accountWideBinding(windows: UsageWindow[], now: number): UsageWindow | null {
+  return bindingWindow(windows.filter((w) => !w.modelOnly), now);
 }
 
 /**
@@ -97,15 +131,19 @@ export function accountWideBinding(windows: UsageWindow[]): UsageWindow | null {
  * Judging on every window would hide an account that is perfectly usable and
  * merely out of one model, which is the common case.
  */
-export function roomiest(accounts: UsageAccount[]): UsageAccount[] {
+export function roomiest(accounts: UsageAccount[], now: number): UsageAccount[] {
+  const used = (a: UsageAccount): number | null => {
+    if (!a.windows) return null;
+    const binding = accountWideBinding(a.windows, now);
+    return binding ? effectiveUsed(binding, now) : null;
+  };
   return accounts
-    .filter((a) => a.windows && accountWideBinding(a.windows))
-    .filter((a) => (accountWideBinding(a.windows as UsageWindow[])?.used ?? 1) < 1)
-    .sort((x, y) => {
-      const bx = accountWideBinding(x.windows as UsageWindow[])?.used ?? 1;
-      const by = accountWideBinding(y.windows as UsageWindow[])?.used ?? 1;
-      return bx - by;
-    });
+    // An account whose account-wide limit has RESET belongs here: its window
+    // began again at empty, so it is somewhere to go. Only an account nobody
+    // has read is left out, because that is a genuine unknown.
+    .filter((a) => used(a) !== null)
+    .filter((a) => (used(a) ?? 1) < 1)
+    .sort((x, y) => (used(x) ?? 1) - (used(y) ?? 1));
 }
 
 /**
@@ -153,36 +191,63 @@ export function renderUsageReport(
 
     for (const w of account.windows) {
       const wait = humanWait(w.resetsAt, now);
-      const spent = w.used !== null && w.used >= 1;
+      // What the bar and percentage show is usage as it stands now, so a window
+      // that has reset reads as empty rather than staying at the number it hit
+      // before it rolled over.
+      const shown = effectiveUsed(w, now);
+      const lifted = typeof w.used === 'number' && !windowIsOpen(w.resetsAt, now);
+      const spent = shown !== null && shown >= 1;
       const tail = spent
         ? paint(wait ? `SPENT, back in ${wait}` : 'SPENT', `${codes.bold}${codes.brightRed}`, color)
-        : wait
-          ? paint(`back in ${wait}`, codes.dim, color)
-          : '';
+        : lifted
+          ? // Said plainly, because the number we last read was high and the row
+            // now shows empty: this explains why.
+            paint('reset since it was last read', codes.dim, color)
+          : wait
+            ? paint(`back in ${wait}`, codes.dim, color)
+            : '';
       lines.push(
-        `    ${paint(w.label.padEnd(labelW), codes.cyan, color)}  ${paintBar(w.used, barSize, color)} ` +
-          `${paint(percent(w.used), shade(w.used), color)}   ${tail}`.trimEnd(),
+        `    ${paint(w.label.padEnd(labelW), codes.cyan, color)}  ${paintBar(shown, barSize, color)} ` +
+          `${paint(percent(shown), shade(shown), color)}   ${tail}`.trimEnd(),
       );
     }
 
-    const binding = bindingWindow(account.windows);
+    const binding = bindingWindow(account.windows, now);
     if (binding) {
-      const spentNow = (binding.used ?? 0) >= 1;
+      const spentNow = (effectiveUsed(binding, now) ?? 0) >= 1;
       const note = spentNow
         ? binding.modelOnly
           ? `${binding.label} is spent; other models still work on this account`
           : `${binding.label} is spent, so this account cannot work until it resets`
-        : `${binding.label} is closest to its limit at ${percent(binding.used).trim()}`;
+        : `${binding.label} is closest to its limit at ${percent(effectiveUsed(binding, now)).trim()}`;
       lines.push(paint(`    -> ${note}`, codes.dim, color));
     }
     lines.push('');
   }
 
-  const best = roomiest(accounts);
-  const anythingRead = accounts.some((a) => a.windows && bindingWindow(a.windows));
+  const best = roomiest(accounts, now);
+  // Whether usage was READ, which is a different question from whether any
+  // limit is currently in force. An account whose windows have all reset has
+  // been read, and saying otherwise sends the operator looking for a fault.
+  const anythingRead = accounts.some((a) => hasReading(a.windows));
+  // Ranking is decided on account-wide windows alone, so a run that read only
+  // per-model numbers has nothing to rank. Without this, such a run falls
+  // through to the "everything is spent" line and reports a limit that was
+  // never read, sending the operator to look up reset times that do not exist.
+  const accountWideRead = accounts.some((a) =>
+    hasReading((a.windows ?? []).filter((w) => !w.modelOnly)),
+  );
   if (!anythingRead) {
     lines.push(
       paint('No usage has been read yet, so there is nothing to compare.', codes.dim, color),
+    );
+  } else if (!accountWideRead) {
+    lines.push(
+      paint(
+        'Only per-model usage has been read, so there is nothing to compare account by account.',
+        codes.dim,
+        color,
+      ),
     );
   } else if (best.length === 0) {
     lines.push(
@@ -190,12 +255,14 @@ export function renderUsageReport(
     );
   } else {
     const top = best[0] as UsageAccount;
-    const binding = accountWideBinding(top.windows as UsageWindow[]);
+    const binding = accountWideBinding(top.windows as UsageWindow[], now);
     lines.push(
       paint('Most room right now: ', codes.dim, color) +
         paint(top.name, `${codes.bold}${codes.brightGreen}`, color) +
         paint(
-          binding ? `  (${binding.label} at ${percent(binding.used).trim()}, its tightest)` : '',
+          binding
+            ? `  (${binding.label} at ${percent(effectiveUsed(binding, now)).trim()}, its tightest)`
+            : '',
           codes.dim,
           color,
         ),
