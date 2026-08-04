@@ -121,3 +121,27 @@ export function reviewsArePaused(comments, isReviewer) {
   );
 }
 
+/**
+ * Has the reviewer actually reviewed THIS commit?
+ *
+ * Two things that look alike have to be told apart:
+ *
+ * - a real review, which carries the commit it was written against and has a
+ *   body
+ * - a record created merely by replying to an inline comment, which has NO body
+ *   and is stamped with whatever the head happened to be at that moment
+ *
+ * Counting the second would mean answering an old finding makes the newest
+ * commits look reviewed, which is the false green this exists to stop, arriving
+ * by a different route from the paused-review one.
+ */
+export function hasSubstantiveReviewFor(reviews, sha, isReviewer) {
+  if (!sha) return false;
+  return (reviews ?? []).some(
+    (r) =>
+      isReviewer(r.user?.login ?? '') &&
+      r.commit_id === sha &&
+      String(r.body ?? '').trim().length > 0,
+  );
+}
+

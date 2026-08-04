@@ -26,6 +26,7 @@ import {
   threadAnswered,
   remedyFor,
   reviewsArePaused,
+  hasSubstantiveReviewFor,
 } from './coderabbit-findings.mjs';
 
 const REVIEWER = 'coderabbitai';
@@ -188,6 +189,12 @@ function waitSeconds() {
  * Reviews carry the commit they were written against, so this answers a
  * different question from "is there a green status": a status can be left over
  * from an earlier pass, a review cannot.
+ *
+ * An EMPTY body does not count. Replying to inline comments creates review
+ * records with no body of their own, stamped with whatever the head is at that
+ * moment, so answering an old finding would otherwise look like a fresh review
+ * of code nobody has read. That is the same false green this check exists to
+ * stop, arriving by a different route.
  */
 function hasReviewForHead(owner, name, pr) {
   try {
@@ -195,7 +202,7 @@ function hasReviewForHead(owner, name, pr) {
     const sha = pull?.head?.sha;
     if (!sha) return false;
     const reviews = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}/reviews`, '--paginate']) ?? [];
-    return reviews.some((r) => isReviewer(r.user?.login ?? '') && r.commit_id === sha);
+    return hasSubstantiveReviewFor(reviews, sha, isReviewer);
   } catch {
     return false; // cannot tell, so do not claim it was reviewed
   }

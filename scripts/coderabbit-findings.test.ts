@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error -- plain JavaScript helper, shared with the CI script
-import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused } from './coderabbit-findings.mjs';
+import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused, hasSubstantiveReviewFor } from './coderabbit-findings.mjs';
 
 /**
  * These decide whether a pull request may merge, so both directions matter:
@@ -9,6 +9,7 @@ import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, 
  */
 
 const isReviewer = (login: string) => login.toLowerCase().startsWith('coderabbitai');
+const REVIEWER = 'coderabbitai[bot]';
 
 describe('spotting a finding in a review body', () => {
   it('matches the severity badges CodeRabbit actually uses', () => {
@@ -157,7 +158,6 @@ describe('what it tells you to do', () => {
  * pass. On PR 15 that pair made the gate report CLEAR with the newest two
  * commits never looked at, so these assert the exact wording it posted.
  */
-const REVIEWER = 'coderabbitai[bot]';
 const PAUSED_COMMENT = [
   '> [!TIP]',
   '> It looks like this branch is under active development. To avoid overwhelming',
@@ -166,6 +166,48 @@ const PAUSED_COMMENT = [
   '',
   '<!-- end of auto-generated comment: review paused by coderabbit.ai -->',
 ].join('\n');
+
+describe('hasSubstantiveReviewFor', () => {
+  const HEAD = 'bb086dcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const OLD = '15e4087bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const review = (over: Record<string, unknown> = {}) => ({
+    user: { login: REVIEWER },
+    commit_id: HEAD,
+    body: 'Actionable comments posted: 1',
+    ...over,
+  });
+
+  it('counts a real review of this commit', () => {
+    expect(hasSubstantiveReviewFor([review()], HEAD, isReviewer)).toBe(true);
+  });
+
+  it('does NOT count an empty record, which is what a reply leaves behind', () => {
+    // Replying to an inline comment creates a review record with no body,
+    // stamped with whatever the head is at that moment. Counting it would mean
+    // answering an old finding makes the newest commits look reviewed.
+    expect(hasSubstantiveReviewFor([review({ body: '' })], HEAD, isReviewer)).toBe(false);
+    expect(hasSubstantiveReviewFor([review({ body: '   ' })], HEAD, isReviewer)).toBe(false);
+    expect(hasSubstantiveReviewFor([review({ body: null })], HEAD, isReviewer)).toBe(false);
+  });
+
+  it('does NOT count a real review of an EARLIER commit', () => {
+    expect(hasSubstantiveReviewFor([review({ commit_id: OLD })], HEAD, isReviewer)).toBe(false);
+  });
+
+  it('does not count a review by anyone other than the reviewer', () => {
+    expect(
+      hasSubstantiveReviewFor([review({ user: { login: 'stephengardner' } })], HEAD, isReviewer),
+    ).toBe(false);
+  });
+
+  it('says no rather than yes when there is nothing to go on', () => {
+    // Not knowing must never read as approval.
+    expect(hasSubstantiveReviewFor([], HEAD, isReviewer)).toBe(false);
+    expect(hasSubstantiveReviewFor(undefined, HEAD, isReviewer)).toBe(false);
+    expect(hasSubstantiveReviewFor([review()], '', isReviewer)).toBe(false);
+    expect(hasSubstantiveReviewFor([review()], undefined, isReviewer)).toBe(false);
+  });
+});
 
 describe('reviewsArePaused', () => {
   it('sees the pause CodeRabbit actually posted', () => {
