@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.32.0]
+
+### Added
+
+- **Rotation follows the model you are using.** A per-model limit stops that
+  model, not the account, so moving to another account whose Fable is also spent
+  solves nothing. When the model in use runs out, ccx now looks for an account
+  that still has room on THAT model first.
+
+  Only when no account has any is the model changed, and then it follows a
+  preference order rather than whatever happens to be free. The default is Fable
+  then Opus, and it says so when it happens rather than quietly moving you.
+
+  Both parts are configurable in `~/.claude-auto-switch/config.json`:
+
+  ```json
+  { "rotation": { "modelPreference": ["fable", "opus"], "preferSameModel": true } }
+  ```
+
+  Set `preferSameModel` to false to rotate on account limits alone, which is how
+  ccx behaved before this existed.
+
 ## [1.31.1]
 
 ### Fixed

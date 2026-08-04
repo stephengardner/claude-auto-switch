@@ -29,6 +29,20 @@ export const ConfigSchema = z.object({
       proactiveHysteresisPercent: z.number().int().min(0).max(100).default(10),
       /** How often a running session checks its own usage. */
       usageCheckSeconds: z.number().int().positive().default(300),
+      /**
+       * Which model to move to when the one in use runs out everywhere.
+       *
+       * A per-model limit stops that model, not the account, so rotation looks
+       * for another account with room on the SAME model first. Only when none
+       * has any is the model changed, and then it follows this order rather than
+       * whatever happens to be free.
+       */
+      modelPreference: z.array(z.string().min(1)).default(['fable', 'opus']),
+      /**
+       * Set false to ignore models entirely and rotate on account limits alone,
+       * which is how ccx behaved before this existed.
+       */
+      preferSameModel: z.boolean().default(true),
     })
     .default({}),
   realClaudePath: z.string().nullable().default(null),
@@ -49,6 +63,8 @@ export interface PartialConfig {
     proactivePercent?: number;
     proactiveHysteresisPercent?: number;
     usageCheckSeconds?: number;
+    modelPreference?: string[];
+    preferSameModel?: boolean;
   };
   realClaudePath?: string | null;
 }

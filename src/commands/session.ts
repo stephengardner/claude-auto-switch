@@ -31,6 +31,8 @@ import {
 } from '../launcher/notify.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
 import { probeLimit } from '../usage/limit-probe.js';
+import { readUsageSnapshot } from '../usage/usage-store.js';
+import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import {
   installCredential,
@@ -87,6 +89,21 @@ function seedSessionSettings(sessionDir: string, accounts: Account[]): void {
       return;
     }
   }
+}
+
+/**
+ * The model this session is running, or null when nothing pins one.
+ *
+ * Read from the settings file the session dir uses, which is where the model pin
+ * lives, and from `--model` on the command line, which wins because it is the
+ * more explicit of the two.
+ */
+function sessionModel(sessionDir: string, args: string[]): string | null {
+  const flag = args.indexOf('--model');
+  if (flag !== -1 && args[flag + 1]) return args[flag + 1] as string;
+  const settings = readJsonSafe(path.join(sessionDir, 'settings.json'));
+  const model = settings?.model;
+  return typeof model === 'string' && model.length > 0 ? model : null;
 }
 
 function wantsContinue(args: string[]): boolean {
@@ -505,7 +522,36 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         )
         .sort((a, b) => a.priority - b.priority);
       // Start on the pinned account if it is still eligible, else lowest priority.
-      const pick = (pinned ? eligible.find((a) => a.name === pinned) : undefined) ?? eligible[0];
+      const ordered = pinned
+        ? [...eligible.filter((a) => a.name === pinned), ...eligible.filter((a) => a.name !== pinned)]
+        : eligible;
+
+      // Prefer an account that still has room on the MODEL in use. A per-model
+      // limit stops that model, not the account, so rotating to one whose Fable
+      // is also spent solves nothing. Only when no account has any is the model
+      // changed, and then in the configured order.
+      const rotation = context.config.rotation;
+      const model = sessionModel(sessionDir, args);
+      if (rotation.preferSameModel && ordered.length > 0) {
+        const snapshot = readUsageSnapshot(context.ctx);
+        const choice = chooseAccountForModel(
+          model,
+          ordered.map((a) => ({
+            name: a.name,
+            models: Object.fromEntries(
+              (snapshot.accounts[a.name]?.models ?? []).map((m) => [m.name, m.utilization]),
+            ),
+          })),
+          rotation.modelPreference,
+        );
+        if (choice) {
+          if (choice.changedModel && model) notice(modelChangeMessage(choice, model));
+          const picked = ordered.find((a) => a.name === choice.account);
+          if (picked) return { name: picked.name, dir: picked.dir };
+        }
+      }
+
+      const pick = ordered[0];
       return pick ? { name: pick.name, dir: pick.dir } : null;
     },
     resolveAccount: (name) => {

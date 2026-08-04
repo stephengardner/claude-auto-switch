@@ -116,6 +116,11 @@ rename one, `l` to sign one in again, `e` to enable or disable, `r` to rotate.
 - **Honest about what it can see.** `ccx doctor` asks Anthropic who each profile
   is really signed in as, which is the only way to catch a profile holding the
   wrong account or two profiles sharing one login.
+- **It follows the model you are on.** A spent model window stops that model, not
+  the account, so ccx looks for another account that still has room on the SAME
+  model before it considers anything else. Only when none does will it change
+  model, in a configurable order (Fable then Opus by default), and it tells you
+  when that happens.
 - **Optional: move before you run out.** Off by default. `ccx proactive on` hands
   the session to a roomier account as the current one approaches its limit,
   rather than waiting to hit the wall.
@@ -176,6 +181,8 @@ Everything works with no config. To tune it, add an optional
 {
   "priorityOrder": ["personal", "work"],
   "rotation": {
+    "modelPreference": ["fable", "opus"],
+    "preferSameModel": true,
     "defaultBackoffMinutes": 300,
     "proactivePercent": 0,
     "usageCheckSeconds": 300
