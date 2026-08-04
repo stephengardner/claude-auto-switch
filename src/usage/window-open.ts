@@ -69,8 +69,13 @@ export interface Measured {
  * bug.
  */
 export function bindsHarder(b: Measured, a: Measured, now: number): boolean {
-  const usedB = effectiveUtilization(b.used, b.resetsAt, now) ?? 0;
-  const usedA = effectiveUtilization(a.used, a.resetsAt, now) ?? 0;
+  const usedB = effectiveUtilization(b.used, b.resetsAt, now);
+  const usedA = effectiveUtilization(a.used, a.resetsAt, now);
+  // Unread is not zero. Folding the two together let an unmeasured window,
+  // which has no reset time and therefore counts as open, win the tie against a
+  // measured window that had expired, so nothing at all outranked something.
+  if (usedB === null) return false;
+  if (usedA === null) return true;
   if (usedB !== usedA) return usedB > usedA;
   return windowIsOpen(b.resetsAt, now) && !windowIsOpen(a.resetsAt, now);
 }

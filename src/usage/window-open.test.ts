@@ -50,6 +50,20 @@ describe('bindsHarder', () => {
   });
 
   it('treats an unread window as no constraint at all', () => {
-    expect(bindsHarder({ used: null, resetsAt: null }, open(0.1), NOW)).toBe(false);
+    const unread = { used: null, resetsAt: null };
+    expect(bindsHarder(unread, open(0.1), NOW)).toBe(false);
+    // The case the earlier version of this test missed. Unread has no reset
+    // time, so it counted as OPEN, and folding it to zero let it win the tie
+    // against an expired measured window: nothing outranking something.
+    expect(bindsHarder(unread, expired(1), NOW)).toBe(false);
+    expect(bindsHarder(unread, { used: 0, resetsAt: null }, NOW)).toBe(false);
+    expect(bindsHarder(unread, unread, NOW)).toBe(false);
+  });
+
+  it('prefers anything MEASURED over something unread', () => {
+    // A measured window is a real constraint, even at zero; an unread one is
+    // simply unknown, and the callers all drop those before they get here.
+    expect(bindsHarder(expired(1), { used: null, resetsAt: null }, NOW)).toBe(true);
+    expect(bindsHarder(open(0), { used: null, resetsAt: null }, NOW)).toBe(true);
   });
 });
