@@ -7,7 +7,10 @@ import {
   bindingWindow,
   accountWideBinding,
   roomiest,
+  effectiveUsed,
+  hasReading,
   type UsageAccount,
+  type UsageWindow,
 } from './report.js';
 
 const NOW = 1_000_000;
@@ -71,6 +74,21 @@ describe('percent', () => {
   });
 });
 
+describe('hasReading', () => {
+  it('is true when anything was measured, whatever its window is doing', () => {
+    // The point of keeping this separate from "is any limit in force": an
+    // account whose windows have all reset HAS been read.
+    expect(hasReading([{ label: 'weekly', used: 1, resetsAt: NOW - 1 }])).toBe(true);
+    expect(hasReading([{ label: 'weekly', used: 0, resetsAt: null }])).toBe(true);
+  });
+
+  it('is false when nothing was measured', () => {
+    expect(hasReading([{ label: 'weekly', used: null, resetsAt: null }])).toBe(false);
+    expect(hasReading(null)).toBe(false);
+    expect(hasReading([])).toBe(false);
+  });
+});
+
 describe('which window binds', () => {
   const windows = [
     { label: '5-hour', used: 0.1, resetsAt: null },
@@ -97,27 +115,29 @@ describe('which window binds', () => {
     expect(bindingWindow(expired, NOW)?.label).toBe('5-hour');
   });
 
-  it('stops calling an account spent once its only window has reset', () => {
+  it('reads a window that has reset as EMPTY, not as the number it hit', () => {
+    // A reset is positive information: the window began again, so the recorded
+    // 100% describes a limit that is over. Treating that as "unknown" was my
+    // mistake; it is knowledge that the account is free.
     const lifted = [{ label: 'weekly', used: 1, resetsAt: NOW - 1 }];
-    // The recorded 100% described a window that is over, so it is no longer the
-    // thing that stops you. With nothing else measured, the honest answer is
-    // that nothing is known, NOT that the account is full.
-    expect(bindingWindow(lifted, NOW)).toBeNull();
+    expect(effectiveUsed(lifted[0] as UsageWindow, NOW)).toBe(0);
+    expect(bindingWindow(lifted, NOW)?.label).toBe('weekly');
   });
 
-  it('does not SUGGEST an account whose windows have all expired', () => {
-    // Deliberate asymmetry, so it does not read as an oversight. Ignoring an
-    // expired window means we no longer know this account's usage, and
-    // `roomiest` answers "where should I go right now", where recommending an
-    // account on no evidence is a gamble. It is excluded for the same reason an
-    // unread account is. Model preference makes the opposite call, treating
-    // unmeasured as worth TRYING, because there the cost of being wrong is one
-    // attempt rather than a recommendation.
+  it('SUGGESTS an account again once its account-wide window has reset', () => {
     const lifted = account({
       name: 'lifted',
       windows: [{ label: 'weekly', used: 1, resetsAt: NOW - 1 }],
     });
-    expect(roomiest([lifted], NOW)).toEqual([]);
+    const busy = account({ name: 'busy', windows: [{ label: 'weekly', used: 0.8, resetsAt: null }] });
+    // Recovered beats busy: its window is empty again.
+    expect(roomiest([busy, lifted], NOW).map((a) => a.name)).toEqual(['lifted', 'busy']);
+  });
+
+  it('still leaves out an account nobody has read', () => {
+    // The one case that IS a genuine unknown, and the reason the two must not
+    // be conflated.
+    expect(roomiest([account({ name: 'unread', windows: null })], NOW)).toEqual([]);
   });
 
   it('is nothing when no window has been read', () => {
@@ -196,6 +216,49 @@ describe('renderUsageReport', () => {
       plain,
     );
     expect(out).toContain('cannot work until it resets');
+  });
+
+  it('does NOT print a window as SPENT once it has reset', () => {
+    // The row renderer used to read w.used directly, so a cached 100% stayed on
+    // screen in red long after the window rolled over.
+    const out = renderUsageReport(
+      [account({ windows: [{ label: 'weekly', used: 1, resetsAt: NOW - 1 }] })],
+      NOW,
+      plain,
+    );
+    expect(out).not.toContain('SPENT');
+    expect(out).toContain('reset since it was last read');
+    expect(out).toContain('0%');
+  });
+
+  it('quotes the SAME number in the summary as in the row it came from', () => {
+    // Caught by rendering the real snapshot: the row read 0% for a window that
+    // had reset while the closing line still quoted its old 7%, so the report
+    // contradicted itself in two places on one screen.
+    const out = renderUsageReport(
+      [
+        account({
+          name: 'lifted',
+          windows: [{ label: '5-hour', used: 0.07, resetsAt: NOW - 1 }],
+        }),
+      ],
+      NOW,
+      plain,
+    );
+    expect(out).toContain('5-hour at 0%');
+    expect(out).not.toContain('at 7%');
+  });
+
+  it('does not claim nothing has been read when every window has reset', () => {
+    // Usage WAS read for this account. Saying otherwise sends the operator
+    // looking for a fault that is not there.
+    const out = renderUsageReport(
+      [account({ name: 'lifted', windows: [{ label: 'weekly', used: 1, resetsAt: NOW - 1 }] })],
+      NOW,
+      plain,
+    );
+    expect(out).not.toContain('No usage has been read yet');
+    expect(out).toContain('Most room right now');
   });
 
   it('names where there is most room', () => {
