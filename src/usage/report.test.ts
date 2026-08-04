@@ -97,14 +97,27 @@ describe('which window binds', () => {
     expect(bindingWindow(expired, NOW)?.label).toBe('5-hour');
   });
 
-  it('SUGGESTS an account again once its account-wide window has reset', () => {
+  it('stops calling an account spent once its only window has reset', () => {
+    const lifted = [{ label: 'weekly', used: 1, resetsAt: NOW - 1 }];
+    // The recorded 100% described a window that is over, so it is no longer the
+    // thing that stops you. With nothing else measured, the honest answer is
+    // that nothing is known, NOT that the account is full.
+    expect(bindingWindow(lifted, NOW)).toBeNull();
+  });
+
+  it('does not SUGGEST an account whose windows have all expired', () => {
+    // Deliberate asymmetry, so it does not read as an oversight. Ignoring an
+    // expired window means we no longer know this account's usage, and
+    // `roomiest` answers "where should I go right now", where recommending an
+    // account on no evidence is a gamble. It is excluded for the same reason an
+    // unread account is. Model preference makes the opposite call, treating
+    // unmeasured as worth TRYING, because there the cost of being wrong is one
+    // attempt rather than a recommendation.
     const lifted = account({
       name: 'lifted',
       windows: [{ label: 'weekly', used: 1, resetsAt: NOW - 1 }],
     });
-    // Spent on paper, but the window reopened, so it is somewhere to go.
     expect(roomiest([lifted], NOW)).toEqual([]);
-    expect(bindingWindow(lifted.windows as never, NOW)).toBeNull();
   });
 
   it('is nothing when no window has been read', () => {
