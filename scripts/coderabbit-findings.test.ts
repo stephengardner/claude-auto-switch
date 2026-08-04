@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error -- plain JavaScript helper, shared with the CI script
-import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK } from './coderabbit-findings.mjs';
+import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused } from './coderabbit-findings.mjs';
 
 /**
  * These decide whether a pull request may merge, so both directions matter:
@@ -148,5 +148,57 @@ describe('what it tells you to do', () => {
     expect(remedyFor('inline')).toContain('reply on that inline comment');
     expect(remedyFor('review-body')).toContain(BODY_ACK);
     expect(remedyFor('summary-comment')).toContain(BODY_ACK);
+  });
+});
+
+/**
+ * CodeRabbit pauses itself on a busy branch and says so in a comment, while
+ * still leaving a green "Review completed" status on the head from its previous
+ * pass. On PR 15 that pair made the gate report CLEAR with the newest two
+ * commits never looked at, so these assert the exact wording it posted.
+ */
+const REVIEWER = 'coderabbitai[bot]';
+const PAUSED_COMMENT = [
+  '> [!TIP]',
+  '> It looks like this branch is under active development. To avoid overwhelming',
+  '> you with review comments due to an influx of new commits, CodeRabbit has',
+  '> automatically paused this review.',
+  '',
+  '<!-- end of auto-generated comment: review paused by coderabbit.ai -->',
+].join('\n');
+
+describe('reviewsArePaused', () => {
+  it('sees the pause CodeRabbit actually posted', () => {
+    expect(reviewsArePaused([{ author: REVIEWER, body: PAUSED_COMMENT }], isReviewer)).toBe(true);
+  });
+
+  it('sees it from the machine marker alone, not only the prose', () => {
+    // The prose is wording that may change; the marker is structural.
+    const body = '<!-- end of auto-generated comment: review paused by coderabbit.ai -->';
+    expect(reviewsArePaused([{ author: REVIEWER, body }], isReviewer)).toBe(true);
+  });
+
+  it('is false for an ordinary review summary', () => {
+    expect(
+      reviewsArePaused(
+        [
+          { author: REVIEWER, body: 'Actionable comments posted: 2' },
+          { author: REVIEWER, body: '<!-- walkthrough_start -->' },
+        ],
+        isReviewer,
+      ),
+    ).toBe(false);
+  });
+
+  it('ignores the same words from someone who is not the reviewer', () => {
+    // Quoting the notice in a human comment must not stall the gate, nor steer it.
+    expect(reviewsArePaused([{ author: 'stephengardner', body: PAUSED_COMMENT }], isReviewer)).toBe(
+      false,
+    );
+  });
+
+  it('is false with no comments, and survives a comment with no body', () => {
+    expect(reviewsArePaused([], isReviewer)).toBe(false);
+    expect(reviewsArePaused([{ author: REVIEWER }], isReviewer)).toBe(false);
   });
 });

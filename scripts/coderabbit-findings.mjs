@@ -100,3 +100,24 @@ export function remedyFor(kind) {
   }
   return `Read the findings in the review body, then comment "${BODY_ACK}" on the pull request.`;
 }
+
+/**
+ * Has CodeRabbit stopped reviewing this branch by itself?
+ *
+ * It pauses automatic reviews when a branch takes several commits in a row, and
+ * says so in a comment of its own. While paused it still leaves a green
+ * "Review completed" status on the head from its LAST pass, so the status alone
+ * reads exactly like a clean review of the current commit. That pair is a hole
+ * to merge unreviewed work through, and it is why this exists.
+ *
+ * Only the reviewer's own comments count. A human quoting the notice must not
+ * be able to stall the gate, or to steer it.
+ */
+export function reviewsArePaused(comments, isReviewer) {
+  return (comments ?? []).some(
+    (c) =>
+      isReviewer(c.author ?? '') &&
+      /review paused by coderabbit|automatically paused this review/i.test(c.body ?? ''),
+  );
+}
+
