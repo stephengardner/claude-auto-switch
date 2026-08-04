@@ -37,6 +37,13 @@ semantic versioning.
   ccx cannot read which one, so those sessions rotate on account capacity alone
   rather than having a model imposed on them.
 
+  Cached usage is read as current capacity rather than as history. Every stored
+  number carries the time its window resets, and one past its own reset says
+  "spent" about a limit that has already lifted, so it is ignored instead of
+  acted on. Without this, a snapshot taken before a reset would move a session
+  off a model that was available again, and announce a limit that no longer
+  existed.
+
 - Fixed: "starting fresh" after a failed resume kept the `--continue` you typed,
   so it repeated the same resume instead of starting fresh.
 

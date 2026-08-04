@@ -540,6 +540,50 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(retry).not.toContain('--continue');
   });
 
+  it('does NOT move off a model whose limit has already reset', async () => {
+    // Taken from a real snapshot: Fable recorded at 100% with a reset time that
+    // has since passed. The window reopened, so moving the session to Opus and
+    // announcing a Fable limit would both be wrong.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-model-expired-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '600';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'only');
+    setActive('only', context.ctx);
+    mkdirSync(path.join(home, 'session'), { recursive: true });
+    writeFileSync(
+      path.join(home, 'session', 'settings.json'),
+      JSON.stringify({ model: 'claude-fable-5[1m]' }),
+      'utf8',
+    );
+    const now = Date.now();
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({
+        accounts: {
+          only: {
+            fiveHour: 0.07,
+            sevenDay: 0,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            models: [{ name: 'Fable', utilization: 1, resetsAt: now - 3_600_000 }],
+            at: now - 6_000_000,
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    expect(await runCommand(context, [])).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(1);
+    // No --model at all: nothing changed, so nothing is imposed.
+    expect(launches[0]?.args ?? []).not.toContain('--model');
+  });
+
   it('imposes NO model when the session has not pinned one', async () => {
     // With nothing pinned, Claude picks its own default and ccx cannot read it.
     // Forcing the first preference would silently move everyone onto Fable, so

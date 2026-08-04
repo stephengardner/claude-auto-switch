@@ -35,6 +35,7 @@ import { readUsageSnapshot } from '../usage/usage-store.js';
 import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
 import { wantsContinue, withoutContinue } from '../launcher/continue-args.js';
+import { usableCapacity } from '../usage/usable-capacity.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import {
   installCredential,
@@ -545,20 +546,20 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // which nobody asked for. Plain account rotation is the honest answer.
       if (rotation.preferSameModel && model && ordered.length > 0) {
         const snapshot = readUsageSnapshot(context.ctx);
+        const now = Date.now();
         const choice = chooseAccountForModel(
           model,
           ordered.map((a) => {
-            const u = snapshot.accounts[a.name];
-            // An account-wide window at its limit makes every model unusable, so
-            // it has to be part of the candidate. Reading only per-model numbers
-            // would offer an account that is out altogether.
-            const wideOut =
-              (typeof u?.fiveHour === 'number' && u.fiveHour >= 1) ||
-              (typeof u?.sevenDay === 'number' && u.sevenDay >= 1);
+            // Read as CURRENT capacity, not as history: a cached number past its
+            // own reset says "spent" about a limit that has already lifted, and
+            // acting on it moves the session off a model it could still use. An
+            // account-wide window that is genuinely closed makes every model
+            // unusable, so it belongs in the candidate too.
+            const capacity = usableCapacity(snapshot.accounts[a.name], now);
             return {
               name: a.name,
-              models: Object.fromEntries((u?.models ?? []).map((m) => [m.name, m.utilization])),
-              ...(wideOut ? { accountWideOut: true } : {}),
+              models: capacity.models,
+              ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
             };
           }),
           rotation.modelPreference,
