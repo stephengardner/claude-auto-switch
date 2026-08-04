@@ -39,6 +39,13 @@ describe('hasRoomFor', () => {
     expect(hasRoomFor(account('a', { Fable: 0 }, true), 'fable')).toBe(false);
   });
 
+  it('has no room when an ACCOUNT-WIDE window is spent, whatever the model says', () => {
+    // A per-model number can look healthy while the account is out altogether,
+    // and offering that account would send a session somewhere it cannot work.
+    expect(hasRoomFor(account('a', { Fable: 0.1 }, true), 'fable')).toBe(false);
+    expect(hasRoomFor(account('a', {}, true), 'opus')).toBe(false);
+  });
+
   it('treats an unmeasured model as room, rather than stranding the account', () => {
     // Refusing to try an account nobody has read would strand a good one; the
     // worst case here is a single wasted attempt.
@@ -89,6 +96,15 @@ describe('chooseAccountForModel', () => {
       ['sonnet', 'opus'],
     );
     expect(choice?.model).toBe('sonnet');
+  });
+
+  it('skips an account that is out account-wide even with model headroom', () => {
+    const choice = chooseAccountForModel(
+      'fable',
+      [account('wide-out', { Fable: 0.1 }, true), account('fine', { Fable: 0.4 })],
+      DEFAULT_ORDER,
+    );
+    expect(choice?.account).toBe('fine');
   });
 
   it('returns nothing when everything is out, instead of guessing', () => {

@@ -26,6 +26,10 @@ semantic versioning.
   Set `preferSameModel` to false to rotate on account limits alone, which is how
   ccx behaved before this existed.
 
+  The chosen model is applied to the session that starts, not merely announced,
+  and it stays applied for the rest of the run: a model that ran out does not
+  come back within a session, so re-checking it would only churn.
+
 ## [1.31.1]
 
 ### Fixed

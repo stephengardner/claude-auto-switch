@@ -37,7 +37,10 @@ export const ConfigSchema = z.object({
        * has any is the model changed, and then it follows this order rather than
        * whatever happens to be free.
        */
-      modelPreference: z.array(z.string().min(1)).default(['fable', 'opus']),
+      modelPreference: z
+        .array(z.string().min(1))
+        .nonempty('modelPreference needs at least one model')
+        .default(['fable', 'opus']),
       /**
        * Set false to ignore models entirely and rotate on account limits alone,
        * which is how ccx behaved before this existed.

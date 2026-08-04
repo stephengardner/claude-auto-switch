@@ -33,6 +33,7 @@ import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.
 import { probeLimit } from '../usage/limit-probe.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
+import { withModel } from '../usage/model-args.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import {
   installCredential,
@@ -220,6 +221,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * themselves into the UI at random: they were doing exactly that.
    */
   let claudeOwnsScreen = false;
+  /**
+   * The model rotation moved to, once the one in use ran out everywhere. Kept
+   * for the rest of the run so later rotations start from the model actually in
+   * use rather than the one that is already spent.
+   */
+  let chosenModel: string | null = null;
 
   /**
    * Tell the operator something, by whichever channel does not wreck the screen.
@@ -531,23 +538,40 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // is also spent solves nothing. Only when no account has any is the model
       // changed, and then in the configured order.
       const rotation = context.config.rotation;
-      const model = sessionModel(sessionDir, args);
+      const model = chosenModel ?? sessionModel(sessionDir, args);
       if (rotation.preferSameModel && ordered.length > 0) {
         const snapshot = readUsageSnapshot(context.ctx);
         const choice = chooseAccountForModel(
           model,
-          ordered.map((a) => ({
-            name: a.name,
-            models: Object.fromEntries(
-              (snapshot.accounts[a.name]?.models ?? []).map((m) => [m.name, m.utilization]),
-            ),
-          })),
+          ordered.map((a) => {
+            const u = snapshot.accounts[a.name];
+            // An account-wide window at its limit makes every model unusable, so
+            // it has to be part of the candidate. Reading only per-model numbers
+            // would offer an account that is out altogether.
+            const wideOut =
+              (typeof u?.fiveHour === 'number' && u.fiveHour >= 1) ||
+              (typeof u?.sevenDay === 'number' && u.sevenDay >= 1);
+            return {
+              name: a.name,
+              models: Object.fromEntries((u?.models ?? []).map((m) => [m.name, m.utilization])),
+              ...(wideOut ? { accountWideOut: true } : {}),
+            };
+          }),
           rotation.modelPreference,
         );
         if (choice) {
-          if (choice.changedModel && model) notice(modelChangeMessage(choice, model));
           const picked = ordered.find((a) => a.name === choice.account);
-          if (picked) return { name: picked.name, dir: picked.dir };
+          if (picked) {
+            // Remembered so the session is actually STARTED on it. Choosing a
+            // model and not applying it is worse than not choosing: the session
+            // keeps running the one that just ran out while the operator has
+            // been told it moved.
+            if (choice.changedModel && model) {
+              chosenModel = choice.model;
+              notice(modelChangeMessage(choice, model));
+            }
+            return { name: picked.name, dir: picked.dir };
+          }
         }
       }
 
@@ -704,9 +728,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // ccx has to say goes through `notice` rather than onto the screen.
       takeScreen(true);
       try {
+        // The chosen model is applied here, and stays applied for later
+        // rotations in this run: once Fable is gone it does not come back
+        // within a session, so re-checking it every time would only churn.
+        const modelArgs = chosenModel ? withModel(args, chosenModel) : args;
         const outcome = await runPtySession({
           ...base,
-          args: wantContinue ? [...args, '--continue'] : args,
+          args: wantContinue ? [...modelArgs, '--continue'] : modelArgs,
         });
         // If we tried to resume but the new account has no saved conversation,
         // start a fresh session on it instead of dead-ending.

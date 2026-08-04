@@ -190,6 +190,15 @@ Everything works with no config. To tune it, add an optional
 }
 ```
 
+Two of those decide how rotation treats models. `preferSameModel` (on by
+default) makes ccx look for another account with room on the model you are
+using before it considers anything else, because a spent model window stops that
+model rather than the account. `modelPreference` is the order it works through
+only when no account has room on the model in use: the default moves you to Opus
+once Fable is gone everywhere, and it says so when it happens. Set
+`preferSameModel` to false to rotate on account limits alone.
+
+
 - `priorityOrder`: which accounts to prefer, in order (for example, burn the
   personal one first and save work for last).
 - `rotation.defaultBackoffMinutes`: how long to treat an account as out when
