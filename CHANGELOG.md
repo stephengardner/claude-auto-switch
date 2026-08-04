@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.32.2]
+
+### Fixed
+
+- **A login that cannot be renewed is no longer asked again every few minutes.**
+  When the token endpoint answers `invalid_grant`, that refresh token is gone for
+  good: no number of retries can change the answer, and only signing in again
+  can. ccx now remembers the refusal against the credential's contents, so it
+  stops asking until the credential changes, which is exactly what `ccx login`
+  does.
+
+  This was costing a pointless request per account per check, and worse, a line
+  in the credential log each time. On the machine this was found on, one dead
+  login had been re-asked 472 times, and 98% of those came less than six minutes
+  apart. That log is the first thing anyone reads to work out why a login broke,
+  so burying it was the real damage. The first refusal is still recorded, since
+  that is the one that answers the question.
+
+  A temporary failure is deliberately NOT remembered, so a blip never benches a
+  healthy account.
+
 ## [1.32.1]
 
 ### Fixed

@@ -3,6 +3,8 @@ import path from 'node:path';
 import { acquireLockDir, CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
 import { writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import { credentialPath, previousCredentialPath, isUsableCredential } from '../accounts/credential-vault.js';
+import { sha256Fingerprint } from '../util/fingerprint.js';
+import { alreadyRefused, refusalReason, rememberRefused } from './dead-login-memo.js';
 
 /**
  * Renew an account's access token when it has expired.
@@ -29,6 +31,11 @@ export type RefreshStatus = 'refreshed' | 'not-needed' | 'needs-login' | 'unavai
 export interface RefreshOutcome {
   status: RefreshStatus;
   detail?: string;
+  /**
+   * True when this verdict was remembered rather than newly discovered, so a
+   * caller can report it once instead of on every check.
+   */
+  alreadyKnown?: true;
 }
 
 interface OauthBlock {
@@ -114,6 +121,19 @@ export async function refreshCredentialIfExpired(
   const auth: OauthBlock = oauth;
   const refreshToken: string = oauth.refreshToken;
 
+  // A dead grant stays dead until this file changes, and only signing in again
+  // changes it. Asking the token endpoint a second time cannot get a different
+  // answer, so do not: it costs a request per check and buries the credential
+  // log, which is the first thing anyone reads to work out why a login broke.
+  const identity = sha256Fingerprint(refreshToken);
+  if (alreadyRefused(identity)) {
+    return {
+      status: 'needs-login',
+      detail: refusalReason(identity) ?? 'renewal already refused for this login',
+      alreadyKnown: true,
+    };
+  }
+
   const expiresAt = typeof oauth.expiresAt === 'number' ? oauth.expiresAt : 0;
   if (expiresAt > now() + EXPIRY_BUFFER_MS && oauth.accessToken) {
     return { status: 'not-needed' };
@@ -159,10 +179,12 @@ export async function refreshCredentialIfExpired(
     // Only a definitively dead grant means "log in again"; anything else is
     // treated as temporary so a blip never marks a good account as broken.
     const dead = /invalid_grant|invalid_request|unauthorized/i.test(body) || response.status === 401;
-    return {
-      status: dead ? 'needs-login' : 'unavailable',
-      detail: `token endpoint ${response.status}${body ? `: ${body}` : ''}`,
-    };
+    const detail = `token endpoint ${response.status}${body ? `: ${body}` : ''}`;
+    // Only a definitively dead grant is worth remembering. A transient failure
+    // must stay retryable, or one blip would bench a healthy account until the
+    // process restarts.
+    if (dead) rememberRefused(identity, detail);
+    return { status: dead ? 'needs-login' : 'unavailable', detail };
   }
 
   let payload: { access_token?: string; refresh_token?: string; expires_in?: number };
