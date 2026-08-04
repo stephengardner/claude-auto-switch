@@ -46,3 +46,31 @@ export function effectiveUtilization(
   if (typeof used !== 'number') return null;
   return windowIsOpen(resetsAt, now) ? used : 0;
 }
+
+/** The two numbers any "which window binds" question needs. */
+export interface Measured {
+  used: number | null | undefined;
+  /** Optional so a caller whose window simply has no reset time still fits. */
+  resetsAt?: number | null | undefined;
+}
+
+/**
+ * Does `b` constrain you more than `a` right now?
+ *
+ * Used wherever something picks the window closest to its limit. Once expired
+ * windows read as empty, TIES are the normal case rather than a corner, so the
+ * tie rule decides what gets named most of the time: an open window wins,
+ * because an expired one constrains nothing and naming it reports a limit that
+ * is not running.
+ *
+ * Written as a comparator rather than repeated at each call site because the
+ * three places that ask this hold their numbers in three different shapes, and
+ * the last time the rule was fixed in only one of them the other two kept the
+ * bug.
+ */
+export function bindsHarder(b: Measured, a: Measured, now: number): boolean {
+  const usedB = effectiveUtilization(b.used, b.resetsAt, now) ?? 0;
+  const usedA = effectiveUtilization(a.used, a.resetsAt, now) ?? 0;
+  if (usedB !== usedA) return usedB > usedA;
+  return windowIsOpen(b.resetsAt, now) && !windowIsOpen(a.resetsAt, now);
+}

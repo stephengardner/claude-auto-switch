@@ -83,6 +83,29 @@ describe('a window that has reset', () => {
     expect(out).toContain('Opus 50%');
   });
 
+  it('names the OPEN model when an expired one is listed first and both read empty', () => {
+    // Same tie as the report: both normalise to 0, so the first listed would win
+    // by accident and the column would name a model that is not running.
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'tie',
+          usage: {
+            fiveHour: 0,
+            sevenDay: 0,
+            models: [
+              { name: 'Fable', utilization: 1, resetsAt: NOW - 1 }, // expired
+              { name: 'Opus', utilization: 0, resetsAt: NOW + 60_000 }, // open
+            ],
+          },
+        }),
+      ]),
+      opts,
+    );
+    expect(out).toContain('Opus 0%');
+    expect(out).not.toContain('Fable');
+  });
+
   it('reads the account-wide columns as empty once they reset', () => {
     const out = renderDashboard(
       snapshot([

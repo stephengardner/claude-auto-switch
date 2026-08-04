@@ -1,4 +1,4 @@
-import { windowIsOpen, effectiveUtilization } from './window-open.js';
+import { windowIsOpen, effectiveUtilization, bindsHarder } from './window-open.js';
 import { codes, paint, shadeForUsed } from '../ui/style.js';
 
 /**
@@ -113,9 +113,8 @@ export function hasReading(windows: UsageWindow[] | null | undefined): boolean {
 export function bindingWindow(windows: UsageWindow[], now: number): UsageWindow | null {
   const known = windows.filter((w) => typeof w.used === 'number');
   if (known.length === 0) return null;
-  return known.reduce((worst, w) =>
-    (effectiveUsed(w, now) ?? 0) > (effectiveUsed(worst, now) ?? 0) ? w : worst,
-  );
+  // Ties go to a window that is still open; see bindsHarder.
+  return known.reduce((worst, w) => (bindsHarder(w, worst, now) ? w : worst));
 }
 
 /**

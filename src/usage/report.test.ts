@@ -115,6 +115,17 @@ describe('which window binds', () => {
     expect(bindingWindow(expired, NOW)?.label).toBe('5-hour');
   });
 
+  it('names the OPEN window when an expired one is listed first and both read empty', () => {
+    // Once expired windows read as empty, ties are the normal case, and a plain
+    // "greater than" keeps whichever came first. Here that would name a 5-hour
+    // window which is not running at all.
+    const windows = [
+      { label: '5-hour', used: 1, resetsAt: NOW - 1 }, // expired, effectively 0
+      { label: 'weekly', used: 0, resetsAt: NOW + 1 }, // open, also 0
+    ];
+    expect(bindingWindow(windows, NOW)?.label).toBe('weekly');
+  });
+
   it('reads a window that has reset as EMPTY, not as the number it hit', () => {
     // A reset is positive information: the window began again, so the recorded
     // 100% describes a limit that is over. Treating that as "unknown" was my

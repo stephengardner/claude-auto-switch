@@ -51,7 +51,7 @@ export interface RenderOptions {
 }
 
 import { codes, paint } from '../ui/style.js';
-import { effectiveUtilization } from '../usage/window-open.js';
+import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
 
 /**
  * A wait, at the coarsest useful precision: minutes within the hour, hours
@@ -113,10 +113,15 @@ function worstModel(
   const models = (a.usage?.models ?? []).filter((m) => typeof m.utilization === 'number');
   if (models.length === 0) return null;
   // Ranked on usage as it stands now, so a window that has already reset does
-  // not keep the column pinned at the number it hit before it rolled over.
-  const at = (m: { utilization: number; resetsAt?: number | null }): number =>
-    effectiveUtilization(m.utilization, m.resetsAt, now) ?? 0;
-  return models.reduce((worst, m) => (at(m) > at(worst) ? m : worst));
+  // not keep the column pinned at the number it hit before it rolled over, and
+  // a tie goes to a model whose window is still running.
+  const measured = (m: { utilization: number; resetsAt?: number | null }) => ({
+    used: m.utilization,
+    resetsAt: m.resetsAt,
+  });
+  return models.reduce((worst, m) =>
+    bindsHarder(measured(m), measured(worst), now) ? m : worst,
+  );
 }
 
 /** The worst model's usage as it stands now, for colouring the MODEL column. */
