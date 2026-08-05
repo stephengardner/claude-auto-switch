@@ -54,6 +54,40 @@ export function snapshotSharing(
   };
 }
 
+/**
+ * Replace a profile's login and carry it to the profiles that shared the old
+ * one, in one call.
+ *
+ * The order is the correctness property and it cannot be observed afterwards:
+ * the snapshot has to be taken BEFORE the write, because writing destroys the
+ * shared value that identifies who was sharing it. Doing it as three statements
+ * at the call site means a later edit can reorder them and nothing fails, which
+ * was true of exactly these three statements until this existed. Here the order
+ * is inside one function, so it is testable and cannot drift.
+ *
+ * `write` may throw: the caller decides what a failed write means, and nothing
+ * is carried when there was no successful write to carry.
+ */
+export function writeAndCarry(
+  target: SharedProfile,
+  allProfiles: SharedProfile[],
+  sharedNames: string[],
+  write: () => void,
+  deps: PropagateDeps = {},
+): string[] {
+  const sharing = snapshotSharing(target, allProfiles, sharedNames);
+  write();
+  return propagateRenewal(
+    {
+      renewedDir: target.dir,
+      siblings: sharing.sharedWith,
+      retired: sharing.fingerprint,
+      renewed: credentialFingerprint(target.dir),
+    },
+    deps,
+  );
+}
+
 export interface PropagateInput {
   /** The profile that was just renewed, whose login is being carried across. */
   renewedDir: string;

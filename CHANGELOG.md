@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.34.1]
+
+### Fixed
+
+- **The login a RUNNING Claude refreshes is carried across too.** 1.34.0 fixed
+  the renewal ccx does at session start. It left the path that fires far more
+  often: a long-running Claude refreshes its own token every few hours, ccx
+  saves that back into the active profile, and a profile sharing that login was
+  still left holding the retired one. Same death, slower road.
+
+  Both paths now carry the renewal across.
+
+  The save and the carry are one call rather than three statements, because the
+  order is the correctness property and it cannot be seen afterwards: the
+  snapshot of who shares the login has to be taken BEFORE the write, since
+  writing destroys the value that identifies them. As three statements at the
+  call site, removing the carry entirely broke no test at all, which is exactly
+  how it would come back.
+
 ## [1.34.0]
 
 ### Fixed

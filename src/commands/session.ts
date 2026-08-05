@@ -46,7 +46,12 @@ import {
   credentialFingerprint,
 } from '../accounts/credential-vault.js';
 import { hasLogin, hasWorkingLogin } from '../accounts/account-login.js';
-import { propagateRenewal, snapshotSharing } from '../accounts/shared-login.js';
+import {
+  propagateRenewal,
+  snapshotSharing,
+  writeAndCarry,
+  type SharingSnapshot,
+} from '../accounts/shared-login.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { decideSaveBack } from '../accounts/save-back.js';
 import {
@@ -344,14 +349,59 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // only produce the same refusal, and re-asking is what froze the machine.
       return 'settled';
     }
+    // The save and the carry are ONE call, so the snapshot cannot drift below
+    // the write. This path matters more than the session-start one: it fires
+    // every time a RUNNING Claude refreshes its own token, which is every few
+    // hours, where the other only fires at launch. Carrying it across here is
+    // what stops a duplicate profile rotting while its twin is in use.
+    let carried: string[];
     try {
-      // Keeps the account's previous credential as a rollback cushion.
-      installCredential(account.dir, sessionCreds);
-      return 'settled';
+      carried = writeAndCarry(
+        account,
+        accounts,
+        renewalWouldBreakOthers(account, accounts),
+        // Keeps the account's previous credential as a rollback cushion.
+        () => void installCredential(account.dir, sessionCreds),
+      );
     } catch {
       // A local write failure, not a decision. It might not repeat, and giving
       // up here would leave a refreshed token unsaved until the process exits.
       return 'retry';
+    }
+    announceCarried(account, carried);
+    return 'settled';
+  };
+
+  /**
+   * Give the profiles that shared this login the one that replaced it.
+   *
+   * Separate from the write so a failure to carry it across can never turn a
+   * successful save into a retry: the account itself is already up to date, and
+   * repeating the save would not help the siblings either.
+   */
+  const carryToSharedProfiles = (account: Account, sharing: SharingSnapshot): void => {
+    announceCarried(
+      account,
+      propagateRenewal({
+        renewedDir: account.dir,
+        siblings: sharing.sharedWith,
+        retired: sharing.fingerprint,
+        renewed: credentialFingerprint(account.dir),
+      }),
+    );
+  };
+
+  /** Say which profiles were brought along, in the log for the right account. */
+  const announceCarried = (account: Account, carried: string[]): void => {
+    for (const name of carried) {
+      logCredentialEvent(
+        {
+          account: name,
+          kind: 'installed',
+          detail: `shares a login with "${account.name}", which was just renewed; carried across so this one keeps working`,
+        },
+        context.ctx,
+      );
     }
   };
 
@@ -652,24 +702,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         //
         // The siblings were read BEFORE the renewal, because afterwards the
         // shared token is gone and there is nothing left to match on.
-        // Bound to the credential the renewal actually produced, so a login
-        // replaced again in between is never spread to the old cohort.
-        const carried = propagateRenewal({
-          renewedDir: account.dir,
-          siblings: sharing.sharedWith,
-          retired: sharing.fingerprint,
-          renewed: credentialFingerprint(account.dir),
-        });
-        for (const name of carried) {
-          logCredentialEvent(
-            {
-              account: name,
-              kind: 'installed',
-              detail: `shares a login with "${account.name}", which was just renewed; carried across so this one keeps working`,
-            },
-            context.ctx,
-          );
-        }
+        carryToSharedProfiles(account, sharing);
       } else if (readiness.state === 'needs-login') {
         logCredentialEvent(
           { account: account.name, kind: 'needs-login', detail: readiness.detail },
