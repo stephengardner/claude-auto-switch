@@ -1,4 +1,5 @@
 import { installCredential, credentialFingerprint, credentialPath } from './credential-vault.js';
+import { withCredentialLock } from '../claude/locks.js';
 
 /**
  * Keeping profiles that share ONE login from killing each other.
@@ -51,31 +52,70 @@ export function snapshotSharing(
   };
 }
 
+export interface PropagateInput {
+  /** The profile that was just renewed, whose login is being carried across. */
+  renewedDir: string;
+  siblings: SharedProfile[];
+  /** What the shared login was BEFORE the renewal. */
+  retired: string | null;
+  /**
+   * What the renewal produced. Propagation is bound to this exact credential, so
+   * a login replaced again after the renewal (a sign-in, another refresh) is
+   * never copied anywhere: the source is re-checked rather than assumed.
+   */
+  renewed: string | null;
+}
+
+export interface PropagateDeps {
+  /** Injectable so a write failure can be FORCED in a test rather than hoped for. */
+  install?: (destDir: string, sourceFile: string) => boolean;
+  /** Injectable so an interleaving between the check and the write can be staged. */
+  lock?: (dir: string, fn: () => void) => void;
+}
+
 /**
  * Copy a freshly renewed login into the profiles that were sharing the one it
  * replaced. Returns the names actually updated.
  *
- * `retiredFingerprint` is the identity of the credential BEFORE the renewal,
- * and a profile is only written when it still holds exactly that. Anything else
- * means the profile is not what it was when this started, and writing over it
- * would be a guess about someone's login. Guessing is what scrambled these
- * profiles once before, so the condition is exact rather than approximate.
+ * Two things make this safe to do automatically:
+ *
+ * - a profile is written only while it still holds EXACTLY the credential that
+ *   was just retired, re-checked inside that profile's own credential lock. The
+ *   check and the write are otherwise separate moments, and a sign-in landing
+ *   between them would be overwritten by an older login.
+ * - the SOURCE is re-checked too, against the credential the renewal actually
+ *   produced, so a profile whose login has since changed again never spreads a
+ *   token nobody asked for.
+ *
+ * Guessing about someone's login is what scrambled these profiles once before,
+ * so both conditions are exact rather than approximate.
  */
-export function propagateRenewal(
-  renewedDir: string,
-  siblings: SharedProfile[],
-  retiredFingerprint: string | null,
-): string[] {
+export function propagateRenewal(input: PropagateInput, deps: PropagateDeps = {}): string[] {
+  const { renewedDir, siblings, retired, renewed } = input;
+  const install = deps.install ?? installCredential;
+  const lock = deps.lock ?? ((dir, fn) => withCredentialLock(dir, fn));
+
+  // Nothing to match on, or the source is no longer the login this was asked to
+  // carry. Either way there is no safe copy to make.
+  if (!retired || !renewed) return [];
+  if (credentialFingerprint(renewedDir) !== renewed) return [];
+
   const updated: string[] = [];
   for (const sibling of siblings) {
     if (sibling.dir === renewedDir) continue;
-    // A null fingerprint needs no branch of its own: a readable profile never
-    // fingerprints to null, so this comparison already refuses everything.
-    if (credentialFingerprint(sibling.dir) !== retiredFingerprint) continue;
+    // Cheap check first, so the ordinary "nothing to do" case takes no lock.
+    if (credentialFingerprint(sibling.dir) !== retired) continue;
     try {
-      // Keeps the sibling's previous credential as a rollback cushion, and
-      // refuses a source that is empty or unreadable.
-      if (installCredential(sibling.dir, credentialPath(renewedDir))) updated.push(sibling.name);
+      lock(sibling.dir, () => {
+        // Re-checked INSIDE the lock, both ends. The check above and the write
+        // are otherwise two separate moments, and anything can happen between
+        // them: a sign-in on the sibling would be replaced by an older login,
+        // and a second renewal on the source would spread a token nobody asked
+        // for. Keeps the sibling's previous credential as a rollback cushion.
+        if (credentialFingerprint(sibling.dir) !== retired) return;
+        if (credentialFingerprint(renewedDir) !== renewed) return;
+        if (install(sibling.dir, credentialPath(renewedDir))) updated.push(sibling.name);
+      });
     } catch {
       // One profile failing must not stop the others: a login left behind is
       // exactly the problem being fixed.

@@ -652,7 +652,15 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         //
         // The siblings were read BEFORE the renewal, because afterwards the
         // shared token is gone and there is nothing left to match on.
-        for (const name of propagateRenewal(account.dir, sharing.sharedWith, sharing.fingerprint)) {
+        // Bound to the credential the renewal actually produced, so a login
+        // replaced again in between is never spread to the old cohort.
+        const carried = propagateRenewal({
+          renewedDir: account.dir,
+          siblings: sharing.sharedWith,
+          retired: sharing.fingerprint,
+          renewed: credentialFingerprint(account.dir),
+        });
+        for (const name of carried) {
           logCredentialEvent(
             {
               account: name,

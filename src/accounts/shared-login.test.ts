@@ -26,17 +26,14 @@ function sharedPair() {
   const shared = { accessToken: 'sk-old', refreshToken: 'refresh-shared', expiresAt: 1 };
   const renewed = profile(home, 'phx', { ...shared });
   const sibling = profile(home, 'maxed', { ...shared });
-  const retired = credentialFingerprint(renewed.dir);
-  return { home, renewed, sibling, retired };
+  return { home, renewed, sibling, retired: credentialFingerprint(renewed.dir) };
 }
 
 /** Stand in for the renewal: replace the login with a rotated one. */
-function renew(dir: string): void {
+function renew(dir: string, refreshToken = 'refresh-rotated'): void {
   writeFileSync(
     path.join(dir, '.credentials.json'),
-    JSON.stringify({
-      claudeAiOauth: { accessToken: 'sk-new', refreshToken: 'refresh-rotated', expiresAt: 999 },
-    }),
+    JSON.stringify({ claudeAiOauth: { accessToken: 'sk-new', refreshToken, expiresAt: 999 } }),
     'utf8',
   );
 }
@@ -49,14 +46,25 @@ describe('a login shared by two profiles, when one of them renews', () => {
     const { renewed, sibling, retired } = sharedPair();
     renew(renewed.dir);
 
-    expect(propagateRenewal(renewed.dir, [sibling], retired)).toEqual(['maxed']);
+    const updated = propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: [sibling],
+      retired,
+      renewed: credentialFingerprint(renewed.dir),
+    });
+    expect(updated).toEqual(['maxed']);
     expect(refreshTokenOf(sibling.dir)).toBe('refresh-rotated');
   });
 
   it('keeps the sibling previous login as a rollback cushion', () => {
     const { renewed, sibling, retired } = sharedPair();
     renew(renewed.dir);
-    propagateRenewal(renewed.dir, [sibling], retired);
+    propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: [sibling],
+      retired,
+      renewed: credentialFingerprint(renewed.dir),
+    });
     expect(existsSync(path.join(sibling.dir, '.credentials.prev.json'))).toBe(true);
   });
 
@@ -72,66 +80,212 @@ describe('a login shared by two profiles, when one of them renews', () => {
     });
     renew(renewed.dir);
 
-    expect(propagateRenewal(renewed.dir, [other], retired)).toEqual([]);
+    const updated = propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: [other],
+      retired,
+      renewed: credentialFingerprint(renewed.dir),
+    });
+    expect(updated).toEqual([]);
     expect(refreshTokenOf(other.dir)).toBe('refresh-someone-else');
   });
 
   it('does nothing when there is no fingerprint to match on', () => {
     const { renewed, sibling } = sharedPair();
     renew(renewed.dir);
-    expect(propagateRenewal(renewed.dir, [sibling], null)).toEqual([]);
+    const updated = propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: [sibling],
+      retired: null,
+      renewed: credentialFingerprint(renewed.dir),
+    });
+    expect(updated).toEqual([]);
     expect(refreshTokenOf(sibling.dir)).toBe('refresh-shared');
   });
 
   it('never writes over the profile that was renewed', () => {
     // Checked BEFORE the renewal on purpose. Afterwards this profile no longer
     // matches the retired fingerprint, so the exact-match check would refuse it
-    // anyway and the guard would prove nothing. Before the renewal it still
-    // matches, so only the self-check stops it copying a file onto itself.
+    // anyway and the guard would prove nothing. Before it, only the self-check
+    // stops it copying a file onto itself.
     const { renewed, retired } = sharedPair();
-    expect(propagateRenewal(renewed.dir, [renewed], retired)).toEqual([]);
+    const updated = propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: [renewed],
+      retired,
+      renewed: retired,
+    });
+    expect(updated).toEqual([]);
     expect(refreshTokenOf(renewed.dir)).toBe('refresh-shared');
   });
 
   it('carries on when one profile cannot be written', () => {
-    // One unwritable profile must not strand the others: a login left behind is
-    // exactly the failure being fixed.
+    // The write failure is FORCED, not hoped for. An earlier version of this
+    // test used a perfectly writable directory, so the failure handler it
+    // claimed to cover never ran once.
     const { home, renewed, sibling, retired } = sharedPair();
-    const broken = { name: 'broken', dir: path.join(home, 'profiles', 'broken') };
-    mkdirSync(broken.dir, { recursive: true });
-    writeFileSync(
-      path.join(broken.dir, '.credentials.json'),
-      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-old', refreshToken: 'refresh-shared' } }),
-      'utf8',
-    );
+    const broken = profile(home, 'broken', {
+      accessToken: 'sk-old',
+      refreshToken: 'refresh-shared',
+      expiresAt: 1,
+    });
     renew(renewed.dir);
 
-    const updated = propagateRenewal(renewed.dir, [broken, sibling], retired);
-    expect(updated).toContain('maxed');
+    const updated = propagateRenewal(
+      {
+        renewedDir: renewed.dir,
+        siblings: [broken, sibling],
+        retired,
+        renewed: credentialFingerprint(renewed.dir),
+      },
+      {
+        install: (destDir, sourceFile) => {
+          if (destDir === broken.dir) throw new Error('disk on fire');
+          writeFileSync(path.join(destDir, '.credentials.json'), readFileSync(sourceFile, 'utf8'));
+          return true;
+        },
+      },
+    );
+
+    expect(updated).toEqual(['maxed']);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-rotated');
+  });
+});
+
+describe('something changing between the check and the write', () => {
+  it('leaves a sibling alone when its login changed after the check', () => {
+    // The window: the fingerprint is checked, then the file is replaced. If a
+    // sign-in lands in between, an unguarded write would replace that NEWER
+    // login with an older one. The injected lock stages that interleaving.
+    const { renewed, sibling, retired } = sharedPair();
+    renew(renewed.dir);
+    const written: string[] = [];
+
+    const updated = propagateRenewal(
+      {
+        renewedDir: renewed.dir,
+        siblings: [sibling],
+        retired,
+        renewed: credentialFingerprint(renewed.dir),
+      },
+      {
+        lock: (dir, fn) => {
+          renew(dir, 'refresh-signed-in-just-now'); // another process, mid-flight
+          fn();
+        },
+        install: (destDir) => {
+          written.push(destDir);
+          return true;
+        },
+      },
+    );
+
+    expect(updated).toEqual([]);
+    expect(written).toEqual([]);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-signed-in-just-now');
+  });
+
+  it('carries nothing when the SOURCE login changed after the renewal', () => {
+    // Bound to the credential the renewal actually produced. If the source has
+    // been replaced again since, spreading it would push a token nobody asked
+    // for onto the old cohort.
+    const { renewed, sibling, retired } = sharedPair();
+    renew(renewed.dir);
+    const renewedFingerprint = credentialFingerprint(renewed.dir);
+    renew(renewed.dir, 'refresh-rotated-yet-again');
+
+    const updated = propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: [sibling],
+      retired,
+      renewed: renewedFingerprint,
+    });
+    expect(updated).toEqual([]);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-shared');
   });
 });
 
 describe('the order of taking the snapshot', () => {
   it('works when taken BEFORE the renewal', () => {
-    const { renewed, sibling, home } = sharedPair();
-    const accounts = [renewed, sibling];
-    const snapshot = snapshotSharing(renewed, accounts, ['maxed']);
+    const { renewed, sibling } = sharedPair();
+    const snapshot = snapshotSharing(renewed, [renewed, sibling], ['maxed']);
     renew(renewed.dir);
 
-    expect(propagateRenewal(renewed.dir, snapshot.sharedWith, snapshot.fingerprint)).toEqual(['maxed']);
+    const updated = propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: snapshot.sharedWith,
+      retired: snapshot.fingerprint,
+      renewed: credentialFingerprint(renewed.dir),
+    });
+    expect(updated).toEqual(['maxed']);
     expect(refreshTokenOf(sibling.dir)).toBe('refresh-rotated');
-    expect(home.length).toBeGreaterThan(0);
   });
 
   it('is USELESS when taken after, which is why it is a separate step', () => {
-    // Renewing rotates the token, so by the time the renewal has happened there
-    // is no shared value left to match on and the sibling is silently left
-    // holding a dead login. This is the mistake the snapshot exists to prevent.
+    // Renewing rotates the token, so by then there is no shared value left to
+    // match on and the sibling is silently left holding a dead login. This is
+    // the mistake the snapshot exists to prevent.
     const { renewed, sibling } = sharedPair();
     renew(renewed.dir);
     const tooLate = snapshotSharing(renewed, [renewed, sibling], ['maxed']);
 
-    expect(propagateRenewal(renewed.dir, tooLate.sharedWith, tooLate.fingerprint)).toEqual([]);
+    const updated = propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: tooLate.sharedWith,
+      retired: tooLate.fingerprint,
+      renewed: credentialFingerprint(renewed.dir),
+    });
+    expect(updated).toEqual([]);
     expect(refreshTokenOf(sibling.dir)).toBe('refresh-shared'); // still the dead one
+  });
+});
+
+describe('the cheap checks before the lock', () => {
+  it('takes no lock for a profile that plainly does not match', () => {
+    // The inner re-check is what makes this correct; the outer one is what
+    // makes it cheap. Asserting the lock is never taken is the only way that
+    // difference is observable, and without it the outer check is untested.
+    const { home, renewed, retired } = sharedPair();
+    const other = profile(home, 'second', {
+      accessToken: 'sk-other',
+      refreshToken: 'refresh-someone-else',
+      expiresAt: 5,
+    });
+    renew(renewed.dir);
+    const locked: string[] = [];
+
+    const updated = propagateRenewal(
+      {
+        renewedDir: renewed.dir,
+        siblings: [other],
+        retired,
+        renewed: credentialFingerprint(renewed.dir),
+      },
+      { lock: (dir, fn) => { locked.push(dir); fn(); } },
+    );
+
+    expect(updated).toEqual([]);
+    expect(locked).toEqual([]);
+  });
+
+  it('stops before touching any sibling when the source has moved on', () => {
+    const { renewed, sibling, retired } = sharedPair();
+    renew(renewed.dir);
+    const renewedFingerprint = credentialFingerprint(renewed.dir);
+    renew(renewed.dir, 'refresh-rotated-yet-again');
+    const locked: string[] = [];
+
+    const updated = propagateRenewal(
+      {
+        renewedDir: renewed.dir,
+        siblings: [sibling],
+        retired,
+        renewed: renewedFingerprint,
+      },
+      { lock: (dir, fn) => { locked.push(dir); fn(); } },
+    );
+
+    expect(updated).toEqual([]);
+    expect(locked).toEqual([]);
   });
 });
