@@ -187,3 +187,28 @@ export function hasSubstantiveReviewFor(reviews, sha, isReviewer) {
   );
 }
 
+/**
+ * Has the reviewer said, in a COMMENT, that it reviewed up to this commit?
+ *
+ * A review that finds nothing posts no review object at all: just a summary
+ * comment saying so, naming the range it covered. Judging only by review objects
+ * therefore cannot tell "reviewed and clean" apart from "never reviewed", and
+ * the two need opposite answers.
+ *
+ * That gap had teeth. Paired with the paused-review check it produced a
+ * permanent false block: a branch with enough commits gets auto-paused, the
+ * pause banner stays in the summary comment even after a re-review, and the
+ * escape hatch could never fire for a clean review. The gate then refuses a
+ * pull request that has genuinely been reviewed, with no way forward.
+ *
+ * Matched on the full 40-character SHA, which the reviewer writes into the
+ * range it covered. Nothing else in a comment carries that string by accident,
+ * and a stale comment naming an older head cannot match the current one.
+ */
+export function reviewerCommentCovers(comments, sha, isReviewer) {
+  if (!sha || sha.length < 40) return false;
+  return (comments ?? []).some(
+    (c) => isReviewer(c.author ?? c.user?.login ?? '') && String(c.body ?? '').includes(sha),
+  );
+}
+
