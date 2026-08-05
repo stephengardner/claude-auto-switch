@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, appendFileSync, mkdirSync, statSync, renameSync, rmSync } from 'node:fs';
+import { acquireLockDir } from '../claude/locks.js';
 import path from 'node:path';
 import { writeSecretFile } from '../util/secret-file.js';
 
@@ -8,6 +9,12 @@ import { writeSecretFile } from '../util/secret-file.js';
  * swaps happen live. Bounded so it never grows without limit; owner-only.
  */
 const FILE = 'events.jsonl';
+/** The compacted older half. Only compaction writes it; appends never do. */
+const ARCHIVE_SUFFIX = '.1';
+/** Where the live file is parked mid-compaction, so a crash there loses nothing. */
+const ROTATING_SUFFIX = '.rotating';
+/** Held only while compacting, so two processes cannot rotate at once. */
+const LOCK_SUFFIX = '.compact.lock';
 const MAX = 200;
 
 export interface EventRecord {
@@ -68,9 +75,32 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
  */
 export function readEvents(configHome: string, limit = 5): EventRecord[] {
   const file = eventsFilePath(configHome);
-  if (!existsSync(file)) return [];
+  // Oldest first: the compacted archive, then anything a compaction was moving
+  // when it was interrupted, then the live file. Reading the middle one is what
+  // makes a compaction killed half way through cost nothing.
+  const parts = [`${file}${ARCHIVE_SUFFIX}`, `${file}${ROTATING_SUFFIX}`, file];
+  const chunks: string[] = [];
+  for (const part of parts) {
+    if (!existsSync(part)) continue;
+    try {
+      chunks.push(readFileSync(part, 'utf8'));
+    } catch {
+      /* an unreadable piece must not lose the readable ones */
+    }
+  }
+  if (chunks.length === 0) return [];
+  return foldRepeats(parseRecords(joinChunks(chunks))).slice(-limit);
+}
+
+/**
+ * Parse the file into records, skipping any malformed line.
+ *
+ * A concurrent append can leave a partial line behind on some systems, and a
+ * line can be hand-edited, so nothing here may assume the file is well formed.
+ */
+function parseRecords(text: string): EventRecord[] {
   const out: EventRecord[] = [];
-  for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
+  for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
       const r = JSON.parse(line) as Partial<EventRecord>;
@@ -90,41 +120,111 @@ export function readEvents(configHome: string, limit = 5): EventRecord[] {
       /* skip a malformed line */
     }
   }
-  return foldRepeats(out).slice(-limit);
+  return out;
 }
 
 /**
- * Append one event, keeping only the most recent MAX.
+ * How large the file may get before it is worth trimming, in bytes.
  *
- * A message identical to the one before it COLLAPSES into that record, bumping
- * a count and the time rather than adding a line. This log is bounded, so
- * without it a caller stuck in a loop empties the window of everything else:
- * that has happened twice, once filling all 200 entries with a single line, and
- * both times it blinded `ccx dashboard` and `ccx history` exactly when they were
- * the tools being reached for. Collapsing keeps the information that something
- * is repeating, and the count says how much.
+ * Measured in BYTES because that is what `stat` gives for free. Counting lines
+ * means reading the whole file, and doing that on every append is how the first
+ * version of this turned a cheap write back into an expensive one: 900 appends
+ * took over twenty seconds. Size is O(1) to ask for, so the common path never
+ * opens the file at all.
+ *
+ * Generous on purpose. Trimming rewrites the file, so it should be rare, and a
+ * few hundred kilobytes of text costs nothing to hold.
+ */
+const TRIM_BYTES = 64 * 1024;
+
+/**
+ * Append one event.
+ *
+ * A TRUE append, one line, and never a read-modify-write of the whole file.
+ * Several ccx processes share this log (a session, the dashboard tailing it, the
+ * editor launcher), and rewriting the file from each of them was wrong in two
+ * ways at once, both reproduced with four concurrent writers:
+ *
+ * - it LOST events. Two writers read the same state and the second rewrite
+ *   erased the first one's event. 74% of events disappeared.
+ * - it THREW. The atomic rewrite renames a temp file onto the target, and on
+ *   Windows that fails with EPERM when another process is doing the same. Three
+ *   of four writers crashed. Nothing here was wrapped, so a log line could take
+ *   down a session start or a swap.
+ *
+ * An append cannot collide with another append and needs no temp file, so both
+ * go away. Writing is best effort besides: telemetry must never be able to stop
+ * the thing it is describing.
  */
 export function appendEvent(configHome: string, msg: string, now: number): void {
-  const records = readEvents(configHome, MAX);
-  const previous = records[records.length - 1];
-  if (previous && previous.msg === msg) {
-    // Clamped for the same reason as the fold on read: a count that leaves the
-    // safe-integer range is dropped when read back, turning a long run into a
-    // single event.
-    const total = (previous.count ?? 1) + 1;
-    records[records.length - 1] = {
-      at: now,
-      msg,
-      count: Number.isSafeInteger(total) ? total : Number.MAX_SAFE_INTEGER,
-    };
-  } else {
-    records.push({ at: now, msg });
+  const file = eventsFilePath(configHome);
+  try {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    appendFileSync(file, `${JSON.stringify({ at: now, msg })}\n`, { mode: 0o600 });
+  } catch {
+    return; // a lost log line must never break a session
   }
-  const body = records
-    .slice(-MAX)
-    .map((r) => JSON.stringify(r))
-    .join('\n');
-  writeSecretFile(eventsFilePath(configHome), `${body}\n`);
+  trimIfLong(file);
+}
+
+/**
+ * Keep the file bounded, occasionally.
+ *
+ * Repeats are FOLDED before the tail is taken, which is the part that matters: a
+ * caller stuck in a loop used to fill every slot and push out everything else,
+ * blinding `ccx dashboard` and `ccx history` exactly when they were the tools
+ * being reached for. That has happened twice. Folding first means a storm
+ * occupies ONE record no matter how long it runs, so real events survive it.
+ *
+ * Best effort throughout. A trim that collides with another process just leaves
+ * the file long for now, and the next append tries again.
+ */
+function trimIfLong(file: string): void {
+  try {
+    // The whole point of the cheap path: ask the size, do not read the file.
+    if (statSync(file).size <= TRIM_BYTES) return;
+
+    // One compactor at a time, and never waiting: if someone else is doing it,
+    // there is nothing to add by queueing up behind them.
+    const lock = acquireLockDir(`${file}${LOCK_SUFFIX}`, { waitMs: 0 });
+    if (!lock.held) return;
+    try {
+      if (statSync(file).size <= TRIM_BYTES) return; // they may have just finished
+
+      // The live file is moved ASIDE in one atomic step rather than read and
+      // replaced. Snapshot-then-replace loses any event appended in between,
+      // which is the same lost-update bug this change removes from the write
+      // path, and it would have been reintroduced here where it is harder to
+      // see. After the rename, appends create a fresh file that compaction
+      // never touches, so nothing arriving from here on can be overwritten.
+      const rotating = `${file}${ROTATING_SUFFIX}`;
+      const archive = `${file}${ARCHIVE_SUFFIX}`;
+      renameSync(file, rotating);
+
+      const older = existsSync(archive) ? readFileSync(archive, 'utf8') : '';
+      const kept = foldRepeats(
+        parseRecords(joinChunks([older, readFileSync(rotating, 'utf8')])),
+      ).slice(-MAX);
+      writeSecretFile(archive, `${kept.map((r) => JSON.stringify(r)).join('\n')}\n`);
+      rmSync(rotating, { force: true });
+    } finally {
+      lock.release();
+    }
+  } catch {
+    /* the file stays long until someone manages it; nothing is lost by that */
+  }
+}
+
+/**
+ * Join file chunks so a line cannot be spliced onto the one after it. A chunk
+ * that does not end in a newline would otherwise merge its last record with the
+ * next chunk's first, and both would be discarded as malformed.
+ */
+function joinChunks(chunks: string[]): string {
+  return chunks
+    .filter((c) => c.length > 0)
+    .map((c) => (c.endsWith('\n') ? c : `${c}\n`))
+    .join('');
 }
 
 /**
