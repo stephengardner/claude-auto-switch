@@ -620,7 +620,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const readiness = await ensureLoginUsable({
         hasLogin: () => hasLogin(account.dir),
         renewalDue: () => renewalIsDue(account.dir),
-        renew: () => refreshCredentialIfExpired(account.dir),
+        renew: () => refreshCredentialIfExpired(account.dir, { ctx: context.ctx }),
       });
       if (readiness.state === 'renewed') {
         logCredentialEvent(

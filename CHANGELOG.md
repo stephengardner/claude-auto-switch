@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.33.0]
+
+### Fixed
+
+- **The status line says "needs sign-in" for a login that has actually been
+  refused.** It already had that warning, but it could only see a credential
+  FILE with no token material. A dead refresh token leaves a file that looks
+  complete, so the warning never fired and the line instead reported healthy
+  headroom, in Claude's own interface, for an account that cannot authenticate.
+
+  When the token endpoint refuses a login for good, that verdict is now written
+  down, keyed by the credential's contents. Signing in again produces different
+  contents, so the note clears itself and no stale record can hold down an
+  account that works.
+
+  The same record spares a fresh session the request it used to spend
+  rediscovering a refusal that was already known. Only a definitive refusal is
+  recorded; a network blip or a server error stays retryable, because a bad
+  moment must never bench a healthy account.
+
 ## [1.32.5]
 
 ### Fixed
