@@ -46,6 +46,8 @@ import {
   credentialFingerprint,
 } from '../accounts/credential-vault.js';
 import { hasLogin, hasWorkingLogin } from '../accounts/account-login.js';
+import { propagateRenewal, snapshotSharing } from '../accounts/shared-login.js';
+import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { decideSaveBack } from '../accounts/save-back.js';
 import {
   freshMirrorState,
@@ -620,6 +622,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     runSession: async (hotAccount, isContinue, runOptions) => {
       const account = accounts.find((a) => a.name === hotAccount.name);
       if (!account) return { kind: 'ok', exitCode: 1 };
+      // Read BEFORE the renewal: it rotates the token, so afterwards there is
+      // no shared value left to identify who was sharing it.
+      const sharing = snapshotSharing(account, accounts, renewalWouldBreakOthers(account, accounts));
       // Check the login BEFORE copying it into the session. A login that merely
       // expired is renewed here, which is safe precisely because nothing is using
       // this account yet, and a login that is genuinely finished is named, with
@@ -639,6 +644,32 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           },
           context.ctx,
         );
+        // Renewing retires the token it replaced, so any profile still holding
+        // that token is finished from this moment. Those profiles are the SAME
+        // account, so they are brought along rather than left to die: this is
+        // how an account here actually died, renewed at a session start while a
+        // duplicate profile kept the retired copy.
+        //
+        // The siblings were read BEFORE the renewal, because afterwards the
+        // shared token is gone and there is nothing left to match on.
+        // Bound to the credential the renewal actually produced, so a login
+        // replaced again in between is never spread to the old cohort.
+        const carried = propagateRenewal({
+          renewedDir: account.dir,
+          siblings: sharing.sharedWith,
+          retired: sharing.fingerprint,
+          renewed: credentialFingerprint(account.dir),
+        });
+        for (const name of carried) {
+          logCredentialEvent(
+            {
+              account: name,
+              kind: 'installed',
+              detail: `shares a login with "${account.name}", which was just renewed; carried across so this one keeps working`,
+            },
+            context.ctx,
+          );
+        }
       } else if (readiness.state === 'needs-login') {
         logCredentialEvent(
           { account: account.name, kind: 'needs-login', detail: readiness.detail },
