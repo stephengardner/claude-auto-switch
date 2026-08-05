@@ -179,8 +179,18 @@ export async function refreshUsage(
       // expired, their usage became unreadable, and the rotation policy went
       // blind on exactly the accounts it was meant to choose between. The
       // renewal is carried across to them instead.
+      // The editor has to be protected through the WHOLE cohort, not just when
+      // it points at this account. Profiles sharing a login share its fate, so
+      // renewing a sibling rotates the token the editor is using and then
+      // carries it into the editor's own file mid-session. Before this change
+      // any sibling caused a refusal, so that could not happen; now it can, and
+      // the grace period is measured against the EDITOR's copy, which is the one
+      // that says whether anything is still using it.
+      const editor = accounts.find((a) => a.name === editorAccount);
       const editorMayBeUsingIt =
-        account.name === editorAccount && !expiredLongerThan(account.dir, EDITOR_IDLE_GRACE_MS);
+        editor !== undefined &&
+        [account.name, ...siblings].includes(editor.name) &&
+        !expiredLongerThan(editor.dir, EDITOR_IDLE_GRACE_MS);
       // Read FRESH, at the moment of the decision, rather than from the map
       // built before the loop. This loop makes a network call per account and
       // sleeps between them, so seconds pass and a session can start in that
@@ -199,7 +209,9 @@ export async function refreshUsage(
       // The SAME fresh answer decides which credential to probe. A session that
       // started mid-refresh holds a newer copy than the profile does, and reading
       // the profile would report usage for a credential nobody is using.
-      const lease = busy.get(account.name);
+      const lease = [account.name, ...siblings]
+        .map((name) => busy.get(name))
+        .find((candidate): candidate is SessionLease => candidate !== undefined);
       const refusal =
         inSessionNow.length > 0
           ? `not renewed: a session is using ${inSessionNow.join(', ')}; renewing would sign it out`

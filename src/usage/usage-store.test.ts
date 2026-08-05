@@ -451,3 +451,84 @@ describe('a session that starts while the usage refresh is running', () => {
     expect(probed.some((file) => file.includes('live'))).toBe(true);
   });
 });
+
+describe('a shared login where only the OTHER profile is busy', () => {
+  function shareLogin(dirs: string[], token: string): void {
+    for (const dir of dirs) {
+      writeFileSync(
+        path.join(dir, '.credentials.json'),
+        JSON.stringify({ claudeAiOauth: { accessToken: `access-${token}`, refreshToken: token } }),
+        'utf8',
+      );
+    }
+  }
+
+  it('probes the credential the sibling session is actually using', async () => {
+    // Refusing the renewal is only half the answer. The profiles share a login,
+    // so the sibling's live session holds the fresher copy of it; reading this
+    // profile instead reports usage for a credential nobody is using.
+    const { c, accounts } = setup(['idle', 'busy']);
+    shareLogin([accounts[0]!.dir, accounts[1]!.dir], 'refresh-shared');
+    const home = c.env.CLAUDE_AUTO_SWITCH_HOME as string;
+    const live = path.join(home, 'live-session');
+    takeLease('busy', live, c);
+    // Only the IDLE account is stale, so it is the only one probed. Otherwise
+    // the busy account's own probe would satisfy the assertion below and the
+    // test could not tell whether the idle one used the right credential.
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({
+        accounts: {
+          busy: {
+            fiveHour: 0.1,
+            sevenDay: 0.2,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            at: Date.now(),
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    const probed: string[] = [];
+    await refreshUsage(accounts, c, {
+      probe: (file) => {
+        probed.push(file);
+        return Promise.resolve(result(0.1, 0.2));
+      },
+      renew: () => Promise.resolve({ status: 'refreshed' }),
+    });
+
+    expect(probed).toHaveLength(1);
+    expect(probed[0]).toContain('live-session');
+  });
+
+  it('does not renew when the EDITOR is pointed at the profile that shares this login', async () => {
+    // The editor reads a login directly, so ccx cannot see its session. Renewing
+    // a sibling rotates the token the editor is using, and then carries it into
+    // the editor's own file mid-session. Before shared logins could be renewed
+    // at all, any sibling caused a refusal and this could not happen.
+    const { c, accounts } = setup(['other', 'editor-one']);
+    shareLogin([accounts[0]!.dir, accounts[1]!.dir], 'refresh-shared');
+    const home = c.env.CLAUDE_AUTO_SWITCH_HOME as string;
+    try {
+      symlinkSync(accounts[1]!.dir, path.join(home, 'editor-active'), 'junction');
+    } catch {
+      symlinkSync(accounts[1]!.dir, path.join(home, 'editor-active'));
+    }
+
+    const renewed: string[] = [];
+    await refreshUsage(accounts, c, {
+      probe: () => Promise.resolve(result(0.1, 0.2)),
+      renew: (dir) => {
+        renewed.push(dir);
+        return Promise.resolve({ status: 'refreshed' });
+      },
+    });
+
+    // Processing the NON-editor profile first is the case that used to slip
+    // through: it is not the editor account itself, so nothing stopped it.
+    expect(renewed).toEqual([]);
+  });
+});
