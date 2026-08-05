@@ -212,3 +212,39 @@ export function reviewerCommentCovers(comments, sha, isReviewer) {
   );
 }
 
+
+/**
+ * Has the reviewer covered this commit, allowing for merges that add nothing?
+ *
+ * Coverage is asked of the head UNCONDITIONALLY by the gate, because "the
+ * reviewer has looked at what I am about to merge" is the question, and the
+ * pause state is only ever an explanation for why it has not. Requiring it only
+ * while paused left a false green: asking for a review lifts the pause the
+ * instant the comment is posted, so a gate run right after reported CLEAR
+ * having verified nothing about the new head.
+ *
+ * A merge commit inherits coverage from its parents. Updating a branch from the
+ * base introduces no reviewable change, and the reviewer says exactly that
+ * ("No files to review"), so without this rule such a head could never be
+ * covered and the pull request would be unmergeable for good. A merge is
+ * covered when every parent is either reviewed or already contained in the base
+ * branch, which together means nothing unreviewed can enter through it.
+ *
+ * The three lookups are injected so this can be tested without a network.
+ */
+export function commitIsCovered(sha, deps, ancestry = new Set()) {
+  // The guard tracks the current PATH, not everything visited anywhere. A
+  // shared set breaks the ordinary diamond: two parents that both reach one
+  // covered ancestor: the second branch would meet it already marked and report
+  // false before its coverage could be established, blocking a head that is
+  // genuinely covered.
+  if (!sha || ancestry.has(sha)) return false;
+  if (deps.reviewed(sha)) return true;
+  if (deps.containedInBase(sha)) return true;
+  const parents = deps.parentsOf(sha) ?? [];
+  // Only a MERGE inherits: a plain commit adds work of its own, and inheriting
+  // from its single parent would let every later commit ride an old review.
+  if (parents.length < 2) return false;
+  const walked = new Set(ancestry).add(sha);
+  return parents.every((parent) => commitIsCovered(parent, deps, walked));
+}
