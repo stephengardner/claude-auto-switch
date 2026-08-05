@@ -2,8 +2,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
-import { readToken } from '../daemon/token-store.js';
-import { hasUsableLogin } from '../accounts/credential-vault.js';
+import { hasLogin } from '../accounts/account-login.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { liveLeases, type LeaseOptions } from '../session/lease.js';
@@ -103,10 +102,6 @@ function pause(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-function hasLogin(dir: string): boolean {
-  return hasUsableLogin(dir) || readToken(dir) !== null;
 }
 
 /**

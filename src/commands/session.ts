@@ -43,9 +43,9 @@ import {
   isUsableCredential,
   identityKey,
   sessionIdentityEmail,
-  hasUsableLogin,
   credentialFingerprint,
 } from '../accounts/credential-vault.js';
+import { hasLogin } from '../accounts/account-login.js';
 import { decideSaveBack } from '../accounts/save-back.js';
 import {
   freshMirrorState,
@@ -67,14 +67,6 @@ import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 
 const CREDS = '.credentials.json';
-
-/** An account is usable if it has a login (a credentials file, or a stored token on macOS). */
-function hasLogin(accountDir: string): boolean {
-  // A signed-out profile keeps a complete credential file with empty tokens, so
-  // file presence is not a login. Selecting one starts a session that cannot
-  // work and then looks like a usage limit.
-  return hasUsableLogin(accountDir) || readToken(accountDir) !== null;
-}
 
 /** True when at least one account can run (hot-swap is possible). */
 export function hasAnyUsableAccount(context: CliContext): boolean {
