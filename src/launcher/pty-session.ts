@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { resetChildTerminalModes } from '../ui/child-terminal-modes.js';
 import { spawn, type IPty } from 'node-pty';
 import { matchesCapText } from './cap-detect.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
@@ -224,9 +225,14 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       exited = true;
       exitSub.dispose();
       if (switchPoll) clearInterval(switchPoll);
-      // Stop routing keystrokes here, but leave the terminal's MODE alone: the
+      // Stop routing keystrokes here, but leave OUR OWN terminal mode alone: the
       // run's owner holds it across sessions so a swap never toggles it.
       detachInput();
+      // The CHILD's modes are a different matter, and nobody was putting them
+      // back. We end sessions by killing them, which skips the child's exit
+      // handler, so the mouse tracking and bracketed paste it switched on stay
+      // on and the terminal keeps reporting into whatever reads input next.
+      resetChildTerminalModes();
       if (ownsInput) input.close();
       process.stdout.off('resize', onResize);
 
