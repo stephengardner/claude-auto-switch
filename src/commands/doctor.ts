@@ -22,6 +22,7 @@ import { probeAll } from '../health/prober.js';
 import { codes, paint } from '../ui/style.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { ClaudeInvoker } from '../invoker.js';
+import { signedInAndNotRejected } from '../health/signed-in.js';
 
 export interface DoctorCheck {
   name: string;
@@ -215,7 +216,7 @@ export async function auditAccounts(context: CliContext): Promise<DoctorCheck> {
     // Ask claude itself: a credential FILE can exist while its token is dead,
     // and a doctor that reports a dead login as healthy is worse than none.
     const healths = await probeAll(accounts, { claude: getClaude(context) });
-    loggedInNames = new Set(healths.filter((h) => h.loggedIn).map((h) => h.name));
+    loggedInNames = signedInAndNotRejected(healths, accounts, context.ctx);
   } catch {
     loggedInNames = new Set(
       accounts

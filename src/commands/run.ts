@@ -12,6 +12,7 @@ import { shouldHintShim, shimHintText, wasHinted, markHinted } from './shim-hint
 import { isShimInstalled } from '../shell/install-shim.js';
 import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-path.js';
 import { configHome } from '../config/paths.js';
+import { signedInAndNotRejected } from '../health/signed-in.js';
 
 /** Show a one-time tip about the transparent shim, after an interactive session. */
 function maybeHintShim(context: CliContext): void {
@@ -58,7 +59,7 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
   const pinned = getActive(context.ctx) ?? undefined;
   const claude = getClaude(context);
   const healths = await probeAll(accounts, { claude });
-  const loggedIn = new Set(healths.filter((h) => h.loggedIn).map((h) => h.name));
+  const loggedIn = signedInAndNotRejected(healths, accounts, context.ctx);
 
   if (isHeadless(passthroughArgs) && context.config.rotation.autoRotateHeadless) {
     const result = await autoRotateHeadless(passthroughArgs, {
