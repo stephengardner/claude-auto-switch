@@ -9,6 +9,8 @@ import { writeFileSync } from 'node:fs';
 import { editorSettingsPath, ENV_KEY } from '../../src/editor/settings.js';
 import { editorJunctionPath, editorTargetAccount } from '../../src/editor/junction.js';
 import { loadConfig } from '../../src/config/config.js';
+import { rememberDeadLogin } from '../../src/usage/dead-login-store.js';
+import { credentialFileFingerprint } from '../../src/accounts/credential-vault.js';
 import type { CliContext } from '../../src/context.js';
 
 function makeContext(home: string): CliContext {
@@ -24,7 +26,15 @@ describe('ccx editor on/off (env-var approach)', () => {
     const context = makeContext(home);
     const dirA = path.join(home, 'profiles', 'A');
     await addCommand(context, 'A', { dir: dirA, login: false });
-    writeFileSync(path.join(dirA, '.credentials.json'), '{}', 'utf8'); // A is logged in
+    // A REAL login. This used to be '{}' with a comment claiming it was logged
+    // in, which the old check believed because the file existed. A signed-out
+    // profile keeps a complete credential with empty tokens, so file presence
+    // was never the question.
+    writeFileSync(
+      path.join(dirA, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-a', refreshToken: 'r' } }),
+      'utf8',
+    );
     useCommand(context, 'A');
 
     expect(editorCommand(context, 'on')).toBe(0);
@@ -51,5 +61,39 @@ describe('ccx editor on/off (env-var approach)', () => {
   it('refuses when there is no active account', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-edcmd-'));
     expect(editorCommand(makeContext(home), 'on')).toBe(1);
+  });
+});
+
+describe('what the editor pointer reports about the account it resolves to', () => {
+  it('does not call a signed-OUT profile logged in', async () => {
+    // The shape that used to pass: a complete credential file whose tokens are
+    // empty, which is exactly what Claude leaves behind when a profile signs
+    // out. Judging by the file existing reported it as a working account.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-edout-'));
+    const context = makeContext(home);
+    const dir = path.join(home, 'profiles', 'empty');
+    await addCommand(context, 'empty', { dir, login: false });
+    writeFileSync(path.join(dir, '.credentials.json'), '{}', 'utf8');
+    useCommand(context, 'empty');
+    expect(editorCommand(context, 'on')).toBe(0);
+
+    expect(editorTargetAccount(context)).toEqual({ name: 'empty', loggedIn: false });
+  });
+
+  it('does not call a REFUSED login logged in either', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-edref-'));
+    const context = makeContext(home);
+    const dir = path.join(home, 'profiles', 'refused');
+    await addCommand(context, 'refused', { dir, login: false });
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-x', refreshToken: 'r' } }),
+      'utf8',
+    );
+    useCommand(context, 'refused');
+    expect(editorCommand(context, 'on')).toBe(0);
+    rememberDeadLogin(credentialFileFingerprint(dir), 'token endpoint 400: invalid_grant', context.ctx);
+
+    expect(editorTargetAccount(context)).toEqual({ name: 'refused', loggedIn: false });
   });
 });
