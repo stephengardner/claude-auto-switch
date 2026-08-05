@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.36.4]
+
+### Fixed
+
+- **`ccx list` no longer shows a refused login as signed in.** The table is
+  where you look to find out which accounts you can use, and it repeated the
+  health probe's answer. The probe reports a refused login as signed in, because
+  the credential file still looks like one, so this was the most misleading
+  place to say it.
+
+- **The editor pointer stopped judging by whether the credential file exists.**
+  A signed-out profile keeps a complete credential with empty tokens, so file
+  presence was never the question. That check was replaced everywhere else in
+  1.17.0 and survived here, which meant `ccx doctor` could report the editor as
+  pointed at a working account when it was pointed at a signed-out or refused
+  one.
+
 ## [1.36.3]
 
 ### Fixed

@@ -1,10 +1,9 @@
 import path from 'node:path';
-import { existsSync } from 'node:fs';
 import { getActive } from '../state/active.js';
 import { getAccount, listAccounts } from '../accounts/registry.js';
 import { setTarget, removeTarget, isLink, readTarget } from '../daemon/junction.js';
-import { readToken } from '../daemon/token-store.js';
 import { ensureEditorReady } from '../commands/editor-ready.js';
+import { hasWorkingLogin } from '../accounts/account-login.js';
 import { configHome, type PathCtx } from '../config/paths.js';
 import type { CliContext } from '../context.js';
 
@@ -15,7 +14,12 @@ export function editorTargetAccount(context: CliContext): { name: string; logged
   const resolved = path.resolve(target);
   const account = listAccounts(context.ctx).find((a) => path.resolve(a.dir) === resolved);
   if (!account) return null;
-  const loggedIn = existsSync(path.join(account.dir, '.credentials.json')) || readToken(account.dir) !== null;
+  // Not `existsSync` on the credential file: a signed-OUT profile keeps a
+  // complete one with empty tokens, which is the check this project replaced
+  // everywhere else years ago and which survived here. Refused logins are
+  // excluded too, so doctor does not report the editor as pointed at a
+  // working account when it is pointed at a finished one.
+  const loggedIn = hasWorkingLogin(account.dir, context.ctx);
   return { name: account.name, loggedIn };
 }
 
