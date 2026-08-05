@@ -187,6 +187,13 @@ export async function refreshUsage(
       // window; renewing then rotates the token out from under a session that
       // had just claimed it. One read covers this account AND the profiles that
       // share its login, because renewing breaks a session on any of them.
+      //
+      // This NARROWS that window to milliseconds, it does not close it. The
+      // rotation happens at the server when the request is made, so a lease
+      // taken during the request is already too late, and the lock this path
+      // holds is Claude's own advisory one, which is best effort by design and
+      // therefore cannot provide mutual exclusion. Closing it needs a ccx-owned
+      // reservation that session start also takes: issue #37.
       const busy = leasedAccounts(c, options.leaseOptions ?? {});
       const inSessionNow = [account.name, ...siblings].filter((name) => busy.has(name));
       // The SAME fresh answer decides which credential to probe. A session that
