@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.37.1]
+
+### Fixed
+
+- **Stray characters like `;171;15M` no longer appear in the input box.**
+  They were never random: that is an SGR mouse report, and the numbers are a
+  cursor position. Claude's interface turns on mouse tracking and bracketed
+  paste when it starts and turns them off when it exits normally, but ccx ends
+  a session by killing it, on every rotation, every account switch and the
+  no-conversation retry. A kill skips the child's exit handler, so those modes
+  stayed on and the terminal carried on reporting into whatever read input
+  next. With any-motion tracking still set, every mouse MOVE sent one.
+
+  ccx now puts those modes back itself when a session ends. It cannot ask a
+  process it just killed to do it, and it must not assume the next session
+  will, because the reports are generated in the gap before anything is
+  listening.
+
 ## [1.37.0]
 
 ### Fixed
