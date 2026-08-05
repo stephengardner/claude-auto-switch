@@ -1,7 +1,6 @@
 import { listAccounts } from '../accounts/registry.js';
 import { loadLedger, cappedNames } from '../ledger/ledger.js';
-import { readToken } from '../daemon/token-store.js';
-import { hasUsableLogin } from '../accounts/credential-vault.js';
+import { hasLogin } from '../accounts/account-login.js';
 import { refreshUsage, type UsageEntry } from './usage-store.js';
 import type { ProactiveDeps } from './proactive.js';
 import type { UsageLike } from './headroom.js';
@@ -49,7 +48,7 @@ export function buildProactiveDeps(
         // Credential presence, not a live probe: this runs on a timer and must
         // stay cheap. A dead token simply shows as usage we cannot read, and
         // unknown usage never triggers a switch.
-        loggedIn: hasUsableLogin(a.dir) || readToken(a.dir) !== null,
+        loggedIn: hasLogin(a.dir),
         capped: capped.has(a.name),
       }));
     },

@@ -5,17 +5,12 @@ import { select } from '../selector/selector.js';
 import { launchWatched, spawnWatched } from '../launcher/launcher.js';
 import type { CapClassification } from '../launcher/cap-detect.js';
 import { loadLedger, saveLedger, markCapped, cappedNames } from '../ledger/ledger.js';
-import { readToken } from '../daemon/token-store.js';
-import { hasUsableLogin } from '../accounts/credential-vault.js';
+import { hasLogin } from '../accounts/account-login.js';
 import { appendEvent } from '../events/log.js';
 import { ensureEditorReady } from './editor-ready.js';
 import { configHome } from '../config/paths.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
-
-function hasLogin(dir: string): boolean {
-  return hasUsableLogin(dir) || readToken(dir) !== null;
-}
 
 /** Pick the account to launch on: active if usable, else the healthiest eligible. */
 async function pickAccount(context: CliContext): Promise<Account | undefined> {

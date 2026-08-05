@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.33.2]
+
+### Changed
+
+- **One shared answer to "does this account have a login".** The same expression
+  was written out in five places, and the reasoning behind it existed in only
+  one of them: a signed-out profile keeps a complete credential file with empty
+  tokens, so the file being there is not a login. The other four copies carried
+  the rule without the reason, which is how a rule quietly gets "simplified" by
+  someone reading only one of them.
+
+  No behaviour change: every copy was identical, and the existing tests all pass
+  untouched. The point is to have one place left to change when the answer needs
+  to get smarter, which it does: several commands still cannot see a login the
+  token endpoint has definitively rejected. That change comes next, separately,
+  so it arrives as a diff about the decision instead of hiding inside a move.
+
 ## [1.33.1]
 
 ### Fixed
