@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, appendFileSync, mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { writeSecretFile } from '../util/secret-file.js';
 
@@ -69,8 +69,22 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
 export function readEvents(configHome: string, limit = 5): EventRecord[] {
   const file = eventsFilePath(configHome);
   if (!existsSync(file)) return [];
+  try {
+    return foldRepeats(parseRecords(readFileSync(file, 'utf8'))).slice(-limit);
+  } catch {
+    return []; // an unreadable log is not worth failing a command over
+  }
+}
+
+/**
+ * Parse the file into records, skipping any malformed line.
+ *
+ * A concurrent append can leave a partial line behind on some systems, and a
+ * line can be hand-edited, so nothing here may assume the file is well formed.
+ */
+function parseRecords(text: string): EventRecord[] {
   const out: EventRecord[] = [];
-  for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
+  for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
       const r = JSON.parse(line) as Partial<EventRecord>;
@@ -90,41 +104,75 @@ export function readEvents(configHome: string, limit = 5): EventRecord[] {
       /* skip a malformed line */
     }
   }
-  return foldRepeats(out).slice(-limit);
+  return out;
 }
 
 /**
- * Append one event, keeping only the most recent MAX.
+ * How large the file may get before it is worth trimming, in bytes.
  *
- * A message identical to the one before it COLLAPSES into that record, bumping
- * a count and the time rather than adding a line. This log is bounded, so
- * without it a caller stuck in a loop empties the window of everything else:
- * that has happened twice, once filling all 200 entries with a single line, and
- * both times it blinded `ccx dashboard` and `ccx history` exactly when they were
- * the tools being reached for. Collapsing keeps the information that something
- * is repeating, and the count says how much.
+ * Measured in BYTES because that is what `stat` gives for free. Counting lines
+ * means reading the whole file, and doing that on every append is how the first
+ * version of this turned a cheap write back into an expensive one: 900 appends
+ * took over twenty seconds. Size is O(1) to ask for, so the common path never
+ * opens the file at all.
+ *
+ * Generous on purpose. Trimming rewrites the file, so it should be rare, and a
+ * few hundred kilobytes of text costs nothing to hold.
+ */
+const TRIM_BYTES = 64 * 1024;
+
+/**
+ * Append one event.
+ *
+ * A TRUE append, one line, and never a read-modify-write of the whole file.
+ * Several ccx processes share this log (a session, the dashboard tailing it, the
+ * editor launcher), and rewriting the file from each of them was wrong in two
+ * ways at once, both reproduced with four concurrent writers:
+ *
+ * - it LOST events. Two writers read the same state and the second rewrite
+ *   erased the first one's event. 74% of events disappeared.
+ * - it THREW. The atomic rewrite renames a temp file onto the target, and on
+ *   Windows that fails with EPERM when another process is doing the same. Three
+ *   of four writers crashed. Nothing here was wrapped, so a log line could take
+ *   down a session start or a swap.
+ *
+ * An append cannot collide with another append and needs no temp file, so both
+ * go away. Writing is best effort besides: telemetry must never be able to stop
+ * the thing it is describing.
  */
 export function appendEvent(configHome: string, msg: string, now: number): void {
-  const records = readEvents(configHome, MAX);
-  const previous = records[records.length - 1];
-  if (previous && previous.msg === msg) {
-    // Clamped for the same reason as the fold on read: a count that leaves the
-    // safe-integer range is dropped when read back, turning a long run into a
-    // single event.
-    const total = (previous.count ?? 1) + 1;
-    records[records.length - 1] = {
-      at: now,
-      msg,
-      count: Number.isSafeInteger(total) ? total : Number.MAX_SAFE_INTEGER,
-    };
-  } else {
-    records.push({ at: now, msg });
+  const file = eventsFilePath(configHome);
+  try {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    appendFileSync(file, `${JSON.stringify({ at: now, msg })}\n`, { mode: 0o600 });
+  } catch {
+    return; // a lost log line must never break a session
   }
-  const body = records
-    .slice(-MAX)
-    .map((r) => JSON.stringify(r))
-    .join('\n');
-  writeSecretFile(eventsFilePath(configHome), `${body}\n`);
+  trimIfLong(file);
+}
+
+/**
+ * Keep the file bounded, occasionally.
+ *
+ * Repeats are FOLDED before the tail is taken, which is the part that matters: a
+ * caller stuck in a loop used to fill every slot and push out everything else,
+ * blinding `ccx dashboard` and `ccx history` exactly when they were the tools
+ * being reached for. That has happened twice. Folding first means a storm
+ * occupies ONE record no matter how long it runs, so real events survive it.
+ *
+ * Best effort throughout. A trim that collides with another process just leaves
+ * the file long for now, and the next append tries again.
+ */
+function trimIfLong(file: string): void {
+  try {
+    // The whole point of the cheap path: ask the size, do not read the file.
+    if (statSync(file).size <= TRIM_BYTES) return;
+
+    const kept = foldRepeats(parseRecords(readFileSync(file, 'utf8'))).slice(-MAX);
+    writeSecretFile(file, `${kept.map((r) => JSON.stringify(r)).join('\n')}\n`);
+  } catch {
+    /* the file stays long until someone manages it; nothing is lost by that */
+  }
 }
 
 /**

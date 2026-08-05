@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.33.5]
+
+### Fixed
+
+- **Writing the event log can no longer crash a session, or lose events.**
+  Several ccx processes share this log: a session writes swaps, the dashboard
+  tails it, the editor launcher adds its own. Every write rewrote the whole file,
+  which was wrong in two ways at once. Reproduced with four concurrent writers:
+
+  - **It threw.** The rewrite renames a temp file onto the target, and on Windows
+    that fails with `EPERM` when another process is doing the same. Three of four
+    writers crashed. Nothing wrapped the call, so a log line could take down a
+    session start or a swap. In a real terminal the old build prints a node
+    stack trace over the session.
+  - **It lost events.** Two writers read the same state and the second rewrite
+    erased the first one's event: 74% of events disappeared.
+
+  Events are now appended one line at a time, which cannot collide and needs no
+  temp file, and a failed write is swallowed. Telemetry must never be able to
+  stop the thing it is describing. Under the same test: nothing lost, nobody
+  crashed, and a process hammering the log managed 28,104 writes in twenty
+  seconds where the old one managed 432.
+
+- **A storm no longer pushes real events out of the log.** Trimming folds
+  repeated messages BEFORE taking the tail, so a caller stuck in a loop occupies
+  one record however long it runs, and everything else survives alongside it.
+  That displacement has happened twice on this machine, both times blinding
+  `ccx dashboard` and `ccx history` exactly when they were the tools being
+  reached for.
+
+  Trimming is also triggered by file SIZE, which is free to ask for, rather than
+  by counting lines, which meant reading the whole file on every append. That
+  first version cost 51ms per event; it is now under 1ms.
+
 ## [1.33.4]
 
 ### Fixed

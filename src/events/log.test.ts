@@ -154,3 +154,70 @@ describe('event log', () => {
     expect(formatEvent({ at: 1_700_000_000_000, msg: 'swap a->b' })).toMatch(/^\d{2}:\d{2}  swap a->b$/);
   });
 });
+
+describe('writing from more than one process at a time', () => {
+  it('never throws, whatever the filesystem does', () => {
+    // Telemetry must not be able to stop the thing it describes. The old write
+    // renamed a temp file onto the target, which fails with EPERM on Windows
+    // when another process is doing the same, and nothing wrapped the call: a
+    // log line could take down a session start or a swap.
+    const h = home();
+    // A path that cannot be created: the parent is a FILE, not a directory.
+    const blocked = path.join(h, 'a-file');
+    writeFileSync(blocked, 'not a directory', 'utf8');
+    expect(() => appendEvent(path.join(blocked, 'nested'), 'anything', 1000)).not.toThrow();
+  });
+
+  it('adds a line without rewriting what is already there', () => {
+    // The property that makes concurrent writers safe: an append cannot erase
+    // another writer's line, because it never rewrites the file.
+    const h = home();
+    appendEvent(h, 'first', 1000);
+    const afterFirst = readFileSync(eventsFilePath(h), 'utf8');
+    appendEvent(h, 'second', 2000);
+    const afterSecond = readFileSync(eventsFilePath(h), 'utf8');
+    expect(afterSecond.startsWith(afterFirst)).toBe(true);
+    expect(readEvents(h, 10).map((r) => r.msg)).toEqual(['first', 'second']);
+  });
+});
+
+describe('keeping the file bounded without losing what matters', () => {
+  it('folds a storm at trim time, so real events survive it', () => {
+    // The headline. A caller stuck in a loop used to push every real event out
+    // of a bounded window. Folding BEFORE the tail is taken means the storm
+    // occupies one record however long it runs.
+    const h = home();
+    appendEvent(h, 'session on second', 1000);
+    // Enough to pass the byte cap, so the trim actually runs and has to fold.
+    for (let i = 0; i < 3000; i++) appendEvent(h, 'the same complaint repeated at length', 2000 + i);
+    appendEvent(h, 'maxed hit its limit', 9000);
+
+    const events = readEvents(h, 50);
+    const messages = events.map((r) => r.msg);
+    expect(messages).toContain('session on second');
+    expect(messages).toContain('maxed hit its limit');
+    expect(events.find((r) => r.msg === 'the same complaint repeated at length')?.count).toBeGreaterThan(100);
+  });
+
+  it('does not let the file grow without limit', () => {
+    const h = home();
+    for (let i = 0; i < 3000; i++) appendEvent(h, `distinct event number ${i} with some padding`, 1000 + i);
+    const lines = readFileSync(eventsFilePath(h), 'utf8').split('\n').filter((l) => l.trim());
+    // Trimming happens in bulk, so the file sits between the cap and the trim
+    // threshold rather than exactly at the cap.
+    expect(lines.length).toBeLessThanOrEqual(2000);
+    // The most recent events are the ones kept.
+    expect(readEvents(h, 2).map((r) => r.msg)).toEqual([
+      'distinct event number 2998 with some padding',
+      'distinct event number 2999 with some padding',
+    ]);
+  });
+
+  it('survives a malformed line left by a partial write', () => {
+    const h = home();
+    appendEvent(h, 'before', 1000);
+    writeFileSync(eventsFilePath(h), `${readFileSync(eventsFilePath(h), 'utf8')}{"at":123,"ms\n`, 'utf8');
+    appendEvent(h, 'after', 2000);
+    expect(readEvents(h, 10).map((r) => r.msg)).toEqual(['before', 'after']);
+  });
+});
