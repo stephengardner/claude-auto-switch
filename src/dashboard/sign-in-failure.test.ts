@@ -22,4 +22,24 @@ describe('signInFailureNotice', () => {
   it('prefers a thrown string over the fallback', () => {
     expect(signInFailureNotice('second', 'chrome not found')).toContain('chrome not found');
   });
+
+  it('survives a thrown value that explodes when you READ it', () => {
+    // A rejection can carry any value at all. Reading the reason out of one
+    // whose toString throws would send the exception back out through the very
+    // path that exists to keep the dashboard alive.
+    const hostile = {
+      toString() {
+        throw new Error('boom');
+      },
+    };
+    const viaPrimitive = {
+      [Symbol.toPrimitive]() {
+        throw new Error('boom');
+      },
+    };
+    for (const thrown of [hostile, viaPrimitive]) {
+      expect(() => signInFailureNotice('phx', thrown)).not.toThrow();
+      expect(signInFailureNotice('phx', thrown)).toContain('no reason given');
+    }
+  });
 });
