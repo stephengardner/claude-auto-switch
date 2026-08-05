@@ -52,12 +52,29 @@ function logPath(c: PathCtx = {}): string {
   return path.join(configHome(c), FILENAME);
 }
 
-/** Record one credential event. Never throws: logging must not break a swap. */
-export function logCredentialEvent(event: Omit<CredentialEvent, 'at'> & { at?: number }, c: PathCtx = {}): void {
+/**
+ * Record one credential event. Never throws: logging must not break a swap.
+ *
+ * `count` is deliberately not accepted, and the written record is built field by
+ * field rather than by spreading the caller's object. A count in this file would
+ * be a lie: it is a READ-time summary of how many physical records repeated, so
+ * persisting one would make two records display as many, and an audit trail that
+ * overstates what happened is worse than no trail.
+ */
+export function logCredentialEvent(
+  event: Omit<CredentialEvent, 'at' | 'count'> & { at?: number },
+  c: PathCtx = {},
+): void {
   try {
     const home = configHome(c);
     secureMkdir(home);
-    const line = JSON.stringify({ at: event.at ?? Date.now(), ...event } satisfies CredentialEvent);
+    const record: CredentialEvent = {
+      at: event.at ?? Date.now(),
+      account: event.account,
+      kind: event.kind,
+      ...(event.detail !== undefined ? { detail: event.detail } : {}),
+    };
+    const line = JSON.stringify(record);
     appendFileSync(logPath(c), `${line}\n`, { encoding: 'utf8', mode: 0o600 });
   } catch {
     /* a missing trail is bad; a crash while writing it would be worse */
@@ -80,7 +97,18 @@ export function readCredentialEvents(limit = 50, c: PathCtx = {}): CredentialEve
     if (line.trim().length === 0) continue;
     try {
       const parsed = JSON.parse(line) as CredentialEvent;
-      if (typeof parsed.at === 'number' && typeof parsed.account === 'string') events.push(parsed);
+      if (typeof parsed.at === 'number' && typeof parsed.account === 'string') {
+        // Built field by field so any count in the file is discarded. Physical
+        // records never carry one, so a value here came from a hand-edited or
+        // corrupted line, and honouring it would inflate the summary above what
+        // actually happened.
+        events.push({
+          at: parsed.at,
+          account: parsed.account,
+          kind: parsed.kind,
+          ...(parsed.detail !== undefined ? { detail: parsed.detail } : {}),
+        });
+      }
     } catch {
       /* skip a truncated line */
     }

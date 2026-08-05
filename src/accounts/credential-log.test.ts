@@ -32,6 +32,31 @@ describe('a repeated credential event', () => {
     expect(lines).toHaveLength(41);
   });
 
+  it('never writes a count into the file, and ignores one that is there', () => {
+    // A count is a read-time summary of how many physical records repeated. In
+    // the file it would be a lie: two records could display as many, and an
+    // audit trail that overstates what happened is worse than none.
+    const c = ctx();
+    const home = c.env.CLAUDE_AUTO_SWITCH_HOME;
+    // A caller trying to persist one, the way the type change made possible.
+    logCredentialEvent({ account: 'work', kind: 'renewed', at: 1, count: 40 } as never, c);
+    const written = JSON.parse(
+      readFileSync(path.join(home, 'credential-log.jsonl'), 'utf8').trim(),
+    ) as Record<string, unknown>;
+    expect(written.count).toBeUndefined();
+
+    // And a count hand-edited into the file does not inflate the summary.
+    writeFileSync(
+      path.join(home, 'credential-log.jsonl'),
+      [
+        JSON.stringify({ at: 1, account: 'a', kind: 'needs-login', detail: 'x', count: 999 }),
+        JSON.stringify({ at: 2, account: 'a', kind: 'needs-login', detail: 'x' }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+    expect(readCredentialEvents(50, c)[0]?.count).toBe(2);
+  });
+
   it('does not merge different accounts, kinds or details', () => {
     const c = ctx();
     logCredentialEvent({ account: 'a', kind: 'needs-login', detail: 'x', at: 1 }, c);
