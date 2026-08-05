@@ -329,6 +329,28 @@ describe('renderUsageReport', () => {
     expect(out).toContain('NEEDS SIGN-IN');
   });
 
+  it('gives sign-in guidance when a rejected login has NO usage read', () => {
+    // The realistic shape, and the one the first version missed: a rejected
+    // login usually has no usage at all, because its token cannot be used to
+    // ask. Reported as "no usage has been read yet", the advice never appeared
+    // in the case it exists for.
+    const out = renderUsageReport(
+      [account({ name: 'dead', needsSignIn: true, windows: null })],
+      NOW,
+      plain,
+    );
+    expect(out).toContain('These accounts need signing in again: dead');
+    expect(out).toContain('ccx login dead');
+    expect(out).not.toContain('No usage has been read yet');
+  });
+
+  it('still says nothing has been read when no login was rejected', () => {
+    // The branch that was displaced has to keep working.
+    const out = renderUsageReport([account({ name: 'quiet', windows: null })], NOW, plain);
+    expect(out).toContain('No usage has been read yet');
+    expect(out).not.toContain('need signing in');
+  });
+
   it('still says everything is spent when the logins are FINE', () => {
     // The other branch must survive: a genuinely exhausted account is a
     // different problem with a different answer.

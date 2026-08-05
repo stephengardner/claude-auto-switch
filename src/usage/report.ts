@@ -251,7 +251,23 @@ export function renderUsageReport(
   const accountWideRead = accounts.some((a) =>
     hasReading((a.windows ?? []).filter((w) => !w.modelOnly)),
   );
-  if (!anythingRead) {
+  // Checked FIRST, because a rejected login usually has no usage to read: its
+  // token cannot be used to ask. Below the nothing-read branch this advice was
+  // unreachable in exactly the case it exists for, "every login is finished",
+  // which came out as "no usage has been read yet".
+  const rejected = accounts.filter((a) => a.needsSignIn).map((a) => a.name);
+  if (rejected.length > 0 && best.length === 0) {
+    // Distinct from being out of room, and the distinction is the whole point:
+    // waiting for a reset never fixes a login, so "check the reset times" would
+    // send the operator away to wait for something that cannot happen.
+    lines.push(
+      paint(
+        `These accounts need signing in again: ${rejected.join(', ')}. Run: ccx login ${rejected[0]}`,
+        codes.yellow,
+        color,
+      ),
+    );
+  } else if (!anythingRead) {
     lines.push(
       paint('No usage has been read yet, so there is nothing to compare.', codes.dim, color),
     );
@@ -260,18 +276,6 @@ export function renderUsageReport(
       paint(
         'Only per-model usage has been read, so there is nothing to compare account by account.',
         codes.dim,
-        color,
-      ),
-    );
-  } else if (best.length === 0 && accounts.some((a) => a.needsSignIn)) {
-    // Distinct from being out of room, and the distinction is the whole point:
-    // waiting for a reset never fixes a login, so saying "check the reset times"
-    // would send the operator away to wait for something that cannot happen.
-    const stale = accounts.filter((a) => a.needsSignIn).map((a) => a.name);
-    lines.push(
-      paint(
-        `These accounts need signing in again: ${stale.join(', ')}. Run: ccx login ${stale[0]}`,
-        codes.yellow,
         color,
       ),
     );
