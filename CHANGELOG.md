@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.34.0]
+
+### Fixed
+
+- **Two profiles holding the same login no longer kill each other.** Signing in
+  twice can quietly produce a duplicate, because the browser stays signed in
+  between `ccx login` runs. Renewing rotates the refresh token and retires the
+  previous one immediately, so the moment either profile renews, the other is
+  holding a dead token and the next thing to touch it gets `invalid_grant`.
+
+  The usage refresh already refused to renew a shared login for exactly this
+  reason. A session STARTING on one renewed it with no such check, and the
+  sibling was finished from that moment.
+
+  Refusing at session start would be the wrong answer, because the session needs
+  a working token to run at all. So the renewal is carried across instead: the
+  profiles are the same account, so they end up holding the same login, and both
+  keep working. Each profile that gets carried across says so in `ccx history`.
+
+  This is not hypothetical. It is how an account here died: the credential log
+  shows a session start renewing one profile at the same moment its duplicate
+  was refused with "Refresh token not found or invalid".
+
+  A profile is only written when it still holds exactly the credential that was
+  just retired. Anything else is left alone, because writing over it would be a
+  guess about someone's login.
+
 ## [1.33.5]
 
 ### Fixed
