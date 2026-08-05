@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { getActive } from '../state/active.js';
 import { listAccounts } from '../accounts/registry.js';
-import { hasUsableLogin, credentialFingerprint } from '../accounts/credential-vault.js';
+import { hasUsableLogin, credentialFileFingerprint } from '../accounts/credential-vault.js';
 import { loginIsKnownDead } from '../usage/dead-login-store.js';
 import { configHome } from '../config/paths.js';
 import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
@@ -142,7 +142,7 @@ export function statuslineSegment(context: CliContext, options: StatuslineOption
   const accountDir = accountDirOf(context, active);
   if (
     !hasUsableLogin(accountDir) ||
-    loginIsKnownDead(credentialFingerprint(accountDir), context.ctx)
+    loginIsKnownDead(credentialFileFingerprint(accountDir), context.ctx)
   ) {
     return `! ${active} needs sign-in`;
   }

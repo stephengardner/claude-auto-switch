@@ -142,7 +142,7 @@ export async function refreshCredentialIfExpired(
   // way that leaves the token in place would stay refused until the process
   // restarted. Re-asking a few times costs a request; being stuck costs a
   // working account.
-  const identity = sha256Fingerprint(fileText);
+  const identity = sha256Fingerprint(fileText); // same value credentialFileFingerprint yields
   // Known dead in THIS process, or recorded by an earlier one. The second half
   // is what a fresh start needs: without it every new session spends a request
   // rediscovering a refusal that is already written down.

@@ -38,6 +38,23 @@ export function credentialFingerprint(dir: string): string | null {
   }
 }
 
+/**
+ * Identify a credential by the WHOLE FILE, not just its token.
+ *
+ * This is the key a recorded refusal is filed under, so any change to the file
+ * retries rather than staying refused: being stuck costs a working login, and
+ * re-asking costs one request. It must be the same function on both sides, or a
+ * refusal is written under one key and looked up under another and nothing ever
+ * matches, which is exactly what happened before this existed.
+ */
+export function credentialFileFingerprint(dir: string): string | null {
+  try {
+    return sha256Fingerprint(readFileSync(credentialPath(dir), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 export function credentialPath(dir: string): string {
   return path.join(dir, CREDENTIALS_FILE);
 }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { statuslineCommand } from './statusline.js';
 import { rememberDeadLogin } from '../usage/dead-login-store.js';
-import { credentialFingerprint } from '../accounts/credential-vault.js';
+import { refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
 
@@ -96,7 +96,22 @@ describe('statuslineCommand', () => {
     });
     const homeDir = (context.ctx.env as Record<string, string>).CLAUDE_AUTO_SWITCH_HOME ?? '';
     const dir = path.join(homeDir, 'profiles', 'work');
-    rememberDeadLogin(credentialFingerprint(dir), 'token endpoint 400: invalid_grant', context.ctx);
+    // Recorded THROUGH the real renewal path, not by calling the store directly.
+    // Writing the note by hand hides a mismatch between the key production files
+    // it under and the key this line looks it up by, which is exactly the bug
+    // this test failed to catch the first time.
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r-dead', expiresAt: 1 } }),
+      'utf8',
+    );
+    const refused = await refreshCredentialIfExpired(dir, {
+      ctx: context.ctx,
+      now: () => 2_000_000,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 })) as unknown as typeof fetch,
+    });
+    expect(refused.status).toBe('needs-login');
 
     expect(await statuslineCommand(context)).toBe(0);
     expect(lines[0]).toBe('! work needs sign-in');
