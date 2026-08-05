@@ -6,7 +6,7 @@ import { hasWorkingLogin } from '../accounts/account-login.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { renewAndCarry } from '../accounts/shared-login.js';
-import { liveLeases, type LeaseOptions } from '../session/lease.js';
+import { liveLeases, type LeaseOptions, type SessionLease } from '../session/lease.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
 import { refreshCredentialIfExpired, renewalIsDue, expiredLongerThan, type RefreshOutcome } from './oauth-refresh.js';
 import { editorPointerAccount } from '../editor/junction.js';
@@ -171,7 +171,7 @@ export async function refreshUsage(
       // numbers still update and the entry still gets stamped. The reason is
       // recorded only when a renewal was actually due, otherwise every refresh
       // would append the same line forever.
-      const lease = inUse.get(account.name);
+
       const siblings = renewalWouldBreakOthers(account, accounts);
       // A profile sharing this login is only a reason to refuse when a SESSION
       // is using it. Refusing whenever a sibling existed was symmetric, so for
@@ -187,8 +187,12 @@ export async function refreshUsage(
       // window; renewing then rotates the token out from under a session that
       // had just claimed it. One read covers this account AND the profiles that
       // share its login, because renewing breaks a session on any of them.
-      const busy = leasedNames(c, options.leaseOptions ?? {});
+      const busy = leasedAccounts(c, options.leaseOptions ?? {});
       const inSessionNow = [account.name, ...siblings].filter((name) => busy.has(name));
+      // The SAME fresh answer decides which credential to probe. A session that
+      // started mid-refresh holds a newer copy than the profile does, and reading
+      // the profile would report usage for a credential nobody is using.
+      const lease = busy.get(account.name);
       const refusal =
         inSessionNow.length > 0
           ? `not renewed: a session is using ${inSessionNow.join(', ')}; renewing would sign it out`
@@ -270,12 +274,15 @@ export async function refreshUsage(
 }
 
 /**
- * Which accounts a session holds RIGHT NOW, as a set of names.
+ * Which accounts a session holds RIGHT NOW, with the lease records.
  *
  * Deliberately a fresh read rather than a cached map: it is asked immediately
  * before a renewal, and the point is to see claims made since the refresh
- * started.
+ * started. The whole RECORD is kept, not just the name, because the same answer
+ * decides which credential to probe: a session started mid-refresh holds a
+ * newer copy than the profile, and reading the profile instead would report
+ * usage for a credential nobody is using.
  */
-function leasedNames(c: PathCtx, options: LeaseOptions): Set<string> {
-  return new Set(liveLeases(c, options).map((lease) => lease.account));
+function leasedAccounts(c: PathCtx, options: LeaseOptions): Map<string, SessionLease> {
+  return new Map(liveLeases(c, options).map((lease) => [lease.account, lease] as const));
 }

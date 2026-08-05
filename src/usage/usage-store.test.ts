@@ -422,10 +422,12 @@ describe('a session that starts while the usage refresh is running', () => {
     const { c, accounts } = setup(['first', 'later']);
     const home = c.env.CLAUDE_AUTO_SWITCH_HOME as string;
     const renewed: string[] = [];
+    const probed: string[] = [];
     let claimed = false;
 
     await refreshUsage(accounts, c, {
       probe: (file) => {
+        probed.push(file);
         // Stands in for the network call. While the FIRST account is being
         // probed, a session claims the second one, which is invisible to the
         // lease map read before the loop started.
@@ -443,5 +445,9 @@ describe('a session that starts while the usage refresh is running', () => {
 
     expect(renewed).toContain(accounts[0]!.dir); // nothing was using this one
     expect(renewed).not.toContain(accounts[1]!.dir); // claimed mid-refresh
+    // The same fresh answer decides which credential to READ. The session that
+    // started mid-refresh holds a newer copy than the profile, so probing the
+    // profile would report usage for a credential nobody is using.
+    expect(probed.some((file) => file.includes('live'))).toBe(true);
   });
 });
