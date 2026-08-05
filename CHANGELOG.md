@@ -24,8 +24,14 @@ semantic versioning.
   Events are now appended one line at a time, which cannot collide and needs no
   temp file, and a failed write is swallowed. Telemetry must never be able to
   stop the thing it is describing. Under the same test: nothing lost, nobody
-  crashed, and a process hammering the log managed 28,104 writes in twenty
-  seconds where the old one managed 432.
+  crashed, and a process hammering the log managed tens of thousands of writes
+  in twenty seconds where the old one managed 432.
+
+  Compaction never replaces the live file either. It moves it aside in one
+  atomic step, so an event appended while a compaction is running lands in a
+  fresh file that compaction does not touch. Doing it the obvious way, reading a
+  snapshot and writing it back, would have reintroduced exactly the lost-update
+  bug this change removes, in the one place left that still rewrites anything.
 
 - **A storm no longer pushes real events out of the log.** Trimming folds
   repeated messages BEFORE taking the tail, so a caller stuck in a loop occupies

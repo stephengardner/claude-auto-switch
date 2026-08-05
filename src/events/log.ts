@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, appendFileSync, mkdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, appendFileSync, mkdirSync, statSync, renameSync, rmSync } from 'node:fs';
+import { acquireLockDir } from '../claude/locks.js';
 import path from 'node:path';
 import { writeSecretFile } from '../util/secret-file.js';
 
@@ -8,6 +9,12 @@ import { writeSecretFile } from '../util/secret-file.js';
  * swaps happen live. Bounded so it never grows without limit; owner-only.
  */
 const FILE = 'events.jsonl';
+/** The compacted older half. Only compaction writes it; appends never do. */
+const ARCHIVE_SUFFIX = '.1';
+/** Where the live file is parked mid-compaction, so a crash there loses nothing. */
+const ROTATING_SUFFIX = '.rotating';
+/** Held only while compacting, so two processes cannot rotate at once. */
+const LOCK_SUFFIX = '.compact.lock';
 const MAX = 200;
 
 export interface EventRecord {
@@ -68,12 +75,21 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
  */
 export function readEvents(configHome: string, limit = 5): EventRecord[] {
   const file = eventsFilePath(configHome);
-  if (!existsSync(file)) return [];
-  try {
-    return foldRepeats(parseRecords(readFileSync(file, 'utf8'))).slice(-limit);
-  } catch {
-    return []; // an unreadable log is not worth failing a command over
+  // Oldest first: the compacted archive, then anything a compaction was moving
+  // when it was interrupted, then the live file. Reading the middle one is what
+  // makes a compaction killed half way through cost nothing.
+  const parts = [`${file}${ARCHIVE_SUFFIX}`, `${file}${ROTATING_SUFFIX}`, file];
+  const chunks: string[] = [];
+  for (const part of parts) {
+    if (!existsSync(part)) continue;
+    try {
+      chunks.push(readFileSync(part, 'utf8'));
+    } catch {
+      /* an unreadable piece must not lose the readable ones */
+    }
   }
+  if (chunks.length === 0) return [];
+  return foldRepeats(parseRecords(joinChunks(chunks))).slice(-limit);
 }
 
 /**
@@ -168,11 +184,47 @@ function trimIfLong(file: string): void {
     // The whole point of the cheap path: ask the size, do not read the file.
     if (statSync(file).size <= TRIM_BYTES) return;
 
-    const kept = foldRepeats(parseRecords(readFileSync(file, 'utf8'))).slice(-MAX);
-    writeSecretFile(file, `${kept.map((r) => JSON.stringify(r)).join('\n')}\n`);
+    // One compactor at a time, and never waiting: if someone else is doing it,
+    // there is nothing to add by queueing up behind them.
+    const lock = acquireLockDir(`${file}${LOCK_SUFFIX}`, { waitMs: 0 });
+    if (!lock.held) return;
+    try {
+      if (statSync(file).size <= TRIM_BYTES) return; // they may have just finished
+
+      // The live file is moved ASIDE in one atomic step rather than read and
+      // replaced. Snapshot-then-replace loses any event appended in between,
+      // which is the same lost-update bug this change removes from the write
+      // path, and it would have been reintroduced here where it is harder to
+      // see. After the rename, appends create a fresh file that compaction
+      // never touches, so nothing arriving from here on can be overwritten.
+      const rotating = `${file}${ROTATING_SUFFIX}`;
+      const archive = `${file}${ARCHIVE_SUFFIX}`;
+      renameSync(file, rotating);
+
+      const older = existsSync(archive) ? readFileSync(archive, 'utf8') : '';
+      const kept = foldRepeats(
+        parseRecords(joinChunks([older, readFileSync(rotating, 'utf8')])),
+      ).slice(-MAX);
+      writeSecretFile(archive, `${kept.map((r) => JSON.stringify(r)).join('\n')}\n`);
+      rmSync(rotating, { force: true });
+    } finally {
+      lock.release();
+    }
   } catch {
     /* the file stays long until someone manages it; nothing is lost by that */
   }
+}
+
+/**
+ * Join file chunks so a line cannot be spliced onto the one after it. A chunk
+ * that does not end in a newline would otherwise merge its last record with the
+ * next chunk's first, and both would be discarded as malformed.
+ */
+function joinChunks(chunks: string[]): string {
+  return chunks
+    .filter((c) => c.length > 0)
+    .map((c) => (c.endsWith('\n') ? c : `${c}\n`))
+    .join('');
 }
 
 /**

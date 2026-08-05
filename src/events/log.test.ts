@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appendEvent, readEvents, formatEvent, eventsFilePath } from './log.js';
@@ -219,5 +219,38 @@ describe('keeping the file bounded without losing what matters', () => {
     writeFileSync(eventsFilePath(h), `${readFileSync(eventsFilePath(h), 'utf8')}{"at":123,"ms\n`, 'utf8');
     appendEvent(h, 'after', 2000);
     expect(readEvents(h, 10).map((r) => r.msg)).toEqual(['before', 'after']);
+  });
+});
+
+describe('when another process is already compacting', () => {
+  it('leaves the file alone instead of compacting alongside it', () => {
+    // Two compactions at once can both merge the archive and both write it, so
+    // one erases the other's merge. The rename makes rotation itself safe; the
+    // archive write is what needs the lock. Held here directly, which is the
+    // only deterministic way to observe it from a single process.
+    const h = home();
+    const file = eventsFilePath(h);
+    const padding = 'y'.repeat(400);
+
+    mkdirSync(path.dirname(file), { recursive: true });
+    mkdirSync(`${file}.compact.lock`); // another process is mid-compaction
+    try {
+      for (let i = 0; i < 200; i++) appendEvent(h, `filler ${i} ${padding}`, 1000 + i);
+      // Grew past the threshold and stayed whole: no compaction ran.
+      expect(readFileSync(file, 'utf8').length).toBeGreaterThan(64 * 1024);
+      expect(existsSync(`${file}.1`)).toBe(false);
+    } finally {
+      rmdirSync(`${file}.compact.lock`);
+    }
+
+    // Nothing was dropped while compaction was deferred.
+    expect(readEvents(h, 500)).toHaveLength(200);
+
+    // With the lock free, the next append compacts, and the history survives it.
+    appendEvent(h, 'after the lock is released', 9001);
+    expect(existsSync(`${file}.1`)).toBe(true);
+    const messages = readEvents(h, 500).map((r) => r.msg);
+    expect(messages).toContain('after the lock is released');
+    expect(messages.some((m) => m.startsWith('filler 199'))).toBe(true);
   });
 });
