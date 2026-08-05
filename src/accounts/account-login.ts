@@ -40,5 +40,18 @@ export function hasLogin(accountDir: string): boolean {
  */
 export function hasWorkingLogin(accountDir: string, ctx: PathCtx): boolean {
   if (!hasLogin(accountDir)) return false;
-  return !loginIsKnownDead(credentialFileFingerprint(accountDir), ctx);
+  return !loginWasRejected(accountDir, ctx);
+}
+
+/**
+ * Has the token endpoint refused THIS exact credential?
+ *
+ * Separate from `hasWorkingLogin` for the callers that have already established
+ * the account is signed in by other means, and only need the part ccx knows.
+ * The health probe is one: it asks Claude itself, which can recognise a login
+ * that ccx's own file check does not, so narrowing its answer with a second
+ * opinion about the file would drop accounts that genuinely work.
+ */
+export function loginWasRejected(accountDir: string, ctx: PathCtx): boolean {
+  return loginIsKnownDead(credentialFileFingerprint(accountDir), ctx);
 }

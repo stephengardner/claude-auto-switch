@@ -5,6 +5,7 @@ import path from 'node:path';
 import { hasLogin, hasWorkingLogin } from './account-login.js';
 import { saveToken } from '../daemon/token-store.js';
 import { rememberDeadLogin } from '../usage/dead-login-store.js';
+import { refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { credentialFileFingerprint } from './credential-vault.js';
 
 function accountDir(): string {
@@ -87,5 +88,49 @@ describe('whether an account has a login that has NOT been rejected', () => {
     const { dir, ctx } = isolated();
     writeCredential(dir, { accessToken: '', refreshToken: '' });
     expect(hasWorkingLogin(dir, ctx)).toBe(false);
+  });
+});
+
+describe('the record the REAL renewal writes, read back by hasWorkingLogin', () => {
+  it('turns the account off after a genuine invalid_grant, and back on after signing in', async () => {
+    // Deliberately does NOT seed the record with the same helper this reads
+    // with: that arrangement agrees with itself even when the writer and the
+    // reader disagree, which is how a mismatch shipped before. The refusal here
+    // is produced by the renewal path itself, from a rejecting token endpoint.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-renewal-'));
+    const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home } };
+    const dir = path.join(home, 'profiles', 'work');
+    mkdirSync(dir, { recursive: true });
+    // Expired, so a renewal is actually attempted.
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'old', refreshToken: 'finished', expiresAt: Date.now() - 60_000 },
+      }),
+      'utf8',
+    );
+
+    expect(hasWorkingLogin(dir, ctx)).toBe(true);
+
+    const outcome = await refreshCredentialIfExpired(dir, {
+      ctx,
+      fetchImpl: () =>
+        Promise.resolve(
+          new Response('{"error":"invalid_grant"}', {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+    });
+    expect(outcome.status).toBe('needs-login');
+
+    // The reader agrees with what the renewal wrote. This is the assertion the
+    // seeded version could never make.
+    expect(hasWorkingLogin(dir, ctx)).toBe(false);
+
+    // Signing in replaces the file, which changes the key, so nothing has to be
+    // cleaned up for the account to work again.
+    writeCredential(dir, { accessToken: 'sk-ant-fresh', refreshToken: 'new' });
+    expect(hasWorkingLogin(dir, ctx)).toBe(true);
   });
 });

@@ -5,7 +5,7 @@ import { select } from '../selector/selector.js';
 import { launchWatched, spawnWatched } from '../launcher/launcher.js';
 import type { CapClassification } from '../launcher/cap-detect.js';
 import { loadLedger, saveLedger, markCapped, cappedNames } from '../ledger/ledger.js';
-import { hasWorkingLogin } from '../accounts/account-login.js';
+import { hasWorkingLogin, loginWasRejected } from '../accounts/account-login.js';
 import { appendEvent } from '../events/log.js';
 import { ensureEditorReady } from './editor-ready.js';
 import { configHome } from '../config/paths.js';
@@ -104,7 +104,19 @@ async function selectHealthy(
 ): Promise<Account | undefined> {
   const claude = getClaude(context);
   const healths = await probeAll(accounts, { claude });
-  const loggedIn = new Set(healths.filter((h) => h.loggedIn).map((h) => h.name));
+  const loggedIn = new Set(
+    healths
+      .filter((h) => h.loggedIn)
+      .map((h) => h.name)
+      // The probe asks Claude whether the profile looks signed in, and it is the
+      // authority on that: it recognises logins ccx's own file check does not.
+      // What it cannot know is that the token endpoint refused this exact
+      // credential afterwards, so that is the only thing subtracted here.
+      .filter((name) => {
+        const account = accounts.find((a) => a.name === name);
+        return !!account && !loginWasRejected(account.dir, context.ctx);
+      }),
+  );
   const sel = select({ accounts, loggedIn, capped, ...(pinned ? { pinned } : {}) });
   return sel.ok ? accounts.find((a) => a.name === sel.account.name) : undefined;
 }
