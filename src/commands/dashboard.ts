@@ -4,6 +4,7 @@ import { writeSwitchRequest } from '../state/switch-request.js';
 import { refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
 import { probeAll, type ProbeResult } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
+import { signInFailureNotice } from '../dashboard/sign-in-failure.js';
 import { renderDashboard, type DashboardAccount } from '../dashboard/render.js';
 import { toSnapshot } from '../dashboard/snapshot.js';
 import { dispatchKey, confirmKey } from '../dashboard/keys.js';
@@ -381,9 +382,18 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     // On the ordinary screen it also sits directly above the sign-in output,
     // which is where it makes sense.
     out.write(`\n${lead}\n`);
+    // Keeps the process alive across the handoff. Handing the screen back pauses
+    // stdin and the refresh timer has just been cleared, so for a moment the only
+    // thing left is this pending promise, and a pending promise does NOT hold
+    // Node open. The event loop could empty and the dashboard would vanish
+    // mid-sign-in with no output at all, which is what "pressing l crashed the
+    // terminal" actually was. Intermittent by nature: it only died when nothing
+    // else happened to have a handle open.
+    const keepAlive = setInterval(() => {}, 1 << 30);
     try {
       return await job();
     } finally {
+      clearInterval(keepAlive);
       terminal = claimScreen();
     }
   };
@@ -392,17 +402,33 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
   try {
     while (running) {
       if (Date.now() - lastProbe > HEALTH_REPROBE_MS) {
-        await deps.reprobe();
+        // Same reasoning as the sign-in below: this spawns probes, and a throw
+        // here would end the dashboard rather than one refresh of one row.
+        try {
+          await deps.reprobe();
+        } catch {
+          /* the rows keep their last known state until the next tick */
+        }
         lastProbe = Date.now();
       }
       if (ui.pendingLogin) {
         const target = ui.pendingLogin;
         ui.pendingLogin = null;
-        ui.notice = await withScreenHandedBack(
-          `Signing in "${target.name}". To use a DIFFERENT account, sign out at claude.ai first.\n` +
-            'The dashboard comes back when the sign-in finishes; Ctrl-C gives up and returns to your shell.',
-          () => deps.onLogin(target),
-        );
+        // Signing in is the one thing this loop runs that reaches outside the
+        // process: a browser, a port, a network. Any of those can throw, and an
+        // error escaping here ends the dashboard with a stack trace, which from
+        // the outside looks like pressing "l" broke the terminal. The keypress
+        // handler has been guarded for exactly this reason since it was written;
+        // the loop body had been left unguarded.
+        try {
+          ui.notice = await withScreenHandedBack(
+            `Signing in "${target.name}". To use a DIFFERENT account, sign out at claude.ai first.\n` +
+              'The dashboard comes back when the sign-in finishes; Ctrl-C gives up and returns to your shell.',
+            () => deps.onLogin(target),
+          );
+        } catch (err) {
+          ui.notice = signInFailureNotice(target.name, err);
+        }
       }
       snap = build();
       clamp();

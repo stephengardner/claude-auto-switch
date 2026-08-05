@@ -35,11 +35,24 @@ export const spawnAuthLogin: StartAuthLogin = (invoker, args, env) => {
   child.stdout?.on('data', onData);
   child.stderr?.on('data', onData);
 
+  let finish: (code: number) => void = () => {};
   const donePromise = new Promise<number>((resolve) => {
+    finish = resolve;
     child.on('close', (code) => {
       settleUrl(undefined);
       resolve(code ?? 1);
     });
+  });
+
+  // A child that cannot be STARTED emits 'error' and never emits 'close'. Node
+  // re-throws an 'error' with no listener as an uncaught exception, which ends
+  // the whole program rather than this one sign-in: from the dashboard, that
+  // looked like pressing "l" crashed the terminal. It is also the only way out
+  // of here that a try/catch around the caller cannot see, because it arrives
+  // on a later tick as an event rather than a rejected promise.
+  child.on('error', () => {
+    settleUrl(undefined);
+    finish(1);
   });
 
   const timer = setTimeout(() => settleUrl(undefined), URL_WAIT_MS);
