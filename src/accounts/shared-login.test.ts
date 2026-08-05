@@ -519,3 +519,68 @@ describe('renewing a login and carrying it, as one operation', () => {
     expect(refreshTokenOf(sibling.dir)).toBe('refresh-from-endpoint');
   });
 });
+
+describe('a renewal that keeps the refresh token', () => {
+  it('still carries across, because the access token changed', () => {
+    // The response can omit refresh_token, in which case the renewal keeps it
+    // and replaces only the access token. Asking "did the token change" would
+    // report no, and the siblings would be left holding a stale credential.
+    const { renewed: active, sibling } = sharedPair();
+    const before = readFileSync(path.join(sibling.dir, '.credentials.json'), 'utf8');
+
+    writeFileSync(
+      path.join(active.dir, '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'sk-rotated-access-only',
+          refreshToken: 'refresh-shared', // unchanged on purpose
+          expiresAt: 12345,
+        },
+      }),
+      'utf8',
+    );
+
+    const carried = propagateRenewal({
+      renewedDir: active.dir,
+      siblings: [sibling],
+      retired: credentialFingerprint(sibling.dir),
+      renewed: credentialFingerprint(active.dir),
+    });
+
+    expect(carried).toEqual(['maxed']);
+    expect(readFileSync(path.join(sibling.dir, '.credentials.json'), 'utf8')).not.toBe(before);
+    expect(readFileSync(path.join(sibling.dir, '.credentials.json'), 'utf8')).toContain(
+      'sk-rotated-access-only',
+    );
+  });
+});
+
+describe('renewAndCarry when only the access token changes', () => {
+  it('still carries, because the whole credential is what changed', async () => {
+    // The response can omit refresh_token, so the renewal keeps that token and
+    // replaces only the access token. Asking "did the TOKEN change" answers no
+    // and leaves the siblings holding a stale credential; the question has to
+    // be about the whole file.
+    const { renewed: active, sibling } = sharedPair();
+
+    const { carried } = await renewAndCarry(active, [active, sibling], ['maxed'], async () => {
+      writeFileSync(
+        path.join(active.dir, '.credentials.json'),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'sk-fresh-access',
+            refreshToken: 'refresh-shared', // unchanged on purpose
+            expiresAt: 4242,
+          },
+        }),
+        'utf8',
+      );
+      return { status: 'refreshed' as const };
+    });
+
+    expect(carried).toEqual(['maxed']);
+    expect(readFileSync(path.join(sibling.dir, '.credentials.json'), 'utf8')).toContain(
+      'sk-fresh-access',
+    );
+  });
+});

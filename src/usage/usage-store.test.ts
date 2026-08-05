@@ -412,3 +412,36 @@ describe('two profiles that share one login, during a usage refresh', () => {
     expect(refreshOf(accounts[0]!.dir)).toBe('refresh-shared');
   });
 });
+
+describe('a session that starts while the usage refresh is running', () => {
+  it('is not renewed out from under, even though the lease came after the snapshot', async () => {
+    // The refresh reads leases once, then makes a network call per account and
+    // sleeps between them, so seconds pass. A session claiming an account in
+    // that window would have been invisible, and renewing rotates the token out
+    // from under it.
+    const { c, accounts } = setup(['first', 'later']);
+    const home = c.env.CLAUDE_AUTO_SWITCH_HOME as string;
+    const renewed: string[] = [];
+    let claimed = false;
+
+    await refreshUsage(accounts, c, {
+      probe: (file) => {
+        // Stands in for the network call. While the FIRST account is being
+        // probed, a session claims the second one, which is invisible to the
+        // lease map read before the loop started.
+        if (!claimed && file.includes('first')) {
+          takeLease('later', path.join(home, 'live'), c);
+          claimed = true;
+        }
+        return Promise.resolve(result(0.1, 0.2));
+      },
+      renew: (dir) => {
+        renewed.push(dir);
+        return Promise.resolve({ status: 'refreshed' });
+      },
+    });
+
+    expect(renewed).toContain(accounts[0]!.dir); // nothing was using this one
+    expect(renewed).not.toContain(accounts[1]!.dir); // claimed mid-refresh
+  });
+});

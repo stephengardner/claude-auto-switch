@@ -1,4 +1,9 @@
-import { installCredential, credentialFingerprint, credentialPath } from './credential-vault.js';
+import {
+  installCredential,
+  credentialFingerprint,
+  credentialFileFingerprint,
+  credentialPath,
+} from './credential-vault.js';
 import { withCredentialLock } from '../claude/locks.js';
 import { copySecretFile } from '../util/secret-file.js';
 import { rmSync } from 'node:fs';
@@ -109,9 +114,18 @@ export async function renewAndCarry<T>(
   deps: PropagateDeps = {},
 ): Promise<{ result: T; carried: string[] }> {
   const sharing = snapshotSharing(target, allProfiles, sharedNames);
+  // "Did anything change" is asked of the WHOLE FILE, while "who shares this
+  // login" is asked of the token. They are different questions and using one
+  // for both is wrong in a way that shows up rarely: a renewal whose response
+  // omits refresh_token keeps that token and replaces only the access token, so
+  // a token-based comparison reports no change and the siblings are left
+  // holding a stale credential.
+  const fileBefore = credentialFileFingerprint(target.dir);
   const result = await renew();
+  if (!sharing.fingerprint || credentialFileFingerprint(target.dir) === fileBefore) {
+    return { result, carried: [] };
+  }
   const renewed = credentialFingerprint(target.dir);
-  if (!sharing.fingerprint || sharing.fingerprint === renewed) return { result, carried: [] };
   return {
     result,
     carried: propagateRenewal(

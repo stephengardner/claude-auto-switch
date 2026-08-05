@@ -179,13 +179,19 @@ export async function refreshUsage(
       // expired, their usage became unreadable, and the rotation policy went
       // blind on exactly the accounts it was meant to choose between. The
       // renewal is carried across to them instead.
-      const siblingsInUse = siblings.filter((name) => inUse.has(name));
       const editorMayBeUsingIt =
         account.name === editorAccount && !expiredLongerThan(account.dir, EDITOR_IDLE_GRACE_MS);
-      const refusal = lease
-        ? `not renewed: a running session (pid ${lease.pid}) is using this login; renewing would sign it out`
-        : siblingsInUse.length > 0
-          ? `not renewed: ${siblingsInUse.join(', ')} shares this login and a session is using it`
+      // Read FRESH, at the moment of the decision, rather than from the map
+      // built before the loop. This loop makes a network call per account and
+      // sleeps between them, so seconds pass and a session can start in that
+      // window; renewing then rotates the token out from under a session that
+      // had just claimed it. One read covers this account AND the profiles that
+      // share its login, because renewing breaks a session on any of them.
+      const busy = leasedNames(c, options.leaseOptions ?? {});
+      const inSessionNow = [account.name, ...siblings].filter((name) => busy.has(name));
+      const refusal =
+        inSessionNow.length > 0
+          ? `not renewed: a session is using ${inSessionNow.join(', ')}; renewing would sign it out`
           : editorMayBeUsingIt
             ? 'not renewed: your editor is pointed at this account and may be using it'
             : null;
@@ -261,4 +267,15 @@ export async function refreshUsage(
     /* cache write is best effort */
   }
   return snapshot;
+}
+
+/**
+ * Which accounts a session holds RIGHT NOW, as a set of names.
+ *
+ * Deliberately a fresh read rather than a cached map: it is asked immediately
+ * before a renewal, and the point is to see claims made since the refresh
+ * started.
+ */
+function leasedNames(c: PathCtx, options: LeaseOptions): Set<string> {
+  return new Set(liveLeases(c, options).map((lease) => lease.account));
 }
