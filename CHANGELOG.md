@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.36.1]
+
+### Fixed
+
+- **`ccx doctor` no longer calls it healthy when nothing is left to run on.**
+  The limits check asked whether every ENABLED account was capped. An account
+  whose login the token endpoint has refused is still enabled and cannot be
+  used, so a couple of dead profiles made the total look fine while every
+  account that could actually start a session was capped.
+
+  Found on a real machine, where it reported ok with both working accounts
+  capped and two refused logins padding the count.
+
+  It counts the accounts that could actually run now, names the ones that need
+  signing in first, and offers the command for them.
+
 ## [1.36.0]
 
 ### Fixed

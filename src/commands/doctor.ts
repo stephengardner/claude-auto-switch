@@ -293,22 +293,43 @@ export function auditSharedLogins(context: CliContext): DoctorCheck {
   };
 }
 
-/** Cap state: informational, but every-enabled-account-capped is a failure. */
+/**
+ * Cap state: informational, unless nothing is left to run on.
+ *
+ * "Left to run on" counts the accounts that could ACTUALLY start a session, not
+ * the enabled ones. An account whose login the token endpoint has refused is
+ * still enabled and cannot be used, so counting it hid the situation this check
+ * exists for: every usable account capped while a couple of dead profiles made
+ * the total look healthy. That is exactly the state it reported "ok" in.
+ */
 export function auditCaps(context: CliContext): DoctorCheck {
   const name = 'caps';
   const now = Date.now();
   const active = loadLedger(context.ctx).caps.filter((c) => c.capUntil && c.capUntil > now);
   if (active.length === 0) return { name, ok: true, detail: 'no accounts marked capped' };
+
   const enabled = listAccounts(context.ctx).filter((a) => a.enabled);
-  const allCapped = enabled.length > 0 && enabled.every((a) => active.some((c) => c.account === a.name));
+  const usable = enabled.filter((a) => hasWorkingLogin(a.dir, context.ctx));
+  const isCapped = (account: { name: string }): boolean =>
+    active.some((c) => c.account === account.name);
   const list = active
     .map((c) => `${c.account} (${Math.max(1, Math.round(((c.capUntil ?? now) - now) / 60000))}m left)`)
     .join(', ');
-  return {
-    name,
-    ok: !allCapped,
-    detail: allCapped ? `EVERY enabled account is marked capped: ${list}` : `capped: ${list}`,
-  };
+
+  if (usable.length > 0 && usable.every(isCapped)) {
+    const needSignIn = enabled.filter((a) => !usable.includes(a)).map((a) => a.name);
+    return {
+      name,
+      ok: false,
+      detail:
+        `every account you can actually use is capped: ${list}` +
+        (needSignIn.length
+          ? `. The rest need signing in first: ${needSignIn.join(', ')}`
+          : ''),
+      ...(needSignIn.length ? { fix: needSignIn.map((n) => `ccx login ${n}`) } : {}),
+    };
+  }
+  return { name, ok: true, detail: `capped: ${list}` };
 }
 
 /** Informational: report which installed editors are pointed at ccx. */
