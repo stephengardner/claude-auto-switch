@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { auditSessionAccount } from './doctor-session-account.js';
 import { configHome, profilesDir } from '../config/paths.js';
 import { detectEditors } from '../editor/settings.js';
 import { readEditorEnvVar } from '../editor/install.js';
@@ -12,6 +13,8 @@ import { isLink, readTarget } from '../daemon/junction.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { listAccounts } from '../accounts/registry.js';
+import { getActive } from '../state/active.js';
+import { liveLeases } from '../session/lease.js';
 import { verifyAccountIdentities } from '../accounts/identity-check.js';
 import { sharedLoginGroups } from '../accounts/duplicate-guard.js';
 import { loadLedger } from '../ledger/ledger.js';
@@ -343,6 +346,12 @@ export async function runDoctor(
     auditConfig(context),
     auditShim(context, deps),
     auditSharedHistory(context),
+    auditSessionAccount({
+      sessionDir: path.join(configHome(context.ctx), 'session'),
+      activeAccount: getActive(context.ctx),
+      accounts: listAccounts(context.ctx),
+      leases: liveLeases(context.ctx),
+    }),
     await auditAccounts(context),
     auditSharedLogins(context),
     await auditIdentities(context, deps),
@@ -360,6 +369,7 @@ const LABELS: Record<string, string> = {
   config: 'config',
   'terminal-shim': 'terminal',
   'shared-history': 'history',
+  'session-account': 'session',
   accounts: 'accounts',
   'account-identity': 'identity',
   'separate-logins': 'separate logins',

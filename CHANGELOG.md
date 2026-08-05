@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.35.0]
+
+### Added
+
+- **`ccx doctor` now says when two sessions are sharing one session directory.** Every
+  `ccx run` uses the SAME session directory, and starting a session copies that
+  account's login into it. Two sessions at once therefore write the same file,
+  and the later one silently takes the first one's account: the first terminal
+  keeps working, on a login it was not given, while ccx still reports the
+  account it chose. A limit hit there is recorded against the wrong account.
+
+  Nothing is corrupted by this, because the save-back guard already refuses to
+  write the borrowed login into the wrong profile. What was missing was any way
+  to SEE it, which is what this reports, naming the sessions and their process
+  ids.
+
+  It also reports when the session's login belongs to a different account than
+  the active one, and stays quiet for the two cases that look similar and are
+  not faults: a running Claude that renewed its own token in place, and two
+  profiles that legitimately share one login.
+
+  Read-only, local, and no network: `ccx doctor` is what you run when a session
+  behaved oddly, and it must not change anything while answering.
+
+  This is a diagnostic, not the fix. Sessions sharing one directory is the
+  underlying design issue and is filed separately.
+
 ## [1.34.1]
 
 ### Fixed
