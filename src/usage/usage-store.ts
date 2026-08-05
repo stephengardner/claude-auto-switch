@@ -2,7 +2,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
-import { hasLogin } from '../accounts/account-login.js';
+import { hasWorkingLogin } from '../accounts/account-login.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { liveLeases, type LeaseOptions } from '../session/lease.js';
@@ -124,12 +124,11 @@ export async function refreshUsage(
     options.renew ?? ((accountDir: string) => refreshCredentialIfExpired(accountDir, { ctx: c }));
 
   const snapshot = readUsageSnapshot(c);
-  const stale = accounts.filter((a) => {
-    if (!hasLogin(a.dir)) return false;
+  const aged = accounts.filter((a) => {
     const entry = snapshot.accounts[a.name];
     return !entry || now() - entry.at > maxAge;
   });
-  if (stale.length === 0) return snapshot;
+  if (aged.length === 0) return snapshot;
 
   // Accounts a running session is using right now. Renewing one of those would
   // rotate the token out from under the live session, which is what produces a
@@ -140,6 +139,15 @@ export async function refreshUsage(
   const inUse = new Map(
     liveLeases(c, options.leaseOptions ?? {}).map((l) => [l.account, l] as const),
   );
+
+  // Skip the logins there is no point probing, but only AFTER the leases are
+  // known. A running session holds its own copy of the credential and keeps it
+  // fresh, so the profile copy can be an older one that has since been refused
+  // while the session's copy works. Judging by the profile copy alone would stop
+  // refreshing usage for an account that is being used right now, and stale
+  // usage is what the rotation policy reads to decide where to move next.
+  const stale = aged.filter((a) => inUse.has(a.name) || hasWorkingLogin(a.dir, c));
+  if (stale.length === 0) return snapshot;
 
   // The editor reads an account's login DIRECTLY through its pointer, so ccx is
   // not in the loop for those sessions and cannot tell whether one is running.

@@ -6,6 +6,8 @@ import { refreshUsage, readUsageSnapshot } from './usage-store.js';
 import type { LimitProbeResult } from './limit-probe.js';
 import { readCredentialEvents } from '../accounts/credential-log.js';
 import { takeLease } from '../session/lease.js';
+import { rememberDeadLogin } from './dead-login-store.js';
+import { credentialFileFingerprint } from '../accounts/credential-vault.js';
 
 function setup(names: string[]) {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-usage-'));
@@ -286,5 +288,58 @@ describe('refreshUsage', () => {
     expect(snap.accounts['out']).toBeUndefined();
     await refreshUsage(accounts, c, { probe }); // failure is cached within TTL
     expect(calls).toBe(1);
+  });
+});
+
+describe('a rejected profile credential while a session is live', () => {
+  it('still refreshes usage for the leased account, reading the live copy', async () => {
+    // The profile copy is the one that was refused. A running session keeps its
+    // OWN copy fresh, so judging the account by the profile copy alone would
+    // stop refreshing usage for the account being used right now, and the
+    // rotation policy reads that usage to decide where to move next.
+    const { c, accounts } = setup(['busy']);
+    const live = path.join(c.env.CLAUDE_AUTO_SWITCH_HOME as string, 'live-session');
+    mkdirSync(live, { recursive: true });
+    writeFileSync(
+      path.join(live, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'tok-live-and-working' } }),
+      'utf8',
+    );
+    takeLease('busy', live, c);
+    rememberDeadLogin(
+      credentialFileFingerprint(accounts[0]!.dir),
+      'token endpoint 400: invalid_grant',
+      c,
+    );
+
+    const probed: string[] = [];
+    const snap = await refreshUsage(accounts, c, {
+      probe: (file) => {
+        probed.push(file);
+        return Promise.resolve(result(0.4, 0.5));
+      },
+      renew: () => Promise.resolve({ status: 'not-needed' }),
+    });
+
+    expect(probed).toHaveLength(1);
+    expect(probed[0]).toContain('live-session');
+    expect(snap.accounts.busy?.fiveHour).toBe(0.4);
+  });
+
+  it('skips a rejected account that no session is using', async () => {
+    const { c, accounts } = setup(['idle']);
+    rememberDeadLogin(
+      credentialFileFingerprint(accounts[0]!.dir),
+      'token endpoint 400: invalid_grant',
+      c,
+    );
+    const probed: string[] = [];
+    await refreshUsage(accounts, c, {
+      probe: (file) => {
+        probed.push(file);
+        return Promise.resolve(result(0.1, 0.2));
+      },
+    });
+    expect(probed).toEqual([]);
   });
 });

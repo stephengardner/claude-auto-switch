@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.33.3]
+
+### Fixed
+
+- **Rotation no longer starts a session on a login that has already been
+  rejected.** The swap loop only learned a login was finished by launching it
+  and watching it fail, so an account the token endpoint had definitively
+  refused was still picked first. What that looks like in a terminal is Claude
+  opening on "Not logged in", with nothing to say which account is at fault or
+  what to do about it.
+
+  Accounts with a recorded refusal are now skipped before anything is launched.
+  They are skipped by being put into the same set that a rejection discovered at
+  runtime goes into, which is what keeps the ending honest: that set is what the
+  closing message reads to choose between "wait for a reset" and "sign in
+  again". Filtering them out of the selection instead would have left the set
+  empty and produced "every account has hit its limit", sending you off to wait
+  for a reset that cannot repair a sign-in.
+
+  When some accounts are out of room AND others need a sign-in, both are now
+  named, because waiting fixes one group and never fixes the other.
+
+  `ccx doctor`, the editor launcher and the usage refresh ask the same stricter
+  question now, so a rejected login is not reported as live and is not probed
+  for usage it cannot return.
+
 ## [1.33.2]
 
 ### Changed

@@ -74,3 +74,4 @@ describe('editorLaunch (against fake-claude)', () => {
     expect(loadLedger(context.ctx).caps).toHaveLength(0);
   });
 });
+

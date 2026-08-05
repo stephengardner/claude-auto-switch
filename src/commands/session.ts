@@ -45,7 +45,7 @@ import {
   sessionIdentityEmail,
   credentialFingerprint,
 } from '../accounts/credential-vault.js';
-import { hasLogin } from '../accounts/account-login.js';
+import { hasLogin, hasWorkingLogin } from '../accounts/account-login.js';
 import { decideSaveBack } from '../accounts/save-back.js';
 import {
   freshMirrorState,
@@ -70,6 +70,12 @@ const CREDS = '.credentials.json';
 
 /** True when at least one account can run (hot-swap is possible). */
 export function hasAnyUsableAccount(context: CliContext): boolean {
+  // Deliberately the NARROW question. This decides whether to take the hot-swap
+  // path at all, and that path is where a rejected login is skipped and named
+  // with the command that fixes it. Asking the strict question here would send a
+  // set of accounts whose logins are all finished DOWN THE OTHER PATH, which
+  // probes each one slowly and never says what is actually wrong. Being signed
+  // out is a reason to enter the swap loop, not to skip it.
   return listAccounts(context.ctx).some((a) => hasLogin(a.dir));
 }
 
@@ -512,6 +518,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   );
 
   const exitCode = await runHotSwapSession({
+    // Skipped up front rather than launched and rejected. These go into the same
+    // set a runtime rejection goes into, so the closing message still says to
+    // sign in instead of telling the operator to wait for a reset.
+    knownDeadAccounts: () =>
+      accounts.filter((a) => hasLogin(a.dir) && !hasWorkingLogin(a.dir, context.ctx)).map((a) => a.name),
     nextAccount: (excluding) => {
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
       const pinned = getActive(context.ctx);
@@ -588,7 +599,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     lastResort: () => {
       const limit = modelOnlyLimit(loadLedger(context.ctx), Date.now());
       if (!limit) return null;
-      const usable = accounts.filter((a) => a.enabled && hasLogin(a.dir));
+      const usable = accounts.filter((a) => a.enabled && hasWorkingLogin(a.dir, context.ctx));
       const pick = usable.find((a) => a.name === getActive(context.ctx)) ?? usable[0];
       if (!pick) return null;
       const when = limit.resetsAt

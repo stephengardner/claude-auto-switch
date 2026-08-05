@@ -270,3 +270,63 @@ describe('runHotSwapSession', () => {
     expect(all).toContain('"fallback" needs signing in again');
   });
 });
+
+describe('accounts whose login is already known to be finished', () => {
+  it('never launches one, and swaps straight to an account that works', async () => {
+    const accounts = pool(['dead', 'good']);
+    const launched: string[] = [];
+    const deps: HotSwapDeps = {
+      knownDeadAccounts: () => ['dead'],
+      nextAccount: (ex) => accounts.find((a) => !ex.has(a.name)) ?? null,
+      resolveAccount: (name) => accounts.find((a) => a.name === name) ?? null,
+      runSession: (account) => {
+        launched.push(account.name);
+        return Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome);
+      },
+      markCapped: () => {},
+      notify: () => {},
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(0);
+    expect(launched).toEqual(['good']);
+  });
+
+  it('says to sign in rather than to wait for a reset when every login is finished', async () => {
+    // The trap this design avoids. Skipping the dead accounts inside nextAccount
+    // instead would leave the set empty, and the ending would then tell the
+    // operator to wait for a reset, which never repairs a sign-in.
+    const notes: string[] = [];
+    const deps: HotSwapDeps = {
+      knownDeadAccounts: () => ['one', 'two'],
+      nextAccount: (ex) => pool(['one', 'two']).find((a) => !ex.has(a.name)) ?? null,
+      resolveAccount: () => null,
+      runSession: () => Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome),
+      markCapped: () => {},
+      notify: (m) => notes.push(m),
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(1);
+    expect(notes.join('\n')).toContain('these accounts need signing in again: one, two');
+    expect(notes.join('\n')).toContain('ccx login one');
+    expect(notes.join('\n')).not.toContain('try again after a reset');
+  });
+
+  it('names both problems when some accounts are capped and others need signing in', async () => {
+    const notes: string[] = [];
+    const deps: HotSwapDeps = {
+      knownDeadAccounts: () => ['dead'],
+      nextAccount: (ex) => pool(['dead', 'capme']).find((a) => !ex.has(a.name)) ?? null,
+      resolveAccount: () => null,
+      runSession: () =>
+        Promise.resolve({ kind: 'capped', exitCode: 1, reason: 'Usage limit reached' } as SessionOutcome),
+      markCapped: () => {},
+      notify: (m) => notes.push(m),
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(1);
+    const all = notes.join('\n');
+    expect(all).toContain('capme hit a limit');
+    expect(all).toContain('need signing in again: dead');
+    expect(all).toContain('A reset will not fix a sign-in');
+  });
+});
