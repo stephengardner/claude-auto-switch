@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.37.0]
+
+### Fixed
+
+- **ccx now says why it gave up.** With every account either capped or refused,
+  running `claude` came straight back to a blank prompt. Refusing was right;
+  saying so only in the event log was not. The ending went out through the
+  channel that deliberately draws nothing, which exists so ccx never scribbles
+  over Claude's screen mid-session. Nothing owns the screen once there is
+  nothing left to run, so it now writes to stderr.
+
+- **That message names every account that is out, not just the ones that ran
+  out during this session.** Accounts capped before the session started were
+  never mentioned, so you could be told two accounts needed signing in while
+  the two that were actually out of room went unnamed.
+
+- **Pressing `l` in the dashboard no longer kills it.** Three faults, each able
+  to end the program on its own: a terminal that goes away (`write EPIPE` from
+  the sign-in's progress line, `read EPIPE` from stdin), a sign-in that could
+  not start (a child that fails to spawn emits `error` and never `close`), and
+  an unguarded loop body. All three arrive as events rather than throws, so
+  nothing at the call site could catch them.
+
 ## [1.36.4]
 
 ### Fixed
