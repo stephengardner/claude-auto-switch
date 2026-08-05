@@ -492,16 +492,24 @@ describe('a shared login where only the OTHER profile is busy', () => {
     );
 
     const probed: string[] = [];
+    const renewed: string[] = [];
     await refreshUsage(accounts, c, {
       probe: (file) => {
         probed.push(file);
         return Promise.resolve(result(0.1, 0.2));
       },
-      renew: () => Promise.resolve({ status: 'refreshed' }),
+      renew: (dir) => {
+        renewed.push(dir);
+        return Promise.resolve({ status: 'refreshed' });
+      },
     });
 
     expect(probed).toHaveLength(1);
     expect(probed[0]).toContain('live-session');
+    // The sibling's session is the reason this one is not renewed either. Without
+    // this the stub renewal has no observable effect, so a regression that renews
+    // before probing would slip through a test named for the sibling being busy.
+    expect(renewed).toEqual([]);
   });
 
   it('does not renew when the EDITOR is pointed at the profile that shares this login', async () => {
