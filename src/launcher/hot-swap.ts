@@ -1,3 +1,4 @@
+import { outOfAccountsMessage } from './out-of-accounts.js';
 export interface HotSwapAccount {
   name: string;
   dir: string;
@@ -57,6 +58,16 @@ export interface HotSwapDeps {
    * leave the operator waiting for a reset that cannot fix a sign-in.
    */
   knownDeadAccounts?: () => string[];
+  /**
+   * Accounts with no stored login at all.
+   *
+   * They are already invisible to selection, so this exists purely so the
+   * ending can tell the truth about them. Without it they are silently absent
+   * and the operator is told to wait for a reset, which never produces a login.
+   * Kept apart from the refused ones because "sign in again" is wrong for an
+   * account that has never been signed in.
+   */
+  accountsNeverSignedIn?: () => string[];
 }
 
 /**
@@ -107,28 +118,13 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
         }
         return outcome.exitCode;
       }
-      if (needsLogin.size > 0) {
-        // Nothing here is exhausted; the logins are simply finished. Saying "try
-        // again after a reset" would send the operator away to wait for something
-        // that will never happen on its own.
-        const names = [...needsLogin];
-        if (capped.size === 0) {
-          deps.notify(
-            `these accounts need signing in again: ${names.join(', ')}. ` +
-              `Run: ccx login ${names[0]}`,
-          );
-          return 1;
-        }
-        // Both problems at once, which is worth saying: waiting fixes the capped
-        // ones and never fixes the rest, so a plain limit message would hide the
-        // only part the operator can act on now.
-        deps.notify(
-          `${[...capped].join(', ')} hit a limit, and these accounts need signing in again: ` +
-            `${names.join(', ')}. A reset will not fix a sign-in. Run: ccx login ${names[0]}`,
-        );
-        return 1;
-      }
-      deps.notify('every account has hit its limit; try again after a reset');
+      deps.notify(
+        outOfAccountsMessage({
+          capped: [...capped],
+          refused: [...needsLogin],
+          neverSignedIn: (deps.accountsNeverSignedIn?.() ?? []).filter((n) => !needsLogin.has(n)),
+        }),
+      );
       return 1;
     }
 

@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.33.4]
+
+### Fixed
+
+- **An account that was never signed in is no longer left out of the ending.**
+  When the swap loop ran out of accounts it chose between "wait for a reset" and
+  "sign in again" by looking at which logins had been refused. An account with
+  no login at all was in neither group: it is invisible to selection, so nothing
+  recorded it, and the session ended by suggesting a wait that could never
+  produce a login.
+
+  It is now named in its own words. "Sign in again" is wrong for an account that
+  has never worked, so the two are kept apart: `refused needs signing in again.
+  fresh is not signed in yet. Run: ccx login refused`.
+
+  Scope worth being exact about: this is the mixed case, where something has a
+  login so the swap loop runs and then runs out. When NO account has a login the
+  loop is never entered, and that path already said `cannot run: no enabled
+  account is logged in (run: ccx login --all)`, which was already right.
+
+  The choice between these endings is now one pure function with the three
+  states named, rather than conditionals at the call site. Telling someone to
+  wait when waiting cannot help has been fixed on four separate surfaces in this
+  project, each time locally, which is what made it worth having one place.
+
 ## [1.33.3]
 
 ### Fixed
