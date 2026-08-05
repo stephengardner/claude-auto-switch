@@ -46,6 +46,17 @@ export interface HotSwapDeps {
    * switch models.
    */
   lastResort?: () => { account: HotSwapAccount; message: string } | null;
+  /**
+   * Accounts already known to have a rejected login, so they are skipped without
+   * being launched first.
+   *
+   * Seeded into the same set that a rejection discovered at runtime goes into,
+   * rather than filtered out inside `nextAccount`. That is what keeps the ending
+   * honest: the closing message reads this set to decide between "wait for a
+   * reset" and "sign in again", so an account that is skipped silently would
+   * leave the operator waiting for a reset that cannot fix a sign-in.
+   */
+  knownDeadAccounts?: () => string[];
 }
 
 /**
@@ -64,7 +75,7 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
    * rejects it. Skipped like a capped one, but NOT recorded as capped, because
    * nothing is exhausted and the fix is a sign-in rather than a wait.
    */
-  const needsLogin = new Set<string>();
+  const needsLogin = new Set<string>(deps.knownDeadAccounts?.() ?? []);
   let first = true;
   // When the operator picks an account mid-session, we relaunch on THAT account
   // next (instead of the policy pick), resuming the same conversation.
@@ -96,13 +107,24 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
         }
         return outcome.exitCode;
       }
-      if (needsLogin.size > 0 && capped.size === 0) {
-        // Nothing is exhausted; the logins are simply finished. Saying "try again
-        // after a reset" here would send the operator away to wait for something
+      if (needsLogin.size > 0) {
+        // Nothing here is exhausted; the logins are simply finished. Saying "try
+        // again after a reset" would send the operator away to wait for something
         // that will never happen on its own.
+        const names = [...needsLogin];
+        if (capped.size === 0) {
+          deps.notify(
+            `these accounts need signing in again: ${names.join(', ')}. ` +
+              `Run: ccx login ${names[0]}`,
+          );
+          return 1;
+        }
+        // Both problems at once, which is worth saying: waiting fixes the capped
+        // ones and never fixes the rest, so a plain limit message would hide the
+        // only part the operator can act on now.
         deps.notify(
-          `these accounts need signing in again: ${[...needsLogin].join(', ')}. ` +
-            `Run: ccx login ${[...needsLogin][0]}`,
+          `${[...capped].join(', ')} hit a limit, and these accounts need signing in again: ` +
+            `${names.join(', ')}. A reset will not fix a sign-in. Run: ccx login ${names[0]}`,
         );
         return 1;
       }

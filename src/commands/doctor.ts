@@ -9,7 +9,7 @@ import { editorTargetAccount } from '../editor/junction.js';
 import { isShimInstalled, shimHasFallback } from '../shell/install-shim.js';
 import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-path.js';
 import { isLink, readTarget } from '../daemon/junction.js';
-import { hasLogin } from '../accounts/account-login.js';
+import { hasWorkingLogin } from '../accounts/account-login.js';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { listAccounts } from '../accounts/registry.js';
 import { verifyAccountIdentities } from '../accounts/identity-check.js';
@@ -216,7 +216,7 @@ export async function auditAccounts(context: CliContext): Promise<DoctorCheck> {
   } catch {
     loggedInNames = new Set(
       accounts
-        .filter((a) => hasLogin(a.dir))
+        .filter((a) => hasWorkingLogin(a.dir, context.ctx))
         .map((a) => a.name),
     );
   }

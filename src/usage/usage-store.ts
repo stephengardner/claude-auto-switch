@@ -2,7 +2,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
-import { hasLogin } from '../accounts/account-login.js';
+import { hasWorkingLogin } from '../accounts/account-login.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { liveLeases, type LeaseOptions } from '../session/lease.js';
@@ -125,7 +125,7 @@ export async function refreshUsage(
 
   const snapshot = readUsageSnapshot(c);
   const stale = accounts.filter((a) => {
-    if (!hasLogin(a.dir)) return false;
+    if (!hasWorkingLogin(a.dir, c)) return false;
     const entry = snapshot.accounts[a.name];
     return !entry || now() - entry.at > maxAge;
   });

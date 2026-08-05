@@ -5,7 +5,7 @@ import { select } from '../selector/selector.js';
 import { launchWatched, spawnWatched } from '../launcher/launcher.js';
 import type { CapClassification } from '../launcher/cap-detect.js';
 import { loadLedger, saveLedger, markCapped, cappedNames } from '../ledger/ledger.js';
-import { hasLogin } from '../accounts/account-login.js';
+import { hasWorkingLogin } from '../accounts/account-login.js';
 import { appendEvent } from '../events/log.js';
 import { ensureEditorReady } from './editor-ready.js';
 import { configHome } from '../config/paths.js';
@@ -19,7 +19,7 @@ async function pickAccount(context: CliContext): Promise<Account | undefined> {
   const active = getActive(context.ctx) ?? undefined;
 
   const fast = accounts.find(
-    (a) => a.name === active && a.enabled && !capped.has(a.name) && hasLogin(a.dir),
+    (a) => a.name === active && a.enabled && !capped.has(a.name) && hasWorkingLogin(a.dir, context.ctx),
   );
   if (fast) return fast;
 
