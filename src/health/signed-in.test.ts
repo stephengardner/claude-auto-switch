@@ -72,3 +72,27 @@ describe('which probed accounts count as somewhere to launch', () => {
     expect([...signedInAndNotRejected(signedIn(['keychain']), accounts, ctx)]).toEqual(['keychain']);
   });
 });
+
+describe('the complement, which is what `ccx login --all` needs', () => {
+  it('leaves a refused login OUT, so it is targeted for signing in', () => {
+    // `ccx login --all` signs in whatever is not usable. The probe reports a
+    // refused login as signed in, because the file still looks like one, so
+    // going by the probe alone skipped exactly the accounts that needed it and
+    // announced that they were all fine.
+    const { ctx, accounts } = setup(['dead', 'good']);
+    rememberDeadLogin(
+      credentialFileFingerprint(accounts[0]!.dir),
+      'token endpoint 400: invalid_grant',
+      ctx,
+    );
+    const usable = signedInAndNotRejected(signedIn(['dead', 'good']), accounts, ctx);
+    const targets = accounts.filter((a) => !usable.has(a.name)).map((a) => a.name);
+    expect(targets).toEqual(['dead']);
+  });
+
+  it('targets nothing when every login works', () => {
+    const { ctx, accounts } = setup(['a', 'b']);
+    const usable = signedInAndNotRejected(signedIn(['a', 'b']), accounts, ctx);
+    expect(accounts.filter((a) => !usable.has(a.name))).toEqual([]);
+  });
+});
