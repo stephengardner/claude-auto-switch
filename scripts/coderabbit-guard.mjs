@@ -28,6 +28,7 @@ import {
   reviewsArePaused,
   hasSubstantiveReviewFor,
   reviewerCommentCovers,
+  reviewerReportsNoUnreviewedCommits,
   commitIsCovered,
   isReviewerLogin,
 } from './coderabbit-findings.mjs';
@@ -213,12 +214,29 @@ function hasReviewForHead(owner, name, pr) {
     const comments = allComments(owner, name, pr);
     const parents = new Map();
 
+    // When the head commit was made, for the "nothing left to review" notice.
+    // That notice is edited in place and names no commit, so the only thing that
+    // ties it to THIS head is being newer than it.
+    const headCommittedAt = (() => {
+      try {
+        const commit = ghJson(['api', `repos/${owner}/${name}/commits/${sha}`]);
+        return Date.parse(commit?.commit?.committer?.date ?? '');
+      } catch {
+        return NaN; // cannot date it, so the notice cannot be trusted
+      }
+    })();
+
     return commitIsCovered(sha, {
       // A review that found NOTHING posts no review object, only a comment
       // naming the range it covered, so both shapes count.
       reviewed: (candidate) =>
         hasSubstantiveReviewFor(reviews, candidate, isReviewer) ||
-        reviewerCommentCovers(comments, candidate, isReviewer),
+        reviewerCommentCovers(comments, candidate, isReviewer) ||
+        // Only ever for the HEAD. The notice says this pull request has nothing
+        // unreviewed left, which is a claim about its tip and not about some
+        // arbitrary ancestor being reached through a merge.
+        (candidate === sha &&
+          reviewerReportsNoUnreviewedCommits(comments, headCommittedAt, isReviewer)),
       // Already on the base branch, so it arrived through its own pull request
       // and was reviewed there. "identical" or "behind" both mean contained.
       containedInBase: (candidate) => {

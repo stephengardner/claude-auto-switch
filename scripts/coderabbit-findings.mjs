@@ -212,6 +212,42 @@ export function reviewerCommentCovers(comments, sha, isReviewer) {
   );
 }
 
+const NO_UNREVIEWED_COMMITS = /no new commits to review since the last review/i;
+
+/**
+ * Has the reviewer said it has NOTHING LEFT to review on this pull request?
+ *
+ * The third shape coverage arrives in, and the one that had no answer here. An
+ * incremental review that finds nothing new posts no review object and writes no
+ * SHA anywhere; it says so only in its summary comment, which it EDITS IN PLACE.
+ *
+ * Worse, asking for a review can destroy the evidence of the previous one. A
+ * head that was covered by a comment naming its SHA stopped being covered the
+ * moment "@coderabbitai review" was answered with "Review skipped: no new
+ * commits", because that rewrite dropped the SHA. The gate then blocked a pull
+ * request that had genuinely been reviewed and was clean, with nothing anyone
+ * could do to move it forward, which is the permanent false block this gate has
+ * now produced twice by other routes.
+ *
+ * Anchored in TIME rather than taken at face value, because the comment is
+ * edited in place and says nothing about which commit it means. The edit must be
+ * NEWER than the commit it is claimed to cover; a notice written before the push
+ * is talking about an older head, and accepting it would be the stale-artifact
+ * false green all over again.
+ */
+export function reviewerReportsNoUnreviewedCommits(comments, headCommittedAt, isReviewer) {
+  if (!Number.isFinite(headCommittedAt)) return false;
+  return (comments ?? []).some((c) => {
+    if (!isReviewer(c.author ?? c.user?.login ?? '')) return false;
+    if (!NO_UNREVIEWED_COMMITS.test(String(c.body ?? ''))) return false;
+    // Accepts both shapes this runs against: the guard's own normalised comment,
+    // which has already parsed the date, and a raw REST comment which has not.
+    const edited =
+      typeof c.updatedAt === 'number' ? c.updatedAt : Date.parse(c.updated_at ?? c.updatedAt ?? '');
+    return Number.isFinite(edited) && edited > headCommittedAt;
+  });
+}
+
 
 /**
  * Has the reviewer covered this commit, allowing for merges that add nothing?
