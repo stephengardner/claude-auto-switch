@@ -850,6 +850,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       notifyTerminal(`ccx: ${m}`);
       logEvent(m);
     },
+    // The ending, which is the opposite situation: no session is running, so
+    // the screen is ours and staying quiet tells the operator nothing.
+    report: (m) => {
+      (context.err ?? ((line: string) => process.stderr.write(`${line}\n`)))(`ccx: ${m}`);
+      logEvent(m);
+    },
+    knownCappedAccounts: () => [...cappedNames(loadLedger(context.ctx), Date.now())],
   });
 
   // No more sessions will run: stop watching usage and restore the terminal.

@@ -27,6 +27,7 @@ describe('runHotSwapSession', () => {
       },
       markCapped: (a) => marked.push(a),
       notify: () => {},
+      report: () => {},
     };
 
     expect(await runHotSwapSession(deps)).toBe(0);
@@ -46,6 +47,7 @@ describe('runHotSwapSession', () => {
       runSession: () => Promise.resolve({ kind: 'capped', exitCode: 1 } as SessionOutcome),
       markCapped: () => {},
       notify: (m) => notes.push(m),
+      report: (m) => notes.push(m),
     };
     expect(await runHotSwapSession(deps)).toBe(1);
     expect(notes.join(' ')).toContain('every account has hit its limit');
@@ -72,6 +74,7 @@ describe('runHotSwapSession', () => {
       },
       markCapped: () => {},
       notify: (m) => notes.push(m),
+      report: (m) => notes.push(m),
       lastResort: () => ({ account: accounts[0]!, message: 'every account is out of Fable' }),
     };
 
@@ -89,6 +92,7 @@ describe('runHotSwapSession', () => {
       runSession: () => Promise.resolve({ kind: 'capped', exitCode: 1 } as SessionOutcome),
       markCapped: () => {},
       notify: () => {},
+      report: () => {},
       lastResort: () => {
         fallbacks += 1;
         return { account: accounts[0]!, message: 'model limit' };
@@ -112,6 +116,7 @@ describe('runHotSwapSession', () => {
       },
       markCapped: () => {},
       notify: () => {},
+      report: () => {},
     };
     expect(await runHotSwapSession(deps)).toBe(0);
     expect(count).toBe(1);
@@ -134,6 +139,7 @@ describe('runHotSwapSession', () => {
       },
       markCapped: () => {},
       notify: () => {},
+      report: () => {},
     };
 
     expect(await runHotSwapSession(deps)).toBe(0);
@@ -161,6 +167,7 @@ describe('runHotSwapSession', () => {
       },
       markCapped: () => {},
       notify: () => {},
+      report: () => {},
     };
 
     expect(await runHotSwapSession(deps)).toBe(0);
@@ -192,6 +199,7 @@ describe('runHotSwapSession', () => {
       },
       markCapped: (a) => marked.push(a),
       notify: () => {},
+      report: () => {},
     };
 
     expect(await runHotSwapSession(deps)).toBe(0);
@@ -219,6 +227,7 @@ describe('runHotSwapSession', () => {
       },
       markCapped: () => {},
       notify: () => {},
+      report: () => {},
     };
 
     await runHotSwapSession(deps);
@@ -236,6 +245,7 @@ describe('runHotSwapSession', () => {
       runSession: () => Promise.resolve({ kind: 'needs-login', exitCode: 1 } as SessionOutcome),
       markCapped: () => {},
       notify: (m) => said.push(m),
+      report: (m) => said.push(m),
     };
 
     expect(await runHotSwapSession(deps)).toBe(1);
@@ -263,6 +273,7 @@ describe('runHotSwapSession', () => {
         ),
       markCapped: () => {},
       notify: (m) => said.push(m),
+      report: (m) => said.push(m),
     };
 
     expect(await runHotSwapSession(deps)).toBe(1);
@@ -285,6 +296,7 @@ describe('accounts whose login is already known to be finished', () => {
       },
       markCapped: () => {},
       notify: () => {},
+      report: () => {},
     };
 
     expect(await runHotSwapSession(deps)).toBe(0);
@@ -303,6 +315,7 @@ describe('accounts whose login is already known to be finished', () => {
       runSession: () => Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome),
       markCapped: () => {},
       notify: (m) => notes.push(m),
+      report: (m) => notes.push(m),
     };
 
     expect(await runHotSwapSession(deps)).toBe(1);
@@ -321,6 +334,7 @@ describe('accounts whose login is already known to be finished', () => {
         Promise.resolve({ kind: 'capped', exitCode: 1, reason: 'Usage limit reached' } as SessionOutcome),
       markCapped: () => {},
       notify: (m) => notes.push(m),
+      report: (m) => notes.push(m),
     };
 
     expect(await runHotSwapSession(deps)).toBe(1);
@@ -344,6 +358,7 @@ describe('accounts that have never been signed in', () => {
       runSession: () => Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome),
       markCapped: () => {},
       notify: (m) => notes.push(m),
+      report: (m) => notes.push(m),
     };
 
     expect(await runHotSwapSession(deps)).toBe(1);
@@ -365,6 +380,7 @@ describe('accounts that have never been signed in', () => {
         Promise.resolve({ kind: 'capped', exitCode: 1, reason: 'Usage limit reached' } as SessionOutcome),
       markCapped: () => {},
       notify: (m) => notes.push(m),
+      report: (m) => notes.push(m),
     };
 
     expect(await runHotSwapSession(deps)).toBe(1);
@@ -386,11 +402,59 @@ describe('accounts that have never been signed in', () => {
       runSession: () => Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome),
       markCapped: () => {},
       notify: (m) => notes.push(m),
+      report: (m) => notes.push(m),
     };
 
     expect(await runHotSwapSession(deps)).toBe(1);
     const all = notes.join('\n');
     expect(all).toContain('same needs signing in again');
     expect(all).not.toContain('is not signed in yet');
+  });
+
+  it('says why it gave up on the channel that DRAWS, not the silent one', async () => {
+    // The bug this pins: the ending went out through `notify`, which draws
+    // nothing on purpose because Claude owns the screen mid-session. Nothing
+    // owns the screen once there is nothing left to run, so the operator got a
+    // blank prompt and ran the same command three times, while the explanation
+    // went only to the event log.
+    const accounts = pool(['one', 'two']);
+    const quiet: string[] = [];
+    const shown: string[] = [];
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => accounts.find((a) => !ex.has(a.name)) ?? null,
+      resolveAccount: (name) => accounts.find((a) => a.name === name) ?? null,
+      runSession: () => Promise.resolve({ kind: 'needs-login', exitCode: 1 } as SessionOutcome),
+      markCapped: () => {},
+      notify: (m) => quiet.push(m),
+      report: (m) => shown.push(m),
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(1);
+    expect(shown.join('\n')).toContain('need signing in again');
+    expect(quiet.join('\n')).not.toContain('need signing in again');
+  });
+
+  it('names the accounts that were ALREADY capped before the run started', async () => {
+    // The running set only collects accounts that cap during this session, so
+    // an operator whose other accounts were capped hours ago was told only
+    // about the sign-ins. That reads as "two accounts are fine", when in fact
+    // there was nothing left to run on at all.
+    const accounts = pool(['main', 'maxed']);
+    const shown: string[] = [];
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => accounts.find((a) => !ex.has(a.name)) ?? null,
+      resolveAccount: (name) => accounts.find((a) => a.name === name) ?? null,
+      runSession: () => Promise.resolve({ kind: 'needs-login', exitCode: 1 } as SessionOutcome),
+      markCapped: () => {},
+      notify: () => {},
+      report: (m) => shown.push(m),
+      knownCappedAccounts: () => ['second', 'phx'],
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(1);
+    const said = shown.join('\n');
+    expect(said).toContain('second, phx hit a limit');
+    expect(said).toContain('main, maxed need signing in again');
+    expect(said).toContain('A reset will not fix a sign-in');
   });
 });
