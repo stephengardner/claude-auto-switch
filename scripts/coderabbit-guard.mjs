@@ -27,6 +27,7 @@ import {
   remedyFor,
   reviewsArePaused,
   hasSubstantiveReviewFor,
+  reviewerCommentCovers,
   isReviewerLogin,
 } from './coderabbit-findings.mjs';
 
@@ -206,7 +207,12 @@ function hasReviewForHead(owner, name, pr) {
     const sha = pull?.head?.sha;
     if (!sha) return false;
     const reviews = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}/reviews`, '--paginate']) ?? [];
-    return hasSubstantiveReviewFor(reviews, sha, isReviewer);
+    if (hasSubstantiveReviewFor(reviews, sha, isReviewer)) return true;
+    // A review that found NOTHING posts no review object, only a comment naming
+    // the range it covered. Without this, "reviewed and clean" is indistinguish-
+    // able from "never reviewed", and on a paused branch that is a permanent
+    // block on a pull request that has actually been reviewed.
+    return reviewerCommentCovers(allComments(owner, name, pr), sha, isReviewer);
   } catch {
     return false; // cannot tell, so do not claim it was reviewed
   }
