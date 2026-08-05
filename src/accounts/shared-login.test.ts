@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { propagateRenewal, snapshotSharing } from './shared-login.js';
-import { credentialFingerprint } from './credential-vault.js';
+import { propagateRenewal, snapshotSharing, writeAndCarry } from './shared-login.js';
+import { credentialFingerprint, installCredential } from './credential-vault.js';
 
 function profile(home: string, name: string, oauth: Record<string, unknown>) {
   const dir = path.join(home, 'profiles', name);
@@ -330,5 +330,127 @@ describe('the source changing while siblings are being written', () => {
     // The sibling holds the verified login, NOT the one that arrived afterwards.
     expect(refreshTokenOf(sibling.dir)).toBe('refresh-rotated');
     expect(installedFrom.join()).not.toContain('refresh-source-changed-mid-flight');
+  });
+});
+
+describe('the sequence a live session performs when it saves its login back', () => {
+  it('carries a token the RUNNING claude refreshed, not just one ccx renewed', () => {
+    // This is the path that fires most often: a long-running Claude refreshes
+    // its own token every few hours, ccx mirrors it into the active profile,
+    // and a duplicate profile would rot while its twin is being used. The steps
+    // here are exactly what saveBack does, with the real functions.
+    const { home, renewed: active, sibling } = sharedPair();
+
+    // What the running session ends up holding after Claude refreshes it.
+    const sessionDir = path.join(home, 'session');
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      path.join(sessionDir, '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'sk-session', refreshToken: 'refresh-from-claude', expiresAt: 999 },
+      }),
+      'utf8',
+    );
+
+    // 1. who shares the login being replaced, asked BEFORE the write
+    const sharing = snapshotSharing(active, [active, sibling], ['maxed']);
+    // 2. the save-back itself
+    installCredential(active.dir, path.join(sessionDir, '.credentials.json'));
+    // 3. carry it across
+    const carried = propagateRenewal({
+      renewedDir: active.dir,
+      siblings: sharing.sharedWith,
+      retired: sharing.fingerprint,
+      renewed: credentialFingerprint(active.dir),
+    });
+
+    expect(carried).toEqual(['maxed']);
+    expect(refreshTokenOf(active.dir)).toBe('refresh-from-claude');
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-from-claude');
+  });
+
+  it('leaves the sibling stranded if the snapshot is taken after the save', () => {
+    // Why the order in saveBack is load-bearing rather than incidental.
+    const { home, renewed: active, sibling } = sharedPair();
+    const sessionDir = path.join(home, 'session');
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      path.join(sessionDir, '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'sk-session', refreshToken: 'refresh-from-claude', expiresAt: 999 },
+      }),
+      'utf8',
+    );
+
+    installCredential(active.dir, path.join(sessionDir, '.credentials.json'));
+    const tooLate = snapshotSharing(active, [active, sibling], ['maxed']);
+    const carried = propagateRenewal({
+      renewedDir: active.dir,
+      siblings: tooLate.sharedWith,
+      retired: tooLate.fingerprint,
+      renewed: credentialFingerprint(active.dir),
+    });
+
+    expect(carried).toEqual([]);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-shared'); // the dead one
+  });
+});
+
+describe('writing a login and carrying it, as one operation', () => {
+  it('carries the new login to the profiles that shared the old one', () => {
+    // The save-back path. Doing this as three statements at the call site meant
+    // a later edit could reorder them and nothing would fail: removing the
+    // carry from session.ts broke no test at all, which is why it lives here.
+    const { renewed: active, sibling } = sharedPair();
+
+    const carried = writeAndCarry(active, [active, sibling], ['maxed'], () => {
+      renew(active.dir, 'refresh-from-claude');
+    });
+
+    expect(carried).toEqual(['maxed']);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-from-claude');
+  });
+
+  it('takes the snapshot before the write, which is the whole reason it exists', () => {
+    // If the snapshot moved below the write there would be no shared value left
+    // to match on, and the sibling would be stranded holding a dead token. The
+    // only way to see the difference is that the sibling IS updated here.
+    const { renewed: active, sibling } = sharedPair();
+    const seen: string[] = [];
+
+    writeAndCarry(active, [active, sibling], ['maxed'], () => {
+      seen.push(refreshTokenOf(sibling.dir)); // still the shared login at write time
+      renew(active.dir, 'refresh-from-claude');
+    });
+
+    expect(seen).toEqual(['refresh-shared']);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-from-claude');
+  });
+
+  it('carries nothing when nobody shares the login', () => {
+    const { home, renewed: active } = sharedPair();
+    const stranger = profile(home, 'second', {
+      accessToken: 'sk-other',
+      refreshToken: 'refresh-someone-else',
+      expiresAt: 5,
+    });
+
+    const carried = writeAndCarry(active, [active, stranger], [], () => {
+      renew(active.dir, 'refresh-from-claude');
+    });
+
+    expect(carried).toEqual([]);
+    expect(refreshTokenOf(stranger.dir)).toBe('refresh-someone-else');
+  });
+
+  it('lets a failed write through, so the caller decides what it means', () => {
+    const { renewed: active, sibling } = sharedPair();
+    expect(() =>
+      writeAndCarry(active, [active, sibling], ['maxed'], () => {
+        throw new Error('disk full');
+      }),
+    ).toThrow('disk full');
+    // Nothing was carried, because there was no successful write to carry.
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-shared');
   });
 });
