@@ -156,16 +156,38 @@ describe('two sessions sharing one session directory', () => {
   });
 
   it('treats two spellings of one Windows path as the same directory', () => {
+    // Both halves matter and only one was covered before. Real lease files hold
+    // backslashes ("C:\\Users\\opens\\.claude-auto-switch\\session"), so the
+    // separator has to be normalised as well as the case; with forward slashes
+    // on both sides this only ever tested the case folding.
     const result = auditSessionAccount({
       sessionDir: '/session',
       activeAccount: 'phx',
       accounts: [{ name: 'phx', dir: '/profiles/phx' }],
-      leases: [lease('phx', 111, 'C:/Home/Session'), lease('second', 222, 'c:/home/session')],
+      leases: [lease('phx', 111, 'C:\\Home\\Session'), lease('second', 222, 'c:/home/session')],
       platform: 'win32',
       exists: () => true,
       fingerprintOf: () => 'login-phx',
     });
     expect(result.ok).toBe(false);
+  });
+
+  it('keeps genuinely different Windows directories apart', () => {
+    // The other side of normalising: it must not make every Windows path look
+    // like every other one.
+    const result = auditSessionAccount({
+      sessionDir: '/session',
+      activeAccount: 'phx',
+      accounts: [{ name: 'phx', dir: '/profiles/phx' }],
+      leases: [
+        lease('phx', 111, 'C:\\Users\\opens\\session-111'),
+        lease('second', 222, 'C:\\Users\\opens\\session-222'),
+      ],
+      platform: 'win32',
+      exists: () => true,
+      fingerprintOf: () => 'login-phx',
+    });
+    expect(result.ok).toBe(true);
   });
 
   it('keeps case-distinct POSIX paths apart, because they ARE different directories', () => {
