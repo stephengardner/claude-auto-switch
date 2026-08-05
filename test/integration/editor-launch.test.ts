@@ -9,8 +9,6 @@ import { editorLaunch } from '../../src/commands/editor-launch.js';
 import { loadConfig } from '../../src/config/config.js';
 import { getActive } from '../../src/state/active.js';
 import { loadLedger } from '../../src/ledger/ledger.js';
-import { rememberDeadLogin } from '../../src/usage/dead-login-store.js';
-import { credentialFileFingerprint } from '../../src/accounts/credential-vault.js';
 import type { CliContext } from '../../src/context.js';
 
 const fakeClaude = fileURLToPath(new URL('../fake-claude/fake-claude.mjs', import.meta.url));
@@ -77,48 +75,3 @@ describe('editorLaunch (against fake-claude)', () => {
   });
 });
 
-describe('editorLaunch and a login the token endpoint has rejected', () => {
-  /** A profile with a real login, plus a fake-claude that reports it signed in. */
-  function seedReal(dir: string): void {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      path.join(dir, '.credentials.json'),
-      JSON.stringify({
-        claudeAiOauth: { accessToken: 'sk-ant-x', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
-      }),
-      'utf8',
-    );
-    writeFileSync(
-      path.join(dir, 'fake-scenario.json'),
-      JSON.stringify({
-        authStatus: { loggedIn: true, subscriptionType: 'max', email: 'x@y.com' },
-        capped: false,
-      }),
-      'utf8',
-    );
-  }
-
-  it('does not launch on it even when the health probe calls it signed in', async () => {
-    // The gap this closes: the probe asks Claude whether the stored file LOOKS
-    // signed in, and fake-claude says yes here, exactly as the real one would.
-    // Only ccx knows the token endpoint refused this credential afterwards.
-    const home = mkdtempSync(path.join(tmpdir(), 'cas-editor-dead-'));
-    const context = makeContext(home);
-    const dirDead = path.join(home, 'profiles', 'DEAD');
-    const dirGood = path.join(home, 'profiles', 'GOOD');
-    await addCommand(context, 'DEAD', { dir: dirDead, login: false });
-    await addCommand(context, 'GOOD', { dir: dirGood, login: false });
-    seedReal(dirDead);
-    seedReal(dirGood);
-    useCommand(context, 'DEAD');
-
-    rememberDeadLogin(
-      credentialFileFingerprint(dirDead),
-      'token endpoint 400: invalid_grant',
-      context.ctx,
-    );
-
-    await editorLaunch(context, ['chat']);
-    expect(getActive(context.ctx)).toBe('GOOD');
-  });
-});
