@@ -68,6 +68,33 @@ export interface HotSwapDeps {
    * account that has never been signed in.
    */
   accountsNeverSignedIn?: () => string[];
+  /**
+   * Accounts that were ALREADY out of room when this run started, from the
+   * ledger.
+   *
+   * The running set only collects accounts that hit a limit during this
+   * session, so without this the ending names none of the accounts that were
+   * capped before it began. That is how an operator with two capped accounts
+   * and two dead logins got told only about the sign-ins, leaving the actual
+   * reason there was nothing to run on unmentioned.
+   *
+   * Used for the ENDING ONLY, never for selection: `nextAccount` is the
+   * authority on what can run, and excluding accounts here as well would let a
+   * stale ledger entry veto an account that has since reset.
+   */
+  knownCappedAccounts?: () => string[];
+  /**
+   * The last word, said when there is nothing left to run on and ccx is about
+   * to exit.
+   *
+   * Deliberately NOT `notify`. That channel draws nothing on purpose, because
+   * Claude owns the screen while a session is running and writing there would
+   * scribble over it. Nothing owns the screen once the loop has run out of
+   * accounts, and sending the ending down the silent channel is what left the
+   * operator staring at a blank prompt, running the same command three times,
+   * with the explanation written only to a log file.
+   */
+  report: (message: string) => void;
 }
 
 /**
@@ -118,9 +145,9 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
         }
         return outcome.exitCode;
       }
-      deps.notify(
+      deps.report(
         outOfAccountsMessage({
-          capped: [...capped],
+          capped: [...capped, ...(deps.knownCappedAccounts?.() ?? [])],
           refused: [...needsLogin],
           neverSignedIn: deps.accountsNeverSignedIn?.() ?? [],
         }),

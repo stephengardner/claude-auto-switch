@@ -61,4 +61,20 @@ describe('spawnAuthLogin', () => {
     proc.cancel?.();
     expect(() => proc.cancel?.()).not.toThrow();
   });
+
+  it('reports a failure instead of taking the whole program down when it cannot start', async () => {
+    // A child that fails to START emits 'error' and never emits 'close'. Node
+    // re-throws an 'error' with no listener as an uncaught exception, so this
+    // ended the entire process rather than this one sign-in: from the dashboard
+    // it read as "pressing l crashed my terminal". A try/catch at the caller
+    // cannot see it either, because it arrives as an event on a later tick
+    // rather than as a rejected promise.
+    const missing = { bin: 'ccx-no-such-binary-anywhere-on-this-machine' };
+    const proc = spawnAuthLogin(missing, ['/login'], {});
+
+    expect(await proc.done()).toBeGreaterThan(0);
+    // The URL wait has to give up too. Otherwise a caller that asks for the URL
+    // first waits out the full timeout on a process that never existed.
+    expect(await proc.urlHint()).toBeUndefined();
+  }, 20000);
 });

@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { Command } from 'commander';
 import { buildContext } from './context.js';
+import { tolerateBrokenTerminal } from './ui/tolerate-broken-terminal.js';
 import { listCommand } from './commands/list.js';
 import { statusCommand } from './commands/status.js';
 import { addCommand } from './commands/add.js';
@@ -31,6 +32,10 @@ const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),
   version: string;
   description: string;
 };
+
+// Before anything reads or prints: a terminal that has gone away must not end
+// the run, in either direction.
+tolerateBrokenTerminal();
 
 const program = new Command();
 program
