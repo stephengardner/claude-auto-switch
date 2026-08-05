@@ -339,6 +339,14 @@ describe('reviewerCommentCovers', () => {
     ).toBe(false);
   });
 
+  it('refuses a login that merely LOOKS like the reviewer', () => {
+    // Anyone can register a name starting with the reviewer's. Matching by
+    // prefix would let them mark a commit reviewed by quoting its SHA.
+    expect(
+      reviewerCommentCovers([{ author: 'coderabbitai-fake', body: `at ${HEAD}` }], HEAD, isReviewer),
+    ).toBe(false);
+  });
+
   it('refuses a short or missing sha rather than matching loosely', () => {
     // A 7-character prefix appears inside plenty of unrelated text.
     expect(reviewerCommentCovers([summary(OLD, HEAD)], '310568b', isReviewer)).toBe(false);
