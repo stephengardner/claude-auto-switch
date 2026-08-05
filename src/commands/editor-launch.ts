@@ -5,13 +5,13 @@ import { select } from '../selector/selector.js';
 import { launchWatched, spawnWatched } from '../launcher/launcher.js';
 import type { CapClassification } from '../launcher/cap-detect.js';
 import { loadLedger, saveLedger, markCapped, cappedNames } from '../ledger/ledger.js';
-import { hasWorkingLogin, loginWasRejected } from '../accounts/account-login.js';
+import { hasWorkingLogin } from '../accounts/account-login.js';
+import { signedInAndNotRejected } from '../health/signed-in.js';
 import { appendEvent } from '../events/log.js';
 import { ensureEditorReady } from './editor-ready.js';
 import { configHome } from '../config/paths.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
-import type { PathCtx } from '../config/paths.js';
 
 /** Pick the account to launch on: active if usable, else the healthiest eligible. */
 async function pickAccount(context: CliContext): Promise<Account | undefined> {
@@ -94,36 +94,6 @@ export async function editorLaunch(context: CliContext, args: string[]): Promise
   const result = await launchWatched(args, { name: chosen.name, dir: chosen.dir }, { claude });
   await handleCap(context, chosen, result.classification);
   return result.exitCode;
-}
-
-/**
- * Which probed accounts count as somewhere to launch.
- *
- * The probe asks Claude whether the profile looks signed in, and it is the
- * authority on that: it recognises logins ccx's own credential-file check does
- * not, so narrowing its answer with a second opinion about the file would drop
- * accounts that genuinely work. What it cannot know is that the token endpoint
- * refused that exact credential afterwards, so that is the only thing taken
- * away here.
- *
- * Pure and exported so this is testable without running a probe subprocess: the
- * first version of its test drove the real prober and turned out to depend on
- * that subprocess finishing, which is not what the rule being tested is about.
- */
-export function signedInAndNotRejected(
-  healths: Array<{ name: string; loggedIn: boolean }>,
-  accounts: Account[],
-  ctx: PathCtx,
-): Set<string> {
-  return new Set(
-    healths
-      .filter((h) => h.loggedIn)
-      .map((h) => h.name)
-      .filter((name) => {
-        const account = accounts.find((a) => a.name === name);
-        return !!account && !loginWasRejected(account.dir, ctx);
-      }),
-  );
 }
 
 /** Probe health and select the best eligible account (pinned preferred). */

@@ -19,6 +19,7 @@ import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
+import { signedInAndNotRejected } from '../health/signed-in.js';
 
 export interface DashboardOptions {
   /** Print a single frame and exit (no live loop). */
@@ -68,7 +69,7 @@ export async function dashboardCommand(
   // Re-read accounts + ledger + active every tick so interactive edits show live.
   const build = () => {
     const accts = listAccounts(context.ctx);
-    const loggedIn = new Set(healths.filter((h) => h.loggedIn).map((h) => h.name));
+    const loggedIn = signedInAndNotRejected(healths, accts, context.ctx);
     const liveEmail = new Map(healths.filter((h) => h.email).map((h) => [h.name, h.email!]));
     const livePlan = new Map(healths.filter((h) => h.plan).map((h) => [h.name, h.plan!]));
     const now = Date.now();
@@ -178,14 +179,15 @@ export async function dashboardCommand(
     },
     onRotate: () => {
       const active = getActive(context.ctx);
-      const loggedIn = new Set(healths.filter((h) => h.loggedIn).map((h) => h.name));
+      const rotatable = listAccounts(context.ctx);
+      const loggedIn = signedInAndNotRejected(healths, rotatable, context.ctx);
       const now = Date.now();
       const capped = new Set(
         loadLedger(context.ctx)
           .caps.filter((c) => c.capUntil && c.capUntil > now)
           .map((c) => c.account),
       );
-      const next = listAccounts(context.ctx)
+      const next = rotatable
         .filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name) && a.name !== active)
         .sort((x, y) => x.priority - y.priority)[0];
       if (next) {

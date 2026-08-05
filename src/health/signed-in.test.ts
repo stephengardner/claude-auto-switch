@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { signedInAndNotRejected } from './editor-launch.js';
+import { signedInAndNotRejected } from './signed-in.js';
 import { rememberDeadLogin } from '../usage/dead-login-store.js';
 import { credentialFileFingerprint } from '../accounts/credential-vault.js';
 import type { Account } from '../accounts/registry.schema.js';

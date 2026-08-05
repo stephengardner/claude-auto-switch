@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.36.2]
+
+### Fixed
+
+- **A refused login no longer counts as available to `ccx run`, `ccx rotate`,
+  the dashboard or `ccx doctor`.** The health probe asks Claude whether a
+  profile looks signed in, and it cannot know that the token endpoint refused
+  that exact credential afterwards. Only the editor path subtracted those; the
+  other four built the same set from the same expression and did not.
+
+  So a login ccx already knew was finished could still be chosen to run on,
+  rotated to, offered by the dashboard's rotate key, and counted in doctor's
+  "N of M signed in".
+
+  There is one shared answer now, and no copies of the raw expression are left.
+
 ## [1.36.1]
 
 ### Fixed
