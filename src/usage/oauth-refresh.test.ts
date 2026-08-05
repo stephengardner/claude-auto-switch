@@ -153,6 +153,35 @@ describe('a login the endpoint has already refused', () => {
     expect(calls).toBe(1);
   });
 
+  it('remembers ONLY an invalid_grant, not a 401 or a malformed request', async () => {
+    // Reporting and remembering are different questions. All of these still say
+    // needs-login, so a real rejection is never mistaken for a network blip. But
+    // only invalid_grant means the server rejected THIS refresh token, and a
+    // note outlasts the moment: it survives the process and makes the status
+    // line say "needs sign-in" until the credential changes. A bare 401 or a
+    // malformed request would bench a working account for no reason.
+    const cases = [
+      { body: { error: 'invalid_request' }, status: 400, remembered: false },
+      { body: { error: 'unauthorized' }, status: 401, remembered: false },
+      { body: {}, status: 401, remembered: false },
+      { body: { error: 'invalid_grant' }, status: 400, remembered: true },
+    ];
+    for (const testCase of cases) {
+      const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: mkdtempSync(path.join(tmpdir(), 'cas-cls-')) } };
+      const dir = account({ accessToken: 'a', refreshToken: `r-${testCase.status}-${JSON.stringify(testCase.body)}`, expiresAt: now() - HOUR });
+      forgetRefusals();
+      const outcome = await refreshCredentialIfExpired(dir, {
+        now,
+        ctx,
+        fetchImpl: jsonFetch(testCase.status, testCase.body),
+      });
+      expect(outcome.status, JSON.stringify(testCase)).toBe('needs-login');
+      // The durable half is the one that must be strict.
+      expect(existsSync(path.join(ctx.env.CLAUDE_AUTO_SWITCH_HOME, 'dead-logins.json')), JSON.stringify(testCase))
+        .toBe(testCase.remembered);
+    }
+  });
+
   it('does NOT remember a transient failure, so a blip stays retryable', async () => {
     const dir = account({ accessToken: 'old', refreshToken: 'r-blip', expiresAt: now() - HOUR });
     let calls = 0;

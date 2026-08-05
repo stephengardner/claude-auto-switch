@@ -200,14 +200,20 @@ export async function refreshCredentialIfExpired(
     } catch {
       /* body is optional context */
     }
-    // Only a definitively dead grant means "log in again"; anything else is
-    // treated as temporary so a blip never marks a good account as broken.
+    // Ask the operator to sign in again on anything that looks like a rejected
+    // login, so a real one is never silently treated as a network blip.
     const dead = /invalid_grant|invalid_request|unauthorized/i.test(body) || response.status === 401;
     const detail = `token endpoint ${response.status}${body ? `: ${body}` : ''}`;
-    // Only a definitively dead grant is worth remembering. A transient failure
-    // must stay retryable, or one blip would bench a healthy account until the
-    // process restarts.
-    if (dead) {
+    // REMEMBERING is a stricter question than reporting, and deliberately so.
+    // Only invalid_grant means the server has rejected this refresh token
+    // itself. `invalid_request` describes a malformed request, which is our bug
+    // rather than a finished login, and a bare 401 can be a client-auth or
+    // transient failure. Recording either would outlast the moment: the note
+    // survives the process and makes the status line say "needs sign-in" until
+    // the credential file changes, so a blip would bench a working account
+    // until someone signed in again for no reason.
+    const refreshTokenRejected = /\binvalid_grant\b/i.test(body);
+    if (refreshTokenRejected) {
       rememberRefused(identity, detail);
       // Written down as well, so a later process knows before it acts.
       if (ctx) rememberDeadLogin(identity, detail, ctx);
