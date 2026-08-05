@@ -58,7 +58,8 @@ export function historyCommand(context: CliContext, options: HistoryOptions = {}
     context.out(paint('  nothing recorded yet', codes.dim, color));
   } else {
     for (const event of credential) {
-      const line = `  ${when(event.at)}  ${event.account}: ${WORDING[event.kind]}`;
+      const repeat = event.count && event.count > 1 ? ` (x${event.count})` : '';
+      const line = `  ${when(event.at)}  ${event.account}: ${WORDING[event.kind]}${repeat}`;
       context.out(paint(line, colorFor(event.kind), color));
       if (event.detail) context.out(paint(`      ${event.detail}`, codes.dim, color));
     }

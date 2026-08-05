@@ -31,10 +31,17 @@ export type CredentialEventKind =
   | 'signed-out';
 
 export interface CredentialEvent {
+  /** When this happened, or when it last happened if it repeated. */
   at: number;
   account: string;
   kind: CredentialEventKind;
   detail?: string;
+  /**
+   * How many times in a row the same thing was recorded. Absent means once.
+   * Only ever produced when READING: every occurrence stays in the file, since
+   * this is an audit trail and nothing about it is rewritten.
+   */
+  count?: number;
 }
 
 const FILENAME = 'credential-log.jsonl';
@@ -45,12 +52,29 @@ function logPath(c: PathCtx = {}): string {
   return path.join(configHome(c), FILENAME);
 }
 
-/** Record one credential event. Never throws: logging must not break a swap. */
-export function logCredentialEvent(event: Omit<CredentialEvent, 'at'> & { at?: number }, c: PathCtx = {}): void {
+/**
+ * Record one credential event. Never throws: logging must not break a swap.
+ *
+ * `count` is deliberately not accepted, and the written record is built field by
+ * field rather than by spreading the caller's object. A count in this file would
+ * be a lie: it is a READ-time summary of how many physical records repeated, so
+ * persisting one would make two records display as many, and an audit trail that
+ * overstates what happened is worse than no trail.
+ */
+export function logCredentialEvent(
+  event: Omit<CredentialEvent, 'at' | 'count'> & { at?: number },
+  c: PathCtx = {},
+): void {
   try {
     const home = configHome(c);
     secureMkdir(home);
-    const line = JSON.stringify({ at: event.at ?? Date.now(), ...event } satisfies CredentialEvent);
+    const record: CredentialEvent = {
+      at: event.at ?? Date.now(),
+      account: event.account,
+      kind: event.kind,
+      ...(event.detail !== undefined ? { detail: event.detail } : {}),
+    };
+    const line = JSON.stringify(record);
     appendFileSync(logPath(c), `${line}\n`, { encoding: 'utf8', mode: 0o600 });
   } catch {
     /* a missing trail is bad; a crash while writing it would be worse */
@@ -73,10 +97,49 @@ export function readCredentialEvents(limit = 50, c: PathCtx = {}): CredentialEve
     if (line.trim().length === 0) continue;
     try {
       const parsed = JSON.parse(line) as CredentialEvent;
-      if (typeof parsed.at === 'number' && typeof parsed.account === 'string') events.push(parsed);
+      if (typeof parsed.at === 'number' && typeof parsed.account === 'string') {
+        // Built field by field so any count in the file is discarded. Physical
+        // records never carry one, so a value here came from a hand-edited or
+        // corrupted line, and honouring it would inflate the summary above what
+        // actually happened.
+        events.push({
+          at: parsed.at,
+          account: parsed.account,
+          kind: parsed.kind,
+          ...(parsed.detail !== undefined ? { detail: parsed.detail } : {}),
+        });
+      }
     } catch {
       /* skip a truncated line */
     }
   }
-  return events.slice(-limit);
+  return foldRepeats(events).slice(-limit);
+}
+
+/**
+ * Collapse consecutive identical events for DISPLAY, keeping a count and the
+ * time of the most recent one.
+ *
+ * The file itself is untouched: this is an append-only audit trail, and folding
+ * it on write would turn a cheap append into a read on the credential path. On
+ * read it costs nothing and rescues what is already written, which is the point,
+ * because `ccx history` is read exactly when something has gone wrong and a run
+ * of one repeated line is what pushes the useful entries off the screen.
+ */
+function foldRepeats(events: CredentialEvent[]): CredentialEvent[] {
+  const out: CredentialEvent[] = [];
+  for (const event of events) {
+    const previous = out[out.length - 1];
+    const same =
+      previous &&
+      previous.account === event.account &&
+      previous.kind === event.kind &&
+      previous.detail === event.detail;
+    if (same) {
+      out[out.length - 1] = { ...event, count: (previous.count ?? 1) + 1 };
+    } else {
+      out.push(event);
+    }
+  }
+  return out;
 }
