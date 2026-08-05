@@ -122,7 +122,7 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
         outOfAccountsMessage({
           capped: [...capped],
           refused: [...needsLogin],
-          neverSignedIn: (deps.accountsNeverSignedIn?.() ?? []).filter((n) => !needsLogin.has(n)),
+          neverSignedIn: deps.accountsNeverSignedIn?.() ?? [],
         }),
       );
       return 1;

@@ -64,3 +64,43 @@ describe('what to say when no account is left to run on', () => {
     expect(message({})).toBe('every account has hit its limit; try again after a reset');
   });
 });
+
+describe('an account that is honestly in two states at once', () => {
+  it('names a refused-and-never-signed-in account once, as refused', () => {
+    const out = message({ refused: ['same'], neverSignedIn: ['same'] });
+    expect(out).toBe('same needs signing in again. Run: ccx login same');
+    expect(out).not.toContain('not signed in yet');
+  });
+
+  it('names a capped-and-refused account once, as the thing you can act on', () => {
+    // Reachable: the last-resort account is picked for having room WITHOUT
+    // excluding capped ones, so an account that already hit a limit can then be
+    // refused. Announcing both would say "wait" and "go sign in" about one
+    // account, and waiting is pointless on one you cannot sign into.
+    const out = message({ capped: ['same'], refused: ['same'] });
+    expect(out).toBe('same needs signing in again. Run: ccx login same');
+    expect(out).not.toContain('hit a limit');
+  });
+
+  it('drops the reset caveat when every capped account was really a sign-in problem', () => {
+    expect(message({ capped: ['same'], refused: ['same'] })).not.toContain('A reset will not fix');
+  });
+
+  it('keeps a genuinely capped account when another one is both', () => {
+    const out = message({ capped: ['busy', 'same'], refused: ['same'] });
+    expect(out).toContain('busy hit a limit');
+    expect(out).toContain('same needs signing in again');
+    expect(out).toContain('A reset will not fix a sign-in');
+    expect(out).not.toContain('busy, same hit a limit');
+  });
+
+  it('says a repeated name once', () => {
+    expect(message({ refused: ['dup', 'dup'] })).toBe('dup needs signing in again. Run: ccx login dup');
+    expect(message({ capped: ['dup', 'dup'], refused: ['x'] })).toContain('dup hit a limit');
+  });
+
+  it('reads as singular once duplicates are removed', () => {
+    // Two entries, one account: "need" would be wrong.
+    expect(message({ neverSignedIn: ['solo', 'solo'] })).toContain('solo is not signed in yet');
+  });
+});

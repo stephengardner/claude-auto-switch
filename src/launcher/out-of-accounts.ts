@@ -31,6 +31,10 @@ export interface OutOfAccounts {
 /** The message shown when waiting really is the only thing to do. */
 const WAIT = 'every account has hit its limit; try again after a reset';
 
+function unique(names: string[]): string[] {
+  return [...new Set(names)];
+}
+
 function group(names: string[], singular: string, plural: string): string {
   return `${names.join(', ')} ${names.length === 1 ? singular : plural}`;
 }
@@ -40,7 +44,22 @@ function group(names: string[], singular: string, plural: string): string {
  * combination can be read in a test.
  */
 export function outOfAccountsMessage(state: OutOfAccounts): string {
-  const { capped, refused, neverSignedIn } = state;
+  // An account can honestly be in two of these at once. The clearest case: a
+  // last-resort account is picked for having ROOM without excluding capped ones,
+  // so one that already hit a limit can then be refused, and it would otherwise
+  // be announced twice in two different voices.
+  //
+  // Precedence is by what the operator can act on. A sign-in is a thing to go
+  // and do; a limit is a thing to wait out, and waiting is pointless on an
+  // account you cannot sign into anyway. So a refused login wins over
+  // everything, and never-signed-in wins over capped. Normalised HERE rather
+  // than at the call site, because the whole point of this function is that one
+  // place decides what the ending says.
+  const refused = unique(state.refused);
+  const neverSignedIn = unique(state.neverSignedIn).filter((n) => !refused.includes(n));
+  const capped = unique(state.capped).filter(
+    (n) => !refused.includes(n) && !neverSignedIn.includes(n),
+  );
   const needsSignIn = [...refused, ...neverSignedIn];
 
   // Nothing anyone can act on right now, so the only useful thing is when to
