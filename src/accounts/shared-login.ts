@@ -1,5 +1,7 @@
 import { installCredential, credentialFingerprint, credentialPath } from './credential-vault.js';
 import { withCredentialLock } from '../claude/locks.js';
+import { copySecretFile } from '../util/secret-file.js';
+import { rmSync } from 'node:fs';
 
 /**
  * Keeping profiles that share ONE login from killing each other.
@@ -83,9 +85,10 @@ export interface PropagateDeps {
  *   was just retired, re-checked inside that profile's own credential lock. The
  *   check and the write are otherwise separate moments, and a sign-in landing
  *   between them would be overwritten by an older login.
- * - the SOURCE is re-checked too, against the credential the renewal actually
- *   produced, so a profile whose login has since changed again never spreads a
- *   token nobody asked for.
+ * - the SOURCE is verified once, against the credential the renewal actually
+ *   produced, and then COPIED. Siblings are written from that copy, so what was
+ *   verified is exactly what lands: passing the source path instead would let a
+ *   sign-in in the gap be installed without ever having been checked.
  *
  * Guessing about someone's login is what scrambled these profiles once before,
  * so both conditions are exact rather than approximate.
@@ -100,25 +103,51 @@ export function propagateRenewal(input: PropagateInput, deps: PropagateDeps = {}
   if (!retired || !renewed) return [];
   if (credentialFingerprint(renewedDir) !== renewed) return [];
 
+  // Copy the verified source ONCE, and hand siblings that copy.
+  //
+  // Verifying the source and then passing its PATH to the installer leaves the
+  // file mutable between the two: the installer reads it again, so a sign-in in
+  // that gap would be copied into a sibling without ever having been checked.
+  // A snapshot cannot change under anyone, so what is verified is exactly what
+  // is written. Taken inside the source's own lock, and kept in the profile
+  // directory (already owner-only) rather than a shared temp area.
+  const snapshot = `${credentialPath(renewedDir)}.propagate.${process.pid}.tmp`;
+  let ready = false;
+  try {
+    lock(renewedDir, () => {
+      if (credentialFingerprint(renewedDir) !== renewed) return;
+      copySecretFile(credentialPath(renewedDir), snapshot);
+      ready = true;
+    });
+  } catch {
+    return [];
+  }
+  if (!ready) return [];
+
   const updated: string[] = [];
-  for (const sibling of siblings) {
-    if (sibling.dir === renewedDir) continue;
-    // Cheap check first, so the ordinary "nothing to do" case takes no lock.
-    if (credentialFingerprint(sibling.dir) !== retired) continue;
+  try {
+    for (const sibling of siblings) {
+      if (sibling.dir === renewedDir) continue;
+      // Cheap check first, so the ordinary "nothing to do" case takes no lock.
+      if (credentialFingerprint(sibling.dir) !== retired) continue;
+      try {
+        lock(sibling.dir, () => {
+          // Re-checked INSIDE the lock. The check above and the write are
+          // otherwise two separate moments, and a sign-in landing between them
+          // would be replaced by an older login.
+          if (credentialFingerprint(sibling.dir) !== retired) return;
+          if (install(sibling.dir, snapshot)) updated.push(sibling.name);
+        });
+      } catch {
+        // One profile failing must not stop the others: a login left behind is
+        // exactly the problem being fixed.
+      }
+    }
+  } finally {
     try {
-      lock(sibling.dir, () => {
-        // Re-checked INSIDE the lock, both ends. The check above and the write
-        // are otherwise two separate moments, and anything can happen between
-        // them: a sign-in on the sibling would be replaced by an older login,
-        // and a second renewal on the source would spread a token nobody asked
-        // for. Keeps the sibling's previous credential as a rollback cushion.
-        if (credentialFingerprint(sibling.dir) !== retired) return;
-        if (credentialFingerprint(renewedDir) !== renewed) return;
-        if (install(sibling.dir, credentialPath(renewedDir))) updated.push(sibling.name);
-      });
+      rmSync(snapshot, { force: true });
     } catch {
-      // One profile failing must not stop the others: a login left behind is
-      // exactly the problem being fixed.
+      /* the copy is temporary; failing to clear it changes nothing */
     }
   }
   return updated;

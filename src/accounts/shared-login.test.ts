@@ -170,7 +170,9 @@ describe('something changing between the check and the write', () => {
       },
       {
         lock: (dir, fn) => {
-          renew(dir, 'refresh-signed-in-just-now'); // another process, mid-flight
+          // Another process signs the SIBLING in while its lock is taken. The
+          // source lock is left alone, or the run would stop before this point.
+          if (dir === sibling.dir) renew(dir, 'refresh-signed-in-just-now');
           fn();
         },
         install: (destDir) => {
@@ -265,7 +267,9 @@ describe('the cheap checks before the lock', () => {
     );
 
     expect(updated).toEqual([]);
-    expect(locked).toEqual([]);
+    // The source is locked to take the snapshot; the point is that the sibling
+    // that obviously does not match is never locked at all.
+    expect(locked).not.toContain(other.dir);
   });
 
   it('stops before touching any sibling when the source has moved on', () => {
@@ -287,5 +291,44 @@ describe('the cheap checks before the lock', () => {
 
     expect(updated).toEqual([]);
     expect(locked).toEqual([]);
+  });
+});
+
+describe('the source changing while siblings are being written', () => {
+  it('writes the credential that was VERIFIED, not whatever the source holds later', () => {
+    // The gap the snapshot closes: verifying the source and then handing the
+    // installer its PATH lets the file change before the installer reads it, so
+    // a sign-in in that window would land in a sibling unchecked.
+    const { renewed, sibling, retired } = sharedPair();
+    renew(renewed.dir);
+    const verified = credentialFingerprint(renewed.dir);
+    const installedFrom: string[] = [];
+
+    const updated = propagateRenewal(
+      {
+        renewedDir: renewed.dir,
+        siblings: [sibling],
+        retired,
+        renewed: verified,
+      },
+      {
+        lock: (dir, fn) => {
+          fn();
+          // The source is signed in again the moment its lock is released,
+          // before any sibling is written.
+          if (dir === renewed.dir) renew(dir, 'refresh-source-changed-mid-flight');
+        },
+        install: (destDir, sourceFile) => {
+          installedFrom.push(readFileSync(sourceFile, 'utf8'));
+          writeFileSync(path.join(destDir, '.credentials.json'), readFileSync(sourceFile, 'utf8'));
+          return true;
+        },
+      },
+    );
+
+    expect(updated).toEqual(['maxed']);
+    // The sibling holds the verified login, NOT the one that arrived afterwards.
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-rotated');
+    expect(installedFrom.join()).not.toContain('refresh-source-changed-mid-flight');
   });
 });
