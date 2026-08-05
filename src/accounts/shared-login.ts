@@ -1,4 +1,9 @@
-import { installCredential, credentialFingerprint, credentialPath } from './credential-vault.js';
+import {
+  installCredential,
+  credentialFingerprint,
+  credentialFileFingerprint,
+  credentialPath,
+} from './credential-vault.js';
 import { withCredentialLock } from '../claude/locks.js';
 import { copySecretFile } from '../util/secret-file.js';
 import { rmSync } from 'node:fs';
@@ -86,6 +91,53 @@ export function writeAndCarry(
     },
     deps,
   );
+}
+
+/**
+ * Renew a login and carry it to the profiles that shared the old one, in one
+ * call, for a renewal that is asynchronous.
+ *
+ * Same reason as `writeAndCarry`: the snapshot has to be taken BEFORE the
+ * renewal, because renewing destroys the shared value that identifies who was
+ * sharing it, and an ordering split across an `await` is even easier to get
+ * wrong than one split across three statements.
+ *
+ * Carries nothing when the credential did not actually change. A renewal that
+ * was not needed leaves the file alone, and copying it over identical siblings
+ * would announce work that never happened.
+ */
+export async function renewAndCarry<T>(
+  target: SharedProfile,
+  allProfiles: SharedProfile[],
+  sharedNames: string[],
+  renew: () => Promise<T>,
+  deps: PropagateDeps = {},
+): Promise<{ result: T; carried: string[] }> {
+  const sharing = snapshotSharing(target, allProfiles, sharedNames);
+  // "Did anything change" is asked of the WHOLE FILE, while "who shares this
+  // login" is asked of the token. They are different questions and using one
+  // for both is wrong in a way that shows up rarely: a renewal whose response
+  // omits refresh_token keeps that token and replaces only the access token, so
+  // a token-based comparison reports no change and the siblings are left
+  // holding a stale credential.
+  const fileBefore = credentialFileFingerprint(target.dir);
+  const result = await renew();
+  if (!sharing.fingerprint || credentialFileFingerprint(target.dir) === fileBefore) {
+    return { result, carried: [] };
+  }
+  const renewed = credentialFingerprint(target.dir);
+  return {
+    result,
+    carried: propagateRenewal(
+      {
+        renewedDir: target.dir,
+        siblings: sharing.sharedWith,
+        retired: sharing.fingerprint,
+        renewed,
+      },
+      deps,
+    ),
+  };
 }
 
 export interface PropagateInput {

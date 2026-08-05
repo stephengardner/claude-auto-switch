@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.36.0]
+
+### Fixed
+
+- **A duplicated account is no longer left to expire in the background.** The
+  usage refresh refused to renew any login another profile shared, because
+  renewing rotates the token and would have retired the other copy. That refusal
+  was symmetric: for a duplicated account it fired on BOTH halves, so neither
+  was ever renewed there. Both tokens expired, their usage became unreadable,
+  and the rotation policy went blind on exactly the accounts it exists to choose
+  between.
+
+  Now the renewal happens and is carried across to the profiles that shared it,
+  using the same machinery as the session paths. A session using one of those
+  profiles is still a reason to refuse, which is what the original guard was
+  really protecting: renewing would sign that session out mid-work. That check
+  reads the leases at the moment it decides, rather than from a snapshot taken
+  before a loop that makes a network call per account.
+
+  It narrows that window rather than closing it. A session claiming an account
+  in the milliseconds before the token request still loses its credential,
+  because the rotation happens at the server. Closing it needs a reservation
+  that session start also takes, which is filed separately.
+
+  Renewing across an `await` is one call rather than a snapshot and a renewal
+  either side of it, because an ordering split across an await is even easier to
+  get wrong than one split across three statements.
+
 ## [1.35.0]
 
 ### Added

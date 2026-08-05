@@ -5,7 +5,8 @@ import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
-import { liveLeases, type LeaseOptions } from '../session/lease.js';
+import { renewAndCarry } from '../accounts/shared-login.js';
+import { liveLeases, type LeaseOptions, type SessionLease } from '../session/lease.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
 import { refreshCredentialIfExpired, renewalIsDue, expiredLongerThan, type RefreshOutcome } from './oauth-refresh.js';
 import { editorPointerAccount } from '../editor/junction.js';
@@ -170,14 +171,50 @@ export async function refreshUsage(
       // numbers still update and the entry still gets stamped. The reason is
       // recorded only when a renewal was actually due, otherwise every refresh
       // would append the same line forever.
-      const lease = inUse.get(account.name);
+
       const siblings = renewalWouldBreakOthers(account, accounts);
+      // A profile sharing this login is only a reason to refuse when a SESSION
+      // is using it. Refusing whenever a sibling existed was symmetric, so for
+      // a duplicated account neither half was ever renewed here: both tokens
+      // expired, their usage became unreadable, and the rotation policy went
+      // blind on exactly the accounts it was meant to choose between. The
+      // renewal is carried across to them instead.
+      // The editor has to be protected through the WHOLE cohort, not just when
+      // it points at this account. Profiles sharing a login share its fate, so
+      // renewing a sibling rotates the token the editor is using and then
+      // carries it into the editor's own file mid-session. Before this change
+      // any sibling caused a refusal, so that could not happen; now it can, and
+      // the grace period is measured against the EDITOR's copy, which is the one
+      // that says whether anything is still using it.
+      const editor = accounts.find((a) => a.name === editorAccount);
       const editorMayBeUsingIt =
-        account.name === editorAccount && !expiredLongerThan(account.dir, EDITOR_IDLE_GRACE_MS);
-      const refusal = lease
-        ? `not renewed: a running session (pid ${lease.pid}) is using this login; renewing would sign it out`
-        : siblings.length > 0
-          ? `not renewed: shares a login with ${siblings.join(', ')}; renewing would end theirs`
+        editor !== undefined &&
+        [account.name, ...siblings].includes(editor.name) &&
+        !expiredLongerThan(editor.dir, EDITOR_IDLE_GRACE_MS);
+      // Read FRESH, at the moment of the decision, rather than from the map
+      // built before the loop. This loop makes a network call per account and
+      // sleeps between them, so seconds pass and a session can start in that
+      // window; renewing then rotates the token out from under a session that
+      // had just claimed it. One read covers this account AND the profiles that
+      // share its login, because renewing breaks a session on any of them.
+      //
+      // This NARROWS that window to milliseconds, it does not close it. The
+      // rotation happens at the server when the request is made, so a lease
+      // taken during the request is already too late, and the lock this path
+      // holds is Claude's own advisory one, which is best effort by design and
+      // therefore cannot provide mutual exclusion. Closing it needs a ccx-owned
+      // reservation that session start also takes: issue #37.
+      const busy = leasedAccounts(c, options.leaseOptions ?? {});
+      const inSessionNow = [account.name, ...siblings].filter((name) => busy.has(name));
+      // The SAME fresh answer decides which credential to probe. A session that
+      // started mid-refresh holds a newer copy than the profile does, and reading
+      // the profile would report usage for a credential nobody is using.
+      const lease = [account.name, ...siblings]
+        .map((name) => busy.get(name))
+        .find((candidate): candidate is SessionLease => candidate !== undefined);
+      const refusal =
+        inSessionNow.length > 0
+          ? `not renewed: a session is using ${inSessionNow.join(', ')}; renewing would sign it out`
           : editorMayBeUsingIt
             ? 'not renewed: your editor is pointed at this account and may be using it'
             : null;
@@ -187,9 +224,21 @@ export async function refreshUsage(
       }
       // Renewal rotates the token, so it is the single most likely reason a
       // login stops working. Record what happened, with the reason.
-      const renewal = mayRenew ? await renew(account.dir) : { status: 'not-needed' as const };
+      const { result: renewal, carried } = mayRenew
+        ? await renewAndCarry(account, accounts, siblings, () => renew(account.dir))
+        : { result: { status: 'not-needed' as const }, carried: [] as string[] };
       if (renewal.status === 'refreshed') {
         logCredentialEvent({ account: account.name, kind: 'renewed' }, c);
+        for (const name of carried) {
+          logCredentialEvent(
+            {
+              account: name,
+              kind: 'installed',
+              detail: `shares a login with "${account.name}", which was just renewed; carried across so this one keeps working`,
+            },
+            c,
+          );
+        }
       } else if (renewal.status === 'needs-login' && !renewal.alreadyKnown) {
         // Only the FIRST refusal for a given login is recorded. The answer
         // cannot change until the credential does, so repeating it every few
@@ -241,4 +290,18 @@ export async function refreshUsage(
     /* cache write is best effort */
   }
   return snapshot;
+}
+
+/**
+ * Which accounts a session holds RIGHT NOW, with the lease records.
+ *
+ * Deliberately a fresh read rather than a cached map: it is asked immediately
+ * before a renewal, and the point is to see claims made since the refresh
+ * started. The whole RECORD is kept, not just the name, because the same answer
+ * decides which credential to probe: a session started mid-refresh holds a
+ * newer copy than the profile, and reading the profile instead would report
+ * usage for a credential nobody is using.
+ */
+function leasedAccounts(c: PathCtx, options: LeaseOptions): Map<string, SessionLease> {
+  return new Map(liveLeases(c, options).map((lease) => [lease.account, lease] as const));
 }
