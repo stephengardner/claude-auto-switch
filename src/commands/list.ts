@@ -3,10 +3,23 @@ import { getActive } from '../state/active.js';
 import { probeAll } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { renderTable } from '../util/table.js';
+import { signedInAndNotRejected } from '../health/signed-in.js';
 import { getClaude, type CliContext } from '../context.js';
 
+/**
+ * Injected in tests so the table can be checked without spawning a probe per
+ * account. Driving the real prober makes an assertion depend on a subprocess
+ * finishing, which passed on one platform and failed on another once already.
+ */
+export interface ListCommandDeps {
+  probe?: typeof probeAll;
+}
+
 /** Show every account with its live health in a table (or JSON with --json). */
-export async function listCommand(context: CliContext): Promise<number> {
+export async function listCommand(
+  context: CliContext,
+  deps: ListCommandDeps = {},
+): Promise<number> {
   const accounts = listAccounts(context.ctx);
   if (accounts.length === 0) {
     context.out('no accounts registered (run: ccx add <name>)');
@@ -16,8 +29,13 @@ export async function listCommand(context: CliContext): Promise<number> {
   const active = getActive(context.ctx);
   const ledger = loadLedger(context.ctx);
   const now = Date.now();
-  const healths = await probeAll(accounts, { claude: getClaude(context) });
+  const healths = await (deps.probe ?? probeAll)(accounts, { claude: getClaude(context) });
   const byName = new Map(healths.map((h) => [h.name, h]));
+  // The probe reports a refused login as signed in, because the file still
+  // looks like one. This table is where someone looks to find out which
+  // accounts they can use, so showing yes for a login ccx already knows is
+  // finished is the most misleading place to say it.
+  const usable = signedInAndNotRejected(healths, accounts, context.ctx);
 
   const rows = accounts.map((a) => {
     const h = byName.get(a.name);
@@ -27,7 +45,7 @@ export async function listCommand(context: CliContext): Promise<number> {
       name: a.name,
       email: h?.email ?? '',
       plan: h?.plan ?? a.plan ?? '',
-      loggedIn: h?.loggedIn ? 'yes' : 'no',
+      loggedIn: usable.has(a.name) ? 'yes' : 'no',
       cappedUntil: cap ? (cap.capUntil ? new Date(cap.capUntil).toLocaleTimeString() : 'indefinite') : '',
     };
   });
