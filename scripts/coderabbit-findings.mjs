@@ -232,14 +232,19 @@ export function reviewerCommentCovers(comments, sha, isReviewer) {
  *
  * The three lookups are injected so this can be tested without a network.
  */
-export function commitIsCovered(sha, deps, seen = new Set()) {
-  if (!sha || seen.has(sha)) return false; // a cycle cannot establish anything
-  seen.add(sha);
+export function commitIsCovered(sha, deps, ancestry = new Set()) {
+  // The guard tracks the current PATH, not everything visited anywhere. A
+  // shared set breaks the ordinary diamond: two parents that both reach one
+  // covered ancestor: the second branch would meet it already marked and report
+  // false before its coverage could be established, blocking a head that is
+  // genuinely covered.
+  if (!sha || ancestry.has(sha)) return false;
   if (deps.reviewed(sha)) return true;
   if (deps.containedInBase(sha)) return true;
   const parents = deps.parentsOf(sha) ?? [];
   // Only a MERGE inherits: a plain commit adds work of its own, and inheriting
   // from its single parent would let every later commit ride an old review.
   if (parents.length < 2) return false;
-  return parents.every((parent) => commitIsCovered(parent, deps, seen));
+  const walked = new Set(ancestry).add(sha);
+  return parents.every((parent) => commitIsCovered(parent, deps, walked));
 }

@@ -434,3 +434,63 @@ describe('commitIsCovered', () => {
     expect(commitIsCovered('', world({ reviewed: [''] }))).toBe(false);
   });
 });
+
+describe('commitIsCovered with a diamond history', () => {
+  const world = (opts: {
+    reviewed?: string[];
+    inBase?: string[];
+    parents?: Record<string, string[]>;
+  }) => ({
+    reviewed: (sha: string) => (opts.reviewed ?? []).includes(sha),
+    containedInBase: (sha: string) => (opts.inBase ?? []).includes(sha),
+    parentsOf: (sha: string) => (opts.parents ?? {})[sha] ?? [],
+  });
+
+  it('covers a head whose two parents reach the SAME covered ancestor', () => {
+    // An ordinary shape once a branch has been updated from the base twice. A
+    // cycle guard shared between sibling branches meets the shared ancestor
+    // already marked on the second visit and reports false, blocking a head
+    // that is genuinely covered.
+    const diamond = world({
+      reviewed: ['reviewed-head'],
+      inBase: ['main-tip'],
+      parents: {
+        top: ['left', 'right'],
+        left: ['reviewed-head', 'main-tip'],
+        right: ['reviewed-head', 'main-tip'],
+      },
+    });
+    expect(commitIsCovered('top', diamond)).toBe(true);
+  });
+
+  it('covers a diamond whose shared ancestor is itself a merge', () => {
+    // The case that actually exercises the guard. When the shared ancestor is
+    // reviewed outright it answers before it is ever recorded, so a shared set
+    // looks harmless. Make it a MERGE and it has to recurse, which records it,
+    // and the second branch then meets it already marked.
+    const deep = world({
+      reviewed: ['reviewed-head'],
+      inBase: ['main-tip'],
+      parents: {
+        top: ['left', 'right'],
+        left: ['shared', 'main-tip'],
+        right: ['shared', 'main-tip'],
+        shared: ['reviewed-head', 'main-tip'],
+      },
+    });
+    expect(commitIsCovered('top', deep)).toBe(true);
+  });
+
+  it('still refuses a diamond where one side is unreviewed', () => {
+    const diamond = world({
+      reviewed: ['reviewed-head'],
+      inBase: ['main-tip'],
+      parents: {
+        top: ['left', 'right'],
+        left: ['reviewed-head', 'main-tip'],
+        right: ['stranger', 'main-tip'],
+      },
+    });
+    expect(commitIsCovered('top', diamond)).toBe(false);
+  });
+});
