@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { getActive } from '../state/active.js';
 import { listAccounts } from '../accounts/registry.js';
-import { hasUsableLogin } from '../accounts/credential-vault.js';
+import { hasUsableLogin, credentialFileFingerprint } from '../accounts/credential-vault.js';
+import { loginIsKnownDead } from '../usage/dead-login-store.js';
 import { configHome } from '../config/paths.js';
 import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
@@ -132,7 +133,19 @@ export function statuslineSegment(context: CliContext, options: StatuslineOption
 
   const active = getActive(context.ctx);
   if (!active) return 'ccx: no account';
-  if (!hasUsableLogin(accountDirOf(context, active))) return `! ${active} needs sign-in`;
+  // Two ways a login is finished, and both have to reach this line. A file with
+  // no token material is the obvious one. The other is a credential that LOOKS
+  // complete but whose refresh token the endpoint has already rejected: it
+  // passes every local check, so without the recorded refusal this warning
+  // cannot fire and the line reports healthy headroom for an account that
+  // cannot authenticate.
+  const accountDir = accountDirOf(context, active);
+  if (
+    !hasUsableLogin(accountDir) ||
+    loginIsKnownDead(credentialFileFingerprint(accountDir), context.ctx)
+  ) {
+    return `! ${active} needs sign-in`;
+  }
 
   const entry = readUsageSnapshot(context.ctx).accounts[active];
   const name = options.compact ? '' : active;

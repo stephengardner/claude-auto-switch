@@ -107,6 +107,81 @@ describe('a login the endpoint has already refused', () => {
     expect(calls).toBe(2);
   });
 
+  it('does not ask again in a LATER process, which is why the note is on disk', async () => {
+    // Clearing only the in-process memory is exactly what a new process looks
+    // like: nothing tried yet. Without the note, every fresh session spends a
+    // request rediscovering a refusal that is already recorded.
+    const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: mkdtempSync(path.join(tmpdir(), 'cas-cross-')) } };
+    const dir = account({ accessToken: 'old', refreshToken: 'r-dead', expiresAt: now() - HOUR });
+    let calls = 0;
+    const counting: typeof fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
+    }) as unknown as typeof fetch;
+
+    expect((await refreshCredentialIfExpired(dir, { now, fetchImpl: counting, ctx })).status).toBe(
+      'needs-login',
+    );
+    expect(calls).toBe(1);
+
+    forgetRefusals();
+    const later = await refreshCredentialIfExpired(dir, { now, fetchImpl: counting, ctx });
+    expect(later.status).toBe('needs-login');
+    expect(later.alreadyKnown).toBe(true);
+    expect(later.detail).toContain('invalid_grant');
+    expect(calls).toBe(1);
+  });
+
+  it('writes NOTHING when no state location is given', async () => {
+    // Nothing here defaults to the real config home. An earlier draft did, and
+    // the first test that forgot to pass one wrote into live state.
+    const dir = account({ accessToken: 'old', refreshToken: 'r-dead2', expiresAt: now() - HOUR });
+    forgetRefusals();
+    const outcome = await refreshCredentialIfExpired(dir, {
+      now,
+      fetchImpl: jsonFetch(400, { error: 'invalid_grant' }),
+    });
+    expect(outcome.status).toBe('needs-login');
+    // No ctx, so no note anywhere: the only record is the in-process one.
+    forgetRefusals();
+    let calls = 0;
+    const counting: typeof fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
+    }) as unknown as typeof fetch;
+    await refreshCredentialIfExpired(dir, { now, fetchImpl: counting });
+    expect(calls).toBe(1);
+  });
+
+  it('remembers ONLY an invalid_grant, not a 401 or a malformed request', async () => {
+    // Reporting and remembering are different questions. All of these still say
+    // needs-login, so a real rejection is never mistaken for a network blip. But
+    // only invalid_grant means the server rejected THIS refresh token, and a
+    // note outlasts the moment: it survives the process and makes the status
+    // line say "needs sign-in" until the credential changes. A bare 401 or a
+    // malformed request would bench a working account for no reason.
+    const cases = [
+      { body: { error: 'invalid_request' }, status: 400, remembered: false },
+      { body: { error: 'unauthorized' }, status: 401, remembered: false },
+      { body: {}, status: 401, remembered: false },
+      { body: { error: 'invalid_grant' }, status: 400, remembered: true },
+    ];
+    for (const testCase of cases) {
+      const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: mkdtempSync(path.join(tmpdir(), 'cas-cls-')) } };
+      const dir = account({ accessToken: 'a', refreshToken: `r-${testCase.status}-${JSON.stringify(testCase.body)}`, expiresAt: now() - HOUR });
+      forgetRefusals();
+      const outcome = await refreshCredentialIfExpired(dir, {
+        now,
+        ctx,
+        fetchImpl: jsonFetch(testCase.status, testCase.body),
+      });
+      expect(outcome.status, JSON.stringify(testCase)).toBe('needs-login');
+      // The durable half is the one that must be strict.
+      expect(existsSync(path.join(ctx.env.CLAUDE_AUTO_SWITCH_HOME, 'dead-logins.json')), JSON.stringify(testCase))
+        .toBe(testCase.remembered);
+    }
+  });
+
   it('does NOT remember a transient failure, so a blip stays retryable', async () => {
     const dir = account({ accessToken: 'old', refreshToken: 'r-blip', expiresAt: now() - HOUR });
     let calls = 0;

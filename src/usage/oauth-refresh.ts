@@ -5,6 +5,8 @@ import { writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import { credentialPath, previousCredentialPath, isUsableCredential } from '../accounts/credential-vault.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import { alreadyRefused, refusalReason, rememberRefused } from './dead-login-memo.js';
+import { loginIsKnownDead, deadLoginReason, rememberDeadLogin, forgetDeadLogin } from './dead-login-store.js';
+import type { PathCtx } from '../config/paths.js';
 
 /**
  * Renew an account's access token when it has expired.
@@ -50,6 +52,12 @@ export interface RefreshOptions {
   fetchImpl?: typeof fetch;
   tokenUrl?: string;
   clientId?: string;
+  /**
+   * Where ccx keeps its state, so a refusal is written where a LATER process
+   * will find it. Without it the note is skipped rather than written somewhere
+   * unintended, which is why nothing here defaults to the real config home.
+   */
+  ctx?: PathCtx;
 }
 
 /**
@@ -134,11 +142,18 @@ export async function refreshCredentialIfExpired(
   // way that leaves the token in place would stay refused until the process
   // restarted. Re-asking a few times costs a request; being stuck costs a
   // working account.
-  const identity = sha256Fingerprint(fileText);
-  if (alreadyRefused(identity)) {
+  const identity = sha256Fingerprint(fileText); // same value credentialFileFingerprint yields
+  // Known dead in THIS process, or recorded by an earlier one. The second half
+  // is what a fresh start needs: without it every new session spends a request
+  // rediscovering a refusal that is already written down.
+  const ctx = options.ctx;
+  if (alreadyRefused(identity) || (ctx && loginIsKnownDead(identity, ctx))) {
     return {
       status: 'needs-login',
-      detail: refusalReason(identity) ?? 'renewal already refused for this login',
+      detail:
+        refusalReason(identity) ??
+        (ctx ? deadLoginReason(identity, ctx) : undefined) ??
+        'renewal was already refused for this login',
       alreadyKnown: true,
     };
   }
@@ -185,14 +200,24 @@ export async function refreshCredentialIfExpired(
     } catch {
       /* body is optional context */
     }
-    // Only a definitively dead grant means "log in again"; anything else is
-    // treated as temporary so a blip never marks a good account as broken.
+    // Ask the operator to sign in again on anything that looks like a rejected
+    // login, so a real one is never silently treated as a network blip.
     const dead = /invalid_grant|invalid_request|unauthorized/i.test(body) || response.status === 401;
     const detail = `token endpoint ${response.status}${body ? `: ${body}` : ''}`;
-    // Only a definitively dead grant is worth remembering. A transient failure
-    // must stay retryable, or one blip would bench a healthy account until the
-    // process restarts.
-    if (dead) rememberRefused(identity, detail);
+    // REMEMBERING is a stricter question than reporting, and deliberately so.
+    // Only invalid_grant means the server has rejected this refresh token
+    // itself. `invalid_request` describes a malformed request, which is our bug
+    // rather than a finished login, and a bare 401 can be a client-auth or
+    // transient failure. Recording either would outlast the moment: the note
+    // survives the process and makes the status line say "needs sign-in" until
+    // the credential file changes, so a blip would bench a working account
+    // until someone signed in again for no reason.
+    const refreshTokenRejected = /\binvalid_grant\b/i.test(body);
+    if (refreshTokenRejected) {
+      rememberRefused(identity, detail);
+      // Written down as well, so a later process knows before it acts.
+      if (ctx) rememberDeadLogin(identity, detail, ctx);
+    }
     return { status: dead ? 'needs-login' : 'unavailable', detail };
   }
 
@@ -224,6 +249,10 @@ export async function refreshCredentialIfExpired(
     },
   };
   writeSecretFile(file, JSON.stringify(updated));
+  // A credential that just renewed is demonstrably alive, so make sure no note
+  // says otherwise. It should never be there, and that is the point: this
+  // guarantees a stale note can never hold down a login that works.
+  if (ctx) forgetDeadLogin(sha256Fingerprint(JSON.stringify(updated)), ctx);
   return { status: 'refreshed' };
   }
 }

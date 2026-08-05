@@ -3,6 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { statuslineCommand } from './statusline.js';
+import { rememberDeadLogin } from '../usage/dead-login-store.js';
+import { refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
 
@@ -82,6 +84,46 @@ describe('statuslineCommand', () => {
     expect(lines[0]).not.toContain('spent');
     // The week is now the tightest window that is actually running.
     expect(lines[0]).toBe('work week 80% left');
+  });
+
+  it('says SIGN IN for a login the endpoint has already refused', async () => {
+    // The bug this closes: a dead refresh token leaves a credential file that
+    // looks complete, so every local check passes and the existing warning one
+    // line above could not fire. The line then reported full headroom, in
+    // Claude's own interface, for an account that cannot authenticate.
+    const { context, lines } = setup('work', {
+      work: entry({ fiveHour: 0, sevenDay: 0 }),
+    });
+    const homeDir = (context.ctx.env as Record<string, string>).CLAUDE_AUTO_SWITCH_HOME ?? '';
+    const dir = path.join(homeDir, 'profiles', 'work');
+    // Recorded THROUGH the real renewal path, not by calling the store directly.
+    // Writing the note by hand hides a mismatch between the key production files
+    // it under and the key this line looks it up by, which is exactly the bug
+    // this test failed to catch the first time.
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r-dead', expiresAt: 1 } }),
+      'utf8',
+    );
+    const refused = await refreshCredentialIfExpired(dir, {
+      ctx: context.ctx,
+      now: () => 2_000_000,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 })) as unknown as typeof fetch,
+    });
+    expect(refused.status).toBe('needs-login');
+
+    expect(await statuslineCommand(context)).toBe(0);
+    expect(lines[0]).toBe('! work needs sign-in');
+  });
+
+  it('still reports headroom for a login that has NOT been refused', async () => {
+    // The other direction: a note about a different credential must not turn a
+    // working account into a warning.
+    const { context, lines } = setup('work', { work: entry({ fiveHour: 0.2, sevenDay: 0 }) });
+    rememberDeadLogin('some-other-credential', 'invalid_grant', context.ctx);
+    expect(await statuslineCommand(context)).toBe(0);
+    expect(lines[0]).toBe('work 5h 80% left');
   });
 
   it('names an OPEN window rather than an expired one when both read empty', async () => {

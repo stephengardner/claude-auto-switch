@@ -126,7 +126,7 @@ export async function refreshUsage(
   const probe =
     options.probe ?? ((file: string) => probeUsage(file));
   const renew =
-    options.renew ?? ((accountDir: string) => refreshCredentialIfExpired(accountDir));
+    options.renew ?? ((accountDir: string) => refreshCredentialIfExpired(accountDir, { ctx: c }));
 
   const snapshot = readUsageSnapshot(c);
   const stale = accounts.filter((a) => {
