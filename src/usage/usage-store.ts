@@ -5,6 +5,7 @@ import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
+import { renewAndCarry } from '../accounts/shared-login.js';
 import { liveLeases, type LeaseOptions } from '../session/lease.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
 import { refreshCredentialIfExpired, renewalIsDue, expiredLongerThan, type RefreshOutcome } from './oauth-refresh.js';
@@ -172,12 +173,19 @@ export async function refreshUsage(
       // would append the same line forever.
       const lease = inUse.get(account.name);
       const siblings = renewalWouldBreakOthers(account, accounts);
+      // A profile sharing this login is only a reason to refuse when a SESSION
+      // is using it. Refusing whenever a sibling existed was symmetric, so for
+      // a duplicated account neither half was ever renewed here: both tokens
+      // expired, their usage became unreadable, and the rotation policy went
+      // blind on exactly the accounts it was meant to choose between. The
+      // renewal is carried across to them instead.
+      const siblingsInUse = siblings.filter((name) => inUse.has(name));
       const editorMayBeUsingIt =
         account.name === editorAccount && !expiredLongerThan(account.dir, EDITOR_IDLE_GRACE_MS);
       const refusal = lease
         ? `not renewed: a running session (pid ${lease.pid}) is using this login; renewing would sign it out`
-        : siblings.length > 0
-          ? `not renewed: shares a login with ${siblings.join(', ')}; renewing would end theirs`
+        : siblingsInUse.length > 0
+          ? `not renewed: ${siblingsInUse.join(', ')} shares this login and a session is using it`
           : editorMayBeUsingIt
             ? 'not renewed: your editor is pointed at this account and may be using it'
             : null;
@@ -187,9 +195,21 @@ export async function refreshUsage(
       }
       // Renewal rotates the token, so it is the single most likely reason a
       // login stops working. Record what happened, with the reason.
-      const renewal = mayRenew ? await renew(account.dir) : { status: 'not-needed' as const };
+      const { result: renewal, carried } = mayRenew
+        ? await renewAndCarry(account, accounts, siblings, () => renew(account.dir))
+        : { result: { status: 'not-needed' as const }, carried: [] as string[] };
       if (renewal.status === 'refreshed') {
         logCredentialEvent({ account: account.name, kind: 'renewed' }, c);
+        for (const name of carried) {
+          logCredentialEvent(
+            {
+              account: name,
+              kind: 'installed',
+              detail: `shares a login with "${account.name}", which was just renewed; carried across so this one keeps working`,
+            },
+            c,
+          );
+        }
       } else if (renewal.status === 'needs-login' && !renewal.alreadyKnown) {
         // Only the FIRST refusal for a given login is recorded. The answer
         // cannot change until the credential does, so repeating it every few

@@ -88,6 +88,44 @@ export function writeAndCarry(
   );
 }
 
+/**
+ * Renew a login and carry it to the profiles that shared the old one, in one
+ * call, for a renewal that is asynchronous.
+ *
+ * Same reason as `writeAndCarry`: the snapshot has to be taken BEFORE the
+ * renewal, because renewing destroys the shared value that identifies who was
+ * sharing it, and an ordering split across an `await` is even easier to get
+ * wrong than one split across three statements.
+ *
+ * Carries nothing when the credential did not actually change. A renewal that
+ * was not needed leaves the file alone, and copying it over identical siblings
+ * would announce work that never happened.
+ */
+export async function renewAndCarry<T>(
+  target: SharedProfile,
+  allProfiles: SharedProfile[],
+  sharedNames: string[],
+  renew: () => Promise<T>,
+  deps: PropagateDeps = {},
+): Promise<{ result: T; carried: string[] }> {
+  const sharing = snapshotSharing(target, allProfiles, sharedNames);
+  const result = await renew();
+  const renewed = credentialFingerprint(target.dir);
+  if (!sharing.fingerprint || sharing.fingerprint === renewed) return { result, carried: [] };
+  return {
+    result,
+    carried: propagateRenewal(
+      {
+        renewedDir: target.dir,
+        siblings: sharing.sharedWith,
+        retired: sharing.fingerprint,
+        renewed,
+      },
+      deps,
+    ),
+  };
+}
+
 export interface PropagateInput {
   /** The profile that was just renewed, whose login is being carried across. */
   renewedDir: string;

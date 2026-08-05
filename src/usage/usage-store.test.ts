@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { refreshUsage, readUsageSnapshot } from './usage-store.js';
@@ -71,9 +71,12 @@ describe('refreshUsage', () => {
     expect(events[0]?.detail).toBe('invalid_grant');
   });
 
-  it('does not renew a profile that shares a login, but still reads its usage', async () => {
+  it('renews a profile that shares a login, and reads its usage', async () => {
     const { c, accounts } = setup(['a', 'b']);
-    // Same refresh token in both: renewing either would end the other.
+    // Same refresh token in both. Renewing rotates it and retires the old one,
+    // so this used to be refused outright. That was symmetric, so NEITHER half
+    // was ever renewed and both tokens expired. The renewal is carried across
+    // to the sibling now, which is what makes renewing safe here.
     for (const account of accounts) {
       writeFileSync(
         path.join(account.dir, '.credentials.json'),
@@ -92,7 +95,9 @@ describe('refreshUsage', () => {
       },
     });
 
-    expect(renewals).toBe(0); // renewal is what destroys the sibling
+    // Renewed rather than skipped: the sibling is brought along, so nothing is
+    // destroyed by it. Both accounts are processed, hence two renewals.
+    expect(renewals).toBeGreaterThan(0);
     // Skipping the renewal must not skip the ACCOUNT: usage still updates, and
     // the entry is stamped, so it does not stay stale and get retried forever.
     expect(snap.accounts['a']?.fiveHour).toBe(0.3);
@@ -341,5 +346,69 @@ describe('a rejected profile credential while a session is live', () => {
       },
     });
     expect(probed).toEqual([]);
+  });
+});
+
+describe('two profiles that share one login, during a usage refresh', () => {
+  /** Give two profiles the same login, as a duplicate sign-in produces. */
+  function shareLogin(dirs: string[], token: string): void {
+    for (const dir of dirs) {
+      writeFileSync(
+        path.join(dir, '.credentials.json'),
+        JSON.stringify({ claudeAiOauth: { accessToken: `access-${token}`, refreshToken: token } }),
+        'utf8',
+      );
+    }
+  }
+  const refreshOf = (dir: string): string =>
+    JSON.parse(readFileSync(path.join(dir, '.credentials.json'), 'utf8')).claudeAiOauth.refreshToken;
+
+  it('renews one of them and carries it to the other', async () => {
+    // Refusing whenever a sibling existed was symmetric, so NEITHER half of a
+    // duplicated account was ever renewed here: both tokens expired, their
+    // usage became unreadable, and the rotation policy went blind on exactly
+    // the accounts it was meant to choose between.
+    const { c, accounts } = setup(['phx', 'maxed']);
+    shareLogin([accounts[0]!.dir, accounts[1]!.dir], 'refresh-shared');
+
+    await refreshUsage(accounts, c, {
+      probe: () => Promise.resolve(result(0.1, 0.2)),
+      // ONLY the first account can renew. Letting both renew would leave both
+      // holding the new token either way, so the assertion below could not tell
+      // carrying apart from two independent renewals.
+      renew: (dir) => {
+        if (dir !== accounts[0]!.dir) return Promise.resolve({ status: 'not-needed' });
+        writeFileSync(
+          path.join(dir, '.credentials.json'),
+          JSON.stringify({ claudeAiOauth: { accessToken: 'access-new', refreshToken: 'refresh-new' } }),
+          'utf8',
+        );
+        return Promise.resolve({ status: 'refreshed' });
+      },
+    });
+
+    expect(refreshOf(accounts[0]!.dir)).toBe('refresh-new');
+    // The only way this changed is by being carried across.
+    expect(refreshOf(accounts[1]!.dir)).toBe('refresh-new');
+  });
+
+  it('still refuses when a session is using the profile that shares it', async () => {
+    // The reason the original refusal existed: renewing rotates the token, and
+    // a session holding that login would be signed out mid-work.
+    const { c, accounts } = setup(['phx', 'maxed']);
+    shareLogin([accounts[0]!.dir, accounts[1]!.dir], 'refresh-shared');
+    takeLease('maxed', path.join(c.env.CLAUDE_AUTO_SWITCH_HOME as string, 'live'), c);
+
+    const renewed: string[] = [];
+    await refreshUsage(accounts, c, {
+      probe: () => Promise.resolve(result(0.1, 0.2)),
+      renew: (dir) => {
+        renewed.push(dir);
+        return Promise.resolve({ status: 'refreshed' });
+      },
+    });
+
+    expect(renewed).not.toContain(accounts[0]!.dir);
+    expect(refreshOf(accounts[0]!.dir)).toBe('refresh-shared');
   });
 });

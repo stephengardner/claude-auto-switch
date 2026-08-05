@@ -2,7 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { propagateRenewal, snapshotSharing, writeAndCarry } from './shared-login.js';
+import {
+  propagateRenewal,
+  snapshotSharing,
+  writeAndCarry,
+  renewAndCarry,
+} from './shared-login.js';
 import { credentialFingerprint, installCredential } from './credential-vault.js';
 
 function profile(home: string, name: string, oauth: Record<string, unknown>) {
@@ -452,5 +457,65 @@ describe('writing a login and carrying it, as one operation', () => {
     ).toThrow('disk full');
     // Nothing was carried, because there was no successful write to carry.
     expect(refreshTokenOf(sibling.dir)).toBe('refresh-shared');
+  });
+});
+
+describe('renewing a login and carrying it, as one operation', () => {
+  it('carries the renewed login to the profiles that shared the old one', async () => {
+    const { renewed: active, sibling } = sharedPair();
+
+    const { result, carried } = await renewAndCarry(
+      active,
+      [active, sibling],
+      ['maxed'],
+      async () => {
+        renew(active.dir, 'refresh-from-endpoint');
+        return { status: 'refreshed' as const };
+      },
+    );
+
+    expect(result.status).toBe('refreshed');
+    expect(carried).toEqual(['maxed']);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-from-endpoint');
+  });
+
+  it('carries nothing when the renewal left the credential alone', async () => {
+    // A renewal that was not needed changes no file. Copying it over identical
+    // siblings would announce work that never happened.
+    const { renewed: active, sibling } = sharedPair();
+
+    const { carried } = await renewAndCarry(active, [active, sibling], ['maxed'], async () => ({
+      status: 'not-needed' as const,
+    }));
+
+    expect(carried).toEqual([]);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-shared');
+  });
+
+  it('carries nothing when the renewal was refused', async () => {
+    const { renewed: active, sibling } = sharedPair();
+
+    const { carried } = await renewAndCarry(active, [active, sibling], ['maxed'], async () => ({
+      status: 'needs-login' as const,
+    }));
+
+    expect(carried).toEqual([]);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-shared');
+  });
+
+  it('takes the snapshot before the renewal, across the await', async () => {
+    // An ordering split across an await is even easier to get wrong than one
+    // split across three statements, which is why this is one call.
+    const { renewed: active, sibling } = sharedPair();
+    const seenDuringRenewal: string[] = [];
+
+    await renewAndCarry(active, [active, sibling], ['maxed'], async () => {
+      seenDuringRenewal.push(refreshTokenOf(sibling.dir));
+      renew(active.dir, 'refresh-from-endpoint');
+      return { status: 'refreshed' as const };
+    });
+
+    expect(seenDuringRenewal).toEqual(['refresh-shared']);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-from-endpoint');
   });
 });
