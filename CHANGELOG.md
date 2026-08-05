@@ -8,7 +8,7 @@ semantic versioning.
 
 ### Added
 
-- **`ccx doctor` now says when two sessions are sharing one account.** Every
+- **`ccx doctor` now says when two sessions are sharing one session directory.** Every
   `ccx run` uses the SAME session directory, and starting a session copies that
   account's login into it. Two sessions at once therefore write the same file,
   and the later one silently takes the first one's account: the first terminal

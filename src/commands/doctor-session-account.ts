@@ -31,6 +31,13 @@ export interface SessionAccountInput {
    * login can be in that directory, so the others are running as somebody else.
    */
   leases?: Array<{ account: string; pid: number; configDir: string }>;
+  /**
+   * Which filesystem's rules apply when comparing directories. Windows treats
+   * two spellings of one path as the same directory; POSIX does not, and
+   * folding case there would merge /tmp/Session with /tmp/session and report a
+   * collision between two perfectly good sessions.
+   */
+  platform?: NodeJS.Platform;
   /** Injected so the check is testable without building credential files. */
   fingerprintOf?: (dir: string) => string | null;
   exists?: (file: string) => boolean;
@@ -43,7 +50,7 @@ export function auditSessionAccount(input: SessionAccountInput): DoctorCheck {
 
   // Checked first, because it explains every other symptom: whichever account
   // the credential comparison below reports, the other sessions are not on it.
-  const shared = sessionsSharingOneDirectory(input.leases ?? []);
+  const shared = sessionsSharingOneDirectory(input.leases ?? [], input.platform ?? process.platform);
   if (shared) {
     return {
       name,
@@ -114,10 +121,17 @@ export function auditSessionAccount(input: SessionAccountInput): DoctorCheck {
  */
 function sessionsSharingOneDirectory(
   leases: Array<{ account: string; pid: number; configDir: string }>,
+  platform: NodeJS.Platform,
 ): { sessions: number; accounts: string[] } | null {
+  const windows = platform === 'win32';
   const byDirectory = new Map<string, string[]>();
   for (const lease of leases) {
-    const key = lease.configDir.toLowerCase();
+    // Case folded ONLY on Windows, where two spellings are one directory. Doing
+    // it everywhere would merge /tmp/Session with /tmp/session on Linux and
+    // report a collision between two sessions that are not colliding, then tell
+    // the operator to stop one of them.
+    const normalised = windows ? lease.configDir.split('\\').join('/') : lease.configDir;
+    const key = windows ? normalised.toLowerCase() : normalised;
     byDirectory.set(key, [...(byDirectory.get(key) ?? []), `${lease.account} (pid ${lease.pid})`]);
   }
   for (const accounts of byDirectory.values()) {

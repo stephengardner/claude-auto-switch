@@ -112,6 +112,7 @@ describe('two sessions sharing one session directory', () => {
       activeAccount: 'phx',
       accounts: [{ name: 'phx', dir: '/profiles/phx' }],
       leases: [lease('phx', 111), lease('second', 222)],
+      platform: 'linux',
       exists: () => true,
       fingerprintOf: () => 'login-phx',
     });
@@ -127,6 +128,7 @@ describe('two sessions sharing one session directory', () => {
       activeAccount: 'phx',
       accounts: [{ name: 'phx', dir: '/profiles/phx' }],
       leases: [lease('phx', 111)],
+      platform: 'linux',
       exists: () => true,
       fingerprintOf: () => 'login-phx',
     });
@@ -142,22 +144,43 @@ describe('two sessions sharing one session directory', () => {
       sessionDir: '/session',
       activeAccount: 'phx',
       accounts: [{ name: 'phx', dir: '/profiles/phx' }],
-      leases: [lease('phx', 111, 'C:/home/session-111'), lease('second', 222, 'C:/home/session-222')],
+      leases: [
+        lease('phx', 111, '/home/session-111'),
+        lease('second', 222, '/home/session-222'),
+      ],
+      platform: 'linux',
       exists: () => true,
       fingerprintOf: () => 'login-phx',
     });
     expect(result.ok).toBe(true);
   });
 
-  it('treats the same directory spelled differently as the same directory', () => {
+  it('treats two spellings of one Windows path as the same directory', () => {
     const result = auditSessionAccount({
       sessionDir: '/session',
       activeAccount: 'phx',
       accounts: [{ name: 'phx', dir: '/profiles/phx' }],
       leases: [lease('phx', 111, 'C:/Home/Session'), lease('second', 222, 'c:/home/session')],
+      platform: 'win32',
       exists: () => true,
       fingerprintOf: () => 'login-phx',
     });
     expect(result.ok).toBe(false);
+  });
+
+  it('keeps case-distinct POSIX paths apart, because they ARE different directories', () => {
+    // Folding case everywhere would merge /tmp/Session with /tmp/session on
+    // Linux and report a collision between two sessions that are not
+    // colliding, then tell the operator to stop one of them.
+    const result = auditSessionAccount({
+      sessionDir: '/session',
+      activeAccount: 'phx',
+      accounts: [{ name: 'phx', dir: '/profiles/phx' }],
+      leases: [lease('phx', 111, '/tmp/Session'), lease('second', 222, '/tmp/session')],
+      platform: 'linux',
+      exists: () => true,
+      fingerprintOf: () => 'login-phx',
+    });
+    expect(result.ok).toBe(true);
   });
 });
