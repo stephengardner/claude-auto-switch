@@ -13,6 +13,8 @@ import {
 import { addAccount } from '../accounts/registry.js';
 import { installShim } from '../shell/install-shim.js';
 import { loadConfig } from '../config/config.js';
+import { credentialFileFingerprint } from '../accounts/credential-vault.js';
+import { loadLedger, markCapped, saveLedger } from '../ledger/ledger.js';
 import type { CliContext } from '../context.js';
 
 function context(lines: string[] = []): CliContext {
@@ -91,10 +93,95 @@ describe('auditSharedHistory', () => {
 });
 
 describe('auditCaps', () => {
+  /** A config home with accounts, some capped and some with a refused login. */
+  function withAccounts(
+    ctxObj: CliContext,
+    accounts: Array<{ name: string; capped?: boolean; refused?: boolean }>,
+  ) {
+    const home = (ctxObj.ctx.env as Record<string, string>).CLAUDE_AUTO_SWITCH_HOME as string;
+    const registry = accounts.map((a) => {
+      const dir = path.join(home, 'profiles', a.name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        path.join(dir, '.credentials.json'),
+        JSON.stringify({
+          claudeAiOauth: { accessToken: `tok-${a.name}`, refreshToken: `refresh-${a.name}` },
+        }),
+        'utf8',
+      );
+      return { name: a.name, dir, priority: 0, enabled: true };
+    });
+    writeFileSync(path.join(home, 'accounts.json'), JSON.stringify({ accounts: registry }), 'utf8');
+
+    const refused: Record<string, { at: number; detail: string }> = {};
+    for (const a of accounts.filter((x) => x.refused)) {
+      const dir = path.join(home, 'profiles', a.name);
+      refused[credentialFileFingerprint(dir) ?? a.name] = { at: Date.now(), detail: 'invalid_grant' };
+    }
+    writeFileSync(path.join(home, 'dead-logins.json'), JSON.stringify({ refused }), 'utf8');
+
+    // Built through the real ledger API rather than hand-written JSON: a cap
+    // record has more shape than it looks, and inventing it produced a schema
+    // error instead of a test.
+    let ledger = loadLedger(ctxObj.ctx);
+    for (const a of accounts.filter((x) => x.capped)) {
+      ledger = markCapped(ledger, {
+        account: a.name,
+        now: Date.now(),
+        resetAt: Date.now() + 60 * 60_000,
+        reason: 'usage cap',
+      });
+    }
+    saveLedger(ledger, ctxObj.ctx);
+  }
+
   it('is ok with an empty ledger', () => {
     const r = auditCaps(context());
     expect(r.ok).toBe(true);
     expect(r.detail).toContain('no accounts marked capped');
+  });
+
+  it('FAILS when every account you can actually use is capped', () => {
+    // The live case that reported ok: two working accounts both capped, while
+    // two profiles with refused logins made the total look healthy. Counting
+    // enabled accounts instead of usable ones hid exactly the state this check
+    // exists to catch.
+    const c = context();
+    withAccounts(c, [
+      { name: 'second', capped: true },
+      { name: 'phx', capped: true },
+      { name: 'main', refused: true },
+      { name: 'maxed', refused: true },
+    ]);
+
+    const r = auditCaps(c);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('every account you can actually use is capped');
+    expect(r.detail).toContain('need signing in first: main, maxed');
+    expect(r.fix?.join(' ')).toContain('ccx login main');
+  });
+
+  it('stays ok while a usable account is still free', () => {
+    const c = context();
+    withAccounts(c, [
+      { name: 'second', capped: true },
+      { name: 'phx' },
+      { name: 'main', refused: true },
+    ]);
+
+    const r = auditCaps(c);
+    expect(r.ok).toBe(true);
+    expect(r.detail).toContain('capped: second');
+  });
+
+  it('does not claim everything is capped when nothing can be used at all', () => {
+    // No usable account and no cap is a sign-in problem, which the accounts
+    // check reports. Claiming a cap here would send someone to wait instead.
+    const c = context();
+    withAccounts(c, [{ name: 'main', refused: true, capped: true }]);
+
+    const r = auditCaps(c);
+    expect(r.ok).toBe(true);
   });
 });
 
