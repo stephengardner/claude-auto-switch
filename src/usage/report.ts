@@ -31,6 +31,12 @@ export interface UsageAccount {
   active: boolean;
   /** Null when nothing has been read for this account yet. */
   windows: UsageWindow[] | null;
+  /**
+   * The stored login has been rejected for good, so this account cannot work
+   * however much room it has. Passed in rather than looked up here, because
+   * this renderer stays pure and testable on its own.
+   */
+  needsSignIn?: boolean;
 }
 
 export interface ReportOptions {
@@ -132,12 +138,17 @@ export function accountWideBinding(windows: UsageWindow[], now: number): UsageWi
  * merely out of one model, which is the common case.
  */
 export function roomiest(accounts: UsageAccount[], now: number): UsageAccount[] {
+  // Room is worth nothing on an account that cannot sign in, and this answers
+  // "where should I go right now". Recommending one is worse than the rotation
+  // equivalent: rotation tries it and recovers, while advice just sends someone
+  // to a session that fails with no explanation.
+  const usable = accounts.filter((a) => !a.needsSignIn);
   const used = (a: UsageAccount): number | null => {
     if (!a.windows) return null;
     const binding = accountWideBinding(a.windows, now);
     return binding ? effectiveUsed(binding, now) : null;
   };
-  return accounts
+  return usable
     // An account whose account-wide limit has RESET belongs here: its window
     // began again at empty, so it is somewhere to go. Only an account nobody
     // has read is left out, because that is a genuine unknown.
@@ -177,10 +188,13 @@ export function renderUsageReport(
     if (account.email) bits.push(account.email);
     if (account.plan) bits.push(account.plan);
     const heading = bits.join('  ·  ');
+    const signIn = account.needsSignIn
+      ? `  ${paint('NEEDS SIGN-IN', `${codes.bold}${codes.yellow}`, color)}`
+      : '';
     lines.push(
-      account.active
+      (account.active
         ? `${paint(heading, `${codes.bold}${codes.cyan}`, color)}  ${paint('ACTIVE', codes.cyan, color)}`
-        : paint(heading, codes.bold, color),
+        : paint(heading, codes.bold, color)) + signIn,
     );
 
     if (!account.windows) {
@@ -246,6 +260,18 @@ export function renderUsageReport(
       paint(
         'Only per-model usage has been read, so there is nothing to compare account by account.',
         codes.dim,
+        color,
+      ),
+    );
+  } else if (best.length === 0 && accounts.some((a) => a.needsSignIn)) {
+    // Distinct from being out of room, and the distinction is the whole point:
+    // waiting for a reset never fixes a login, so saying "check the reset times"
+    // would send the operator away to wait for something that cannot happen.
+    const stale = accounts.filter((a) => a.needsSignIn).map((a) => a.name);
+    lines.push(
+      paint(
+        `These accounts need signing in again: ${stale.join(', ')}. Run: ccx login ${stale[0]}`,
+        codes.yellow,
         color,
       ),
     );

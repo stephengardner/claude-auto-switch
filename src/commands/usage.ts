@@ -2,6 +2,8 @@ import { listAccounts } from '../accounts/registry.js';
 import { getActive } from '../state/active.js';
 import { refreshUsage } from '../usage/usage-store.js';
 import { renderUsageReport, type UsageAccount } from '../usage/report.js';
+import { loginIsKnownDead } from '../usage/dead-login-store.js';
+import { credentialFileFingerprint } from '../accounts/credential-vault.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -35,6 +37,8 @@ export async function usageCommand(context: CliContext): Promise<number> {
       email: a.email,
       plan: a.plan,
       active: a.name === active,
+      // Room means nothing on a login the endpoint has already rejected.
+      needsSignIn: loginIsKnownDead(credentialFileFingerprint(a.dir), context.ctx),
       windows: known
         ? [
             { label: '5-hour', used: u.fiveHour, resetsAt: u.fiveHourReset },

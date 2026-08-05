@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.33.1]
+
+### Fixed
+
+- **`ccx usage` no longer sends you to an account that cannot sign in.** It
+  ranked purely on how much room each account had, so a login the token endpoint
+  had already rejected could be named as the roomiest place to go. Advice is
+  worse than rotation here: rotation tries such an account and recovers on its
+  own, while a recommendation just produces a failed session and no explanation.
+
+  Those accounts are now left out of the suggestion and marked `NEEDS SIGN-IN`
+  on their own row, so the advice is traceable to what it came from.
+
+  When they are the only ones left, the report says to sign in and gives the
+  command, rather than "every account has hit a limit". Waiting for a reset
+  never fixes a login, and sending someone away to wait for something that
+  cannot happen is the worse failure of the two.
+
 ## [1.33.0]
 
 ### Fixed

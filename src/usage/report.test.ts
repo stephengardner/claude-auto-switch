@@ -181,6 +181,20 @@ describe('roomiest', () => {
     expect(roomiest([spent], NOW)).toEqual([]);
   });
 
+  it('does NOT suggest an account whose login has been rejected', () => {
+    // Room is worth nothing on an account that cannot sign in, and advice is
+    // worse than rotation here: rotation tries it and recovers, a report just
+    // sends someone to a session that fails with no explanation.
+    const dead = account({
+      name: 'dead',
+      needsSignIn: true,
+      windows: [{ label: 'weekly', used: 0, resetsAt: null }],
+    });
+    const alive = account({ name: 'alive', windows: [{ label: 'weekly', used: 0.9, resetsAt: null }] });
+    // The dead one has far more room and still must not win.
+    expect(roomiest([dead, alive], NOW).map((a) => a.name)).toEqual(['alive']);
+  });
+
   it('does not suggest an account nothing has been read for', () => {
     expect(roomiest([account({ name: 'unknown', windows: null })], NOW)).toEqual([]);
   });
@@ -292,6 +306,39 @@ describe('renderUsageReport', () => {
     );
     expect(out).not.toContain('No usage has been read yet');
     expect(out).toContain('Most room right now');
+  });
+
+  it('says to SIGN IN, not to wait, when the only accounts left are rejected', () => {
+    // Waiting for a reset never fixes a login, so "check the reset times" would
+    // send the operator away to wait for something that cannot happen.
+    const out = renderUsageReport(
+      [
+        account({
+          name: 'dead',
+          needsSignIn: true,
+          windows: [{ label: 'weekly', used: 0.1, resetsAt: null }],
+        }),
+      ],
+      NOW,
+      plain,
+    );
+    expect(out).toContain('These accounts need signing in again: dead');
+    expect(out).toContain('ccx login dead');
+    expect(out).not.toContain('hit an account-wide limit');
+    // And the row itself is marked, so the advice is traceable.
+    expect(out).toContain('NEEDS SIGN-IN');
+  });
+
+  it('still says everything is spent when the logins are FINE', () => {
+    // The other branch must survive: a genuinely exhausted account is a
+    // different problem with a different answer.
+    const out = renderUsageReport(
+      [account({ name: 'spent', windows: [{ label: 'weekly', used: 1, resetsAt: NOW + 1000 }] })],
+      NOW,
+      plain,
+    );
+    expect(out).toContain('hit an account-wide limit');
+    expect(out).not.toContain('need signing in');
   });
 
   it('names where there is most room', () => {
