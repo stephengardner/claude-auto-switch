@@ -6,6 +6,7 @@ import { cdpBrowserAuthorizer } from '../login/browser.js';
 import { spawnAuthLogin } from '../login/login-process.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
+import { signedInAndNotRejected } from '../health/signed-in.js';
 
 export interface LoginOptions {
   all?: boolean;
@@ -23,8 +24,12 @@ export async function loginCommand(
   if (options.all) {
     const accounts = listAccounts(context.ctx);
     const healths = await probeAll(accounts, { claude });
-    const loggedOut = new Set(healths.filter((h) => !h.loggedIn).map((h) => h.name));
-    targets = accounts.filter((a) => loggedOut.has(a.name));
+    // The same question as everywhere else, asked the other way round. The
+    // probe reports a refused login as signed in, because the file still looks
+    // like one, so going by the probe alone made `--all` skip exactly the
+    // accounts that need signing in and announce that they were all fine.
+    const usable = signedInAndNotRejected(healths, accounts, context.ctx);
+    targets = accounts.filter((a) => !usable.has(a.name));
     if (targets.length === 0) {
       context.out('all accounts are already logged in');
       return 0;

@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.36.3]
+
+### Fixed
+
+- **`ccx login --all` no longer skips the accounts that need signing in.** It
+  asked the health probe which accounts were logged OUT, and the probe reports a
+  refused login as signed in, because the file still looks like one. So the
+  command that exists to fix a refused login skipped exactly those accounts and
+  announced that they were all fine.
+
+  It now targets whatever cannot actually be used, which is the same question
+  the rest of ccx asks, taken the other way round.
+
 ## [1.36.2]
 
 ### Fixed
