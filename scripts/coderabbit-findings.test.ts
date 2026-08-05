@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error -- plain JavaScript helper, shared with the CI script
-import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused, hasSubstantiveReviewFor, reviewerCommentCovers, commitIsCovered, isReviewerLogin } from './coderabbit-findings.mjs';
+import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused, hasSubstantiveReviewFor, reviewerCommentCovers, reviewerReportsNoUnreviewedCommits, commitIsCovered, isReviewerLogin } from './coderabbit-findings.mjs';
 
 /**
  * These decide whether a pull request may merge, so both directions matter:
@@ -492,5 +492,66 @@ describe('commitIsCovered with a diamond history', () => {
       },
     });
     expect(commitIsCovered('top', diamond)).toBe(false);
+  });
+});
+
+describe('reviewerReportsNoUnreviewedCommits', () => {
+  const PUSHED_AT = Date.parse('2026-08-05T10:44:54Z');
+  const SKIPPED = {
+    author: 'coderabbitai[bot]',
+    body: '> [!IMPORTANT]\n> ## Review skipped\n>\n> No new commits to review since the last review.',
+  };
+
+  it('accepts a notice edited AFTER the head was pushed', () => {
+    // The case with no other evidence at all. An incremental review that finds
+    // nothing posts no review object and names no SHA, so without this a clean
+    // pull request can never satisfy a head-coverage check.
+    const comments = [{ ...SKIPPED, updatedAt: PUSHED_AT + 105_000 }];
+    expect(reviewerReportsNoUnreviewedCommits(comments, PUSHED_AT, isReviewerLogin)).toBe(true);
+  });
+
+  it('REFUSES a notice written before the head existed', () => {
+    // The trap this is anchored against. The comment is edited in place and
+    // names no commit, so a notice from before the push is talking about an
+    // older head. Accepting it would wave through commits nobody has read.
+    const comments = [{ ...SKIPPED, updatedAt: PUSHED_AT - 1_000 }];
+    expect(reviewerReportsNoUnreviewedCommits(comments, PUSHED_AT, isReviewerLogin)).toBe(false);
+  });
+
+  it('refuses when the head cannot be dated', () => {
+    const comments = [{ ...SKIPPED, updatedAt: PUSHED_AT + 105_000 }];
+    expect(reviewerReportsNoUnreviewedCommits(comments, NaN, isReviewerLogin)).toBe(false);
+  });
+
+  it('refuses the same words from anyone who is not the reviewer', () => {
+    // Otherwise a human could clear the gate by quoting the notice in a comment.
+    const comments = [{ ...SKIPPED, author: 'stephengardner', updatedAt: PUSHED_AT + 105_000 }];
+    expect(reviewerReportsNoUnreviewedCommits(comments, PUSHED_AT, isReviewerLogin)).toBe(false);
+  });
+
+  it('is not fooled by an ordinary comment from the reviewer', () => {
+    const comments = [
+      { author: 'coderabbitai[bot]', body: 'Looks good to me.', updatedAt: PUSHED_AT + 105_000 },
+    ];
+    expect(reviewerReportsNoUnreviewedCommits(comments, PUSHED_AT, isReviewerLogin)).toBe(false);
+  });
+
+  it('reads a raw REST comment as well as the guard-normalised one', () => {
+    // The guard parses the date before calling this; a test or a direct API read
+    // does not. Only accepting one shape would make this pass in a test and do
+    // nothing in the gate.
+    const raw = [
+      {
+        user: { login: 'coderabbitai[bot]' },
+        body: SKIPPED.body,
+        updated_at: new Date(PUSHED_AT + 105_000).toISOString(),
+      },
+    ];
+    expect(reviewerReportsNoUnreviewedCommits(raw, PUSHED_AT, isReviewerLogin)).toBe(true);
+  });
+
+  it('says no when there are no comments at all', () => {
+    expect(reviewerReportsNoUnreviewedCommits([], PUSHED_AT, isReviewerLogin)).toBe(false);
+    expect(reviewerReportsNoUnreviewedCommits(undefined, PUSHED_AT, isReviewerLogin)).toBe(false);
   });
 });
