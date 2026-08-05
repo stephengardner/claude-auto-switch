@@ -91,12 +91,17 @@ describe('an account that is honestly in two states at once', () => {
     expect(out).toContain('busy hit a limit');
     expect(out).toContain('same needs signing in again');
     expect(out).toContain('A reset will not fix a sign-in');
-    expect(out).not.toContain('busy, same hit a limit');
+    // Rejects the claim itself, not one way of spelling it: "busy hit a limit.
+    // same hit a limit" is the same bug in a different shape.
+    expect(out).not.toContain('same hit a limit');
   });
 
   it('says a repeated name once', () => {
     expect(message({ refused: ['dup', 'dup'] })).toBe('dup needs signing in again. Run: ccx login dup');
-    expect(message({ capped: ['dup', 'dup'], refused: ['x'] })).toContain('dup hit a limit');
+    const capped = message({ capped: ['dup', 'dup'], refused: ['x'] });
+    expect(capped).toContain('dup hit a limit');
+    // Containment cannot tell one "dup" from two, so count them.
+    expect(capped.match(/\bdup\b/g)).toHaveLength(1);
   });
 
   it('reads as singular once duplicates are removed', () => {
