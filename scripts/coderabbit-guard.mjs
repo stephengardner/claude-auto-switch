@@ -28,6 +28,7 @@ import {
   reviewsArePaused,
   hasSubstantiveReviewFor,
   reviewerCommentCovers,
+  commitIsCovered,
   isReviewerLogin,
 } from './coderabbit-findings.mjs';
 
@@ -205,14 +206,41 @@ function hasReviewForHead(owner, name, pr) {
   try {
     const pull = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}`]);
     const sha = pull?.head?.sha;
+    const base = pull?.base?.ref;
     if (!sha) return false;
+
     const reviews = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}/reviews`, '--paginate']) ?? [];
-    if (hasSubstantiveReviewFor(reviews, sha, isReviewer)) return true;
-    // A review that found NOTHING posts no review object, only a comment naming
-    // the range it covered. Without this, "reviewed and clean" is indistinguish-
-    // able from "never reviewed", and on a paused branch that is a permanent
-    // block on a pull request that has actually been reviewed.
-    return reviewerCommentCovers(allComments(owner, name, pr), sha, isReviewer);
+    const comments = allComments(owner, name, pr);
+    const parents = new Map();
+
+    return commitIsCovered(sha, {
+      // A review that found NOTHING posts no review object, only a comment
+      // naming the range it covered, so both shapes count.
+      reviewed: (candidate) =>
+        hasSubstantiveReviewFor(reviews, candidate, isReviewer) ||
+        reviewerCommentCovers(comments, candidate, isReviewer),
+      // Already on the base branch, so it arrived through its own pull request
+      // and was reviewed there. "identical" or "behind" both mean contained.
+      containedInBase: (candidate) => {
+        if (!base) return false;
+        try {
+          const cmp = ghJson([
+            'api',
+            `repos/${owner}/${name}/compare/${base}...${candidate}`,
+          ]);
+          return cmp?.status === 'identical' || cmp?.status === 'behind';
+        } catch {
+          return false; // cannot tell, so do not claim it is covered
+        }
+      },
+      parentsOf: (candidate) => {
+        if (!parents.has(candidate)) {
+          const commit = ghJson(['api', `repos/${owner}/${name}/commits/${candidate}`]);
+          parents.set(candidate, (commit?.parents ?? []).map((p) => p.sha));
+        }
+        return parents.get(candidate);
+      },
+    });
   } catch {
     return false; // cannot tell, so do not claim it was reviewed
   }
@@ -341,14 +369,20 @@ function main() {
     console.error('Wait for the review to appear and finish, then run this again.');
     verdict(1, 'BLOCKED');
   }
-  // Paused with nothing covering this commit is the false green: the head shows
-  // "Review completed" from an earlier pass while the newest commits have not
-  // been looked at. Answered comments from those earlier passes do not cover
-  // them either, so every other signal here reads clear.
-  if (snapshot.paused && !hasReviewForHead(owner, name, pr)) {
-    console.error(`coderabbit-guard: PR #${pr} BLOCKED: CodeRabbit has PAUSED reviews on this branch.`);
-    console.error('The green status on the head is from its last pass, not a review of this commit.');
-    console.error('Comment "@coderabbitai review" on the pull request, then run this again.');
+  // The head must have been REVIEWED, whatever the pause state says. Asking
+  // this only while paused was a false green: commenting "@coderabbitai review"
+  // lifts the pause the moment it is posted, so a run straight afterwards
+  // reported CLEAR having checked nothing about the new head. The pause is only
+  // ever the explanation for why coverage is missing, never a substitute for it.
+  if (!hasReviewForHead(owner, name, pr)) {
+    console.error(`coderabbit-guard: PR #${pr} BLOCKED: the head commit has not been reviewed.`);
+    if (snapshot.paused) {
+      console.error('CodeRabbit has PAUSED reviews on this branch, so the green status on the');
+      console.error('head is from its last pass. Comment "@coderabbitai review", WAIT for the');
+      console.error('review to land, then run this again.');
+    } else {
+      console.error('Wait for the review of this commit to finish, then run this again.');
+    }
     verdict(1, 'BLOCKED');
   }
   if (!reviewed) {

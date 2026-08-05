@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error -- plain JavaScript helper, shared with the CI script
-import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused, hasSubstantiveReviewFor, reviewerCommentCovers, isReviewerLogin } from './coderabbit-findings.mjs';
+import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused, hasSubstantiveReviewFor, reviewerCommentCovers, commitIsCovered, isReviewerLogin } from './coderabbit-findings.mjs';
 
 /**
  * These decide whether a pull request may merge, so both directions matter:
@@ -363,5 +363,74 @@ describe('reviewerCommentCovers', () => {
     expect(
       reviewerCommentCovers([{ user: { login: 'coderabbitai' }, body: `at ${HEAD}` }], HEAD, isReviewer),
     ).toBe(true);
+  });
+});
+
+describe('commitIsCovered', () => {
+  /** Build the three lookups from plain sets, so a case reads as a picture. */
+  const world = (opts: {
+    reviewed?: string[];
+    inBase?: string[];
+    parents?: Record<string, string[]>;
+  }) => ({
+    reviewed: (sha: string) => (opts.reviewed ?? []).includes(sha),
+    containedInBase: (sha: string) => (opts.inBase ?? []).includes(sha),
+    parentsOf: (sha: string) => (opts.parents ?? {})[sha] ?? [],
+  });
+
+  it('counts a head the reviewer looked at', () => {
+    expect(commitIsCovered('head', world({ reviewed: ['head'] }))).toBe(true);
+  });
+
+  it('refuses a head nobody reviewed', () => {
+    // The false green this exists to stop.
+    expect(commitIsCovered('head', world({ reviewed: ['older'] }))).toBe(false);
+  });
+
+  it('counts a merge that brings together a reviewed head and the base', () => {
+    // Updating a branch from the base adds no reviewable change, and the
+    // reviewer says so ("No files to review"). Without this the pull request
+    // could never be covered again and would be unmergeable for good.
+    const merge = world({
+      reviewed: ['reviewed-head'],
+      inBase: ['main-tip'],
+      parents: { merge: ['reviewed-head', 'main-tip'] },
+    });
+    expect(commitIsCovered('merge', merge)).toBe(true);
+  });
+
+  it('refuses a merge whose other parent is neither reviewed nor in the base', () => {
+    // Merging someone else's unreviewed branch must not inherit coverage.
+    const merge = world({
+      reviewed: ['reviewed-head'],
+      inBase: [],
+      parents: { merge: ['reviewed-head', 'stranger'] },
+    });
+    expect(commitIsCovered('merge', merge)).toBe(false);
+  });
+
+  it('does NOT let a plain commit inherit from its parent', () => {
+    // The whole point. A normal commit adds work of its own, so inheriting
+    // would let every later commit ride an old review.
+    const plain = world({ reviewed: ['parent'], parents: { head: ['parent'] } });
+    expect(commitIsCovered('head', plain)).toBe(false);
+  });
+
+  it('walks a chain of merges', () => {
+    const chain = world({
+      reviewed: ['reviewed-head'],
+      inBase: ['main-1', 'main-2'],
+      parents: { top: ['inner', 'main-2'], inner: ['reviewed-head', 'main-1'] },
+    });
+    expect(commitIsCovered('top', chain)).toBe(true);
+  });
+
+  it('stops rather than looping when history refers to itself', () => {
+    const loop = world({ parents: { a: ['b', 'c'], b: ['a', 'c'], c: ['a', 'b'] } });
+    expect(commitIsCovered('a', loop)).toBe(false);
+  });
+
+  it('refuses an empty sha instead of treating it as covered', () => {
+    expect(commitIsCovered('', world({ reviewed: [''] }))).toBe(false);
   });
 });
