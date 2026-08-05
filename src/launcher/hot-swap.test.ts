@@ -306,7 +306,7 @@ describe('accounts whose login is already known to be finished', () => {
     };
 
     expect(await runHotSwapSession(deps)).toBe(1);
-    expect(notes.join('\n')).toContain('these accounts need signing in again: one, two');
+    expect(notes.join('\n')).toContain('one, two need signing in again');
     expect(notes.join('\n')).toContain('ccx login one');
     expect(notes.join('\n')).not.toContain('try again after a reset');
   });
@@ -326,7 +326,71 @@ describe('accounts whose login is already known to be finished', () => {
     expect(await runHotSwapSession(deps)).toBe(1);
     const all = notes.join('\n');
     expect(all).toContain('capme hit a limit');
-    expect(all).toContain('need signing in again: dead');
+    expect(all).toContain('dead needs signing in again');
     expect(all).toContain('A reset will not fix a sign-in');
+  });
+});
+
+describe('accounts that have never been signed in', () => {
+  it('names one instead of telling the operator to wait for a reset', async () => {
+    // The gap: these accounts are invisible to selection, so nothing recorded
+    // them and the ending fell through to the limit message. A reset cannot
+    // produce a login that has never existed.
+    const notes: string[] = [];
+    const deps: HotSwapDeps = {
+      accountsNeverSignedIn: () => ['fresh'],
+      nextAccount: () => null, // nothing selectable: the only account has no login
+      resolveAccount: () => null,
+      runSession: () => Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome),
+      markCapped: () => {},
+      notify: (m) => notes.push(m),
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(1);
+    const all = notes.join('\n');
+    expect(all).toContain('fresh is not signed in yet');
+    expect(all).toContain('ccx login fresh');
+    expect(all).not.toContain('try again after a reset');
+    // "again" would send someone looking for a login they never had.
+    expect(all).not.toContain('signing in again');
+  });
+
+  it('says both when one account is out of room and another was never set up', async () => {
+    const notes: string[] = [];
+    const deps: HotSwapDeps = {
+      accountsNeverSignedIn: () => ['fresh'],
+      nextAccount: (ex) => (ex.has('busy') ? null : { name: 'busy', dir: '/d/busy' }),
+      resolveAccount: () => null,
+      runSession: () =>
+        Promise.resolve({ kind: 'capped', exitCode: 1, reason: 'Usage limit reached' } as SessionOutcome),
+      markCapped: () => {},
+      notify: (m) => notes.push(m),
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(1);
+    const all = notes.join('\n');
+    expect(all).toContain('busy hit a limit');
+    expect(all).toContain('fresh is not signed in yet');
+    expect(all).toContain('A reset will not fix a sign-in');
+  });
+
+  it('does not name an account twice when it is both refused and unreadable', async () => {
+    // Both lists are derived from the same accounts, so an account could appear
+    // in each. It is a refused login, which is the more specific truth.
+    const notes: string[] = [];
+    const deps: HotSwapDeps = {
+      knownDeadAccounts: () => ['same'],
+      accountsNeverSignedIn: () => ['same'],
+      nextAccount: () => null,
+      resolveAccount: () => null,
+      runSession: () => Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome),
+      markCapped: () => {},
+      notify: (m) => notes.push(m),
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(1);
+    const all = notes.join('\n');
+    expect(all).toContain('same needs signing in again');
+    expect(all).not.toContain('is not signed in yet');
   });
 });

@@ -523,6 +523,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // sign in instead of telling the operator to wait for a reset.
     knownDeadAccounts: () =>
       accounts.filter((a) => hasLogin(a.dir) && !hasWorkingLogin(a.dir, context.ctx)).map((a) => a.name),
+    // Never selectable, so this is only for the ending: an account nobody has
+    // signed into is otherwise silently absent, and the operator gets told to
+    // wait for a reset that cannot produce a login.
+    accountsNeverSignedIn: () =>
+      accounts.filter((a) => a.enabled && !hasLogin(a.dir)).map((a) => a.name),
     nextAccount: (excluding) => {
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
       const pinned = getActive(context.ctx);
