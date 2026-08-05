@@ -12,18 +12,32 @@ export interface LoginOptions {
   all?: boolean;
 }
 
+/**
+ * Injected in tests so which accounts get signed in can be checked without
+ * spawning a probe per account. Driving the real prober from a test made an
+ * earlier one depend on a subprocess finishing, which passed on one platform
+ * and failed on another for a reason unrelated to the rule being tested.
+ */
+export interface LoginCommandDeps {
+  probe?: typeof probeAll;
+  login?: typeof loginAccount;
+}
+
 /** Log in a stale account via the browser, or every logged-out account with --all. */
 export async function loginCommand(
   context: CliContext,
   name?: string,
   options: LoginOptions = {},
+  commandDeps: LoginCommandDeps = {},
 ): Promise<number> {
   const claude = getClaude(context);
+  const probeAccounts = commandDeps.probe ?? probeAll;
+  const signIn = commandDeps.login ?? loginAccount;
 
   let targets: Account[];
   if (options.all) {
     const accounts = listAccounts(context.ctx);
-    const healths = await probeAll(accounts, { claude });
+    const healths = await probeAccounts(accounts, { claude });
     // The same question as everywhere else, asked the other way round. The
     // probe reports a refused login as signed in, because the file still looks
     // like one, so going by the probe alone made `--all` skip exactly the
@@ -57,7 +71,7 @@ export async function loginCommand(
   let allOk = true;
   for (const account of targets) {
     context.out(`logging in "${account.name}"...`);
-    const result = await loginAccount(
+    const result = await signIn(
       { name: account.name, dir: account.dir, ...(account.email ? { email: account.email } : {}) },
       deps,
     );
