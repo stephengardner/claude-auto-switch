@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error -- plain JavaScript helper, shared with the CI script
-import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused, hasSubstantiveReviewFor, isReviewerLogin } from './coderabbit-findings.mjs';
+import { isBodyFinding, bodyFindings, bodyFindingsAcknowledged, threadAnswered, remedyFor, BODY_ACK, reviewsArePaused, hasSubstantiveReviewFor, reviewerCommentCovers, isReviewerLogin } from './coderabbit-findings.mjs';
 
 /**
  * These decide whether a pull request may merge, so both directions matter:
@@ -308,5 +308,60 @@ describe('reviewsArePaused', () => {
   it('is false with no comments, and survives a comment with no body', () => {
     expect(reviewsArePaused([], isReviewer)).toBe(false);
     expect(reviewsArePaused([{ author: REVIEWER }], isReviewer)).toBe(false);
+  });
+});
+
+describe('reviewerCommentCovers', () => {
+  const HEAD = '310568b853477099226d22d8b29636df7273b646';
+  const OLD = 'b5b9bdcabef6319d14b45a2510363852b72e49b9';
+  const isReviewer = (login: string) => isReviewerLogin(login);
+
+  const summary = (from: string, to: string) => ({
+    author: 'coderabbitai[bot]',
+    body: `No actionable comments were generated in the recent review.\n\nReviewing files that changed from the base of the PR and between ${from} and ${to}.`,
+  });
+
+  it('counts a clean review, which posts no review object at all', () => {
+    // The case that mattered: a review finding nothing says so in a comment and
+    // creates no review record, so judging by records alone cannot tell
+    // "reviewed and clean" from "never reviewed".
+    expect(reviewerCommentCovers([summary(OLD, HEAD)], HEAD, isReviewer)).toBe(true);
+  });
+
+  it('does not count a comment about an EARLIER head', () => {
+    expect(reviewerCommentCovers([summary('aaa', OLD)], HEAD, isReviewer)).toBe(false);
+  });
+
+  it('ignores a comment from anyone but the reviewer', () => {
+    // Otherwise quoting a SHA in a reply would mark your own commit reviewed.
+    expect(
+      reviewerCommentCovers([{ author: 'stephengardner', body: `looks fine at ${HEAD}` }], HEAD, isReviewer),
+    ).toBe(false);
+  });
+
+  it('refuses a login that merely LOOKS like the reviewer', () => {
+    // Anyone can register a name starting with the reviewer's. Matching by
+    // prefix would let them mark a commit reviewed by quoting its SHA.
+    expect(
+      reviewerCommentCovers([{ author: 'coderabbitai-fake', body: `at ${HEAD}` }], HEAD, isReviewer),
+    ).toBe(false);
+  });
+
+  it('refuses a short or missing sha rather than matching loosely', () => {
+    // A 7-character prefix appears inside plenty of unrelated text.
+    expect(reviewerCommentCovers([summary(OLD, HEAD)], '310568b', isReviewer)).toBe(false);
+    expect(reviewerCommentCovers([summary(OLD, HEAD)], '', isReviewer)).toBe(false);
+  });
+
+  it('survives an empty or absent comment list', () => {
+    expect(reviewerCommentCovers([], HEAD, isReviewer)).toBe(false);
+    expect(reviewerCommentCovers(undefined, HEAD, isReviewer)).toBe(false);
+  });
+
+  it('reads the login from either shape the APIs return', () => {
+    // Comments come back as {author} from one helper and {user:{login}} raw.
+    expect(
+      reviewerCommentCovers([{ user: { login: 'coderabbitai' }, body: `at ${HEAD}` }], HEAD, isReviewer),
+    ).toBe(true);
   });
 });
