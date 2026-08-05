@@ -31,10 +31,17 @@ export type CredentialEventKind =
   | 'signed-out';
 
 export interface CredentialEvent {
+  /** When this happened, or when it last happened if it repeated. */
   at: number;
   account: string;
   kind: CredentialEventKind;
   detail?: string;
+  /**
+   * How many times in a row the same thing was recorded. Absent means once.
+   * Only ever produced when READING: every occurrence stays in the file, since
+   * this is an audit trail and nothing about it is rewritten.
+   */
+  count?: number;
 }
 
 const FILENAME = 'credential-log.jsonl';
@@ -78,5 +85,33 @@ export function readCredentialEvents(limit = 50, c: PathCtx = {}): CredentialEve
       /* skip a truncated line */
     }
   }
-  return events.slice(-limit);
+  return foldRepeats(events).slice(-limit);
+}
+
+/**
+ * Collapse consecutive identical events for DISPLAY, keeping a count and the
+ * time of the most recent one.
+ *
+ * The file itself is untouched: this is an append-only audit trail, and folding
+ * it on write would turn a cheap append into a read on the credential path. On
+ * read it costs nothing and rescues what is already written, which is the point,
+ * because `ccx history` is read exactly when something has gone wrong and a run
+ * of one repeated line is what pushes the useful entries off the screen.
+ */
+function foldRepeats(events: CredentialEvent[]): CredentialEvent[] {
+  const out: CredentialEvent[] = [];
+  for (const event of events) {
+    const previous = out[out.length - 1];
+    const same =
+      previous &&
+      previous.account === event.account &&
+      previous.kind === event.kind &&
+      previous.detail === event.detail;
+    if (same) {
+      out[out.length - 1] = { ...event, count: (previous.count ?? 1) + 1 };
+    } else {
+      out.push(event);
+    }
+  }
+  return out;
 }

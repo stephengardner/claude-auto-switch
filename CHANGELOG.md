@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.32.5]
+
+### Fixed
+
+- **`ccx history` no longer spends its whole screen on one repeated line.** The
+  login trail is append-only, so a run of the same message stayed as one entry
+  per occurrence and pushed everything else out of view. On the machine this was
+  found on, seven of the eight most recent entries were the same "renewal
+  refused" line, hiding two successful renewals and a refusal that had protected
+  a running session.
+
+  Consecutive identical events now collapse for DISPLAY, with a count and the
+  time of the most recent one, shown as `(x7)`. The limit therefore counts
+  things that happened rather than copies of one of them.
+
+  Nothing is rewritten. Every occurrence stays in the file, because this is an
+  audit trail and folding it on write would turn a cheap append into a read on
+  the credential path. Folding when read costs nothing there and rescues what is
+  already recorded.
+
 ## [1.32.4]
 
 ### Fixed
