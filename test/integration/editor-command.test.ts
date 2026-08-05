@@ -9,8 +9,7 @@ import { writeFileSync } from 'node:fs';
 import { editorSettingsPath, ENV_KEY } from '../../src/editor/settings.js';
 import { editorJunctionPath, editorTargetAccount } from '../../src/editor/junction.js';
 import { loadConfig } from '../../src/config/config.js';
-import { rememberDeadLogin } from '../../src/usage/dead-login-store.js';
-import { credentialFileFingerprint } from '../../src/accounts/credential-vault.js';
+import { refreshCredentialIfExpired } from '../../src/usage/oauth-refresh.js';
 import type { CliContext } from '../../src/context.js';
 
 function makeContext(home: string): CliContext {
@@ -73,7 +72,15 @@ describe('what the editor pointer reports about the account it resolves to', () 
     const context = makeContext(home);
     const dir = path.join(home, 'profiles', 'empty');
     await addCommand(context, 'empty', { dir, login: false });
-    writeFileSync(path.join(dir, '.credentials.json'), '{}', 'utf8');
+    // The real signed-out shape: a COMPLETE credential whose token strings are
+    // empty, which is what Claude leaves behind. `{}` is a missing credential,
+    // a different thing, and a regression that treats empty tokens as usable
+    // would pass against it.
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: '', refreshToken: '' } }),
+      'utf8',
+    );
     useCommand(context, 'empty');
     expect(editorCommand(context, 'on')).toBe(0);
 
@@ -85,14 +92,32 @@ describe('what the editor pointer reports about the account it resolves to', () 
     const context = makeContext(home);
     const dir = path.join(home, 'profiles', 'refused');
     await addCommand(context, 'refused', { dir, login: false });
+    // EXPIRED, so a renewal is actually attempted below.
     writeFileSync(
       path.join(dir, '.credentials.json'),
-      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-x', refreshToken: 'r' } }),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'sk-ant-x', refreshToken: 'finished', expiresAt: Date.now() - 60_000 },
+      }),
       'utf8',
     );
     useCommand(context, 'refused');
     expect(editorCommand(context, 'on')).toBe(0);
-    rememberDeadLogin(credentialFileFingerprint(dir), 'token endpoint 400: invalid_grant', context.ctx);
+
+    // Recorded by the REAL renewal against a rejecting endpoint, not seeded with
+    // the same helper this then reads with. Seeding both sides agrees with
+    // itself even when the writer and the reader disagree, which has shipped
+    // once already.
+    const outcome = await refreshCredentialIfExpired(dir, {
+      ctx: context.ctx,
+      fetchImpl: () =>
+        Promise.resolve(
+          new Response('{"error":"invalid_grant"}', {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+    });
+    expect(outcome.status).toBe('needs-login');
 
     expect(editorTargetAccount(context)).toEqual({ name: 'refused', loggedIn: false });
   });

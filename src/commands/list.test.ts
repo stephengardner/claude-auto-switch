@@ -3,8 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { listCommand } from './list.js';
-import { rememberDeadLogin } from '../usage/dead-login-store.js';
-import { credentialFileFingerprint } from '../accounts/credential-vault.js';
+import { refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
 
@@ -52,12 +51,29 @@ describe('ccx list', () => {
     // This table is where someone looks to find out which accounts they can
     // use. The probe reports a refused login as signed in, because the file
     // still looks like one, so this was the most misleading place to repeat it.
-    const { ctx, accounts, context, lines } = setup(['dead', 'good']);
-    rememberDeadLogin(
-      credentialFileFingerprint(accounts[0]!.dir),
-      'token endpoint 400: invalid_grant',
-      ctx,
+    const { accounts, context, lines } = setup(['dead', 'good']);
+    // The refusal is recorded by the REAL renewal against a rejecting endpoint,
+    // not seeded with the same helper this then reads with. Seeding both sides
+    // agrees with itself even when the writer and the reader disagree, which is
+    // a mismatch that has shipped once already.
+    writeFileSync(
+      path.join(accounts[0]!.dir, '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'old', refreshToken: 'finished', expiresAt: Date.now() - 60_000 },
+      }),
+      'utf8',
     );
+    const outcome = await refreshCredentialIfExpired(accounts[0]!.dir, {
+      ctx: context.ctx,
+      fetchImpl: () =>
+        Promise.resolve(
+          new Response('{"error":"invalid_grant"}', {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+    });
+    expect(outcome.status).toBe('needs-login');
 
     await listCommand(context, { probe: (accts) => allSignedIn(accts) });
 
