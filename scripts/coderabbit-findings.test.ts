@@ -518,6 +518,26 @@ describe('reviewerReportsNoUnreviewedCommits', () => {
     expect(reviewerReportsNoUnreviewedCommits(comments, PUSHED_AT, isReviewerLogin)).toBe(false);
   });
 
+  it('REFUSES a notice edited at exactly the moment of the push', () => {
+    // The boundary itself. "After the head" has to stay strict: a notice written
+    // in the same second cannot have taken the new commit into account, and
+    // relaxing this to >= would quietly accept it.
+    const comments = [{ ...SKIPPED, updatedAt: PUSHED_AT }];
+    expect(reviewerReportsNoUnreviewedCommits(comments, PUSHED_AT, isReviewerLogin)).toBe(false);
+  });
+
+  it('refuses a login that merely STARTS with the reviewer name', () => {
+    // Exact matching, not a prefix. GitHub logins are first come, first served,
+    // so anyone could register a lookalike and clear the gate with a comment.
+    for (const author of ['coderabbitai-fake', 'coderabbitai2', 'notcoderabbitai']) {
+      const comments = [{ ...SKIPPED, author, updatedAt: PUSHED_AT + 105_000 }];
+      expect(
+        reviewerReportsNoUnreviewedCommits(comments, PUSHED_AT, isReviewerLogin),
+        author,
+      ).toBe(false);
+    }
+  });
+
   it('refuses when the head cannot be dated', () => {
     const comments = [{ ...SKIPPED, updatedAt: PUSHED_AT + 105_000 }];
     expect(reviewerReportsNoUnreviewedCommits(comments, NaN, isReviewerLogin)).toBe(false);
