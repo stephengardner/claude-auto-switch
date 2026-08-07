@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.38.0]
+
+### Fixed
+
+- **Healthy accounts are no longer capped.** The cap check asked the SHARED
+  session directory's credential, so with two ccx runs rotating at once an
+  exhausted account answered on behalf of a healthy one. Measured on a real
+  machine: five accounts capped for five hours each inside 87 seconds, one of
+  them with 97% of its five-hour window still free. That account then refused
+  to start anything, including with an explicit `--model`. The check now asks
+  the account it is about to cap, using that account's own credential.
+
+- **A limit is never recorded from screen text alone.** The headless path had
+  no verification at all, so any output matching the cap patterns took an
+  account out for hours. Both paths now share one rule, and anything short of
+  a confirmed limit (an unreachable endpoint, a 429, a missing token) is not a
+  cap. A limit that is real will trigger again; a healthy account wrongly
+  capped stays broken for hours.
+
+### Added
+
+- **Running out of one model switches model instead of giving up.** A
+  per-model limit stops that model, not the account, so ccx now changes model
+  and carries on rather than rotating away from an account that still has room.
+  The order is your `modelPreference` (default Fable then Opus). Rotating
+  accounts solved nothing when every account shared the same spent model,
+  which is how a machine with plenty of capacity reported that everything was
+  capped.
+
 ## [1.37.1]
 
 ### Fixed

@@ -13,6 +13,7 @@ import { isShimInstalled } from '../shell/install-shim.js';
 import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-path.js';
 import { configHome } from '../config/paths.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
+import { confirmCap } from '../usage/confirm-cap.js';
 
 /** Show a one-time tip about the transparent shim, after an interactive session. */
 function maybeHintShim(context: CliContext): void {
@@ -68,6 +69,10 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
       loggedIn,
       pinned,
       now: () => Date.now(),
+      // The account's OWN usage decides, so a limit is never recorded from text
+      // alone and a model-scoped one keeps its scope.
+      confirmCap: (account, renderedText) => confirmCap(account.dir, renderedText),
+      modelPreference: context.config.rotation.modelPreference,
       defaultBackoffMinutes: context.config.rotation.defaultBackoffMinutes,
       ledger: loadLedger(context.ctx),
       out: context.out,

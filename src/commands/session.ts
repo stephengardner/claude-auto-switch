@@ -30,7 +30,8 @@ import {
   setTerminalOwnedElsewhere,
 } from '../launcher/notify.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
-import { probeLimit } from '../usage/limit-probe.js';
+import { confirmCap } from '../usage/confirm-cap.js';
+import { nextModel } from '../usage/next-model.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
@@ -232,6 +233,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * use rather than the one that is already spent.
    */
   let chosenModel: string | null = null;
+  /**
+   * Models proven spent during THIS run, so the fallback walks forward instead
+   * of handing back a model that has already run out.
+   */
+  const spentModels: string[] = [];
 
   /**
    * Tell the operator something, by whichever channel does not wreck the screen.
@@ -270,15 +276,30 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   let limitedModel: string | undefined;
 
   // Ground-truth cap check: rendered text only TRIGGERS this; the API decides.
-  // Uses the SESSION credential (the live, possibly-refreshed token).
+  //
+  // Asked of the ACCOUNT we are about to cap, using its own stored credential.
+  // This used to ask the session credential, for freshness, and that was wrong:
+  // the session directory is shared, so it holds whichever account another ccx
+  // run installed last. Two runs rotating at once meant a genuinely exhausted
+  // account's token answered for a healthy one, and the healthy one got the cap.
+  // That is how an account with 97% of its five-hour window left was recorded as
+  // out of room, and then refused for five hours.
+  //
+  // Freshness is not worth anything here anyway: usage belongs to the ACCOUNT,
+  // so an older token for the right account gives the right answer, while the
+  // newest token for the wrong account gives a confident wrong one.
   const verifyCap = async (renderedText: string): Promise<boolean> => {
     let verdict: string;
     if (context.verifyCap) {
       verdict = await context.verifyCap(renderedText);
     } else {
-      const probe = await probeLimit(sessionCreds, renderedText);
-      verdict = probe.verdict;
-      limitedModel = probe.limitedModel;
+      // `current` is the account this session is running as. Same rule the
+      // headless path uses, so there is one definition of "sure enough to cap".
+      const decision = await confirmCap(current?.dir, renderedText, {
+        sessionCredentials: sessionCreds,
+      });
+      verdict = decision.limited ? 'limited' : 'allowed';
+      limitedModel = decision.model;
     }
     if (verdict !== 'limited') {
       // This fires whenever limit-looking text renders and the API refutes it,
@@ -823,6 +844,26 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // flag the operator may have typed, or "fresh" would just repeat the
           // resume that found nothing.
           return await runPtySession({ ...base, args: withoutContinue(modelArgs) });
+        }
+        // A limit about ONE MODEL is not a reason to give up this account: it
+        // still has room on everything else. Change model and carry on here,
+        // rather than rotating away and eventually reporting that every account
+        // is capped while sitting on one with most of its week left.
+        if (outcome.kind === 'capped' && limitedModel) {
+          if (!spentModels.some((m) => m.toLowerCase() === limitedModel!.toLowerCase())) {
+            spentModels.push(limitedModel);
+          }
+          const fallback = nextModel(context.config.rotation.modelPreference, spentModels);
+          if (fallback) {
+            chosenModel = fallback;
+            notice(`out of ${limitedModel} here; switching to ${fallback} and carrying on`);
+            return await runPtySession({
+              ...base,
+              args: wantContinue
+                ? [...withModel(args, fallback), '--continue']
+                : withModel(args, fallback),
+            });
+          }
         }
         return outcome;
       } finally {
