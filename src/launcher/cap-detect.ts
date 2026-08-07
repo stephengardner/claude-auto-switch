@@ -14,6 +14,37 @@ export interface CapClassification {
 }
 
 /**
+ * Lines that MEASURE a limit rather than announce hitting one.
+ *
+ * Claude keeps a usage gauge on screen: "You've used 74% of your weekly limit,
+ * resets Aug 12". That is the opposite of a cap, and it is present during a
+ * perfectly healthy session, but it contains the words "weekly limit" and so it
+ * matched. Every session therefore looked like it had capped, over and over.
+ *
+ * The consequence was not just noise. The trigger sent ccx to the usage API,
+ * which answered "yes, limited" for an unrelated reason (one model's window was
+ * spent), and ccx rotated a session that was running fine, eventually reporting
+ * that every account had hit its limit while sitting on one with 92% of its
+ * five-hour window free.
+ *
+ * These are REMOVED from the text before looking for a cap, rather than used to
+ * reject the whole chunk, because a real cap message and the gauge can arrive in
+ * the same screenful and the real one must still be found.
+ */
+const GAUGE_PATTERNS = [
+  // "You've used 74% of your weekly limit" / "12% of your 5-hour limit"
+  /you'?ve used\s+\d+%[^.\n]*/gi,
+  /\d+%\s+of\s+your\s+[^.\n]*limit[^.\n]*/gi,
+  // A warning that one is coming is not one arriving.
+  /approaching[^.\n]*limit[^.\n]*/gi,
+];
+
+/** Strip the gauge lines so only a real announcement can match. */
+function withoutGauges(text: string): string {
+  return GAUGE_PATTERNS.reduce((acc, re) => acc.replace(re, ' '), text);
+}
+
+/**
  * Patterns that indicate a usage cap. These cover the known phrasings; the exact
  * message the current CLI emits should be confirmed against a real cap and added
  * here if different. Detection is deliberately isolated so tightening it touches
@@ -41,7 +72,7 @@ const CAP_PATTERNS = [
 export function classifyRun(outcome: RunOutcome): CapClassification {
   if (outcome.exitCode === 0) return { kind: 'ok' };
 
-  const text = `${outcome.stderr}\n${outcome.stdout ?? ''}`;
+  const text = withoutGauges(`${outcome.stderr}\n${outcome.stdout ?? ''}`);
   if (CAP_PATTERNS.some((re) => re.test(text))) {
     const resetAt = extractResetAt(text);
     return {
@@ -59,7 +90,7 @@ export function classifyRun(outcome: RunOutcome): CapClassification {
  * escape codes are stripped first so the words still match inside the TUI render.
  */
 export function matchesCapText(text: string): CapClassification | null {
-  const clean = stripAnsi(text);
+  const clean = withoutGauges(stripAnsi(text));
   if (!CAP_PATTERNS.some((re) => re.test(clean))) return null;
   const resetAt = extractResetAt(clean);
   return { kind: 'capped', reason: 'usage cap', ...(resetAt !== undefined ? { resetAt } : {}) };

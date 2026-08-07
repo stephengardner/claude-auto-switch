@@ -30,7 +30,9 @@ import {
   setTerminalOwnedElsewhere,
 } from '../launcher/notify.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
-import { probeLimit } from '../usage/limit-probe.js';
+import { confirmCap } from '../usage/confirm-cap.js';
+import { nextModel } from '../usage/next-model.js';
+import { screenGatedOutput } from '../ui/screen-gated-output.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
@@ -232,6 +234,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * use rather than the one that is already spent.
    */
   let chosenModel: string | null = null;
+  /**
+   * Models proven spent during THIS run, so the fallback walks forward instead
+   * of handing back a model that has already run out.
+   */
+  const spentModels: string[] = [];
 
   /**
    * Tell the operator something, by whichever channel does not wreck the screen.
@@ -249,10 +256,24 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     if (!claudeOwnsScreen) err(`[ccx] ${message}`);
   };
 
+  /**
+   * The closing message, held until the screen is ours to write on.
+   *
+   * There are two ways to get this wrong and both have shipped. Staying silent
+   * leaves the operator at a blank prompt with no idea why nothing ran. Writing
+   * regardless paints into a terminal Claude is mid-draw on, and the words land
+   * inside its input box looking like something the operator typed, which is
+   * worse than silence: it reads as a live refusal of a session that is in fact
+   * running fine.
+   */
+  const ending = screenGatedOutput(err);
+
   /** Claude has the terminal from here; ccx stays off it until told otherwise. */
   const takeScreen = (owned: boolean): void => {
     claudeOwnsScreen = owned;
     setTerminalOwnedElsewhere(owned);
+    // Handed back: anything held while Claude was drawing can be said now.
+    ending.setBusy(owned);
   };
 
   let current: Account | null = null;
@@ -270,15 +291,30 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   let limitedModel: string | undefined;
 
   // Ground-truth cap check: rendered text only TRIGGERS this; the API decides.
-  // Uses the SESSION credential (the live, possibly-refreshed token).
+  //
+  // Asked of the ACCOUNT we are about to cap, using its own stored credential.
+  // This used to ask the session credential, for freshness, and that was wrong:
+  // the session directory is shared, so it holds whichever account another ccx
+  // run installed last. Two runs rotating at once meant a genuinely exhausted
+  // account's token answered for a healthy one, and the healthy one got the cap.
+  // That is how an account with 97% of its five-hour window left was recorded as
+  // out of room, and then refused for five hours.
+  //
+  // Freshness is not worth anything here anyway: usage belongs to the ACCOUNT,
+  // so an older token for the right account gives the right answer, while the
+  // newest token for the wrong account gives a confident wrong one.
   const verifyCap = async (renderedText: string): Promise<boolean> => {
     let verdict: string;
     if (context.verifyCap) {
       verdict = await context.verifyCap(renderedText);
     } else {
-      const probe = await probeLimit(sessionCreds, renderedText);
-      verdict = probe.verdict;
-      limitedModel = probe.limitedModel;
+      // `current` is the account this session is running as. Same rule the
+      // headless path uses, so there is one definition of "sure enough to cap".
+      const decision = await confirmCap(current?.dir, renderedText, {
+        sessionCredentials: sessionCreds,
+      });
+      verdict = decision.limited ? 'limited' : 'allowed';
+      limitedModel = decision.model;
     }
     if (verdict !== 'limited') {
       // This fires whenever limit-looking text renders and the API refutes it,
@@ -824,6 +860,26 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // resume that found nothing.
           return await runPtySession({ ...base, args: withoutContinue(modelArgs) });
         }
+        // A limit about ONE MODEL is not a reason to give up this account: it
+        // still has room on everything else. Change model and carry on here,
+        // rather than rotating away and eventually reporting that every account
+        // is capped while sitting on one with most of its week left.
+        if (outcome.kind === 'capped' && limitedModel) {
+          if (!spentModels.some((m) => m.toLowerCase() === limitedModel!.toLowerCase())) {
+            spentModels.push(limitedModel);
+          }
+          const fallback = nextModel(context.config.rotation.modelPreference, spentModels);
+          if (fallback) {
+            chosenModel = fallback;
+            notice(`out of ${limitedModel} here; switching to ${fallback} and carrying on`);
+            return await runPtySession({
+              ...base,
+              args: wantContinue
+                ? [...withModel(args, fallback), '--continue']
+                : withModel(args, fallback),
+            });
+          }
+        }
         return outcome;
       } finally {
         takeScreen(false);
@@ -853,8 +909,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // The ending, which is the opposite situation: no session is running, so
     // the screen is ours and staying quiet tells the operator nothing.
     report: (m) => {
-      (context.err ?? ((line: string) => process.stderr.write(`${line}\n`)))(`ccx: ${m}`);
       logEvent(m);
+      // Never onto a screen Claude is drawing on: the words land inside its
+      // input box looking like something the operator typed, which reads as a
+      // live refusal of a session that is in fact running. Held rather than
+      // dropped, so it still gets said the moment the terminal comes back.
+      ending.say(`ccx: ${m}`);
     },
     knownCappedAccounts: () => [...cappedNames(loadLedger(context.ctx), Date.now())],
   });
