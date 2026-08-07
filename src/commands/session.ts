@@ -32,6 +32,7 @@ import {
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
 import { confirmCap } from '../usage/confirm-cap.js';
 import { nextModel } from '../usage/next-model.js';
+import { screenGatedOutput } from '../ui/screen-gated-output.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
@@ -255,10 +256,24 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     if (!claudeOwnsScreen) err(`[ccx] ${message}`);
   };
 
+  /**
+   * The closing message, held until the screen is ours to write on.
+   *
+   * There are two ways to get this wrong and both have shipped. Staying silent
+   * leaves the operator at a blank prompt with no idea why nothing ran. Writing
+   * regardless paints into a terminal Claude is mid-draw on, and the words land
+   * inside its input box looking like something the operator typed, which is
+   * worse than silence: it reads as a live refusal of a session that is in fact
+   * running fine.
+   */
+  const ending = screenGatedOutput(err);
+
   /** Claude has the terminal from here; ccx stays off it until told otherwise. */
   const takeScreen = (owned: boolean): void => {
     claudeOwnsScreen = owned;
     setTerminalOwnedElsewhere(owned);
+    // Handed back: anything held while Claude was drawing can be said now.
+    ending.setBusy(owned);
   };
 
   let current: Account | null = null;
@@ -894,8 +909,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // The ending, which is the opposite situation: no session is running, so
     // the screen is ours and staying quiet tells the operator nothing.
     report: (m) => {
-      (context.err ?? ((line: string) => process.stderr.write(`${line}\n`)))(`ccx: ${m}`);
       logEvent(m);
+      // Never onto a screen Claude is drawing on: the words land inside its
+      // input box looking like something the operator typed, which reads as a
+      // live refusal of a session that is in fact running. Held rather than
+      // dropped, so it still gets said the moment the terminal comes back.
+      ending.say(`ccx: ${m}`);
     },
     knownCappedAccounts: () => [...cappedNames(loadLedger(context.ctx), Date.now())],
   });
