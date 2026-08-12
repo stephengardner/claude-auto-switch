@@ -70,6 +70,20 @@ describe('what rotation can learn from limits recorded earlier', () => {
     ]);
   });
 
+  it('reads differently cased names as ONE model, wherever they came from', () => {
+    // "Fable" from the usage API, "fable" from config, "claude-fable-5" from a
+    // flag. A strict comparison here read two accounts out of the same model
+    // as a mixed situation, so the last-resort path gave up instead of saying
+    // which model was out and starting anyway.
+    let ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    ledger = markCapped(ledger, { account: 'b', now, resetAt: later + 5, model: 'fable' });
+    const limit = modelOnlyLimit(ledger, now);
+    expect(limit).not.toBeNull();
+    expect(limit?.model).toBe('Fable');
+    expect(limit?.resetsAt).toBe(later);
+    expect(modelCappedNames(ledger, now, 'FABLE')).toEqual(new Set(['a', 'b']));
+  });
+
   it('keeps one record PER MODEL on an account', () => {
     // Writing a cap used to drop every record for the account, so capping
     // Fable and then Opus erased the Fable one, and the next run offered Fable

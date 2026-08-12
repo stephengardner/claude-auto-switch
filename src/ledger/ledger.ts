@@ -28,6 +28,20 @@ function isActive(cap: { capUntil: number | null }, now: number): boolean {
 }
 
 /**
+ * Are these the same model?
+ *
+ * One rule, used everywhere a model name is compared here. The name arrives
+ * from three places that disagree about spelling ("Fable" from the usage API,
+ * "fable" from config, "claude-fable-5" from a flag), so a strict comparison in
+ * one function and a case-insensitive one in another reads the same ledger two
+ * different ways: caps for "Fable" and "fable" looked like two different models
+ * and the last-resort path gave up rather than saying which one was out.
+ */
+function sameModel(one: string | undefined, other: string | undefined): boolean {
+  return (one ?? '').toLowerCase() === (other ?? '').toLowerCase();
+}
+
+/**
  * Is this account unusable at time `now`?
  *
  * Only an account-wide limit makes an account unusable. A limit on ONE model
@@ -48,7 +62,7 @@ export function cappedNames(ledger: Ledger, now: number): Set<string> {
 export function modelCappedNames(ledger: Ledger, now: number, model?: string): Set<string> {
   return new Set(
     ledger.caps
-      .filter((c) => c.model && isActive(c, now) && (!model || c.model.toLowerCase() === model.toLowerCase()))
+      .filter((c) => c.model && isActive(c, now) && (!model || sameModel(c.model, model)))
       .map((c) => c.account),
   );
 }
@@ -118,10 +132,8 @@ export function markCapped(ledger: Ledger, input: MarkCappedInput): Ledger {
     ...(input.model ? { model: input.model } : {}),
   };
 
-  const sameModel = (c: CapRecord): boolean =>
-    (c.model ?? '').toLowerCase() === (input.model ?? '').toLowerCase();
   const superseded = (c: CapRecord): boolean =>
-    c.account === input.account && (input.model === undefined ? true : sameModel(c));
+    c.account === input.account && (input.model === undefined || sameModel(c.model, input.model));
 
   return { caps: [...ledger.caps.filter((c) => !superseded(c)), record] };
 }
@@ -142,7 +154,7 @@ export function modelOnlyLimit(
   if (active.length === 0) return null;
   if (!active.every((c) => typeof c.model === 'string' && c.model.length > 0)) return null;
   const model = active[0]!.model!;
-  if (!active.every((c) => c.model === model)) return null; // mixed models: not one story
+  if (!active.every((c) => sameModel(c.model, model))) return null; // mixed: not one story
   const resets = active
     .map((c) => c.capUntil)
     .filter((t): t is number => typeof t === 'number')
