@@ -114,9 +114,15 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
         context.ctx,
       );
       context.out(
-        `\n[ccx] "${result.account.name}" hit its limit; your next session will use a different account.`,
+        decision.model
+          ? `\n[ccx] "${result.account.name}" is out of ${decision.model}; other models still work here.`
+          : `\n[ccx] "${result.account.name}" hit its limit; your next session will use a different account.`,
       );
-      advanceActiveToHealthy(context, loggedIn); // carry the switch over to the editor
+      // Safe for BOTH scopes: cappedNames excludes model-scoped caps, so a
+      // Fable-only limit leaves the active account reading as healthy and this
+      // moves nothing. It only advances when the account is genuinely
+      // unusable, which is exactly when the editor pointer should follow.
+      advanceActiveToHealthy(context, loggedIn);
     } else {
       context.out(
         `\n[ccx] limit text on screen, but "${result.account.name}" shows no spent window; ` +

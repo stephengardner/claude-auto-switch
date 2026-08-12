@@ -79,6 +79,24 @@ describe('classifyRun', () => {
       expect(classifyRun({ exitCode: 1, stderr: sameLine }).kind).toBe('capped');
     });
 
+    it('finds a cap that follows the resets clause with no period between', () => {
+      // The resets tail must stop at the value, not run to the next period:
+      // an open-ended tail re-created the same-line bug one clause later.
+      const line =
+        "You've used 74% of your weekly limit resets 2026-08-12T15:00:00Z, Claude usage limit reached";
+      expect(matchesCapText(line)).not.toBeNull();
+      expect(classifyRun({ exitCode: 1, stderr: line }).kind).toBe('capped');
+    });
+
+    it('never reports punctuation the filter left behind as the reason', () => {
+      // A gauge ending in a period leaves "." on its line, and "." is no
+      // reason; the announcement below it is.
+      const mixed = "You've used 12% of your 5-hour limit.\nUsage limit reached.";
+      const result = classifyRun({ exitCode: 1, stderr: mixed });
+      expect(result.kind).toBe('capped');
+      expect(result.reason).toBe('Usage limit reached.');
+    });
+
     it('reports the real announcement as the reason, not the gauge', () => {
       // The raw first line is the gauge, and recording that told the operator
       // "74% of your weekly limit" about an account that actually hit a cap.

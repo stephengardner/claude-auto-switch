@@ -40,12 +40,16 @@ export interface CapClassification {
 // The separator class is built from escapes (middle dot, en dash, em dash)
 // because the gauge renders with any of them before "resets".
 const GAUGE_SEPARATORS = `[,\\u00b7\\u2013\\u2014\\-\\s]*`;
-const GAUGE_TAIL =
-  `(?:\\s+of\\s+your\\s+[^.\\n]{0,40}?limit)?` + `(?:${GAUGE_SEPARATORS}resets[^.\\n]*)?`;
+// The reset value stops at the first comma, period or newline, and is bounded
+// in length. An open-ended tail re-created the same bug one clause later:
+// "resets 2026-08-12T15:00:00Z, Claude usage limit reached" lost the
+// announcement to the resets clause.
+const RESETS_CLAUSE = `(?:${GAUGE_SEPARATORS}resets[^,.\\n]{0,60})?`;
+const GAUGE_TAIL = `(?:\\s+of\\s+your\\s+[^.\\n]{0,40}?limit)?${RESETS_CLAUSE}`;
 const GAUGE_PATTERNS = [
   // "You've used 74% of your weekly limit · resets Aug 12"
   new RegExp(`you'?ve used\\s+\\d+%${GAUGE_TAIL}`, 'gi'),
-  new RegExp(`\\d+%\\s+of\\s+your\\s+[^.\\n]{0,40}?limit(?:${GAUGE_SEPARATORS}resets[^.\\n]*)?`, 'gi'),
+  new RegExp(`\\d+%\\s+of\\s+your\\s+[^.\\n]{0,40}?limit${RESETS_CLAUSE}`, 'gi'),
   // A warning that one is coming is not one arriving.
   /approaching\s+[^.\n]{0,40}?limit/gi,
 ];
@@ -135,7 +139,9 @@ function firstNonEmptyLine(s: string): string {
   const leftovers = new RegExp(`^[\\s\\u00b7\\u2013\\u2014,\\-]+|\\s+$`, 'g');
   for (const line of s.split(/\r?\n/)) {
     const trimmed = line.replace(leftovers, '');
-    if (trimmed.length > 0) return trimmed;
+    // Something readable, not punctuation the filter left behind: a gauge that
+    // ended in a period leaves "." on its line, and "." is no reason.
+    if (/[a-z0-9]/i.test(trimmed)) return trimmed;
   }
   return '';
 }
