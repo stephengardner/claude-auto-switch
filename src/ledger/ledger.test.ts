@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { markCapped, isCapped, cappedNames, clearExpired, clearAccount, modelCappedNames, allLimitedNames, modelOnlyLimit } from './ledger.js';
+import {
+  markCapped,
+  isCapped,
+  cappedNames,
+  clearExpired,
+  clearAccount,
+  modelCappedNames,
+  allLimitedNames,
+  modelOnlyLimit,
+  activeModelCaps,
+} from './ledger.js';
 import type { Ledger } from './ledger.schema.js';
 
 const empty: Ledger = { caps: [] };
@@ -41,6 +51,74 @@ describe('ledger', () => {
   it('clearAccount removes an account cap after a successful run', () => {
     const l = markCapped(empty, { account: 'a', now: 0, resetAt: 100 });
     expect(isCapped(clearAccount(l, 'a'), 'a', 50)).toBe(false);
+  });
+});
+
+describe('what rotation can learn from limits recorded earlier', () => {
+  const now = 2_000_000;
+  const later = now + 60 * 60_000;
+
+  it('reports the (account, model) pairs that are spent right now', () => {
+    // Rotation plans from what it measured plus what it proved this run, and
+    // neither sees a limit an earlier run confirmed. Without this, a fresh run
+    // hands a model straight back to the account that just ran out of it.
+    let ledger = markCapped({ caps: [] }, { account: 'main', now, resetAt: later, model: 'Fable' });
+    ledger = markCapped(ledger, { account: 'phx', now, resetAt: later, model: 'Opus' });
+    expect(activeModelCaps(ledger, now)).toEqual([
+      { account: 'main', model: 'Fable' },
+      { account: 'phx', model: 'Opus' },
+    ]);
+  });
+
+  it('reads differently cased names as ONE model, wherever they came from', () => {
+    // "Fable" from the usage API, "fable" from config, "claude-fable-5" from a
+    // flag. A strict comparison here read two accounts out of the same model
+    // as a mixed situation, so the last-resort path gave up instead of saying
+    // which model was out and starting anyway.
+    let ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    ledger = markCapped(ledger, { account: 'b', now, resetAt: later + 5, model: 'fable' });
+    const limit = modelOnlyLimit(ledger, now);
+    expect(limit).not.toBeNull();
+    expect(limit?.model).toBe('Fable');
+    expect(limit?.resetsAt).toBe(later);
+    expect(modelCappedNames(ledger, now, 'FABLE')).toEqual(new Set(['a', 'b']));
+  });
+
+  it('keeps one record PER MODEL on an account', () => {
+    // Writing a cap used to drop every record for the account, so capping
+    // Fable and then Opus erased the Fable one, and the next run offered Fable
+    // back to an account whose Fable window was demonstrably closed.
+    let ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    ledger = markCapped(ledger, { account: 'a', now, resetAt: later, model: 'Opus' });
+    expect(activeModelCaps(ledger, now)).toEqual([
+      { account: 'a', model: 'Fable' },
+      { account: 'a', model: 'Opus' },
+    ]);
+  });
+
+  it('replaces the record for the SAME model rather than adding another', () => {
+    let ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    ledger = markCapped(ledger, { account: 'a', now, resetAt: later + 5, model: 'fable' });
+    expect(activeModelCaps(ledger, now)).toEqual([{ account: 'a', model: 'fable' }]);
+  });
+
+  it('an account-wide limit replaces every record for that account', () => {
+    // Nothing about the account is usable, so per-model detail is only noise.
+    let ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    ledger = markCapped(ledger, { account: 'a', now, resetAt: later });
+    expect(activeModelCaps(ledger, now)).toEqual([]);
+    expect(isCapped(ledger, 'a', now)).toBe(true);
+  });
+
+  it('leaves out account-wide limits, which are a different question', () => {
+    // Those already remove the account entirely, via cappedNames.
+    const ledger = markCapped({ caps: [] }, { account: 'main', now, resetAt: later });
+    expect(activeModelCaps(ledger, now)).toEqual([]);
+  });
+
+  it('forgets a pair once its window has reopened', () => {
+    const ledger = markCapped({ caps: [] }, { account: 'main', now, resetAt: later, model: 'Fable' });
+    expect(activeModelCaps(ledger, later + 1)).toEqual([]);
   });
 });
 

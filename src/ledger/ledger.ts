@@ -28,6 +28,20 @@ function isActive(cap: { capUntil: number | null }, now: number): boolean {
 }
 
 /**
+ * Are these the same model?
+ *
+ * One rule, used everywhere a model name is compared here. The name arrives
+ * from three places that disagree about spelling ("Fable" from the usage API,
+ * "fable" from config, "claude-fable-5" from a flag), so a strict comparison in
+ * one function and a case-insensitive one in another reads the same ledger two
+ * different ways: caps for "Fable" and "fable" looked like two different models
+ * and the last-resort path gave up rather than saying which one was out.
+ */
+function sameModel(one: string | undefined, other: string | undefined): boolean {
+  return (one ?? '').toLowerCase() === (other ?? '').toLowerCase();
+}
+
+/**
  * Is this account unusable at time `now`?
  *
  * Only an account-wide limit makes an account unusable. A limit on ONE model
@@ -48,7 +62,7 @@ export function cappedNames(ledger: Ledger, now: number): Set<string> {
 export function modelCappedNames(ledger: Ledger, now: number, model?: string): Set<string> {
   return new Set(
     ledger.caps
-      .filter((c) => c.model && isActive(c, now) && (!model || c.model.toLowerCase() === model.toLowerCase()))
+      .filter((c) => c.model && isActive(c, now) && (!model || sameModel(c.model, model)))
       .map((c) => c.account),
   );
 }
@@ -56,6 +70,24 @@ export function modelCappedNames(ledger: Ledger, now: number, model?: string): S
 /** Every account with any active limit, whatever its scope (for display). */
 export function allLimitedNames(ledger: Ledger, now: number): Set<string> {
   return new Set(ledger.caps.filter((c) => isActive(c, now)).map((c) => c.account));
+}
+
+/**
+ * Which (account, model) pairs are known spent right now, from limits recorded
+ * EARLIER, including by other runs.
+ *
+ * Rotation plans from what it has measured plus what it has proven during the
+ * run, and neither of those sees a limit an earlier run confirmed. Without
+ * this, a fresh run offers a model back to the account it just ran out on, and
+ * only rediscovers the limit by hitting it again.
+ */
+export function activeModelCaps(
+  ledger: Ledger,
+  now: number,
+): Array<{ account: string; model: string }> {
+  return ledger.caps
+    .filter((c): c is typeof c & { model: string } => Boolean(c.model) && isActive(c, now))
+    .map((c) => ({ account: c.account, model: c.model }));
 }
 
 export interface MarkCappedInput {
@@ -70,7 +102,20 @@ export interface MarkCappedInput {
   model?: string;
 }
 
-/** Record (or replace) a cap for an account. Returns a new Ledger. */
+/**
+ * Record (or replace) a cap for an account. Returns a new Ledger.
+ *
+ * A model-scoped write replaces only the record for THAT model, so an account
+ * can hold one per model. Replacing everything for the account was fine while
+ * caps were only read as "can this account run at all", and wrong the moment
+ * rotation started planning from them: capping Fable and then Opus on one
+ * account erased the Fable record, and the next run offered Fable back to an
+ * account whose Fable window was demonstrably closed.
+ *
+ * An account-wide write still replaces everything for the account, which is
+ * right: nothing about that account is usable, so no per-model detail survives
+ * as anything but noise.
+ */
 export function markCapped(ledger: Ledger, input: MarkCappedInput): Ledger {
   const capUntil =
     input.resetAt !== undefined && input.resetAt !== null
@@ -87,7 +132,10 @@ export function markCapped(ledger: Ledger, input: MarkCappedInput): Ledger {
     ...(input.model ? { model: input.model } : {}),
   };
 
-  return { caps: [...ledger.caps.filter((c) => c.account !== input.account), record] };
+  const superseded = (c: CapRecord): boolean =>
+    c.account === input.account && (input.model === undefined || sameModel(c.model, input.model));
+
+  return { caps: [...ledger.caps.filter((c) => !superseded(c)), record] };
 }
 
 /**
@@ -106,7 +154,7 @@ export function modelOnlyLimit(
   if (active.length === 0) return null;
   if (!active.every((c) => typeof c.model === 'string' && c.model.length > 0)) return null;
   const model = active[0]!.model!;
-  if (!active.every((c) => c.model === model)) return null; // mixed models: not one story
+  if (!active.every((c) => sameModel(c.model, model))) return null; // mixed: not one story
   const resets = active
     .map((c) => c.capUntil)
     .filter((t): t is number => typeof t === 'number')

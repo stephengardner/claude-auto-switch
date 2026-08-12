@@ -23,13 +23,6 @@ export interface AccountModelUsage {
   accountWideOut?: boolean;
 }
 
-export interface ModelChoice {
-  account: string;
-  model: string;
-  /** True when this required changing model, which the operator should be told. */
-  changedModel: boolean;
-}
-
 /** Normalized so "Fable", "fable" and "claude-fable-5[1m]" are one thing. */
 export function normalizeModel(model: string): string {
   const lower = model.toLowerCase();
@@ -48,45 +41,4 @@ export function hasRoomFor(account: AccountModelUsage, model: string): boolean {
   // strand a perfectly good one, and the worst case is one wasted attempt.
   if (!entry || entry[1] === null) return true;
   return (entry[1] as number) < ROOM;
-}
-
-/**
- * Where to go next, given the model in use and the accounts available.
- *
- * `accounts` is in the order rotation would otherwise try them, so priority and
- * pinning are already applied and this only ever narrows the choice.
- *
- * Returns null when no account has room on any model in the chain, which is the
- * honest "everything is out" answer rather than a guess.
- */
-export function chooseAccountForModel(
-  currentModel: string | null,
-  accounts: AccountModelUsage[],
-  preference: string[],
-): ModelChoice | null {
-  // The model in use comes first, whatever the configured order says: staying
-  // put is always better than changing model on someone.
-  const chain = currentModel
-    ? [currentModel, ...preference.filter((m) => normalizeModel(m) !== normalizeModel(currentModel))]
-    : [...preference];
-
-  for (const model of chain) {
-    const found = accounts.find((a) => hasRoomFor(a, model));
-    if (found) {
-      return {
-        account: found.name,
-        model,
-        changedModel: currentModel !== null && normalizeModel(model) !== normalizeModel(currentModel),
-      };
-    }
-  }
-  return null;
-}
-
-/** What to tell the operator when the choice meant changing model. */
-export function modelChangeMessage(choice: ModelChoice, from: string): string {
-  return (
-    `every account is out of ${from}, so this continues on ${choice.model} ` +
-    `using "${choice.account}"`
-  );
 }

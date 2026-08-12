@@ -182,6 +182,7 @@ Everything works with no config. To tune it, add an optional
   "priorityOrder": ["personal", "work"],
   "rotation": {
     "modelPreference": ["fable", "opus"],
+    "modelStrategy": "model-first",
     "preferSameModel": true,
     "defaultBackoffMinutes": 300,
     "proactivePercent": 0,
@@ -190,13 +191,35 @@ Everything works with no config. To tune it, add an optional
 }
 ```
 
-Two of those decide how rotation treats models. `preferSameModel` (on by
-default) makes ccx look for another account with room on the model you are
-using before it considers anything else, because a spent model window stops that
-model rather than the account. `modelPreference` is the order it works through
-only when no account has room on the model in use: the default moves you to Opus
-once Fable is gone everywhere, and it says so when it happens. Set
-`preferSameModel` to false to rotate on account limits alone.
+### Which runs out first, the model or the account
+
+`ccx models` shows and sets this; the config keys are there if you prefer to
+edit the file.
+
+```
+ccx models                            what you have now
+ccx models fable opus                 use Fable, fall back to Opus
+ccx models fable                      only ever Fable, never fall back
+ccx models --strategy account-first   use each account up instead
+```
+
+`modelStrategy` picks the rule rotation follows:
+
+- **model-first** (the default) uses up the CURRENT MODEL everywhere before
+  changing model: Fable on every account, and only when the last one is gone
+  does it fall back to Opus and start again from your first account. This is
+  what "stay on Fable as long as possible" means.
+- **account-first** uses up each ACCOUNT before moving on: Fable then Opus on
+  this account, then the same on the next one.
+
+`modelPreference` is the chain both strategies walk. A chain of one
+(`["fable"]`) means never fall back: when Fable is gone everywhere ccx says so
+rather than moving you to a model you did not choose. `preferSameModel: false`
+ignores models entirely and rotates on account limits alone (interactive
+sessions only; headless runs always plan by model).
+
+Both ways of running follow this: an interactive session and a headless
+`ccx -p ...` request use the same planner, so the setting means one thing.
 
 This applies only when a model is actually in play, meaning you passed
 `--model` or pinned one in your session `settings.json`. With nothing pinned,

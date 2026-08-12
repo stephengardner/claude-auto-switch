@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { capProbeCredential } from './cap-probe-credential.js';
+import { normalizeModel } from './model-preference.js';
 import { isUsableCredential, CREDENTIALS_FILE } from '../accounts/credential-vault.js';
 import { probeLimit, type LimitProbeResult } from './limit-probe.js';
 
@@ -42,6 +43,20 @@ export interface ConfirmCapDeps {
   probe?: (credentialsFile: string, renderedText: string) => Promise<LimitProbeResult>;
   /** Used only before an account is chosen, when nothing can be capped yet. */
   sessionCredentials?: string;
+  /**
+   * The model the session is actually running.
+   *
+   * A spent window for a model you are NOT using is not a limit on you. The
+   * session moves to Opus, the account's Fable stays at 100% forever, and any
+   * limit-looking text (a resumed conversation replays the old cap message
+   * every time) re-confirmed that spent Fable and ended the session. Measured:
+   * ten rotations in six minutes, each session lasting under twenty seconds.
+   *
+   * Unknown keeps the old behaviour, since a session with nothing pinned is
+   * running the default model, which is the one a spent window most likely
+   * refers to.
+   */
+  modelInUse?: string | null;
 }
 
 /**
@@ -60,7 +75,10 @@ export async function confirmCap(
   const probe = deps.probe ?? probeLimit;
   const credentials = capProbeCredential(accountDir, deps.sessionCredentials ?? '');
   if (!credentials) return { limited: false, detail: 'no credential to ask' };
-  return decideFromProbe(await probeSafely(probe, credentials, renderedText));
+  return decideFromProbe(
+    await probeSafely(probe, credentials, renderedText),
+    deps.modelInUse ?? null,
+  );
 }
 
 /**
@@ -122,10 +140,16 @@ export async function confirmSessionCap(
         ? path.join(input.believedDir, CREDENTIALS_FILE)
         : null;
   if (!credentials) return { limited: false, detail: 'no credential to ask', askedOf };
-  return { ...decideFromProbe(await probeSafely(probe, credentials, renderedText)), askedOf };
+  return {
+    ...decideFromProbe(
+      await probeSafely(probe, credentials, renderedText),
+      deps.modelInUse ?? null,
+    ),
+    askedOf,
+  };
 }
 
-function decideFromProbe(result: LimitProbeResult): CapDecision {
+function decideFromProbe(result: LimitProbeResult, modelInUse: string | null): CapDecision {
   if (result.verdict !== 'limited') {
     return { limited: false, detail: result.detail ?? result.verdict };
   }
@@ -143,23 +167,27 @@ function decideFromProbe(result: LimitProbeResult): CapDecision {
     return { limited: true, ...accountWindow, ...(result.detail ? { detail: result.detail } : {}) };
   }
 
-  // A named model means only that model is gone. Carried through so the cap is
-  // recorded WITH its scope; dropping it here is what turned "Fable is spent"
-  // into "this account is unusable".
-  if (result.limitedModel) {
-    const window = (result.models ?? []).find((m) => m.name === result.limitedModel);
-    return {
-      limited: true,
-      model: result.limitedModel,
-      ...(window?.resetsAt !== undefined ? { resetAt: window.resetsAt } : {}),
-      ...(result.detail ? { detail: result.detail } : {}),
-    };
-  }
-
-  // Nothing account-wide is spent, so a spent model is the whole story, and the
-  // account keeps working on everything else.
-  const model = spentModelWindow(result);
+  // Nothing account-wide is spent, so a spent model is the whole story: the
+  // account keeps working on everything else. The model the probe NAMED wins
+  // over a scan, since it was matched against the text on screen.
+  const named = result.limitedModel
+    ? ((result.models ?? []).find((m) => m.name === result.limitedModel) ?? {
+        name: result.limitedModel,
+        utilization: 1,
+      })
+    : null;
+  const model = named ?? spentModelWindow(result);
   if (model) {
+    // A window spent on a model this session is NOT running says nothing about
+    // this session. Once ccx moves to Opus, the account's Fable stays at 100%
+    // for the rest of the week, so every replayed cap message would re-confirm
+    // it and end the session within seconds, over and over.
+    if (modelInUse && normalizeModel(model.name) !== normalizeModel(modelInUse)) {
+      return {
+        limited: false,
+        detail: `${model.name} is spent, but this session is running ${modelInUse}`,
+      };
+    }
     return {
       limited: true,
       model: model.name,

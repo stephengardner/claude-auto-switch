@@ -11,6 +11,7 @@ import { rotateCommand } from './commands/rotate.js';
 import { usageCommand } from './commands/usage.js';
 import { autoCommand, type AutoOptions } from './commands/auto.js';
 import { proactiveCommand } from './commands/proactive-config.js';
+import { modelsCommand } from './commands/models-config.js';
 import { statuslineCommand } from './commands/statusline.js';
 import { historyCommand } from './commands/history.js';
 import { runCommand } from './commands/run.js';
@@ -157,6 +158,14 @@ program
       return;
     }
     process.exitCode = proactiveCommand(context(), verb, opts);
+  });
+
+program
+  .command('models [models...]')
+  .description('which models to use, in what order, and what gets used up first')
+  .option('--strategy <strategy>', 'model-first (stay on one model across accounts) or account-first')
+  .action((models: string[] | undefined, opts: { strategy?: string }) => {
+    process.exitCode = modelsCommand(context(), models, opts);
   });
 
 program

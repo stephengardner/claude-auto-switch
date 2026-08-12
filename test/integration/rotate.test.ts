@@ -95,6 +95,148 @@ describe('autoRotateHeadless', () => {
     expect(result.ledger.caps[0]!.capUntil).toBe(5555);
   });
 
+  it('walks the ACCOUNTS on one model before falling back (model-first)', async () => {
+    // The headless path used to change model on the spot and stay put, which
+    // ignored the strategy entirely: a setting that governs one of the two
+    // ways to run is a setting that lies about what it does.
+    const runs: Array<{ dir: string; model: string | undefined }> = [];
+    const run = async (_bin: string, args: string[], opts?: RunOptions) => {
+      const at = args.indexOf('--model');
+      runs.push({
+        dir: opts?.env?.CLAUDE_CONFIG_DIR ?? '',
+        model: at >= 0 ? args[at + 1] : undefined,
+      });
+      // Out of Fable everywhere; fine on the fallback.
+      return runs.length <= 2
+        ? { stdout: "you've reached your Fable 5 limit", stderr: '', exitCode: 1 }
+        : { stdout: 'done', stderr: '', exitCode: 0 };
+    };
+
+    const result = await autoRotateHeadless(['-p', 'hi', '--model', 'fable'], {
+      ...base,
+      ledger: { caps: [] },
+      run,
+      modelPreference: ['fable', 'opus'],
+      modelStrategy: 'model-first',
+      confirmCap: () => Promise.resolve({ limited: true, model: 'Fable' }),
+    });
+
+    expect(result.exitCode).toBe(0);
+    // A on Fable, then B on Fable (not A on Opus), and only then the fallback.
+    expect(runs.map((r) => `${r.dir}:${r.model}`)).toEqual([
+      '/dir/A:fable',
+      '/dir/B:fable',
+      '/dir/A:opus',
+    ]);
+  });
+
+  it('honours a model limit an EARLIER run recorded, instead of rediscovering it', async () => {
+    // This path reads no usage numbers, so the ledger is the only thing that
+    // remembers. Without it a fresh run offers Fable straight back to the
+    // account that ran out of it minutes ago.
+    const runs: string[] = [];
+    const run = async (_bin: string, args: string[], opts?: RunOptions) => {
+      const at = args.indexOf('--model');
+      runs.push(`${opts?.env?.CLAUDE_CONFIG_DIR ?? ''}:${at >= 0 ? args[at + 1] : 'none'}`);
+      return { stdout: 'done', stderr: '', exitCode: 0 };
+    };
+
+    await autoRotateHeadless(['-p', 'hi', '--model', 'fable'], {
+      ...base,
+      // A's Fable ran out earlier and has not reset yet.
+      ledger: { caps: [{ account: 'A', capUntil: 9_999_999, reason: 'usage cap', at: 900, model: 'fable' }] },
+      run,
+      modelPreference: ['fable', 'opus'],
+      modelStrategy: 'model-first',
+    });
+
+    // Straight to B on Fable: A is not offered Fable it demonstrably lacks.
+    expect(runs).toEqual(['/dir/B:fable']);
+  });
+
+  it('says WHICH chain ran out, not that every account is capped', async () => {
+    // Model-scoped exhaustion can leave every account perfectly usable. The
+    // generic message is false then, and hides what actually happened.
+    let said = '';
+    const run = async () => ({ stdout: "you've reached your Fable 5 limit", stderr: '', exitCode: 1 });
+    const result = await autoRotateHeadless(['-p', 'hi', '--model', 'fable'], {
+      ...base,
+      accounts: [acct('A', 0)],
+      loggedIn: new Set(['A']),
+      ledger: { caps: [] },
+      run,
+      out: (m) => {
+        said += `${m}\n`;
+      },
+      modelPreference: ['fable'],
+      modelStrategy: 'model-first',
+      confirmCap: () => Promise.resolve({ limited: true, model: 'fable' }),
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(said).toContain('out of fable');
+    expect(said).not.toContain('all accounts are capped');
+  });
+
+  it('tries every pairing when the model in use is not in the preference', async () => {
+    // The chain leads with the model in use even when it is not on the list,
+    // so --model sonnet against a fable/opus preference has THREE models to
+    // get through. Sizing the loop from the preference alone stopped it after
+    // five attempts, leaving a pairing untried.
+    const runs: string[] = [];
+    let lastModel = 'sonnet';
+    const run = async (_bin: string, args: string[], opts?: RunOptions) => {
+      const at = args.indexOf('--model');
+      lastModel = at >= 0 ? (args[at + 1] as string) : 'sonnet';
+      runs.push(`${opts?.env?.CLAUDE_CONFIG_DIR ?? ''}:${lastModel}`);
+      return { stdout: 'limit reached', stderr: '', exitCode: 1 };
+    };
+
+    const result = await autoRotateHeadless(['-p', 'hi', '--model', 'sonnet'], {
+      ...base,
+      ledger: { caps: [] },
+      run,
+      modelPreference: ['fable', 'opus'],
+      modelStrategy: 'model-first',
+      confirmCap: () => Promise.resolve({ limited: true, model: lastModel }),
+    });
+
+    expect(result.exitCode).toBe(1); // everything really was out
+    expect(runs).toEqual([
+      '/dir/A:sonnet',
+      '/dir/B:sonnet',
+      '/dir/A:fable',
+      '/dir/B:fable',
+      '/dir/A:opus',
+      '/dir/B:opus',
+    ]);
+  });
+
+  it('walks the MODELS on one account first when told to (account-first)', async () => {
+    const runs: Array<{ dir: string; model: string | undefined }> = [];
+    const run = async (_bin: string, args: string[], opts?: RunOptions) => {
+      const at = args.indexOf('--model');
+      runs.push({
+        dir: opts?.env?.CLAUDE_CONFIG_DIR ?? '',
+        model: at >= 0 ? args[at + 1] : undefined,
+      });
+      return runs.length <= 1
+        ? { stdout: "you've reached your Fable 5 limit", stderr: '', exitCode: 1 }
+        : { stdout: 'done', stderr: '', exitCode: 0 };
+    };
+
+    await autoRotateHeadless(['-p', 'hi', '--model', 'fable'], {
+      ...base,
+      ledger: { caps: [] },
+      run,
+      modelPreference: ['fable', 'opus'],
+      modelStrategy: 'account-first',
+      confirmCap: () => Promise.resolve({ limited: true, model: 'Fable' }),
+    });
+
+    expect(runs.map((r) => `${r.dir}:${r.model}`)).toEqual(['/dir/A:fable', '/dir/A:opus']);
+  });
+
   it('starts the next model and keeps the account after a model-scoped cap', async () => {
     // The recorded cap is only half the job: the run itself must continue on
     // the fallback model instead of ending on an account with room left.
