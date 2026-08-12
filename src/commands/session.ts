@@ -33,7 +33,7 @@ import {
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
 import { confirmCap } from '../usage/confirm-cap.js';
 import { nextModel } from '../usage/next-model.js';
-import { screenGatedOutput } from '../ui/screen-gated-output.js';
+import { createTerminalWriter } from '../ui/terminal-writer.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
@@ -270,23 +270,20 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   };
 
   /**
-   * The closing message, held until the screen is ours to write on.
-   *
-   * There are two ways to get this wrong and both have shipped. Staying silent
-   * leaves the operator at a blank prompt with no idea why nothing ran. Writing
-   * regardless paints into a terminal Claude is mid-draw on, and the words land
-   * inside its input box looking like something the operator typed, which is
-   * worse than silence: it reads as a live refusal of a session that is in fact
-   * running fine.
+   * The one owner of what ccx writes to this terminal: closing messages are
+   * held while Claude is drawing (last one wins) and said when the screen comes
+   * back, the child's terminal modes are put back at the end of the run, and a
+   * crash guard covers a wrapper that dies without its finally blocks.
    */
-  const ending = screenGatedOutput(err);
+  const screen = createTerminalWriter({ line: err });
 
   /** Claude has the terminal from here; ccx stays off it until told otherwise. */
   const takeScreen = (owned: boolean): void => {
     claudeOwnsScreen = owned;
     setTerminalOwnedElsewhere(owned);
     // Handed back: anything held while Claude was drawing can be said now.
-    ending.setBusy(owned);
+    if (owned) screen.childStarted();
+    else screen.childEnded();
   };
 
   let current: Account | null = null;
@@ -939,7 +936,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // input box looking like something the operator typed, which reads as a
       // live refusal of a session that is in fact running. Held rather than
       // dropped, so it still gets said the moment the terminal comes back.
-      ending.say(`ccx: ${m}`);
+      screen.say(`ccx: ${m}`);
     },
     knownCappedAccounts: () => [...cappedNames(loadLedger(context.ctx), Date.now())],
   });
@@ -947,6 +944,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // No more sessions will run: stop watching usage and restore the terminal.
   proactive.stop();
   terminalInput.close();
+  // The last write of the run: put the child's terminal modes back once more
+  // (a flush that landed after the per-session reset can have switched them
+  // back on) and say anything still held. After this the shell has the
+  // terminal, and it must not be receiving mouse reports as typed text.
+  screen.runEnding();
   // On exit, save any refreshed credential back to its account. The session's
   // copy is deliberately LEFT in place: removing it makes anything that looks at
   // this session afterwards report "not logged in", which sends you chasing a
