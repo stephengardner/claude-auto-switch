@@ -95,20 +95,34 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
 
   const watched = await launchWatched(passthroughArgs, result.account, { claude });
   if (watched.classification.kind === 'capped') {
-    saveLedger(
-      markCapped(loadLedger(context.ctx), {
-        account: result.account.name,
-        now: Date.now(),
-        resetAt: watched.classification.resetAt ?? null,
-        backoffMinutes: context.config.rotation.defaultBackoffMinutes,
-        reason: watched.classification.reason ?? 'usage cap',
-      }),
-      context.ctx,
-    );
-    context.out(
-      `\n[ccx] "${result.account.name}" hit its limit; your next session will use a different account.`,
-    );
-    advanceActiveToHealthy(context, loggedIn); // carry the switch over to the editor
+    // Same rule as every other cap-recording path: text only TRIGGERS, the
+    // account's own usage decides. This branch used to write the cap straight
+    // from the classification, so a replayed or quoted limit message could
+    // bench an account for hours from here even though both rotation paths
+    // had learned better.
+    const decision = await confirmCap(result.account.dir, watched.stderr);
+    if (decision.limited) {
+      saveLedger(
+        markCapped(loadLedger(context.ctx), {
+          account: result.account.name,
+          now: Date.now(),
+          resetAt: decision.resetAt ?? watched.classification.resetAt ?? null,
+          backoffMinutes: context.config.rotation.defaultBackoffMinutes,
+          reason: watched.classification.reason ?? 'usage cap',
+          ...(decision.model ? { model: decision.model } : {}),
+        }),
+        context.ctx,
+      );
+      context.out(
+        `\n[ccx] "${result.account.name}" hit its limit; your next session will use a different account.`,
+      );
+      advanceActiveToHealthy(context, loggedIn); // carry the switch over to the editor
+    } else {
+      context.out(
+        `\n[ccx] limit text on screen, but "${result.account.name}" shows no spent window; ` +
+          'nothing was recorded.',
+      );
+    }
   }
   return watched.exitCode;
 }

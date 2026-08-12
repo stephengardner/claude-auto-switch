@@ -94,4 +94,32 @@ describe('autoRotateHeadless', () => {
     expect(result.ledger.caps[0]!.model).toBe('Fable');
     expect(result.ledger.caps[0]!.capUntil).toBe(5555);
   });
+
+  it('starts the next model and keeps the account after a model-scoped cap', async () => {
+    // The recorded cap is only half the job: the run itself must continue on
+    // the fallback model instead of ending on an account with room left.
+    const invocations: string[][] = [];
+    let call = 0;
+    const run = async (_bin: string, args: string[]) => {
+      invocations.push(args);
+      call += 1;
+      return call === 1
+        ? { stdout: '', stderr: "you've reached your Fable 5 limit", exitCode: 1 }
+        : { stdout: 'done on the fallback', stderr: '', exitCode: 0 };
+    };
+    const result = await autoRotateHeadless(['-p', 'hi'], {
+      ...base,
+      accounts: [acct('A', 0)],
+      loggedIn: new Set(['A']),
+      ledger: { caps: [] },
+      run,
+      modelPreference: ['fable', 'opus'],
+      confirmCap: () => Promise.resolve({ limited: true, model: 'Fable' }),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.account).toBe('A');
+    expect(invocations).toHaveLength(2);
+    expect(invocations[1]!.join(' ')).toContain('--model opus');
+  });
 });

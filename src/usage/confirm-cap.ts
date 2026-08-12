@@ -60,7 +60,25 @@ export async function confirmCap(
   const probe = deps.probe ?? probeLimit;
   const credentials = capProbeCredential(accountDir, deps.sessionCredentials ?? '');
   if (!credentials) return { limited: false, detail: 'no credential to ask' };
-  return decideFromProbe(await probe(credentials, renderedText));
+  return decideFromProbe(await probeSafely(probe, credentials, renderedText));
+}
+
+/**
+ * A probe that rejects is the least proven case of all, so it must come back
+ * as "not confirmed" rather than as an exception. The real probe never
+ * rejects, but this function cannot know which probe it was given, and a
+ * network failure escaping here has taken headless rotation down whole.
+ */
+async function probeSafely(
+  probe: (credentialsFile: string, renderedText: string) => Promise<LimitProbeResult>,
+  credentials: string,
+  renderedText: string,
+): Promise<LimitProbeResult> {
+  try {
+    return await probe(credentials, renderedText);
+  } catch {
+    return { verdict: 'unknown', detail: 'could not confirm usage limit' };
+  }
 }
 
 /** A cap decision that also says WHOSE credential answered. */
@@ -104,12 +122,25 @@ export async function confirmSessionCap(
         ? path.join(input.believedDir, CREDENTIALS_FILE)
         : null;
   if (!credentials) return { limited: false, detail: 'no credential to ask', askedOf };
-  return { ...decideFromProbe(await probe(credentials, renderedText)), askedOf };
+  return { ...decideFromProbe(await probeSafely(probe, credentials, renderedText)), askedOf };
 }
 
 function decideFromProbe(result: LimitProbeResult): CapDecision {
   if (result.verdict !== 'limited') {
     return { limited: false, detail: result.detail ?? result.verdict };
+  }
+
+  // Checked FIRST, before any named model: an account-wide window that is
+  // genuinely spent makes every model unusable, and the probe can name a model
+  // (from the rendered text) while the five-hour window is spent too. Scoping
+  // to the model then would leave the account in rotation with nothing to run
+  // on. An account-wide cap still has to be EARNED: this branch used to be
+  // reached by assumption (any "limited" verdict without a model became
+  // account-wide), which locked out an account with 2% of its five-hour window
+  // used because its Fable was gone.
+  const accountWindow = spentAccountWindow(result);
+  if (accountWindow) {
+    return { limited: true, ...accountWindow, ...(result.detail ? { detail: result.detail } : {}) };
   }
 
   // A named model means only that model is gone. Carried through so the cap is
@@ -123,16 +154,6 @@ function decideFromProbe(result: LimitProbeResult): CapDecision {
       ...(window?.resetsAt !== undefined ? { resetAt: window.resetsAt } : {}),
       ...(result.detail ? { detail: result.detail } : {}),
     };
-  }
-
-  // An account-wide cap takes the WHOLE account out for hours, so it has to be
-  // earned by an account-wide window that is genuinely spent. This branch used
-  // to be reached by assumption: any "limited" verdict that did not name a
-  // model became account-wide. That locked out an account with 2% of its
-  // five-hour window used and 57% of its week left, because its Fable was gone.
-  const accountWindow = spentAccountWindow(result);
-  if (accountWindow) {
-    return { limited: true, ...accountWindow, ...(result.detail ? { detail: result.detail } : {}) };
   }
 
   // Nothing account-wide is spent, so a spent model is the whole story, and the

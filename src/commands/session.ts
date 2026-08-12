@@ -309,6 +309,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // whole account. Recorded with the limit so it never blocks other models.
   let limitedModel: string | undefined;
   /**
+   * The confirmed limit's own reset time. The PTY outcome only carries what
+   * the screen text offered, which is usually nothing; the probe's answer is
+   * the one worth recording, or the ledger falls back to a fixed backoff and
+   * benches the account long after its window reopened.
+   */
+  let limitedResetAt: number | undefined;
+  /**
    * Who a confirmed limit actually belongs to, when that is not the account
    * ccx believed. A session forced through /login comes back as whatever
    * account the browser picked, and from then on the limit banner on screen is
@@ -352,6 +359,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     let refusalData: EventDetail['data'];
     if (context.verifyCap) {
       verdict = await context.verifyCap(renderedText);
+      // The injected verifier answers yes or no and nothing else, so anything
+      // held from an EARLIER verification must not survive into this one: a
+      // stale model here scopes the new cap to a limit it did not come from.
+      limitedModel = undefined;
+      limitedResetAt = undefined;
     } else {
       const identity = resolveSessionIdentity({
         sessionDir,
@@ -364,6 +376,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       );
       verdict = decision.limited ? 'limited' : 'allowed';
       limitedModel = decision.model;
+      limitedResetAt = decision.resetAt;
       refusalData = {
         askedOf: decision.askedOf,
         ...(decision.detail ? { detail: decision.detail } : {}),
@@ -700,6 +713,49 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     current = account;
   };
 
+  /**
+   * Write a confirmed cap to the ledger, honestly attributed.
+   *
+   * One function for BOTH callers: the swap loop's markCapped, and the
+   * in-session model fallback. The fallback used to skip this entirely: when
+   * switching model in place succeeded, the capped outcome never reached the
+   * swap loop, the spent model went unrecorded, and every other session kept
+   * choosing it.
+   */
+  const recordCap = (accountName: string, reason: string, resetAt: number | undefined): void => {
+    if (capUnregisteredEmail) {
+      // There is no registered account to record this against, and the
+      // believed account must NOT take it: nothing of its is spent. The
+      // rotation still moves off the session; this only skips the ledger.
+      logEvent(
+        `"${accountName}" was not capped: the limit belonged to ${capUnregisteredEmail}, ` +
+          'which is not a registered account',
+        { kind: 'cap-skipped', data: { email: capUnregisteredEmail, believed: accountName } },
+      );
+      capUnregisteredEmail = null;
+      return;
+    }
+    saveLedger(
+      markCapped(loadLedger(context.ctx), {
+        account: accountName,
+        now: Date.now(),
+        resetAt: resetAt ?? limitedResetAt ?? null,
+        backoffMinutes: context.config.rotation.defaultBackoffMinutes,
+        reason,
+        ...(limitedModel ? { model: limitedModel } : {}),
+      }),
+      context.ctx,
+    );
+    logEvent(`${accountName} hit its limit`, {
+      kind: 'capped',
+      data: {
+        reason,
+        resetAt: resetAt ?? limitedResetAt ?? null,
+        ...(limitedModel ? { model: limitedModel } : {}),
+      },
+    });
+  };
+
   // Claim the operator's keyboard once for the whole run; every session in the
   // swap loop borrows it, so terminal mode is never toggled mid-swap.
   const terminalInput = openTerminalInput();
@@ -1031,6 +1087,17 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           }
           const fallback = nextModel(context.config.rotation.modelPreference, spentModels);
           if (fallback) {
+            // Recorded BEFORE the fallback runs: when the fallback succeeds,
+            // this capped outcome never reaches the swap loop's markCapped,
+            // and an unrecorded model cap is a model every other session keeps
+            // choosing. A second model-scoped cap after this advances through
+            // the remaining models via the swap loop, which re-enters here
+            // with spentModels carrying the history.
+            recordCap(
+              capOwner ?? current?.name ?? account.name,
+              outcome.reason ?? 'usage cap',
+              outcome.resetAt,
+            );
             chosenModel = fallback;
             notice(`out of ${limitedModel} here; switching to ${fallback} and carrying on`);
             const next = await runPtySession({
@@ -1047,39 +1114,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         takeScreen(false);
       }
     },
-    markCapped: (accountName, reason, resetAt) => {
-      if (capUnregisteredEmail) {
-        // There is no registered account to record this against, and the
-        // believed account must NOT take it: nothing of its is spent. The
-        // rotation still moves off the session; this only skips the ledger.
-        logEvent(
-          `"${accountName}" was not capped: the limit belonged to ${capUnregisteredEmail}, ` +
-            'which is not a registered account',
-          { kind: 'cap-skipped', data: { email: capUnregisteredEmail, believed: accountName } },
-        );
-        capUnregisteredEmail = null;
-        return;
-      }
-      saveLedger(
-        markCapped(loadLedger(context.ctx), {
-          account: accountName,
-          now: Date.now(),
-          resetAt: resetAt ?? null,
-          backoffMinutes: context.config.rotation.defaultBackoffMinutes,
-          reason,
-          ...(limitedModel ? { model: limitedModel } : {}),
-        }),
-        context.ctx,
-      );
-      logEvent(`${accountName} hit its limit`, {
-        kind: 'capped',
-        data: {
-          reason,
-          resetAt: resetAt ?? null,
-          ...(limitedModel ? { model: limitedModel } : {}),
-        },
-      });
-    },
+    markCapped: (accountName, reason, resetAt) => recordCap(accountName, reason, resetAt),
     notify: (m) => {
       // NOT stderr: Claude owns the screen while a session runs, so writing
       // there scribbles over the interface. The terminal notification draws

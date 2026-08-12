@@ -31,12 +31,23 @@ export interface CapClassification {
  * reject the whole chunk, because a real cap message and the gauge can arrive in
  * the same screenful and the real one must still be found.
  */
+// Bounded at the limit word (plus its resets clause), never to the end of the
+// line: a REAL announcement can share the line with the gauge, and a pattern
+// that ate everything to the next period removed the announcement with it.
+// "You've used 74% of your weekly limit, Claude usage limit reached." became
+// whitespace, and a genuine cap went unconfirmed.
+//
+// The separator class is built from escapes (middle dot, en dash, em dash)
+// because the gauge renders with any of them before "resets".
+const GAUGE_SEPARATORS = `[,\\u00b7\\u2013\\u2014\\-\\s]*`;
+const GAUGE_TAIL =
+  `(?:\\s+of\\s+your\\s+[^.\\n]{0,40}?limit)?` + `(?:${GAUGE_SEPARATORS}resets[^.\\n]*)?`;
 const GAUGE_PATTERNS = [
-  // "You've used 74% of your weekly limit" / "12% of your 5-hour limit"
-  /you'?ve used\s+\d+%[^.\n]*/gi,
-  /\d+%\s+of\s+your\s+[^.\n]*limit[^.\n]*/gi,
+  // "You've used 74% of your weekly limit · resets Aug 12"
+  new RegExp(`you'?ve used\\s+\\d+%${GAUGE_TAIL}`, 'gi'),
+  new RegExp(`\\d+%\\s+of\\s+your\\s+[^.\\n]{0,40}?limit(?:${GAUGE_SEPARATORS}resets[^.\\n]*)?`, 'gi'),
   // A warning that one is coming is not one arriving.
-  /approaching[^.\n]*limit[^.\n]*/gi,
+  /approaching\s+[^.\n]{0,40}?limit/gi,
 ];
 
 /** Strip the gauge lines so only a real announcement can match. */
@@ -77,7 +88,10 @@ export function classifyRun(outcome: RunOutcome): CapClassification {
     const resetAt = extractResetAt(text);
     return {
       kind: 'capped',
-      reason: firstLine(outcome.stderr) || 'usage cap',
+      // From the FILTERED text: when the gauge precedes the announcement, the
+      // raw first line is the gauge, and the recorded reason then says "74% of
+      // your weekly limit" about an account that actually hit a real cap.
+      reason: firstNonEmptyLine(withoutGauges(outcome.stderr)) || 'usage cap',
       ...(resetAt !== undefined ? { resetAt } : {}),
     };
   }
@@ -114,4 +128,14 @@ function extractResetAt(text: string): number | undefined {
 
 function firstLine(s: string): string {
   return s.split(/\r?\n/)[0]?.trim() ?? '';
+}
+
+/** The first line with anything on it, for text the gauge filter has thinned. */
+function firstNonEmptyLine(s: string): string {
+  const leftovers = new RegExp(`^[\\s\\u00b7\\u2013\\u2014,\\-]+|\\s+$`, 'g');
+  for (const line of s.split(/\r?\n/)) {
+    const trimmed = line.replace(leftovers, '');
+    if (trimmed.length > 0) return trimmed;
+  }
+  return '';
 }

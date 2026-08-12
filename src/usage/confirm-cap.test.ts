@@ -163,6 +163,34 @@ describe('whose login answers for an interactive session', () => {
   });
 });
 
+describe('a probe that fails outright', () => {
+  const rejecting = () => Promise.reject(new Error('fetch aborted'));
+
+  it('is an unconfirmed cap for confirmCap, never an exception', async () => {
+    // Headless rotation awaits this with no catch of its own, so a network
+    // failure escaping here took the whole run down. The rule stands: the
+    // least proven case of all must not become a cap, or a crash.
+    const decision = await confirmCap('/profiles/any', 'limit reached', { probe: rejecting });
+    expect(decision.limited).toBe(false);
+    expect(decision.detail).toBe('could not confirm usage limit');
+  });
+
+  it('is an unconfirmed cap for confirmSessionCap too, keeping askedOf', async () => {
+    const session = mkdtempSync(path.join(tmpdir(), 'cas-cap-reject-'));
+    writeFileSync(
+      path.join(session, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'tok', refreshToken: 'rt' } }),
+    );
+    const decision = await confirmSessionCap(
+      { sessionDir: session, believedDir: null },
+      'limit reached',
+      { probe: rejecting },
+    );
+    expect(decision.limited).toBe(false);
+    expect(decision.askedOf).toBe('session');
+  });
+});
+
 describe('how WIDE a confirmed limit really is', () => {
   const probing = (result: LimitProbeResult) => () => Promise.resolve(result);
 
@@ -201,6 +229,25 @@ describe('how WIDE a confirmed limit really is', () => {
     expect(decision.limited).toBe(true);
     expect(decision.model).toBeUndefined();
     expect(decision.resetAt).toBe(555);
+  });
+
+  it('caps the ACCOUNT when a named model arrives with a spent account window', async () => {
+    // The rendered text names a model, so the probe answers with it, but the
+    // five-hour window is spent too: every model is unusable. Scoping to the
+    // model would leave the account in rotation with nothing to run on.
+    const decision = await confirmCap('/profiles/maxed', 'Fable limit reached', {
+      probe: probing({
+        verdict: 'limited',
+        limitedModel: 'Fable',
+        fiveHour: 1,
+        fiveHourReset: 4242,
+        sevenDay: 0.6,
+        models: [{ name: 'Fable', utilization: 1, resetsAt: 9999 }],
+      }),
+    });
+    expect(decision.limited).toBe(true);
+    expect(decision.model).toBeUndefined();
+    expect(decision.resetAt).toBe(4242);
   });
 
   it('refuses to cap when nothing measurable is spent', async () => {

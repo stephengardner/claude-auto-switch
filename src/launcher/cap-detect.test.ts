@@ -69,6 +69,27 @@ describe('classifyRun', () => {
       expect(classifyRun({ exitCode: 1, stderr: together }).kind).toBe('capped');
     });
 
+    it('still finds a REAL cap on the SAME LINE as the gauge', () => {
+      // The pattern used to eat everything to the next period, so a line
+      // holding the gauge, a dash, and a genuine announcement became
+      // whitespace and the cap went unconfirmed. The separator is the em dash
+      // the real render uses, written here as an escape.
+      const sameLine = "You've used 74% of your weekly limit \u2014 Claude usage limit reached.";
+      expect(matchesCapText(sameLine)).not.toBeNull();
+      expect(classifyRun({ exitCode: 1, stderr: sameLine }).kind).toBe('capped');
+    });
+
+    it('reports the real announcement as the reason, not the gauge', () => {
+      // The raw first line is the gauge, and recording that told the operator
+      // "74% of your weekly limit" about an account that actually hit a cap.
+      const mixed = ["You've used 74% of your weekly limit", 'Claude usage limit reached.'].join(
+        '\n',
+      );
+      const result = classifyRun({ exitCode: 1, stderr: mixed });
+      expect(result.kind).toBe('capped');
+      expect(result.reason).toBe('Claude usage limit reached.');
+    });
+
     it('still catches the wordings that mean a real stop', () => {
       for (const line of [
         "You've reached your Fable 5 limit.",
