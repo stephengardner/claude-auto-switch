@@ -87,15 +87,23 @@ const CAP_PATTERNS = [
 export function classifyRun(outcome: RunOutcome): CapClassification {
   if (outcome.exitCode === 0) return { kind: 'ok' };
 
-  const text = withoutGauges(`${outcome.stderr}\n${outcome.stdout ?? ''}`);
+  const combined = `${outcome.stderr}\n${outcome.stdout ?? ''}`;
+  const text = withoutGauges(combined);
   if (CAP_PATTERNS.some((re) => re.test(text))) {
-    const resetAt = extractResetAt(text);
+    // From the ORIGINAL text, not the filtered one: the gauge filter can
+    // remove the very timestamp the resets clause carried, and a cap that
+    // shares a line with the gauge would then record no reset at all.
+    const resetAt = extractResetAt(combined);
+    // The reason comes from whichever stream actually carries the cap, and
+    // from the LINE that matched: the raw first line can be the gauge, an
+    // unrelated warning, or the wrong stream entirely, and each of those has
+    // been recorded as "the reason" at some point.
+    const filteredErr = withoutGauges(outcome.stderr);
+    const filteredOut = withoutGauges(outcome.stdout ?? '');
+    const source = CAP_PATTERNS.some((re) => re.test(filteredErr)) ? filteredErr : filteredOut;
     return {
       kind: 'capped',
-      // From the FILTERED text: when the gauge precedes the announcement, the
-      // raw first line is the gauge, and the recorded reason then says "74% of
-      // your weekly limit" about an account that actually hit a real cap.
-      reason: firstNonEmptyLine(withoutGauges(outcome.stderr)) || 'usage cap',
+      reason: capLine(source) ?? (firstNonEmptyLine(source) || 'usage cap'),
       ...(resetAt !== undefined ? { resetAt } : {}),
     };
   }
@@ -108,9 +116,12 @@ export function classifyRun(outcome: RunOutcome): CapClassification {
  * escape codes are stripped first so the words still match inside the TUI render.
  */
 export function matchesCapText(text: string): CapClassification | null {
-  const clean = withoutGauges(stripAnsi(text));
+  const plain = stripAnsi(text);
+  const clean = withoutGauges(plain);
   if (!CAP_PATTERNS.some((re) => re.test(clean))) return null;
-  const resetAt = extractResetAt(clean);
+  // The unfiltered text, for the same reason as classifyRun: the gauge filter
+  // can take the reset timestamp with it.
+  const resetAt = extractResetAt(plain);
   return { kind: 'capped', reason: 'usage cap', ...(resetAt !== undefined ? { resetAt } : {}) };
 }
 
@@ -132,6 +143,15 @@ function extractResetAt(text: string): number | undefined {
 
 function firstLine(s: string): string {
   return s.split(/\r?\n/)[0]?.trim() ?? '';
+}
+
+/** The line the cap actually announced itself on, or null when none matches alone. */
+function capLine(s: string): string | null {
+  for (const line of s.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0 && CAP_PATTERNS.some((re) => re.test(trimmed))) return trimmed;
+  }
+  return null;
 }
 
 /** The first line with anything on it, for text the gauge filter has thinned. */

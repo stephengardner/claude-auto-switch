@@ -97,6 +97,39 @@ describe('classifyRun', () => {
       expect(result.reason).toBe('Usage limit reached.');
     });
 
+    it('keeps the reset timestamp when the gauge and the cap share a line', () => {
+      // The filter removes the resets clause, and the timestamp went with it:
+      // classified as capped, but with no reset recorded, so the ledger fell
+      // back to a fixed backoff.
+      const line =
+        "You've used 74% of your weekly limit resets 2026-08-12T15:00:00Z, Claude usage limit reached";
+      const result = classifyRun({ exitCode: 1, stderr: line });
+      expect(result.kind).toBe('capped');
+      expect(result.resetAt).toBe(Date.parse('2026-08-12T15:00:00Z'));
+      expect(matchesCapText(line)?.resetAt).toBe(Date.parse('2026-08-12T15:00:00Z'));
+    });
+
+    it('takes the reason from the stream that carries the cap', () => {
+      // A stdout-only cap used to report the generic "usage cap", and an
+      // unrelated stderr line could stand in as the evidence.
+      const result = classifyRun({
+        exitCode: 1,
+        stderr: 'some unrelated warning',
+        stdout: 'Claude usage limit reached.',
+      });
+      expect(result.kind).toBe('capped');
+      expect(result.reason).toBe('Claude usage limit reached.');
+    });
+
+    it('reports the cap LINE as the reason, not whatever line came first', () => {
+      const result = classifyRun({
+        exitCode: 1,
+        stderr: 'an unrelated warning came first\nUsage limit reached.',
+      });
+      expect(result.kind).toBe('capped');
+      expect(result.reason).toBe('Usage limit reached.');
+    });
+
     it('reports the real announcement as the reason, not the gauge', () => {
       // The raw first line is the gauge, and recording that told the operator
       // "74% of your weekly limit" about an account that actually hit a cap.
