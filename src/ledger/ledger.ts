@@ -58,6 +58,24 @@ export function allLimitedNames(ledger: Ledger, now: number): Set<string> {
   return new Set(ledger.caps.filter((c) => isActive(c, now)).map((c) => c.account));
 }
 
+/**
+ * Which (account, model) pairs are known spent right now, from limits recorded
+ * EARLIER, including by other runs.
+ *
+ * Rotation plans from what it has measured plus what it has proven during the
+ * run, and neither of those sees a limit an earlier run confirmed. Without
+ * this, a fresh run offers a model back to the account it just ran out on, and
+ * only rediscovers the limit by hitting it again.
+ */
+export function activeModelCaps(
+  ledger: Ledger,
+  now: number,
+): Array<{ account: string; model: string }> {
+  return ledger.caps
+    .filter((c): c is typeof c & { model: string } => Boolean(c.model) && isActive(c, now))
+    .map((c) => ({ account: c.account, model: c.model }));
+}
+
 export interface MarkCappedInput {
   account: string;
   now: number;

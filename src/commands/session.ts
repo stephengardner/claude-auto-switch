@@ -18,6 +18,7 @@ import {
   markCapped,
   cappedNames,
   modelOnlyLimit,
+  activeModelCaps,
 } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
@@ -852,6 +853,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
       const snapshot = readUsageSnapshot(context.ctx);
       const now = Date.now();
+      // Limits confirmed earlier, by this run or another one. Stronger than a
+      // cached number, because a cap was proven against the account's own
+      // usage at the moment it was written, so it wins where they disagree.
+      const knownSpent = activeModelCaps(loadLedger(context.ctx), now);
       const plan = planRotation({
         candidates: ordered.map((a) => {
           // Read as CURRENT capacity, not as history: a cached number past its
@@ -860,9 +865,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // account-wide window that is genuinely closed makes every model
           // unusable, so it belongs in the candidate too.
           const capacity = usableCapacity(snapshot.accounts[a.name], now);
+          const spentByLedger = Object.fromEntries(
+            knownSpent.filter((c) => c.account === a.name).map((c) => [c.model, 1]),
+          );
           return {
             name: a.name,
-            models: capacity.models,
+            models: { ...capacity.models, ...spentByLedger },
             ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
           };
         }),

@@ -2,7 +2,7 @@ import type { ClaudeInvoker } from '../invoker.js';
 import { select, eligibleInOrder, type SelectableAccount } from '../selector/selector.js';
 import { planRotation, spentKey, type RotationStrategy } from '../usage/rotation-plan.js';
 import { modelInArgs } from '../usage/model-args.js';
-import { markCapped, cappedNames, clearAccount } from '../ledger/ledger.js';
+import { markCapped, cappedNames, clearAccount, activeModelCaps } from '../ledger/ledger.js';
 import type { Ledger } from '../ledger/ledger.schema.js';
 import type { CapDecision } from '../usage/confirm-cap.js';
 import { withModel } from '../usage/model-args.js';
@@ -117,14 +117,30 @@ export async function autoRotateHeadless<T extends RotatableAccount>(
     // accounts on one model before falling back, and `account-first` walks the
     // models on one account, exactly as configured.
     const ordered = eligibleInOrder(selectInput);
+    // Limits confirmed EARLIER, including by other runs, count as spent. This
+    // path reads no usage numbers, so without the ledger a fresh run offers a
+    // model straight back to the account that just ran out of it and only
+    // rediscovers the limit by hitting it again.
+    const knownSpent = activeModelCaps(ledger, deps.now());
     const plan = planRotation({
-      candidates: ordered.map((a) => ({ name: a.name, models: {} })),
+      candidates: ordered.map((a) => ({
+        name: a.name,
+        models: Object.fromEntries(
+          knownSpent.filter((c) => c.account === a.name).map((c) => [c.model, 1]),
+        ),
+      })),
       modelInUse,
       preference: chain,
       strategy: deps.modelStrategy ?? 'model-first',
       spentThisRun,
     });
-    if (plan.kind === 'exhausted') break;
+    if (plan.kind === 'exhausted') {
+      // The planner's own words: "every account is capped" is false when the
+      // accounts are fine and it is the model chain that has run out, and it
+      // hides which chain that was.
+      deps.out(plan.reason);
+      return { exitCode: 1, rotations, ledger };
+    }
 
     const account = ordered.find((a) => a.name === plan.account) ?? sel.account;
     if (plan.model) {

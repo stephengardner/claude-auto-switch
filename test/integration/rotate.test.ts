@@ -130,6 +130,54 @@ describe('autoRotateHeadless', () => {
     ]);
   });
 
+  it('honours a model limit an EARLIER run recorded, instead of rediscovering it', async () => {
+    // This path reads no usage numbers, so the ledger is the only thing that
+    // remembers. Without it a fresh run offers Fable straight back to the
+    // account that ran out of it minutes ago.
+    const runs: string[] = [];
+    const run = async (_bin: string, args: string[], opts?: RunOptions) => {
+      const at = args.indexOf('--model');
+      runs.push(`${opts?.env?.CLAUDE_CONFIG_DIR ?? ''}:${at >= 0 ? args[at + 1] : 'none'}`);
+      return { stdout: 'done', stderr: '', exitCode: 0 };
+    };
+
+    await autoRotateHeadless(['-p', 'hi', '--model', 'fable'], {
+      ...base,
+      // A's Fable ran out earlier and has not reset yet.
+      ledger: { caps: [{ account: 'A', capUntil: 9_999_999, reason: 'usage cap', at: 900, model: 'fable' }] },
+      run,
+      modelPreference: ['fable', 'opus'],
+      modelStrategy: 'model-first',
+    });
+
+    // Straight to B on Fable: A is not offered Fable it demonstrably lacks.
+    expect(runs).toEqual(['/dir/B:fable']);
+  });
+
+  it('says WHICH chain ran out, not that every account is capped', async () => {
+    // Model-scoped exhaustion can leave every account perfectly usable. The
+    // generic message is false then, and hides what actually happened.
+    let said = '';
+    const run = async () => ({ stdout: "you've reached your Fable 5 limit", stderr: '', exitCode: 1 });
+    const result = await autoRotateHeadless(['-p', 'hi', '--model', 'fable'], {
+      ...base,
+      accounts: [acct('A', 0)],
+      loggedIn: new Set(['A']),
+      ledger: { caps: [] },
+      run,
+      out: (m) => {
+        said += `${m}\n`;
+      },
+      modelPreference: ['fable'],
+      modelStrategy: 'model-first',
+      confirmCap: () => Promise.resolve({ limited: true, model: 'fable' }),
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(said).toContain('out of fable');
+    expect(said).not.toContain('all accounts are capped');
+  });
+
   it('tries every pairing when the model in use is not in the preference', async () => {
     // The chain leads with the model in use even when it is not on the list,
     // so --model sonnet against a fable/opus preference has THREE models to
