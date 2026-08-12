@@ -33,11 +33,10 @@ import {
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
 import { confirmSessionCap } from '../usage/confirm-cap.js';
 import { resolveSessionIdentity, maskEmail } from '../session/session-identity.js';
-import { nextModel } from '../usage/next-model.js';
 import { createTerminalWriter } from '../ui/terminal-writer.js';
 import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-store.js';
 import { startUsageRefresher } from '../usage/usage-refresher.js';
-import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
+import { planRotation, spentKey } from '../usage/rotation-plan.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
 import { wantsContinue, withoutContinue } from '../launcher/continue-args.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
@@ -257,10 +256,15 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    */
   let chosenModel: string | null = null;
   /**
-   * Models proven spent during THIS run, so the fallback walks forward instead
-   * of handing back a model that has already run out.
+   * "account|model" pairs proven spent during THIS run.
+   *
+   * PER ACCOUNT, which is the whole point. Held as a bare list of models, one
+   * account running out of Fable read as every account being out of Fable: the
+   * run switched to Opus permanently and never went back, while another
+   * account still had a quarter of its Fable week. It also bounds the loop,
+   * since each confirmed limit removes exactly one pairing from the space.
    */
-  const spentModels: string[] = [];
+  const spentThisRun = new Set<string>();
 
   /**
    * Tell the operator something, by whichever channel does not wreck the screen.
@@ -373,6 +377,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const decision = await confirmSessionCap(
         { sessionDir, believedDir: current?.dir ?? null },
         renderedText,
+        // Scoped to what this session is actually running: a spent window for
+        // a model it is not on is not a limit on it.
+        { modelInUse: chosenModel ?? sessionModel(sessionDir, args) },
       );
       verdict = decision.limited ? 'limited' : 'allowed';
       limitedModel = decision.model;
@@ -832,55 +839,56 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         ? [...eligible.filter((a) => a.name === pinned), ...eligible.filter((a) => a.name !== pinned)]
         : eligible;
 
-      // Prefer an account that still has room on the MODEL in use. A per-model
-      // limit stops that model, not the account, so rotating to one whose Fable
-      // is also spent solves nothing. Only when no account has any is the model
-      // changed, and then in the configured order.
+      // ONE decision, made by the planner: which account, on which model. The
+      // model half used to be decided separately, inside the session, and it
+      // fired first: one account running out of Fable moved the whole run to
+      // Opus even though another account had most of its Fable week left, and
+      // it was never reconsidered afterwards. See usage/rotation-plan.ts.
       const rotation = context.config.rotation;
-      const model = chosenModel ?? sessionModel(sessionDir, args);
-      // Only when a model is actually in play. With nothing pinned, Claude picks
-      // its own default and ccx cannot read it, so choosing an account for some
-      // preference model's headroom would pick on one model and run another.
-      // Imposing the preference instead would silently change everyone's model,
-      // which nobody asked for. Plain account rotation is the honest answer.
-      if (rotation.preferSameModel && model && ordered.length > 0) {
-        const snapshot = readUsageSnapshot(context.ctx);
-        const now = Date.now();
-        const choice = chooseAccountForModel(
-          model,
-          ordered.map((a) => {
-            // Read as CURRENT capacity, not as history: a cached number past its
-            // own reset says "spent" about a limit that has already lifted, and
-            // acting on it moves the session off a model it could still use. An
-            // account-wide window that is genuinely closed makes every model
-            // unusable, so it belongs in the candidate too.
-            const capacity = usableCapacity(snapshot.accounts[a.name], now);
-            return {
-              name: a.name,
-              models: capacity.models,
-              ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
-            };
-          }),
-          rotation.modelPreference,
-        );
-        if (choice) {
-          const picked = ordered.find((a) => a.name === choice.account);
-          if (picked) {
-            // Remembered so the session is actually STARTED on it. Choosing a
-            // model and not applying it is worse than not choosing: the session
-            // keeps running the one that just ran out while the operator has
-            // been told it moved.
-            if (choice.changedModel) {
-              chosenModel = choice.model;
-              notice(modelChangeMessage(choice, model));
-            }
-            return { name: picked.name, dir: picked.dir };
-          }
-        }
+      if (!rotation.preferSameModel || ordered.length === 0) {
+        const pick = ordered[0];
+        return pick ? { name: pick.name, dir: pick.dir } : null;
       }
 
-      const pick = ordered[0];
-      return pick ? { name: pick.name, dir: pick.dir } : null;
+      const snapshot = readUsageSnapshot(context.ctx);
+      const now = Date.now();
+      const plan = planRotation({
+        candidates: ordered.map((a) => {
+          // Read as CURRENT capacity, not as history: a cached number past its
+          // own reset says "spent" about a limit that has already lifted, and
+          // acting on it moves the session off a model it could still use. An
+          // account-wide window that is genuinely closed makes every model
+          // unusable, so it belongs in the candidate too.
+          const capacity = usableCapacity(snapshot.accounts[a.name], now);
+          return {
+            name: a.name,
+            models: capacity.models,
+            ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
+          };
+        }),
+        // The model in use, or the one a confirmed cap just told us was in
+        // use. Without that second source the first rotation is blind: nothing
+        // pins a model, so ccx could not tell it was on Fable and rotated by
+        // priority alone, straight through two accounts whose Fable was also
+        // spent before reaching the one with room.
+        modelInUse: chosenModel ?? sessionModel(sessionDir, args) ?? limitedModel ?? null,
+        preference: rotation.modelPreference,
+        strategy: rotation.modelStrategy,
+        spentThisRun,
+      });
+
+      if (plan.kind === 'exhausted') return null;
+      const picked = ordered.find((a) => a.name === plan.account);
+      if (!picked) return null;
+      // ONLY on a change. Remembering it is what makes the session actually
+      // start on it, but writing it down when nothing moved would impose
+      // `--model` on a session that never asked for one, overriding the
+      // operator's own pin with a value ccx picked.
+      if (plan.changedModel && plan.model) {
+        notice(plan.reason, { kind: 'model-change', data: { to: plan.model } });
+        chosenModel = plan.model;
+      }
+      return { name: picked.name, dir: picked.dir };
     },
     resolveAccount: (name) => {
       const a = accounts.find((x) => x.name === name);
@@ -1086,37 +1094,14 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // resume that found nothing.
           return await runPtySession({ ...base, args: withoutContinue(modelArgs) });
         }
-        // A limit about ONE MODEL is not a reason to give up this account: it
-        // still has room on everything else. Change model and carry on here,
-        // rather than rotating away and eventually reporting that every account
-        // is capped while sitting on one with most of its week left.
+        // A model-scoped limit is remembered against THIS ACCOUNT and handed
+        // back to the swap loop, which asks the planner what to do next. It
+        // used to be answered here instead, by switching model on the spot,
+        // and that answer fired before rotation ever got to choose: running
+        // out of Fable on one account moved the whole run to Opus while
+        // another account still had Fable. One decision, one place.
         if (outcome.kind === 'capped' && limitedModel) {
-          if (!spentModels.some((m) => m.toLowerCase() === limitedModel!.toLowerCase())) {
-            spentModels.push(limitedModel);
-          }
-          const fallback = nextModel(context.config.rotation.modelPreference, spentModels);
-          if (fallback) {
-            // Recorded BEFORE the fallback runs: when the fallback succeeds,
-            // this capped outcome never reaches the swap loop's markCapped,
-            // and an unrecorded model cap is a model every other session keeps
-            // choosing. A second model-scoped cap after this advances through
-            // the remaining models via the swap loop, which re-enters here
-            // with spentModels carrying the history.
-            recordCap(
-              capOwner ?? current?.name ?? account.name,
-              outcome.reason ?? 'usage cap',
-              outcome.resetAt,
-            );
-            chosenModel = fallback;
-            notice(`out of ${limitedModel} here; switching to ${fallback} and carrying on`);
-            const next = await runPtySession({
-              ...base,
-              args: wantContinue
-                ? [...withModel(args, fallback), '--continue']
-                : withModel(args, fallback),
-            });
-            return withCapScope(next);
-          }
+          spentThisRun.add(spentKey(capOwner ?? current?.name ?? account.name, limitedModel));
         }
         return withCapScope(outcome);
       } finally {

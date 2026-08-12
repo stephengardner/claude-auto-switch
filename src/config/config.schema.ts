@@ -42,6 +42,18 @@ export const ConfigSchema = z.object({
         .nonempty('modelPreference needs at least one model')
         .default(['fable', 'opus']),
       /**
+       * Which runs out first: the model, or the account.
+       *
+       * model-first uses up the CURRENT MODEL everywhere before changing
+       * model, so a session stays on Fable across every account and only then
+       * falls back to Opus. account-first uses up each ACCOUNT across the
+       * whole chain before moving to the next one.
+       *
+       * A one-model chain (`modelPreference: ['fable']`) means never fall
+       * back at all, under either strategy.
+       */
+      modelStrategy: z.enum(['model-first', 'account-first']).default('model-first'),
+      /**
        * Set false to ignore models entirely and rotate on account limits alone,
        * which is how ccx behaved before this existed.
        */
@@ -67,6 +79,7 @@ export interface PartialConfig {
     proactiveHysteresisPercent?: number;
     usageCheckSeconds?: number;
     modelPreference?: string[];
+    modelStrategy?: 'model-first' | 'account-first';
     preferSameModel?: boolean;
   };
   realClaudePath?: string | null;

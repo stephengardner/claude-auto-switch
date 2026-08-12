@@ -191,6 +191,72 @@ describe('a probe that fails outright', () => {
   });
 });
 
+describe('a spent window for a model this session is NOT running', () => {
+  const probing = (result: LimitProbeResult) => () => Promise.resolve(result);
+
+  it('is not a limit on this session', async () => {
+    // The ten-rotations-in-six-minutes churn. Once ccx moved to Opus, the
+    // account's Fable stayed at 100% for the rest of the week, so every
+    // replayed cap message re-confirmed it and killed the session in seconds.
+    const decision = await confirmCap('/profiles/main', 'Fable limit reached', {
+      modelInUse: 'opus',
+      probe: probing({
+        verdict: 'limited',
+        limitedModel: 'Fable',
+        fiveHour: 0.13,
+        sevenDay: 0.55,
+        models: [
+          { name: 'Fable', utilization: 1 },
+          { name: 'Opus', utilization: 0.2 },
+        ],
+      }),
+    });
+    expect(decision.limited).toBe(false);
+    expect(decision.detail).toContain('running opus');
+  });
+
+  it('IS a limit when it names the model in use', async () => {
+    const decision = await confirmCap('/profiles/main', 'Fable limit reached', {
+      modelInUse: 'claude-fable-5',
+      probe: probing({
+        verdict: 'limited',
+        limitedModel: 'Fable',
+        fiveHour: 0.13,
+        models: [{ name: 'Fable', utilization: 1, resetsAt: 4242 }],
+      }),
+    });
+    expect(decision.limited).toBe(true);
+    expect(decision.model).toBe('Fable');
+    expect(decision.resetAt).toBe(4242);
+  });
+
+  it('still caps account-wide, whatever model is in use', async () => {
+    // An account-wide window makes every model unusable, so the model in use
+    // is beside the point.
+    const decision = await confirmCap('/profiles/main', 'limit reached', {
+      modelInUse: 'opus',
+      probe: probing({ verdict: 'limited', fiveHour: 1, fiveHourReset: 999, sevenDay: 0.4 }),
+    });
+    expect(decision.limited).toBe(true);
+    expect(decision.model).toBeUndefined();
+  });
+
+  it('keeps the old behaviour when nothing pins a model', async () => {
+    // A session with nothing pinned is running the default, which is the
+    // model a spent window most likely refers to.
+    const decision = await confirmCap('/profiles/main', 'Fable limit reached', {
+      probe: probing({
+        verdict: 'limited',
+        limitedModel: 'Fable',
+        fiveHour: 0.1,
+        models: [{ name: 'Fable', utilization: 1 }],
+      }),
+    });
+    expect(decision.limited).toBe(true);
+    expect(decision.model).toBe('Fable');
+  });
+});
+
 describe('how WIDE a confirmed limit really is', () => {
   const probing = (result: LimitProbeResult) => () => Promise.resolve(result);
 

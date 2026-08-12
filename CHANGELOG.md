@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.40.0]
+
+### Fixed
+
+- **Running out of one model no longer moves the whole run off that model.**
+  One account running out of Fable was treated as every account running out of
+  Fable: ccx switched to Opus for the rest of the run and never reconsidered,
+  even after rotating onto an account with a quarter of its Fable week left.
+  Spent models are now remembered per ACCOUNT, and the model is re-decided on
+  every account change.
+
+- **A session no longer gets capped by a model it is not running.** After
+  moving to Opus, the account's spent Fable window stayed at 100% all week, so
+  every replayed cap message from a resumed conversation re-confirmed it and
+  ended the session within seconds. Measured on a real machine: ten rotations
+  in six minutes, each session under twenty seconds. A spent window for a model
+  you are not using is not a limit on you.
+
+- **Rotation stopped walking through accounts whose model was also spent.**
+  When a confirmed limit says which model ran out, that answer now picks the
+  next account, so a Fable limit goes straight to an account with Fable left
+  instead of trying two more spent ones by priority order first.
+
+### Added
+
+- **`ccx models`: choose what gets used up first.** `model-first` (the new
+  default) stays on one model across every account before falling back;
+  `account-first` uses each account up across the chain before moving on. A
+  one-model chain (`ccx models fable`) means never fall back: ccx reports that
+  Fable is gone everywhere rather than switching you to something you did not
+  ask for.
+
+### Changed
+
+- The account choice and the model choice are made together, by one planner
+  (`usage/rotation-plan.ts`), instead of by two pieces of code that disagreed.
+  The in-session model switch used to fire before rotation could choose, which
+  is what moved a whole run to Opus while another account still had Fable.
+
 ## [1.39.0]
 
 ### Fixed
