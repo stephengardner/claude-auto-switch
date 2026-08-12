@@ -65,7 +65,52 @@ describe('session leases', () => {
     const c = home();
     takeLease('work', '/session', c);
     releaseLease('work', c);
-    expect(liveLeases(c)).toEqual([]);
+    expect(existsSync(leasePath('work', c))).toBe(false);
+  });
+
+  it('lets several sessions announce ONE account at the same time', () => {
+    // The file was per-account, so the last session to start silently took the
+    // only slot: the others could not refresh the announcement and their
+    // protection lapsed while they ran. One file per session ends that.
+    const c = home();
+    takeLease('work', '/session-a', c, { now: () => 1_000 });
+    // A second session of the same account, written as another pid would.
+    mkdirSync(path.dirname(leasePath('work', c)), { recursive: true });
+    writeFileSync(
+      leasePath('work', c, 424242),
+      JSON.stringify({ account: 'work', pid: process.pid, configDir: '/session-b', at: 2_000 }),
+      'utf8',
+    );
+    const live = liveLeases(c, { now: () => 2_500 });
+    expect(live).toHaveLength(2);
+    expect(live.map((l) => l.configDir).sort()).toEqual(['/session-a', '/session-b']);
+  });
+
+  it('answers leaseFor with the most recently refreshed session', () => {
+    // That is the session whose copy of the login is most plausibly freshest,
+    // which is what usage reading wants.
+    const c = home();
+    takeLease('work', '/session-old', c, { now: () => 1_000 });
+    writeFileSync(
+      leasePath('work', c, 424242),
+      JSON.stringify({ account: 'work', pid: process.pid, configDir: '/session-new', at: 5_000 }),
+      'utf8',
+    );
+    expect(leaseFor('work', c, { now: () => 5_500 })?.configDir).toBe('/session-new');
+  });
+
+  it('still reads a lease written before the pid suffix existed', () => {
+    // Reading is by CONTENT: an old <account>.json from a session that has not
+    // restarted must keep counting.
+    const c = home();
+    mkdirSync(path.dirname(leasePath('work', c)), { recursive: true });
+    const legacy = path.join(path.dirname(leasePath('work', c)), 'work.json');
+    writeFileSync(
+      legacy,
+      JSON.stringify({ account: 'work', pid: process.pid, configDir: '/old-session', at: 1_000 }),
+      'utf8',
+    );
+    expect(liveLeases(c, { now: () => 1_500 })).toHaveLength(1);
   });
 
   it('never touches or releases another session\'s announcement', () => {

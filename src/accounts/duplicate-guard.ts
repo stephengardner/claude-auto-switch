@@ -18,6 +18,26 @@ import { credentialPath } from './credential-vault.js';
 export interface ProfileLike {
   name: string;
   dir: string;
+  /**
+   * The account this profile is registered FOR. Two profiles holding one token
+   * are only siblings when this agrees; see `sameRegisteredAccount`.
+   */
+  email?: string;
+}
+
+/**
+ * Are two profiles registered as the same Anthropic account?
+ *
+ * Unknown on either side means "cannot rule it out", which keeps the case this
+ * whole file exists for working: signing in twice while the browser is still
+ * signed in gives one account two profiles, and those really do have to be kept
+ * in step.
+ */
+function sameRegisteredAccount(one: ProfileLike, other: ProfileLike): boolean {
+  const a = (one.email ?? '').trim().toLowerCase();
+  const b = (other.email ?? '').trim().toLowerCase();
+  if (a.length === 0 || b.length === 0) return true;
+  return a === b;
 }
 
 /** A short, comparable fingerprint of a token, so tokens never get logged. */
@@ -66,12 +86,50 @@ export function sharedLoginGroups(profiles: ProfileLike[]): Array<{ fingerprint:
     .map(([fp, names]) => ({ fingerprint: fp, names }));
 }
 
-/** Would renewing this profile's login also invalidate another profile's? */
+/**
+ * Would renewing this profile's login also invalidate another profile's?
+ *
+ * TOKEN equality and nothing else, deliberately. Renewal rotates the refresh
+ * token at the server, so every profile holding that token loses it PHYSICALLY,
+ * whoever it is registered to. A contaminated sibling (same token, different
+ * registered account) is still killed by the rotation, so filtering it out of
+ * this answer would let a renewal sign a live session out. Protection follows
+ * the token; only the CARRY follows the account (see carryTargets).
+ */
 export function renewalWouldBreakOthers(profile: ProfileLike, profiles: ProfileLike[]): string[] {
   const { refresh } = tokensOf(profile.dir);
   if (!refresh) return [];
   return profiles
     .filter((other) => other.name !== profile.name && tokensOf(other.dir).refresh === refresh)
+    .map((other) => other.name);
+}
+
+/**
+ * Which profiles a renewal should be CARRIED across to.
+ *
+ * Same token AND the same registered account. Carrying a renewal to a profile
+ * registered for a DIFFERENT account is what turned a one-off mix-up into a
+ * permanent one: from the moment two profiles held one token, every renewal
+ * copied the new token over the other, so they could never come apart, and
+ * signing in again was undone by the next renewal minutes later. Three accounts
+ * here spent a day as one, reporting one account's usage under three names and
+ * refusing to rotate between them.
+ *
+ * Same token plus different registered accounts is contamination. The fix for
+ * that is `ccx login <name>`, which `ccx doctor` already prints, not a copy.
+ * The contaminated holder still counts for renewal SAFETY, which is why this
+ * is a separate question from renewalWouldBreakOthers.
+ */
+export function carryTargets(profile: ProfileLike, profiles: ProfileLike[]): string[] {
+  const { refresh } = tokensOf(profile.dir);
+  if (!refresh) return [];
+  return profiles
+    .filter(
+      (other) =>
+        other.name !== profile.name &&
+        tokensOf(other.dir).refresh === refresh &&
+        sameRegisteredAccount(profile, other),
+    )
     .map((other) => other.name);
 }
 

@@ -241,8 +241,12 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
 
   // The question replaces the key hints while it is up, because those keys do
   // not apply until it is answered.
+  //
+  // [Y/n], because Enter confirms. It always has, but the label used to say
+  // [y/N], which advertises the opposite, so the one key everyone reaches for
+  // looked like the key that would cancel.
   if (options.confirm) {
-    lines.push(paint(`  ${options.confirm}  [y/N]`, codes.yellow, color));
+    lines.push(paint(`  ${options.confirm}  [Y/n]`, codes.yellow, color));
   }
 
   if (options.notice) {
@@ -258,7 +262,10 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     }
     lines.push(paint('  enter confirm  ·  esc cancel', codes.dim, color));
   } else if (options.confirm) {
-    lines.push(paint('  y confirm  ·  any other key cancels', codes.dim, color));
+    // Anything else still cancels, and that is deliberate: l sits next to j and
+    // k, so a stray press while moving is likely, and the next keystroke after
+    // it should not sign anyone in.
+    lines.push(paint('  enter or y confirm  ·  any other key cancels', codes.dim, color));
   } else if (options.interactive) {
     lines.push(
       paint(

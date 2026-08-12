@@ -13,6 +13,10 @@ const base = {
   now: () => 1000,
   defaultBackoffMinutes: 300,
   out: () => {},
+  // These tests are about ROTATION, so the account's usage is taken as agreeing
+  // with the text. What happens when it does NOT agree is the subject of its
+  // own test below, because that is the case that used to cap healthy accounts.
+  confirmCap: () => Promise.resolve({ limited: true }),
 };
 
 describe('autoRotateHeadless', () => {
@@ -54,5 +58,68 @@ describe('autoRotateHeadless', () => {
     const result = await autoRotateHeadless(['-p', 'hi'], { ...base, ledger: { caps: [] }, run });
     expect(result.account).toBe('A');
     expect(result.rotations).toBe(0);
+  });
+
+  it('does NOT cap an account when its usage refutes the limit text', async () => {
+    // A resumed conversation replays old limit messages, and code on screen can
+    // talk about rate limits. Capping from the text alone took healthy accounts
+    // out for hours: five of them inside 87 seconds on a real machine.
+    const run = async () => ({ stdout: 'talking about rate limits', stderr: 'rate limit', exitCode: 1 });
+    const result = await autoRotateHeadless(['-p', 'hi'], {
+      ...base,
+      ledger: { caps: [] },
+      run,
+      confirmCap: () => Promise.resolve({ limited: false, detail: 'five-hour window at 3%' }),
+    });
+
+    expect(result.ledger.caps).toEqual([]); // nothing was taken out of rotation
+    expect(result.rotations).toBe(0);
+    expect(result.account).toBe('A'); // it stayed on the account it started with
+  });
+
+  it('records a model-scoped limit WITH its model, so the account keeps working', async () => {
+    // The difference between "switch to Opus and carry on" and "every account
+    // has hit its limit, come back in five hours".
+    const run = async () => ({ stdout: "you've reached your Fable 5 limit", stderr: '', exitCode: 1 });
+    const result = await autoRotateHeadless(['-p', 'hi'], {
+      ...base,
+      accounts: [acct('A', 0)],
+      loggedIn: new Set(['A']),
+      ledger: { caps: [] },
+      run,
+      confirmCap: () => Promise.resolve({ limited: true, model: 'Fable', resetAt: 5555 }),
+    });
+
+    expect(result.ledger.caps).toHaveLength(1);
+    expect(result.ledger.caps[0]!.model).toBe('Fable');
+    expect(result.ledger.caps[0]!.capUntil).toBe(5555);
+  });
+
+  it('starts the next model and keeps the account after a model-scoped cap', async () => {
+    // The recorded cap is only half the job: the run itself must continue on
+    // the fallback model instead of ending on an account with room left.
+    const invocations: string[][] = [];
+    let call = 0;
+    const run = async (_bin: string, args: string[]) => {
+      invocations.push(args);
+      call += 1;
+      return call === 1
+        ? { stdout: '', stderr: "you've reached your Fable 5 limit", exitCode: 1 }
+        : { stdout: 'done on the fallback', stderr: '', exitCode: 0 };
+    };
+    const result = await autoRotateHeadless(['-p', 'hi'], {
+      ...base,
+      accounts: [acct('A', 0)],
+      loggedIn: new Set(['A']),
+      ledger: { caps: [] },
+      run,
+      modelPreference: ['fable', 'opus'],
+      confirmCap: () => Promise.resolve({ limited: true, model: 'Fable' }),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.account).toBe('A');
+    expect(invocations).toHaveLength(2);
+    expect(invocations[1]!.join(' ')).toContain('--model opus');
   });
 });

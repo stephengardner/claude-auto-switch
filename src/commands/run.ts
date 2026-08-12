@@ -13,6 +13,7 @@ import { isShimInstalled } from '../shell/install-shim.js';
 import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-path.js';
 import { configHome } from '../config/paths.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
+import { confirmCap } from '../usage/confirm-cap.js';
 
 /** Show a one-time tip about the transparent shim, after an interactive session. */
 function maybeHintShim(context: CliContext): void {
@@ -68,6 +69,10 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
       loggedIn,
       pinned,
       now: () => Date.now(),
+      // The account's OWN usage decides, so a limit is never recorded from text
+      // alone and a model-scoped one keeps its scope.
+      confirmCap: (account, renderedText) => confirmCap(account.dir, renderedText),
+      modelPreference: context.config.rotation.modelPreference,
       defaultBackoffMinutes: context.config.rotation.defaultBackoffMinutes,
       ledger: loadLedger(context.ctx),
       out: context.out,
@@ -90,20 +95,40 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
 
   const watched = await launchWatched(passthroughArgs, result.account, { claude });
   if (watched.classification.kind === 'capped') {
-    saveLedger(
-      markCapped(loadLedger(context.ctx), {
-        account: result.account.name,
-        now: Date.now(),
-        resetAt: watched.classification.resetAt ?? null,
-        backoffMinutes: context.config.rotation.defaultBackoffMinutes,
-        reason: watched.classification.reason ?? 'usage cap',
-      }),
-      context.ctx,
-    );
-    context.out(
-      `\n[ccx] "${result.account.name}" hit its limit; your next session will use a different account.`,
-    );
-    advanceActiveToHealthy(context, loggedIn); // carry the switch over to the editor
+    // Same rule as every other cap-recording path: text only TRIGGERS, the
+    // account's own usage decides. This branch used to write the cap straight
+    // from the classification, so a replayed or quoted limit message could
+    // bench an account for hours from here even though both rotation paths
+    // had learned better.
+    const decision = await confirmCap(result.account.dir, watched.stderr);
+    if (decision.limited) {
+      saveLedger(
+        markCapped(loadLedger(context.ctx), {
+          account: result.account.name,
+          now: Date.now(),
+          resetAt: decision.resetAt ?? watched.classification.resetAt ?? null,
+          backoffMinutes: context.config.rotation.defaultBackoffMinutes,
+          reason: watched.classification.reason ?? 'usage cap',
+          ...(decision.model ? { model: decision.model } : {}),
+        }),
+        context.ctx,
+      );
+      context.out(
+        decision.model
+          ? `\n[ccx] "${result.account.name}" is out of ${decision.model}; other models still work here.`
+          : `\n[ccx] "${result.account.name}" hit its limit; your next session will use a different account.`,
+      );
+      // Safe for BOTH scopes: cappedNames excludes model-scoped caps, so a
+      // Fable-only limit leaves the active account reading as healthy and this
+      // moves nothing. It only advances when the account is genuinely
+      // unusable, which is exactly when the editor pointer should follow.
+      advanceActiveToHealthy(context, loggedIn);
+    } else {
+      context.out(
+        `\n[ccx] limit text on screen, but "${result.account.name}" shows no spent window; ` +
+          'nothing was recorded.',
+      );
+    }
   }
   return watched.exitCode;
 }

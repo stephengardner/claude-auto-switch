@@ -5,6 +5,7 @@ import { listAccounts } from '../accounts/registry.js';
 import { hasUsableLogin, credentialFileFingerprint } from '../accounts/credential-vault.js';
 import { loginIsKnownDead } from '../usage/dead-login-store.js';
 import { configHome } from '../config/paths.js';
+import { isSessionDir } from '../session/session-dir.js';
 import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import type { CliContext } from '../context.js';
@@ -82,7 +83,7 @@ function isManagedSession(context: CliContext): boolean {
   if (!configDir) return false; // plain `claude` on the default config
   const home = configHome(context.ctx);
   return (
-    samePath(configDir, path.join(home, 'session')) || // terminal session
+    isSessionDir(configDir, context.ctx) || // terminal session (one dir per session)
     samePath(configDir, path.join(home, 'editor-active')) // editor, following ccx
   );
 }

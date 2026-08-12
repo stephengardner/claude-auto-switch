@@ -228,11 +228,6 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // Stop routing keystrokes here, but leave OUR OWN terminal mode alone: the
       // run's owner holds it across sessions so a swap never toggles it.
       detachInput();
-      // The CHILD's modes are a different matter, and nobody was putting them
-      // back. We end sessions by killing them, which skips the child's exit
-      // handler, so the mouse tracking and bracketed paste it switched on stay
-      // on and the terminal keeps reporting into whatever reads input next.
-      resetChildTerminalModes();
       if (ownsInput) input.close();
       process.stdout.off('resize', onResize);
 
@@ -272,6 +267,15 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // real cap raced the async verdict and the whole session ended instead of
       // rotating (the "my session completely terminated" bug).
       setTimeout(() => {
+        // The CHILD's modes are put back HERE, after the trailing flush, and
+        // nowhere earlier. We end sessions by killing them, which skips the
+        // child's exit handler, so the mouse tracking and bracketed paste it
+        // switched on stay on and every mouse movement types `;171;15M` into
+        // whatever reads input next. Doing this in onExit looked right and was
+        // not: the trailing flush arrives AFTER the exit event, and Claude's
+        // last redraw re-enabled the very modes the reset had just turned off.
+        // That is how the fix shipped and the garbage survived it.
+        resetChildTerminalModes();
         if (capped || switching || noConversation) return finalize();
         const timeboxed = (p: Promise<boolean>): Promise<boolean> =>
           Promise.race([p, new Promise<boolean>((r) => setTimeout(() => r(false), 12_000))]);

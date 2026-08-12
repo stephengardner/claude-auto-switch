@@ -71,6 +71,12 @@ export async function launchHeadless(
 export interface WatchedResult {
   exitCode: number;
   classification: CapClassification;
+  /**
+   * What the run actually printed. Carried out so a caller confirming a cap
+   * can hand the verifier the real rendered text (which is how a per-model
+   * limit gets matched to its model) instead of a one-line summary.
+   */
+  stderr: string;
 }
 
 /**
@@ -115,5 +121,5 @@ export async function spawnWatched(
     child.on('error', () => resolve(1));
   });
 
-  return { exitCode, classification: classifyRun({ exitCode, stderr }) };
+  return { exitCode, classification: classifyRun({ exitCode, stderr }), stderr };
 }

@@ -4,7 +4,8 @@ import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
-import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
+import { renewalWouldBreakOthers, carryTargets } from '../accounts/duplicate-guard.js';
+import { sessionIdentityEmail } from '../accounts/credential-vault.js';
 import { renewAndCarry } from '../accounts/shared-login.js';
 import { liveLeases, type LeaseOptions, type SessionLease } from '../session/lease.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
@@ -72,9 +73,57 @@ export function writeUsageSnapshot(snapshot: UsageSnapshot, c: PathCtx = {}): vo
   }
 }
 
+/**
+ * How old the stored snapshot is, judged by its NEWEST entry; Infinity when
+ * there is nothing. The newest entry rather than the oldest, because one
+ * account that could not be probed (signed out, rate-limited) must not make a
+ * fresh snapshot read as ancient and trigger refreshes that cannot help it.
+ */
+export function snapshotAgeMs(c: PathCtx = {}, now: () => number = () => Date.now()): number {
+  const stamps = Object.values(readUsageSnapshot(c).accounts)
+    .map((entry) => entry.at)
+    .filter((at): at is number => typeof at === 'number' && Number.isFinite(at));
+  if (stamps.length === 0) return Infinity;
+  return Math.max(0, now() - Math.max(...stamps));
+}
+
+/**
+ * Whose stored login answers for this account's usage.
+ *
+ * A running Claude keeps its own copy of the login fresher than the profile's,
+ * so a leased account is normally read from the session directory. That is only
+ * right while the session is signed in AS this account.
+ *
+ * Sessions used to share one directory, so the login sitting in it belonged to
+ * whichever account started last, and reading it filed THAT account's usage
+ * under this one. Measured here: an account with 21% of its week used and 35%
+ * of its Fable was recorded at 57% with Fable spent, and then routed around as
+ * out of room while its own numbers said it was fine.
+ *
+ * Only falls back on positive evidence of a mismatch. An identity nobody has
+ * recorded is not a mismatch, and refusing the session copy then would give a
+ * staler answer for no reason.
+ */
+export function usageCredentialDir(
+  account: { dir: string; email?: string },
+  leaseConfigDir: string | undefined,
+): string {
+  if (!leaseConfigDir) return account.dir;
+  const runningAs = sessionIdentityEmail(leaseConfigDir);
+  const shouldBe = sessionIdentityEmail(account.dir) ?? account.email ?? null;
+  if (runningAs === null || shouldBe === null) return leaseConfigDir;
+  return runningAs.toLowerCase() === shouldBe.toLowerCase() ? leaseConfigDir : account.dir;
+}
+
 export interface RefreshableAccount {
   name: string;
   dir: string;
+  /**
+   * Who this profile is registered for. Carried so the sibling check can tell a
+   * genuine duplicate of ONE account from two different accounts that have
+   * ended up holding the same token, and only copy a renewal across the first.
+   */
+  email?: string;
 }
 
 export interface RefreshUsageOptions {
@@ -224,8 +273,15 @@ export async function refreshUsage(
       }
       // Renewal rotates the token, so it is the single most likely reason a
       // login stops working. Record what happened, with the reason.
+      // The carry list is NARROWER than the protection cohort above: siblings
+      // holding this token are all protected from an unsafe renewal, but only
+      // the ones registered for the SAME account receive the renewed login.
+      // Carrying into a contaminated holder is what made contamination
+      // permanent.
       const { result: renewal, carried } = mayRenew
-        ? await renewAndCarry(account, accounts, siblings, () => renew(account.dir))
+        ? await renewAndCarry(account, accounts, carryTargets(account, accounts), () =>
+            renew(account.dir),
+          )
         : { result: { status: 'not-needed' as const }, carried: [] as string[] };
       if (renewal.status === 'refreshed') {
         logCredentialEvent({ account: account.name, kind: 'renewed' }, c);
@@ -254,8 +310,9 @@ export async function refreshUsage(
         );
       }
       // The live session's copy is the one being kept fresh, so for a leased
-      // account that is the file to read. The profile's copy may be older.
-      result = await probe(path.join(lease?.configDir ?? account.dir, '.credentials.json'));
+      // account that is the file to read, PROVIDED the session is actually
+      // signed in as this account. See usageCredentialDir.
+      result = await probe(path.join(usageCredentialDir(account, lease?.configDir), '.credentials.json'));
     } catch {
       result = { verdict: 'unknown' };
     }

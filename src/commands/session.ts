@@ -21,7 +21,8 @@ import {
 } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
-import { runHotSwapSession } from '../launcher/hot-swap.js';
+import { runHotSwapSession, type SessionOutcome } from '../launcher/hot-swap.js';
+import { sessionDirFor, sweepDeadSessionDirs, seedFromKeptSettings } from '../session/session-dir.js';
 import { runPtySession } from '../launcher/pty-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
 import {
@@ -30,8 +31,12 @@ import {
   setTerminalOwnedElsewhere,
 } from '../launcher/notify.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
-import { probeLimit } from '../usage/limit-probe.js';
-import { readUsageSnapshot } from '../usage/usage-store.js';
+import { confirmSessionCap } from '../usage/confirm-cap.js';
+import { resolveSessionIdentity, maskEmail } from '../session/session-identity.js';
+import { nextModel } from '../usage/next-model.js';
+import { createTerminalWriter } from '../ui/terminal-writer.js';
+import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-store.js';
+import { startUsageRefresher } from '../usage/usage-refresher.js';
 import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
 import { wantsContinue, withoutContinue } from '../launcher/continue-args.js';
@@ -52,7 +57,11 @@ import {
   writeAndCarry,
   type SharingSnapshot,
 } from '../accounts/shared-login.js';
-import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
+import { carryTargets } from '../accounts/duplicate-guard.js';
+import {
+  pullProfileIntoSession,
+  recoverLoginFromLiveSession,
+} from '../accounts/credential-sync.js';
 import { decideSaveBack } from '../accounts/save-back.js';
 import {
   freshMirrorState,
@@ -67,9 +76,9 @@ import { takeLease, touchLease, releaseLease } from '../session/lease.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
 import { ensureLoginUsable, readinessMessage, swapMode } from '../session/preflight.js';
 import { renewalIsDue, refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
-import { withCredentialLock, withCredentialLockIfFree } from '../claude/locks.js';
+import { withCredentialLock, withCredentialLockIfFree, acquireLockDir } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
-import { appendEvent } from '../events/log.js';
+import { appendEvent, type EventDetail } from '../events/log.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 
@@ -201,13 +210,25 @@ function writeJsonSafe(file: string, data: unknown): void {
 export async function runInteractiveHotSwap(context: CliContext, args: string[]): Promise<number> {
   const accounts = listAccounts(context.ctx);
   const claude = getClaude(context);
-  const sessionDir = path.join(configHome(context.ctx), 'session');
+  // A directory of this session's OWN, never one shared with other sessions.
+  // Starting a session copies the chosen account's login into here, so while
+  // this was shared the second session to start took the first one's account:
+  // the first terminal carried on as somebody else, its limits were recorded
+  // against the wrong account, and the save-back wrote the borrowed login into
+  // the wrong profile. Swept first, because a session that is killed never gets
+  // to clean up, and what it leaves behind is a credential.
+  sweepDeadSessionDirs(context.ctx, { keepPid: process.pid });
+  const sessionDir = sessionDirFor(process.pid, context.ctx);
   secureMkdir(sessionDir);
   const sessionCreds = path.join(sessionDir, CREDS);
   // Share the user's REAL ~/.claude session/memory store (projects) so /resume
   // and project memories are complete and identical in ccx sessions and plain
   // `claude` alike. Self-heals each start; skips safely if files are busy.
   ensureSharedProjects(sessionDir, context.ctx);
+  // The model pin lives in these settings, and this directory is new every
+  // session now, so carry forward what the last one ended with before falling
+  // back to an account's defaults.
+  seedFromKeptSettings(sessionDir, context.ctx);
   seedSessionSettings(sessionDir, accounts);
   // Bring in the user's real settings (hooks, permissions), session keys winning.
   mergeUserSettings(sessionDir, context.ctx);
@@ -217,7 +238,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   const err = context.err ?? ((m: string) => process.stderr.write(`${m}\n`));
   const home = configHome(context.ctx);
   // Record events to the shared log so an open `ccx dashboard` shows swaps live.
-  const logEvent = (m: string): void => appendEvent(home, m, Date.now());
+  // The detail is the evidence a decision was based on, so the log can answer
+  // "why did it do that" on its own.
+  const logEvent = (m: string, detail: EventDetail = {}): void =>
+    appendEvent(home, m, Date.now(), detail);
   const debugLog = process.env.CAS_DEBUG ? path.join(sessionDir, 'session-debug.log') : undefined;
 
   /**
@@ -232,6 +256,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * use rather than the one that is already spent.
    */
   let chosenModel: string | null = null;
+  /**
+   * Models proven spent during THIS run, so the fallback walks forward instead
+   * of handing back a model that has already run out.
+   */
+  const spentModels: string[] = [];
 
   /**
    * Tell the operator something, by whichever channel does not wreck the screen.
@@ -240,19 +269,30 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * which draw nothing, plus the event log that `ccx dashboard` and `ccx history`
    * read. Between sessions, when nothing owns the screen, plain stderr.
    */
-  const notice = (message: string): void => {
+  const notice = (message: string, detail: EventDetail = {}): void => {
     // While Claude owns the terminal this goes to the LOG and nowhere else.
     // Writing anything, even an escape sequence that renders nothing, pushes
     // bytes into a terminal that is mid-draw and corrupts what is on screen.
     // `ccx dashboard` and `ccx history` are where these are read.
-    logEvent(message);
+    logEvent(message, detail);
     if (!claudeOwnsScreen) err(`[ccx] ${message}`);
   };
+
+  /**
+   * The one owner of what ccx writes to this terminal: closing messages are
+   * held while Claude is drawing (last one wins) and said when the screen comes
+   * back, the child's terminal modes are put back at the end of the run, and a
+   * crash guard covers a wrapper that dies without its finally blocks.
+   */
+  const screen = createTerminalWriter({ line: err });
 
   /** Claude has the terminal from here; ccx stays off it until told otherwise. */
   const takeScreen = (owned: boolean): void => {
     claudeOwnsScreen = owned;
     setTerminalOwnedElsewhere(owned);
+    // Handed back: anything held while Claude was drawing can be said now.
+    if (owned) screen.childStarted();
+    else screen.childEnded();
   };
 
   let current: Account | null = null;
@@ -268,25 +308,127 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // Which model was out, when the limit was about one model rather than the
   // whole account. Recorded with the limit so it never blocks other models.
   let limitedModel: string | undefined;
+  /**
+   * The confirmed limit's own reset time. The PTY outcome only carries what
+   * the screen text offered, which is usually nothing; the probe's answer is
+   * the one worth recording, or the ledger falls back to a fixed backoff and
+   * benches the account long after its window reopened.
+   */
+  let limitedResetAt: number | undefined;
+  /**
+   * Who a confirmed limit actually belongs to, when that is not the account
+   * ccx believed. A session forced through /login comes back as whatever
+   * account the browser picked, and from then on the limit banner on screen is
+   * THAT account's. Recording the cap against the believed account would take
+   * a healthy account out of rotation on somebody else's limit.
+   */
+  let capOwner: string | null = null;
+  /**
+   * Set when the session turned out to be signed in as an address nobody has
+   * registered. There is no account to cap, and no account SHOULD be capped:
+   * the session still rotates off it, and the log says why nothing was
+   * recorded.
+   */
+  let capUnregisteredEmail: string | null = null;
+
+  /**
+   * Tell the rotation how WIDE a limit was, so a spent model does not read as a
+   * spent account.
+   *
+   * Without this the caller sees a bare "capped" and sets the account aside,
+   * which empties the candidate list and skips the model switch that lives in
+   * `nextAccount`, because that only runs while there are candidates left.
+   */
+  const withCapScope = (outcome: SessionOutcome): SessionOutcome =>
+    outcome.kind === 'capped' && limitedModel ? { ...outcome, cappedModel: limitedModel } : outcome;
 
   // Ground-truth cap check: rendered text only TRIGGERS this; the API decides.
-  // Uses the SESSION credential (the live, possibly-refreshed token).
+  //
+  // Asked of the SESSION'S OWN login, because with one directory per session
+  // that login is exactly the identity that rendered the banner on screen. The
+  // profile is only the guess: after a mid-session /login the session can be a
+  // different account than ccx believes, and asking the believed account about
+  // the actual account's banner is how a session deadlocked for hours, probing
+  // a healthy account and logging "no cap is confirmed" on every render.
+  //
+  // WHO the limit belongs to is resolved alongside, and the cap is recorded
+  // against that account, never against the believed one on somebody else's
+  // evidence.
   const verifyCap = async (renderedText: string): Promise<boolean> => {
     let verdict: string;
+    let refusalData: EventDetail['data'];
     if (context.verifyCap) {
       verdict = await context.verifyCap(renderedText);
+      // The injected verifier answers yes or no and nothing else, so anything
+      // held from an EARLIER verification must not survive into this one: a
+      // stale model here scopes the new cap to a limit it did not come from.
+      limitedModel = undefined;
+      limitedResetAt = undefined;
     } else {
-      const probe = await probeLimit(sessionCreds, renderedText);
-      verdict = probe.verdict;
-      limitedModel = probe.limitedModel;
+      const identity = resolveSessionIdentity({
+        sessionDir,
+        believed: current,
+        accounts,
+      });
+      const decision = await confirmSessionCap(
+        { sessionDir, believedDir: current?.dir ?? null },
+        renderedText,
+      );
+      verdict = decision.limited ? 'limited' : 'allowed';
+      limitedModel = decision.model;
+      limitedResetAt = decision.resetAt;
+      // Identities are logged by ACCOUNT NAME when they resolve to one, and as
+      // a masked address when they do not: the event log is a rotating shared
+      // file the dashboard renders, and a raw address is a stronger identifier
+      // than it needs to carry.
+      const identityLabel = identity.actual
+        ? identity.actual.name
+        : identity.email
+          ? maskEmail(identity.email)
+          : null;
+      refusalData = {
+        askedOf: decision.askedOf,
+        ...(decision.detail ? { detail: decision.detail } : {}),
+        ...(current ? { believed: current.name } : {}),
+        ...(identityLabel ? { sessionIdentity: identityLabel } : {}),
+      };
+      if (decision.limited && identity.mismatch) {
+        if (identity.actual) {
+          capOwner = identity.actual.name;
+          logEvent(
+            `this session is actually "${identity.actual.name}", not "${current?.name}"; ` +
+              `the limit on screen belongs to "${identity.actual.name}" and is recorded there`,
+            {
+              kind: 'identity-mismatch',
+              data: {
+                believed: current?.name ?? null,
+                actual: identity.actual.name,
+                askedOf: decision.askedOf,
+                ...(decision.model ? { model: decision.model } : {}),
+              },
+            },
+          );
+        } else {
+          capUnregisteredEmail = identity.email ? maskEmail(identity.email) : 'an unknown login';
+          logEvent(
+            `this session is signed in as ${capUnregisteredEmail}, which is not a registered ` +
+              'account; rotating off it without recording a cap against anyone',
+            {
+              kind: 'identity-mismatch',
+              data: { believed: current?.name ?? null, actual: null, email: capUnregisteredEmail },
+            },
+          );
+        }
+      }
     }
     if (verdict !== 'limited') {
       // This fires whenever limit-looking text renders and the API refutes it,
       // which includes a conversation that merely TALKS about rate limits. Far
-      // too noisy for the screen; the log is where it belongs.
+      // too noisy for the screen; the log is where it belongs, and it carries
+      // the probe's answer so the refusal can be judged later.
       notice(
-        'limit text on screen, but no account-wide cap is confirmed; not switching. ' +
-          'For a per-model limit, switch yourself: ccx use <name>',
+        'limit text on screen, but the login this session runs on shows no spent window; not switching',
+        { kind: 'cap-verify', ...(refusalData ? { data: refusalData } : {}) },
       );
     }
     return verdict === 'limited';
@@ -359,7 +501,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       carried = writeAndCarry(
         account,
         accounts,
-        renewalWouldBreakOthers(account, accounts),
+        carryTargets(account, accounts),
         // Keeps the account's previous credential as a rollback cushion.
         () => void installCredential(account.dir, sessionCreds),
       );
@@ -496,6 +638,32 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     });
   };
 
+  /**
+   * Carry a renewal that happened ELSEWHERE into this running session.
+   *
+   * The mirror above is the other direction (this session renews, the profile
+   * receives). Without this one, a renewal by any OTHER holder of the login (a
+   * sibling session, a session start, the dashboard) retires the lineage this
+   * session is holding, and its next refresh dies with "please run /login" in
+   * the middle of working. Throttled: the common case is "same login on both
+   * sides" and it needs checking, not checking every 400ms.
+   */
+  let lastPullCheck = 0;
+  const pullRenewedLogin = (account: Account): void => {
+    const now = Date.now();
+    if (now - lastPullCheck < 5_000) return;
+    lastPullCheck = now;
+    if (pullProfileIntoSession(account, sessionDir, context.ctx) === 'pulled') {
+      // What was just installed came FROM the profile, so it is not a change
+      // to mirror back; settling it here saves an identity lookup per pull.
+      mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
+      logEvent(`the "${account.name}" login was renewed elsewhere; this session picked it up`, {
+        kind: 'credential-sync',
+        data: { account: account.name, direction: 'pull' },
+      });
+    }
+  };
+
   /** Remove the live credential from the shared session dir so it never lingers. */
   const scrubSessionCreds = (): void => {
     try {
@@ -512,6 +680,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * instead of leaving the session on a half-applied account.
    */
   const activate = (account: Account): void => {
+    // A fresh activation installs this account's own login, so whatever
+    // identity drift the previous session had is corrected here and the cap
+    // attribution starts clean.
+    capOwner = null;
+    capUnregisteredEmail = null;
     // The ORDER of announce / copy / release is the safety property, so it lives
     // in activateWithLease where tests pin it: announce first, copy second,
     // release the old one last. Any gap between a login being in use and being
@@ -549,9 +722,75 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     current = account;
   };
 
+  /**
+   * Write a confirmed cap to the ledger, honestly attributed.
+   *
+   * One function for BOTH callers: the swap loop's markCapped, and the
+   * in-session model fallback. The fallback used to skip this entirely: when
+   * switching model in place succeeded, the capped outcome never reached the
+   * swap loop, the spent model went unrecorded, and every other session kept
+   * choosing it.
+   */
+  const recordCap = (accountName: string, reason: string, resetAt: number | undefined): void => {
+    if (capUnregisteredEmail) {
+      // There is no registered account to record this against, and the
+      // believed account must NOT take it: nothing of its is spent. The
+      // rotation still moves off the session; this only skips the ledger.
+      logEvent(
+        `"${accountName}" was not capped: the limit belonged to ${capUnregisteredEmail}, ` +
+          'which is not a registered account',
+        { kind: 'cap-skipped', data: { email: capUnregisteredEmail, believed: accountName } },
+      );
+      capUnregisteredEmail = null;
+      return;
+    }
+    saveLedger(
+      markCapped(loadLedger(context.ctx), {
+        account: accountName,
+        now: Date.now(),
+        resetAt: resetAt ?? limitedResetAt ?? null,
+        backoffMinutes: context.config.rotation.defaultBackoffMinutes,
+        reason,
+        ...(limitedModel ? { model: limitedModel } : {}),
+      }),
+      context.ctx,
+    );
+    logEvent(`${accountName} hit its limit`, {
+      kind: 'capped',
+      data: {
+        reason,
+        resetAt: resetAt ?? limitedResetAt ?? null,
+        ...(limitedModel ? { model: limitedModel } : {}),
+      },
+    });
+  };
+
   // Claim the operator's keyboard once for the whole run; every session in the
   // swap loop borrows it, so terminal mode is never toggled mid-swap.
   const terminalInput = openTerminalInput();
+
+  // Keep the usage snapshot alive for the whole run, whatever the proactive
+  // setting is. Refreshing was coupled to proactive rotation (a feature, off
+  // by default), so with no dashboard open NOTHING refreshed: rotation chose
+  // targets from hours-old numbers and idle profiles' logins quietly rotted.
+  const usageWatch = startUsageRefresher(
+    {
+      refresh: () => refreshUsage(listAccounts(context.ctx), context.ctx),
+      snapshotAgeMs: () => snapshotAgeMs(context.ctx),
+      tryLock: () => acquireLockDir(path.join(home, 'usage-refresh.lock'), { waitMs: 0 }),
+      onOutcome: (outcome, detail) => {
+        if (outcome === 'error') {
+          const minutes = Number.isFinite(detail.ageMs) ? Math.round(detail.ageMs / 60_000) : null;
+          logEvent(
+            'usage refresh failed; rotation is choosing from ' +
+              (minutes === null ? 'no data at all' : `data ${minutes} minutes old`),
+            { kind: 'usage-refresh', data: { outcome, ...detail } },
+          );
+        }
+      },
+    },
+    Math.max(30, context.config.rotation.usageCheckSeconds) * 1000,
+  );
 
   // Watch our own headroom and hand the session to a roomier account before the
   // current one runs out. The switch goes through the normal request path, so
@@ -647,9 +886,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const a = accounts.find((x) => x.name === name);
       return a && hasLogin(a.dir) ? { name: a.name, dir: a.dir } : null;
     },
-    // The account the session is ACTUALLY on right now (may have moved via a
-    // seamless swap), so a cap is attributed to the right account.
-    currentAccount: () => current?.name ?? '',
+    // The account the session is ACTUALLY on right now: a seamless swap may
+    // have moved it, and a verified limit may have turned out to belong to the
+    // account the session was really signed in as. Caps are attributed here.
+    currentAccount: () => capOwner ?? current?.name ?? '',
     // Every account has hit a limit. If those limits are about ONE MODEL, the
     // session still works on another model, so start it and say which model is
     // out. Refusing here is what made a Fable limit look like being signed out.
@@ -674,17 +914,38 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       if (!account) return { kind: 'ok', exitCode: 1 };
       // Read BEFORE the renewal: it rotates the token, so afterwards there is
       // no shared value left to identify who was sharing it.
-      const sharing = snapshotSharing(account, accounts, renewalWouldBreakOthers(account, accounts));
+      const sharing = snapshotSharing(account, accounts, carryTargets(account, accounts));
       // Check the login BEFORE copying it into the session. A login that merely
       // expired is renewed here, which is safe precisely because nothing is using
       // this account yet, and a login that is genuinely finished is named, with
       // the command that fixes it, rather than turning into Claude saying you are
       // logged out for no visible reason.
-      const readiness = await ensureLoginUsable({
-        hasLogin: () => hasLogin(account.dir),
-        renewalDue: () => renewalIsDue(account.dir),
-        renew: () => refreshCredentialIfExpired(account.dir, { ctx: context.ctx }),
-      });
+      const checkReadiness = () =>
+        ensureLoginUsable({
+          hasLogin: () => hasLogin(account.dir),
+          renewalDue: () => renewalIsDue(account.dir),
+          renew: () => refreshCredentialIfExpired(account.dir, { ctx: context.ctx }),
+        });
+      let readiness = await checkReadiness();
+      if (readiness.state === 'needs-login') {
+        // The stored login is dead, but a LIVE session of this account may be
+        // running on a renewed one the hub never heard about: its Claude
+        // refreshed, the mirror had not landed yet, and the profile kept the
+        // retired copy. Adopting the live one is the difference between
+        // starting normally and demanding a sign-in the operator does not owe.
+        const recovered = recoverLoginFromLiveSession(account, sessionDir, context.ctx);
+        if (recovered.recovered) {
+          logEvent(
+            `the stored "${account.name}" login was dead; adopted the working one from ` +
+              `its live session (pid ${recovered.fromPid})`,
+            {
+              kind: 'credential-sync',
+              data: { account: account.name, direction: 'recover', fromPid: recovered.fromPid },
+            },
+          );
+          readiness = await checkReadiness();
+        }
+      }
       if (readiness.state === 'renewed') {
         logCredentialEvent(
           {
@@ -747,6 +1008,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         if (!current) return;
         touchLease(current.name, context.ctx);
         mirrorSessionLoginToProfile(current);
+        pullRenewedLogin(current);
       };
       const switchWatch = (): string | null => {
         const request = readSwitchRequest(context.ctx);
@@ -824,25 +1086,44 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // resume that found nothing.
           return await runPtySession({ ...base, args: withoutContinue(modelArgs) });
         }
-        return outcome;
+        // A limit about ONE MODEL is not a reason to give up this account: it
+        // still has room on everything else. Change model and carry on here,
+        // rather than rotating away and eventually reporting that every account
+        // is capped while sitting on one with most of its week left.
+        if (outcome.kind === 'capped' && limitedModel) {
+          if (!spentModels.some((m) => m.toLowerCase() === limitedModel!.toLowerCase())) {
+            spentModels.push(limitedModel);
+          }
+          const fallback = nextModel(context.config.rotation.modelPreference, spentModels);
+          if (fallback) {
+            // Recorded BEFORE the fallback runs: when the fallback succeeds,
+            // this capped outcome never reaches the swap loop's markCapped,
+            // and an unrecorded model cap is a model every other session keeps
+            // choosing. A second model-scoped cap after this advances through
+            // the remaining models via the swap loop, which re-enters here
+            // with spentModels carrying the history.
+            recordCap(
+              capOwner ?? current?.name ?? account.name,
+              outcome.reason ?? 'usage cap',
+              outcome.resetAt,
+            );
+            chosenModel = fallback;
+            notice(`out of ${limitedModel} here; switching to ${fallback} and carrying on`);
+            const next = await runPtySession({
+              ...base,
+              args: wantContinue
+                ? [...withModel(args, fallback), '--continue']
+                : withModel(args, fallback),
+            });
+            return withCapScope(next);
+          }
+        }
+        return withCapScope(outcome);
       } finally {
         takeScreen(false);
       }
     },
-    markCapped: (accountName, reason, resetAt) => {
-      saveLedger(
-        markCapped(loadLedger(context.ctx), {
-          account: accountName,
-          now: Date.now(),
-          resetAt: resetAt ?? null,
-          backoffMinutes: context.config.rotation.defaultBackoffMinutes,
-          reason,
-          ...(limitedModel ? { model: limitedModel } : {}),
-        }),
-        context.ctx,
-      );
-      logEvent(`${accountName} hit its limit`);
-    },
+    markCapped: (accountName, reason, resetAt) => recordCap(accountName, reason, resetAt),
     notify: (m) => {
       // NOT stderr: Claude owns the screen while a session runs, so writing
       // there scribbles over the interface. The terminal notification draws
@@ -853,15 +1134,25 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // The ending, which is the opposite situation: no session is running, so
     // the screen is ours and staying quiet tells the operator nothing.
     report: (m) => {
-      (context.err ?? ((line: string) => process.stderr.write(`${line}\n`)))(`ccx: ${m}`);
       logEvent(m);
+      // Never onto a screen Claude is drawing on: the words land inside its
+      // input box looking like something the operator typed, which reads as a
+      // live refusal of a session that is in fact running. Held rather than
+      // dropped, so it still gets said the moment the terminal comes back.
+      screen.say(`ccx: ${m}`);
     },
     knownCappedAccounts: () => [...cappedNames(loadLedger(context.ctx), Date.now())],
   });
 
   // No more sessions will run: stop watching usage and restore the terminal.
   proactive.stop();
+  usageWatch.stop();
   terminalInput.close();
+  // The last write of the run: put the child's terminal modes back once more
+  // (a flush that landed after the per-session reset can have switched them
+  // back on) and say anything still held. After this the shell has the
+  // terminal, and it must not be receiving mouse reports as typed text.
+  screen.runEnding();
   // On exit, save any refreshed credential back to its account. The session's
   // copy is deliberately LEFT in place: removing it makes anything that looks at
   // this session afterwards report "not logged in", which sends you chasing a

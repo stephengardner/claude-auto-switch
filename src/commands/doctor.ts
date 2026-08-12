@@ -174,10 +174,26 @@ function samePath(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
+/**
+ * The session directory worth inspecting.
+ *
+ * Sessions get one each now, so there is no single fixed path to look at. A
+ * running one is the honest subject; the pre-split single directory is the
+ * fallback so a session started before the upgrade is still reported on.
+ */
+function currentSessionDir(context: CliContext): string {
+  const live = liveLeases(context.ctx)
+    .map((lease) => lease.configDir)
+    .filter((dir): dir is string => typeof dir === 'string' && dir.length > 0);
+  // liveLeases sorts oldest first, so the LAST entry is the most recently
+  // refreshed session, which is the honest subject to inspect.
+  return live[live.length - 1] ?? path.join(configHome(context.ctx), 'session');
+}
+
 /** Session history: ccx must SHARE ~/.claude/projects, never fork it. */
 export function auditSharedHistory(context: CliContext): DoctorCheck {
   const name = 'shared-history';
-  const sessionDir = path.join(configHome(context.ctx), 'session');
+  const sessionDir = currentSessionDir(context);
   const link = path.join(sessionDir, 'projects');
   if (!existsSync(sessionDir)) {
     return { name, ok: true, detail: 'no ccx session yet (links on first session)' };
@@ -369,7 +385,7 @@ export async function runDoctor(
     auditShim(context, deps),
     auditSharedHistory(context),
     auditSessionAccount({
-      sessionDir: path.join(configHome(context.ctx), 'session'),
+      sessionDir: currentSessionDir(context),
       activeAccount: getActive(context.ctx),
       accounts: listAccounts(context.ctx),
       leases: liveLeases(context.ctx),

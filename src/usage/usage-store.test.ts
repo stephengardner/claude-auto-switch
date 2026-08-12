@@ -540,3 +540,91 @@ describe('a shared login where only the OTHER profile is busy', () => {
     expect(renewed).toEqual([]);
   });
 });
+
+describe('whose login answers for an account, when a session is running', () => {
+  /** Write the identity Claude records for a config directory. */
+  function signedInAs(dir: string, email: string) {
+    writeFileSync(path.join(dir, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: email } }), 'utf8');
+  }
+
+  function liveSession(home: string, name: string, token: string) {
+    const dir = path.join(home, name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: token, refreshToken: `rt-${token}` } }),
+      'utf8',
+    );
+    return dir;
+  }
+
+  it('uses the profile when the session directory is signed in as SOMEBODY ELSE', async () => {
+    // The production failure. Sessions shared one directory, so the login in it
+    // belonged to whichever account started last. Reading it filed that
+    // account's usage under this one: augdog911 has 21% of its week used and
+    // 35% of its Fable, and was recorded at 57% with Fable spent, then routed
+    // around as out of room while its own numbers said it was fine.
+    const { c, accounts } = setup(['maxed']);
+    const home = path.dirname(path.dirname(accounts[0]!.dir));
+    signedInAs(accounts[0]!.dir, 'augdog911@gmail.com');
+    const shared = liveSession(home, 'shared-session', 'tok-someone-else');
+    signedInAs(shared, 'contactshopsheriff@gmail.com');
+    takeLease('maxed', shared, c);
+
+    const probed: string[] = [];
+    await refreshUsage(accounts, c, {
+      probe: (file) => {
+        probed.push(file);
+        return Promise.resolve(result(0.03, 0.21));
+      },
+      renew: () => Promise.resolve({ status: 'not-needed' as const }),
+    });
+
+    expect(probed).toHaveLength(1);
+    expect(probed[0]).toContain(path.join('profiles', 'maxed'));
+    expect(probed[0]).not.toContain('shared-session');
+  });
+
+  it('still prefers the session copy when it IS this account', async () => {
+    // A running Claude keeps its own copy fresher than the profile's, so this
+    // has to keep working: the guard is about the wrong ACCOUNT, not about
+    // distrusting live sessions.
+    const { c, accounts } = setup(['solo']);
+    const home = path.dirname(path.dirname(accounts[0]!.dir));
+    signedInAs(accounts[0]!.dir, 'solo@example.com');
+    const own = liveSession(home, 'own-session', 'tok-fresh');
+    signedInAs(own, 'solo@example.com');
+    takeLease('solo', own, c);
+
+    const probed: string[] = [];
+    await refreshUsage(accounts, c, {
+      probe: (file) => {
+        probed.push(file);
+        return Promise.resolve(result(0.1, 0.2));
+      },
+      renew: () => Promise.resolve({ status: 'not-needed' as const }),
+    });
+
+    expect(probed[0]).toContain('own-session');
+  });
+
+  it('prefers the session copy when neither side records an identity', async () => {
+    // Not knowing is not evidence of a mismatch. Falling back on unknown would
+    // give a staler answer for no reason.
+    const { c, accounts } = setup(['quiet']);
+    const home = path.dirname(path.dirname(accounts[0]!.dir));
+    const anon = liveSession(home, 'anon-session', 'tok-anon');
+    takeLease('quiet', anon, c);
+
+    const probed: string[] = [];
+    await refreshUsage(accounts, c, {
+      probe: (file) => {
+        probed.push(file);
+        return Promise.resolve(result(0.1, 0.2));
+      },
+      renew: () => Promise.resolve({ status: 'not-needed' as const }),
+    });
+
+    expect(probed[0]).toContain('anon-session');
+  });
+});

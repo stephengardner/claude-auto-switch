@@ -125,6 +125,56 @@ describe('a message that repeats', () => {
   });
 });
 
+describe('an event that carries its evidence', () => {
+  it('stores and returns the kind and the data alongside the sentence', () => {
+    // The requirement this exists for: when anything happens, the log says what
+    // the issue is. The sentence is the diagnosis; the data is the numbers it
+    // was based on, so "why did it do that" is answerable later without
+    // reproducing the moment.
+    const h = home();
+    appendEvent(h, 'limit belongs to contactss, not main', 1000, {
+      kind: 'identity-mismatch',
+      data: { believed: 'main', actual: 'contactss', fiveHour: 0.05 },
+    });
+    const [r] = readEvents(h);
+    expect(r?.kind).toBe('identity-mismatch');
+    expect(r?.data).toEqual({ believed: 'main', actual: 'contactss', fiveHour: 0.05 });
+  });
+
+  it('keeps the NEWEST occurrence\'s data when repeats fold', () => {
+    // Same rule as the timestamp: a repeat is asked "is this still going, and
+    // why", and the answer is the state as of the last time, not the first.
+    const h = home();
+    appendEvent(h, 'still refusing', 1000, { kind: 'cap-verify', data: { fiveHour: 0.2 } });
+    appendEvent(h, 'still refusing', 2000, { kind: 'cap-verify', data: { fiveHour: 0.9 } });
+    const [r] = readEvents(h);
+    expect(r?.count).toBe(2);
+    expect(r?.data).toEqual({ fiveHour: 0.9 });
+  });
+
+  it('reads records written before kind and data existed', () => {
+    const h = home();
+    mkdirSync(h, { recursive: true });
+    writeFileSync(eventsFilePath(h), `${JSON.stringify({ at: 1000, msg: 'old style' })}\n`);
+    expect(readEvents(h)).toEqual([{ at: 1000, msg: 'old style' }]);
+  });
+
+  it('drops a data field that is not a plain object, keeping the sentence', () => {
+    // The input is a file, and anything can write one. Rendering a string or an
+    // array where an object was promised would surprise whoever formats it.
+    const h = home();
+    mkdirSync(h, { recursive: true });
+    writeFileSync(
+      eventsFilePath(h),
+      `${JSON.stringify({ at: 1000, msg: 'edited', data: 'not-an-object' })}\n` +
+        `${JSON.stringify({ at: 2000, msg: 'also edited', data: [1, 2] })}\n`,
+    );
+    const records = readEvents(h);
+    expect(records[0]).toEqual({ at: 1000, msg: 'edited' });
+    expect(records[1]).toEqual({ at: 2000, msg: 'also edited' });
+  });
+});
+
 describe('event log', () => {
   it('returns [] when there is no log yet', () => {
     expect(readEvents(home())).toEqual([]);

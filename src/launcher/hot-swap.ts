@@ -15,6 +15,12 @@ export interface SessionOutcome {
    * capped every account the operator had.
    */
   ranMs?: number;
+  /**
+   * Set when ONE model ran out rather than the account. The account still works
+   * on everything else, so it keeps its place in the rotation and the MODEL is
+   * what changes.
+   */
+  cappedModel?: string;
   /** For kind 'switch': the account the operator asked to switch to, in place. */
   switchTo?: string;
 }
@@ -114,6 +120,15 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
    * nothing is exhausted and the fix is a sign-in rather than a wait.
    */
   const needsLogin = new Set<string>(deps.knownDeadAccounts?.() ?? []);
+  /**
+   * "account|model" pairs that have already run out during this session.
+   *
+   * A model-scoped limit does NOT take the account out of rotation, so
+   * something has to stop the loop handing the same account back forever. One
+   * try per account per model is that bound: after it, the account is set aside
+   * like an account-wide limit.
+   */
+  const modelCapped = new Set<string>();
   let first = true;
   // When the operator picks an account mid-session, we relaunch on THAT account
   // next (instead of the policy pick), resuming the same conversation.
@@ -171,8 +186,24 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
     if (outcome.kind === 'capped') {
       // The session may have moved via a seamless swap; attribute to the real one.
       const capName = deps.currentAccount?.() || account.name;
-      capped.add(capName);
       deps.markCapped(capName, outcome.reason ?? 'usage cap', outcome.resetAt);
+
+      // A limit about ONE MODEL leaves the account working on every other model,
+      // so it stays in the rotation and the model changes instead. Setting it
+      // aside here is what emptied the candidate list, and the switch to the
+      // next model lives in `nextAccount`, which only runs while that list has
+      // something in it. So the eviction removed the very fallback it needed to
+      // reach, and runs ended on "every account has hit its limit" sitting on an
+      // account with most of its week still free.
+      const scopedTo = outcome.cappedModel;
+      const pair = scopedTo ? `${capName}|${scopedTo.toLowerCase()}` : '';
+      if (scopedTo && !modelCapped.has(pair)) {
+        modelCapped.add(pair);
+        deps.notify(`"${capName}" is out of ${scopedTo}; staying here on another model...`);
+        continue;
+      }
+
+      capped.add(capName);
       deps.notify(`"${capName}" hit its limit; continuing on another account...`);
       continue;
     }

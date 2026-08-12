@@ -26,6 +26,24 @@ export interface EventRecord {
    * so records written before this existed still read correctly.
    */
   count?: number;
+  /**
+   * What KIND of thing happened (cap-verify, credential-sync, identity-mismatch,
+   * ...), so the log can be filtered by decision rather than by prose.
+   */
+  kind?: string;
+  /**
+   * The evidence the decision was based on: the numbers, names and verdicts as
+   * they were at that moment. The message stays the human sentence; this is what
+   * lets "why did it do that?" be answered from the log alone instead of by
+   * reproducing the moment.
+   */
+  data?: Record<string, unknown>;
+}
+
+/** The structured half of an event, alongside its human-readable message. */
+export interface EventDetail {
+  kind?: string;
+  data?: Record<string, unknown>;
 }
 
 export function eventsFilePath(configHome: string): string {
@@ -59,6 +77,11 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
         at: record.at,
         msg: record.msg,
         count: Number.isSafeInteger(total) ? total : Number.MAX_SAFE_INTEGER,
+        // The newest occurrence's evidence, matching `at`: when the same thing
+        // has happened forty times, the state as of the LAST time is the one
+        // that answers "is this still going, and why".
+        ...(record.kind ? { kind: record.kind } : {}),
+        ...(record.data ? { data: record.data } : {}),
       };
     } else {
       out.push(record);
@@ -114,6 +137,12 @@ function parseRecords(text: string): EventRecord[] {
           ...(Number.isSafeInteger(r.count) && (r.count as number) > 1
             ? { count: r.count as number }
             : {}),
+          ...(typeof r.kind === 'string' && r.kind.length > 0 ? { kind: r.kind } : {}),
+          // A plain object only. Anything else (a string, an array, null) came
+          // from a hand-edited line, and rendering it later would surprise.
+          ...(r.data && typeof r.data === 'object' && !Array.isArray(r.data)
+            ? { data: r.data as Record<string, unknown> }
+            : {}),
         });
       }
     } catch {
@@ -156,11 +185,22 @@ const TRIM_BYTES = 64 * 1024;
  * go away. Writing is best effort besides: telemetry must never be able to stop
  * the thing it is describing.
  */
-export function appendEvent(configHome: string, msg: string, now: number): void {
+export function appendEvent(
+  configHome: string,
+  msg: string,
+  now: number,
+  detail: EventDetail = {},
+): void {
   const file = eventsFilePath(configHome);
   try {
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    appendFileSync(file, `${JSON.stringify({ at: now, msg })}\n`, { mode: 0o600 });
+    const record = {
+      at: now,
+      msg,
+      ...(detail.kind ? { kind: detail.kind } : {}),
+      ...(detail.data ? { data: detail.data } : {}),
+    };
+    appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
   } catch {
     return; // a lost log line must never break a session
   }
