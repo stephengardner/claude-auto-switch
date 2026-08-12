@@ -82,6 +82,8 @@ function dirWithLogin(root: string, name: string, token: string, expiresAt: numb
 }
 
 describe('carrying a renewal into a running session', () => {
+  // A scratch home, so these tests' log entries never land in the real one.
+  const scratch = (root: string) => ({ env: { CLAUDE_AUTO_SWITCH_HOME: root } });
   it('replaces the session copy and reports what it did', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-'));
     const profile = dirWithLogin(root, 'profile', 'new', 9_000);
@@ -89,6 +91,7 @@ describe('carrying a renewal into a running session', () => {
     const result = pullProfileIntoSession(
       { name: 'work', dir: profile, email: 'a@example.com' },
       session,
+      scratch(root),
     );
     expect(result).toBe('pulled');
     expect(credentialFingerprint(session)).toBe(credentialFingerprint(profile));
@@ -98,7 +101,7 @@ describe('carrying a renewal into a running session', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-'));
     const profile = dirWithLogin(root, 'profile', 'same', 9_000);
     const session = dirWithLogin(root, 'session', 'same', 9_000);
-    expect(pullProfileIntoSession({ name: 'work', dir: profile }, session)).toBe('skipped');
+    expect(pullProfileIntoSession({ name: 'work', dir: profile }, session, scratch(root))).toBe('skipped');
   });
 
   it('reports busy instead of waiting when a refresh holds the lock', () => {
@@ -110,7 +113,7 @@ describe('carrying a renewal into a running session', () => {
     const session = dirWithLogin(root, 'session', 'old', 1_000, 'a@example.com');
     mkdirSync(path.join(session, '.oauth_refresh.lock'), { recursive: true });
     expect(
-      pullProfileIntoSession({ name: 'work', dir: profile, email: 'a@example.com' }, session),
+      pullProfileIntoSession({ name: 'work', dir: profile, email: 'a@example.com' }, session, scratch(root)),
     ).toBe('busy');
     // And nothing was written under the busy lock.
     expect(credentialFingerprint(session)).not.toBe(credentialFingerprint(profile));
