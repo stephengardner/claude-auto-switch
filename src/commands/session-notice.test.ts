@@ -31,10 +31,10 @@ describe('what ccx says while Claude owns the screen', () => {
     // Not even an escape sequence. It renders nothing, but it is still bytes
     // pushed into a terminal that is mid-draw, which garbles the display and can
     // leave the terminal in a mode Claude is not expecting.
-    expect(source).toMatch(/const notice = \(message: string\): void => \{/);
-    const start = source.indexOf('const notice = (message: string): void => {');
+    expect(source).toMatch(/const notice = \(message: string, detail: EventDetail = \{\}\): void => \{/);
+    const start = source.indexOf('const notice = (message: string, detail: EventDetail = {}): void => {');
     const body = source.slice(start, source.indexOf('};', start));
-    expect(body).toContain('logEvent(message)');
+    expect(body).toContain('logEvent(message, detail)');
     expect(body).toContain('if (!claudeOwnsScreen)');
     expect(body).not.toContain('notifyTerminal');
   });

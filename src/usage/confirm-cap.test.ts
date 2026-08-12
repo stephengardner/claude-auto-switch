@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { confirmCap } from './confirm-cap.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { confirmCap, confirmSessionCap } from './confirm-cap.js';
 import type { LimitProbeResult } from './limit-probe.js';
 
 const probing = (result: LimitProbeResult, seen?: string[]) => (file: string) => {
@@ -86,6 +89,77 @@ describe('confirmCap', () => {
   it('refuses when there is no credential to ask', async () => {
     const decision = await confirmCap(null, 'limit', { probe: probing({ verdict: 'limited' }) });
     expect(decision.limited).toBe(false);
+  });
+});
+
+describe('whose login answers for an interactive session', () => {
+  const probing = (result: LimitProbeResult) => {
+    const asked: string[] = [];
+    return {
+      asked,
+      probe: (file: string) => {
+        asked.push(file);
+        return Promise.resolve(result);
+      },
+    };
+  };
+
+  function loginDir(name: string): string {
+    const dir = mkdtempSync(path.join(tmpdir(), `cas-cap-${name}-`));
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: `tok-${name}`, refreshToken: `rt-${name}` } }),
+    );
+    return dir;
+  }
+
+  it('asks the SESSION credential: that login rendered the banner on screen', async () => {
+    // The deadlock this ends: a session signed in as somebody else showed that
+    // account's limit banner, the believed profile answered "not capped", and
+    // the switch never came. With one directory per session, the session's own
+    // login IS the identity on screen; the profile is only a guess.
+    const session = loginDir('session');
+    const profile = loginDir('profile');
+    const { asked, probe } = probing({ verdict: 'limited', fiveHour: 1, fiveHourReset: 42 });
+    const decision = await confirmSessionCap(
+      { sessionDir: session, believedDir: profile },
+      'limit reached',
+      { probe },
+    );
+    expect(decision.limited).toBe(true);
+    expect(decision.askedOf).toBe('session');
+    expect(asked[0]).toContain(session);
+  });
+
+  it('falls back to the believed profile when the session has no usable login', async () => {
+    // A signed-out session dir holds a credential file with EMPTY tokens; the
+    // profile is the better guess then, and the decision says which was asked.
+    const session = mkdtempSync(path.join(tmpdir(), 'cas-cap-empty-'));
+    writeFileSync(
+      path.join(session, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: '' } }),
+    );
+    const profile = loginDir('believed');
+    const { asked, probe } = probing({ verdict: 'allowed' });
+    const decision = await confirmSessionCap(
+      { sessionDir: session, believedDir: profile },
+      'limit reached',
+      { probe },
+    );
+    expect(decision.askedOf).toBe('profile');
+    expect(asked[0]).toContain(profile);
+  });
+
+  it('refuses outright when neither side has a credential to ask', async () => {
+    const session = mkdtempSync(path.join(tmpdir(), 'cas-cap-none-'));
+    const { asked, probe } = probing({ verdict: 'limited', fiveHour: 1 });
+    const decision = await confirmSessionCap(
+      { sessionDir: session, believedDir: null },
+      'limit reached',
+      { probe },
+    );
+    expect(decision.limited).toBe(false);
+    expect(asked).toHaveLength(0);
   });
 });
 

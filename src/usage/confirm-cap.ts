@@ -1,4 +1,6 @@
+import path from 'node:path';
 import { capProbeCredential } from './cap-probe-credential.js';
+import { isUsableCredential, CREDENTIALS_FILE } from '../accounts/credential-vault.js';
 import { probeLimit, type LimitProbeResult } from './limit-probe.js';
 
 /**
@@ -58,8 +60,54 @@ export async function confirmCap(
   const probe = deps.probe ?? probeLimit;
   const credentials = capProbeCredential(accountDir, deps.sessionCredentials ?? '');
   if (!credentials) return { limited: false, detail: 'no credential to ask' };
+  return decideFromProbe(await probe(credentials, renderedText));
+}
 
-  const result = await probe(credentials, renderedText);
+/** A cap decision that also says WHOSE credential answered. */
+export interface SessionCapDecision extends CapDecision {
+  askedOf: 'session' | 'profile';
+}
+
+/**
+ * Confirm a limit for an INTERACTIVE session, asking the session's own login.
+ *
+ * The old rule here was the profile's credential, "the account we are about to
+ * cap", written when every session shared one directory and the session
+ * credential could belong to any concurrent run. One directory per session
+ * inverted that: the session's login is now exactly the identity that rendered
+ * the limit banner on screen, and the profile is the guess. Asking the profile
+ * is how a session signed in as somebody else (a mid-session /login) deadlocked
+ * for hours: the actual account's banner on screen, the believed account
+ * answering "not capped", and the switch never came.
+ *
+ * The caller resolves WHO the session credential belongs to (session-identity)
+ * and records the cap against that account. This function only answers "is the
+ * login this session is running on out of room, and how widely".
+ *
+ * Falls back to the believed profile when the session has no usable login of
+ * its own, which is the one case where the profile is the better guess.
+ */
+export async function confirmSessionCap(
+  input: { sessionDir: string; believedDir: string | null },
+  renderedText: string,
+  deps: ConfirmCapDeps = {},
+): Promise<SessionCapDecision> {
+  const probe = deps.probe ?? probeLimit;
+  const sessionCredentials = path.join(input.sessionDir, CREDENTIALS_FILE);
+  const askedOf: 'session' | 'profile' = isUsableCredential(sessionCredentials)
+    ? 'session'
+    : 'profile';
+  const credentials =
+    askedOf === 'session'
+      ? sessionCredentials
+      : input.believedDir
+        ? path.join(input.believedDir, CREDENTIALS_FILE)
+        : null;
+  if (!credentials) return { limited: false, detail: 'no credential to ask', askedOf };
+  return { ...decideFromProbe(await probe(credentials, renderedText)), askedOf };
+}
+
+function decideFromProbe(result: LimitProbeResult): CapDecision {
   if (result.verdict !== 'limited') {
     return { limited: false, detail: result.detail ?? result.verdict };
   }

@@ -31,7 +31,8 @@ import {
   setTerminalOwnedElsewhere,
 } from '../launcher/notify.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
-import { confirmCap } from '../usage/confirm-cap.js';
+import { confirmSessionCap } from '../usage/confirm-cap.js';
+import { resolveSessionIdentity } from '../session/session-identity.js';
 import { nextModel } from '../usage/next-model.js';
 import { createTerminalWriter } from '../ui/terminal-writer.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
@@ -72,7 +73,7 @@ import { ensureLoginUsable, readinessMessage, swapMode } from '../session/prefli
 import { renewalIsDue, refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { withCredentialLock, withCredentialLockIfFree } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
-import { appendEvent } from '../events/log.js';
+import { appendEvent, type EventDetail } from '../events/log.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 
@@ -232,7 +233,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   const err = context.err ?? ((m: string) => process.stderr.write(`${m}\n`));
   const home = configHome(context.ctx);
   // Record events to the shared log so an open `ccx dashboard` shows swaps live.
-  const logEvent = (m: string): void => appendEvent(home, m, Date.now());
+  // The detail is the evidence a decision was based on, so the log can answer
+  // "why did it do that" on its own.
+  const logEvent = (m: string, detail: EventDetail = {}): void =>
+    appendEvent(home, m, Date.now(), detail);
   const debugLog = process.env.CAS_DEBUG ? path.join(sessionDir, 'session-debug.log') : undefined;
 
   /**
@@ -260,12 +264,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * which draw nothing, plus the event log that `ccx dashboard` and `ccx history`
    * read. Between sessions, when nothing owns the screen, plain stderr.
    */
-  const notice = (message: string): void => {
+  const notice = (message: string, detail: EventDetail = {}): void => {
     // While Claude owns the terminal this goes to the LOG and nowhere else.
     // Writing anything, even an escape sequence that renders nothing, pushes
     // bytes into a terminal that is mid-draw and corrupts what is on screen.
     // `ccx dashboard` and `ccx history` are where these are read.
-    logEvent(message);
+    logEvent(message, detail);
     if (!claudeOwnsScreen) err(`[ccx] ${message}`);
   };
 
@@ -299,6 +303,21 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // Which model was out, when the limit was about one model rather than the
   // whole account. Recorded with the limit so it never blocks other models.
   let limitedModel: string | undefined;
+  /**
+   * Who a confirmed limit actually belongs to, when that is not the account
+   * ccx believed. A session forced through /login comes back as whatever
+   * account the browser picked, and from then on the limit banner on screen is
+   * THAT account's. Recording the cap against the believed account would take
+   * a healthy account out of rotation on somebody else's limit.
+   */
+  let capOwner: string | null = null;
+  /**
+   * Set when the session turned out to be signed in as an address nobody has
+   * registered. There is no account to cap, and no account SHOULD be capped:
+   * the session still rotates off it, and the log says why nothing was
+   * recorded.
+   */
+  let capUnregisteredEmail: string | null = null;
 
   /**
    * Tell the rotation how WIDE a limit was, so a spent model does not read as a
@@ -313,37 +332,76 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
   // Ground-truth cap check: rendered text only TRIGGERS this; the API decides.
   //
-  // Asked of the ACCOUNT we are about to cap, using its own stored credential.
-  // This used to ask the session credential, for freshness, and that was wrong:
-  // the session directory is shared, so it holds whichever account another ccx
-  // run installed last. Two runs rotating at once meant a genuinely exhausted
-  // account's token answered for a healthy one, and the healthy one got the cap.
-  // That is how an account with 97% of its five-hour window left was recorded as
-  // out of room, and then refused for five hours.
+  // Asked of the SESSION'S OWN login, because with one directory per session
+  // that login is exactly the identity that rendered the banner on screen. The
+  // profile is only the guess: after a mid-session /login the session can be a
+  // different account than ccx believes, and asking the believed account about
+  // the actual account's banner is how a session deadlocked for hours, probing
+  // a healthy account and logging "no cap is confirmed" on every render.
   //
-  // Freshness is not worth anything here anyway: usage belongs to the ACCOUNT,
-  // so an older token for the right account gives the right answer, while the
-  // newest token for the wrong account gives a confident wrong one.
+  // WHO the limit belongs to is resolved alongside, and the cap is recorded
+  // against that account, never against the believed one on somebody else's
+  // evidence.
   const verifyCap = async (renderedText: string): Promise<boolean> => {
     let verdict: string;
+    let refusalData: EventDetail['data'];
     if (context.verifyCap) {
       verdict = await context.verifyCap(renderedText);
     } else {
-      // `current` is the account this session is running as. Same rule the
-      // headless path uses, so there is one definition of "sure enough to cap".
-      const decision = await confirmCap(current?.dir, renderedText, {
-        sessionCredentials: sessionCreds,
+      const identity = resolveSessionIdentity({
+        sessionDir,
+        believed: current,
+        accounts,
       });
+      const decision = await confirmSessionCap(
+        { sessionDir, believedDir: current?.dir ?? null },
+        renderedText,
+      );
       verdict = decision.limited ? 'limited' : 'allowed';
       limitedModel = decision.model;
+      refusalData = {
+        askedOf: decision.askedOf,
+        ...(decision.detail ? { detail: decision.detail } : {}),
+        ...(current ? { believed: current.name } : {}),
+        ...(identity.email ? { sessionIdentity: identity.email } : {}),
+      };
+      if (decision.limited && identity.mismatch) {
+        if (identity.actual) {
+          capOwner = identity.actual.name;
+          logEvent(
+            `this session is signed in as ${identity.email}, not "${current?.name}"; ` +
+              `the limit on screen belongs to "${identity.actual.name}" and is recorded there`,
+            {
+              kind: 'identity-mismatch',
+              data: {
+                believed: current?.name ?? null,
+                actual: identity.actual.name,
+                askedOf: decision.askedOf,
+                ...(decision.model ? { model: decision.model } : {}),
+              },
+            },
+          );
+        } else {
+          capUnregisteredEmail = identity.email;
+          logEvent(
+            `this session is signed in as ${identity.email}, which is not a registered ` +
+              'account; rotating off it without recording a cap against anyone',
+            {
+              kind: 'identity-mismatch',
+              data: { believed: current?.name ?? null, actual: null, email: identity.email },
+            },
+          );
+        }
+      }
     }
     if (verdict !== 'limited') {
       // This fires whenever limit-looking text renders and the API refutes it,
       // which includes a conversation that merely TALKS about rate limits. Far
-      // too noisy for the screen; the log is where it belongs.
+      // too noisy for the screen; the log is where it belongs, and it carries
+      // the probe's answer so the refusal can be judged later.
       notice(
-        'limit text on screen, but no account-wide cap is confirmed; not switching. ' +
-          'For a per-model limit, switch yourself: ccx use <name>',
+        'limit text on screen, but the login this session runs on shows no spent window; not switching',
+        { kind: 'cap-verify', ...(refusalData ? { data: refusalData } : {}) },
       );
     }
     return verdict === 'limited';
@@ -569,6 +627,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    * instead of leaving the session on a half-applied account.
    */
   const activate = (account: Account): void => {
+    // A fresh activation installs this account's own login, so whatever
+    // identity drift the previous session had is corrected here and the cap
+    // attribution starts clean.
+    capOwner = null;
+    capUnregisteredEmail = null;
     // The ORDER of announce / copy / release is the safety property, so it lives
     // in activateWithLease where tests pin it: announce first, copy second,
     // release the old one last. Any gap between a login being in use and being
@@ -704,9 +767,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const a = accounts.find((x) => x.name === name);
       return a && hasLogin(a.dir) ? { name: a.name, dir: a.dir } : null;
     },
-    // The account the session is ACTUALLY on right now (may have moved via a
-    // seamless swap), so a cap is attributed to the right account.
-    currentAccount: () => current?.name ?? '',
+    // The account the session is ACTUALLY on right now: a seamless swap may
+    // have moved it, and a verified limit may have turned out to belong to the
+    // account the session was really signed in as. Caps are attributed here.
+    currentAccount: () => capOwner ?? current?.name ?? '',
     // Every account has hit a limit. If those limits are about ONE MODEL, the
     // session still works on another model, so start it and say which model is
     // out. Refusing here is what made a Fable limit look like being signed out.
@@ -908,6 +972,18 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       }
     },
     markCapped: (accountName, reason, resetAt) => {
+      if (capUnregisteredEmail) {
+        // There is no registered account to record this against, and the
+        // believed account must NOT take it: nothing of its is spent. The
+        // rotation still moves off the session; this only skips the ledger.
+        logEvent(
+          `"${accountName}" was not capped: the limit belonged to ${capUnregisteredEmail}, ` +
+            'which is not a registered account',
+          { kind: 'cap-skipped', data: { email: capUnregisteredEmail, believed: accountName } },
+        );
+        capUnregisteredEmail = null;
+        return;
+      }
       saveLedger(
         markCapped(loadLedger(context.ctx), {
           account: accountName,
@@ -919,7 +995,14 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         }),
         context.ctx,
       );
-      logEvent(`${accountName} hit its limit`);
+      logEvent(`${accountName} hit its limit`, {
+        kind: 'capped',
+        data: {
+          reason,
+          resetAt: resetAt ?? null,
+          ...(limitedModel ? { model: limitedModel } : {}),
+        },
+      });
     },
     notify: (m) => {
       // NOT stderr: Claude owns the screen while a session runs, so writing
