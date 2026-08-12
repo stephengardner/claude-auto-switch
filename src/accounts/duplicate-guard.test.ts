@@ -86,3 +86,37 @@ describe('refusing a login that duplicates another profile', () => {
     expect(profileAlreadyHolding('', accounts, 'work')).toBeNull();
   });
 });
+
+describe('two profiles holding one token that are NOT the same account', () => {
+  /** Same helper, plus the account each profile is registered FOR. */
+  function owned(name: string, refresh: string, email?: string) {
+    return { ...profile(name, { refresh }), ...(email ? { email } : {}) };
+  }
+
+  it('does not treat them as sharing a login, so the renewal is not carried across', () => {
+    // This is contamination, not sharing, and carrying the renewal across is
+    // what made it permanent: once two profiles held one token, every renewal
+    // copied the new one over the sibling, so they could never come apart and
+    // signing in again was undone minutes later by the next renewal.
+    const main = owned('main', 'shared', 'stephen@shopsheriff.com');
+    const phx = owned('phx', 'shared', 'stephen@phoenixtechnologies.io');
+    expect(renewalWouldBreakOthers(main, [main, phx])).toEqual([]);
+  });
+
+  it('still carries across for a genuine duplicate of the SAME account', () => {
+    // The case this exists for: signing in twice while the browser is still
+    // signed in gives one account two profiles, and renewing either one would
+    // otherwise kill the other.
+    const one = owned('one', 'shared', 'same@example.com');
+    const two = owned('two', 'shared', 'same@example.com');
+    expect(renewalWouldBreakOthers(one, [one, two])).toEqual(['two']);
+  });
+
+  it('carries across when an account is unregistered, rather than guessing', () => {
+    // Not knowing who a profile is for cannot rule out that they match, and
+    // refusing on unknown would break the duplicate case this protects.
+    const known = owned('known', 'shared', 'same@example.com');
+    const nameless = owned('nameless', 'shared');
+    expect(renewalWouldBreakOthers(known, [known, nameless])).toEqual(['nameless']);
+  });
+});

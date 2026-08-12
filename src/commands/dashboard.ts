@@ -399,6 +399,21 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
   };
 
   let lastProbe = Date.now();
+  /**
+   * Keeps the process alive for as long as the dashboard is running.
+   *
+   * Node exits the moment nothing is holding the event loop open, and this loop
+   * spends most of its life holding nothing: handing the terminal back for a
+   * sign-in pauses stdin, and every keypress clears the refresh timer. When both
+   * gaps line up the process ends with no error and no output, which from the
+   * outside is the dashboard vanishing back to the shell for no reason.
+   *
+   * This has been patched twice before, each time around the specific gap that
+   * was found (the keypress handler, then the sign-in), and it came back both
+   * times somewhere else. So the guard belongs here instead: the invariant is
+   * not "cover the handoff", it is "while this loop runs, the process lives".
+   */
+  const stayAlive = setInterval(() => {}, 1 << 30);
   try {
     while (running) {
       if (Date.now() - lastProbe > HEALTH_REPROBE_MS) {
@@ -465,6 +480,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       wake = null;
     }
   } finally {
+    clearInterval(stayAlive);
     stdin.off('data', onKey);
     terminal.restore();
   }

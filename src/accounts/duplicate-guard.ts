@@ -18,6 +18,26 @@ import { credentialPath } from './credential-vault.js';
 export interface ProfileLike {
   name: string;
   dir: string;
+  /**
+   * The account this profile is registered FOR. Two profiles holding one token
+   * are only siblings when this agrees; see `sameRegisteredAccount`.
+   */
+  email?: string;
+}
+
+/**
+ * Are two profiles registered as the same Anthropic account?
+ *
+ * Unknown on either side means "cannot rule it out", which keeps the case this
+ * whole file exists for working: signing in twice while the browser is still
+ * signed in gives one account two profiles, and those really do have to be kept
+ * in step.
+ */
+function sameRegisteredAccount(one: ProfileLike, other: ProfileLike): boolean {
+  const a = (one.email ?? '').trim().toLowerCase();
+  const b = (other.email ?? '').trim().toLowerCase();
+  if (a.length === 0 || b.length === 0) return true;
+  return a === b;
 }
 
 /** A short, comparable fingerprint of a token, so tokens never get logged. */
@@ -66,12 +86,31 @@ export function sharedLoginGroups(profiles: ProfileLike[]): Array<{ fingerprint:
     .map(([fp, names]) => ({ fingerprint: fp, names }));
 }
 
-/** Would renewing this profile's login also invalidate another profile's? */
+/**
+ * Would renewing this profile's login also invalidate another profile's?
+ *
+ * Matching tokens alone is NOT enough to answer yes. Callers use this list to
+ * decide who a renewal gets carried across to, and carrying it to a profile
+ * registered for a DIFFERENT account is what turned a one-off mix-up into a
+ * permanent one: from the moment two profiles held one token, every renewal
+ * copied the new token over the other, so they could never come apart, and
+ * signing in again was undone by the next renewal minutes later. Three accounts
+ * here spent a day as one, reporting one account's usage under three names and
+ * refusing to rotate between them.
+ *
+ * Same token plus different registered accounts is contamination. The fix for
+ * that is `ccx login <name>`, which `ccx doctor` already prints, not a copy.
+ */
 export function renewalWouldBreakOthers(profile: ProfileLike, profiles: ProfileLike[]): string[] {
   const { refresh } = tokensOf(profile.dir);
   if (!refresh) return [];
   return profiles
-    .filter((other) => other.name !== profile.name && tokensOf(other.dir).refresh === refresh)
+    .filter(
+      (other) =>
+        other.name !== profile.name &&
+        tokensOf(other.dir).refresh === refresh &&
+        sameRegisteredAccount(profile, other),
+    )
     .map((other) => other.name);
 }
 

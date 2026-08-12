@@ -458,3 +458,66 @@ describe('accounts that have never been signed in', () => {
     expect(said).toContain('A reset will not fix a sign-in');
   });
 });
+
+describe('a limit about ONE MODEL', () => {
+  it('keeps the account in rotation, so the model can change instead', async () => {
+    // The account still runs on every other model. Setting it aside empties the
+    // candidate list, and the Opus switch lives in nextAccount, which only runs
+    // when that list is NOT empty. So evicting here is what removed the very
+    // fallback it was supposed to reach, and the run ended on "every account has
+    // hit its limit" while sitting on an account with most of its week free.
+    const accounts = pool(['a', 'b']);
+    const seen: string[] = [];
+    const excluded: Array<string[]> = [];
+    let call = 0;
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => {
+        excluded.push([...ex]);
+        return accounts.find((x) => !ex.has(x.name)) ?? null;
+      },
+      resolveAccount: (name) => accounts.find((x) => x.name === name) ?? null,
+      runSession: (account) => {
+        seen.push(account.name);
+        call += 1;
+        // Out of Fable the first time, fine on the next model after that.
+        return Promise.resolve(
+          call === 1
+            ? ({ kind: 'capped', exitCode: 1, cappedModel: 'Fable' } as SessionOutcome)
+            : ({ kind: 'ok', exitCode: 0 } as SessionOutcome),
+        );
+      },
+      markCapped: () => {},
+      notify: () => {},
+      report: () => {},
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(0);
+    // Stayed on "a" rather than rotating away from it.
+    expect(seen).toEqual(['a', 'a']);
+    expect(excluded[1]).toEqual([]);
+  });
+
+  it('gives up on the account once the SAME model runs out there twice', async () => {
+    // Otherwise nothing bounds the retry and the run spins on one account.
+    const accounts = pool(['a', 'b']);
+    const seen: string[] = [];
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => accounts.find((x) => !ex.has(x.name)) ?? null,
+      resolveAccount: (name) => accounts.find((x) => x.name === name) ?? null,
+      runSession: (account) => {
+        seen.push(account.name);
+        return Promise.resolve(
+          account.name === 'a'
+            ? ({ kind: 'capped', exitCode: 1, cappedModel: 'Fable' } as SessionOutcome)
+            : ({ kind: 'ok', exitCode: 0 } as SessionOutcome),
+        );
+      },
+      markCapped: () => {},
+      notify: () => {},
+      report: () => {},
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(0);
+    expect(seen).toEqual(['a', 'a', 'b']);
+  });
+});

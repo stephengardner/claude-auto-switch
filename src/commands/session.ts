@@ -21,7 +21,8 @@ import {
 } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
-import { runHotSwapSession } from '../launcher/hot-swap.js';
+import { runHotSwapSession, type SessionOutcome } from '../launcher/hot-swap.js';
+import { sessionDirFor, sweepDeadSessionDirs, seedFromKeptSettings } from '../session/session-dir.js';
 import { runPtySession } from '../launcher/pty-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
 import {
@@ -203,13 +204,25 @@ function writeJsonSafe(file: string, data: unknown): void {
 export async function runInteractiveHotSwap(context: CliContext, args: string[]): Promise<number> {
   const accounts = listAccounts(context.ctx);
   const claude = getClaude(context);
-  const sessionDir = path.join(configHome(context.ctx), 'session');
+  // A directory of this session's OWN, never one shared with other sessions.
+  // Starting a session copies the chosen account's login into here, so while
+  // this was shared the second session to start took the first one's account:
+  // the first terminal carried on as somebody else, its limits were recorded
+  // against the wrong account, and the save-back wrote the borrowed login into
+  // the wrong profile. Swept first, because a session that is killed never gets
+  // to clean up, and what it leaves behind is a credential.
+  sweepDeadSessionDirs(context.ctx, { keepPid: process.pid });
+  const sessionDir = sessionDirFor(process.pid, context.ctx);
   secureMkdir(sessionDir);
   const sessionCreds = path.join(sessionDir, CREDS);
   // Share the user's REAL ~/.claude session/memory store (projects) so /resume
   // and project memories are complete and identical in ccx sessions and plain
   // `claude` alike. Self-heals each start; skips safely if files are busy.
   ensureSharedProjects(sessionDir, context.ctx);
+  // The model pin lives in these settings, and this directory is new every
+  // session now, so carry forward what the last one ended with before falling
+  // back to an account's defaults.
+  seedFromKeptSettings(sessionDir, context.ctx);
   seedSessionSettings(sessionDir, accounts);
   // Bring in the user's real settings (hooks, permissions), session keys winning.
   mergeUserSettings(sessionDir, context.ctx);
@@ -289,6 +302,17 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // Which model was out, when the limit was about one model rather than the
   // whole account. Recorded with the limit so it never blocks other models.
   let limitedModel: string | undefined;
+
+  /**
+   * Tell the rotation how WIDE a limit was, so a spent model does not read as a
+   * spent account.
+   *
+   * Without this the caller sees a bare "capped" and sets the account aside,
+   * which empties the candidate list and skips the model switch that lives in
+   * `nextAccount`, because that only runs while there are candidates left.
+   */
+  const withCapScope = (outcome: SessionOutcome): SessionOutcome =>
+    outcome.kind === 'capped' && limitedModel ? { ...outcome, cappedModel: limitedModel } : outcome;
 
   // Ground-truth cap check: rendered text only TRIGGERS this; the API decides.
   //
@@ -872,15 +896,16 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           if (fallback) {
             chosenModel = fallback;
             notice(`out of ${limitedModel} here; switching to ${fallback} and carrying on`);
-            return await runPtySession({
+            const next = await runPtySession({
               ...base,
               args: wantContinue
                 ? [...withModel(args, fallback), '--continue']
                 : withModel(args, fallback),
             });
+            return withCapScope(next);
           }
         }
-        return outcome;
+        return withCapScope(outcome);
       } finally {
         takeScreen(false);
       }

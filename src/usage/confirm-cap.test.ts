@@ -88,3 +88,53 @@ describe('confirmCap', () => {
     expect(decision.limited).toBe(false);
   });
 });
+
+describe('how WIDE a confirmed limit really is', () => {
+  const probing = (result: LimitProbeResult) => () => Promise.resolve(result);
+
+  it('caps the MODEL, not the account, when no account window is spent', async () => {
+    // The production failure, twice in one day. The account-wide branch never
+    // checked that an account-wide window was actually spent: any "limited"
+    // verdict without a named model became an account-wide cap. An account with
+    // 2% of its five-hour window used and 57% of its week was taken out of
+    // rotation for five hours because its Fable was gone.
+    const decision = await confirmCap('/profiles/maxed', 'limit reached', {
+      probe: probing({
+        verdict: 'limited',
+        fiveHour: 0.02,
+        sevenDay: 0.57,
+        models: [{ name: 'Fable', utilization: 1, resetsAt: 777 }],
+      }),
+    });
+    expect(decision.limited).toBe(true);
+    expect(decision.model).toBe('Fable');
+    expect(decision.resetAt).toBe(777);
+  });
+
+  it('uses the spent window’s own reset, not a fixed guess', async () => {
+    // phx was capped for five hours by the default backoff when its five-hour
+    // window reopened in sixteen minutes, so the only account with Fable left
+    // stayed locked out long after it had recovered.
+    const decision = await confirmCap('/profiles/phx', 'limit reached', {
+      probe: probing({
+        verdict: 'limited',
+        fiveHour: 1,
+        fiveHourReset: 555,
+        sevenDay: 0.44,
+        sevenDayReset: 99999,
+      }),
+    });
+    expect(decision.limited).toBe(true);
+    expect(decision.model).toBeUndefined();
+    expect(decision.resetAt).toBe(555);
+  });
+
+  it('refuses to cap when nothing measurable is spent', async () => {
+    // "Limited" with every window showing room is not something to act on, and
+    // guessing account-wide is the most expensive guess available.
+    const decision = await confirmCap('/profiles/main', 'limit reached', {
+      probe: probing({ verdict: 'limited', fiveHour: 0.1, sevenDay: 0.2, models: [{ name: 'Fable', utilization: 0.35 }] }),
+    });
+    expect(decision.limited).toBe(false);
+  });
+});

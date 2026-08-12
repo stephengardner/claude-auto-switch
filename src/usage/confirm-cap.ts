@@ -77,13 +77,57 @@ export async function confirmCap(
     };
   }
 
-  // Account-wide. Reset time from whichever window is actually spent, so it
-  // comes back the moment it can rather than after a fixed guess.
-  const fiveOut = typeof result.fiveHour === 'number' && result.fiveHour >= 1;
-  const resetAt = fiveOut ? result.fiveHourReset : result.sevenDayReset;
-  return {
-    limited: true,
-    ...(resetAt !== undefined ? { resetAt } : {}),
-    ...(result.detail ? { detail: result.detail } : {}),
-  };
+  // An account-wide cap takes the WHOLE account out for hours, so it has to be
+  // earned by an account-wide window that is genuinely spent. This branch used
+  // to be reached by assumption: any "limited" verdict that did not name a
+  // model became account-wide. That locked out an account with 2% of its
+  // five-hour window used and 57% of its week left, because its Fable was gone.
+  const accountWindow = spentAccountWindow(result);
+  if (accountWindow) {
+    return { limited: true, ...accountWindow, ...(result.detail ? { detail: result.detail } : {}) };
+  }
+
+  // Nothing account-wide is spent, so a spent model is the whole story, and the
+  // account keeps working on everything else.
+  const model = spentModelWindow(result);
+  if (model) {
+    return {
+      limited: true,
+      model: model.name,
+      ...(model.resetsAt !== undefined ? { resetAt: model.resetsAt } : {}),
+      ...(result.detail ? { detail: result.detail } : {}),
+    };
+  }
+
+  // Limited, yet every window we can read still has room. That is not proven,
+  // and the rule in this file is that not proven never becomes a cap.
+  return { limited: false, detail: result.detail ?? 'limited, but no window is actually spent' };
+}
+
+/** A window is spent at 100%; anything below it still has room. */
+const SPENT = 1;
+
+/**
+ * The account-wide window that is actually spent, carrying its OWN reset time.
+ *
+ * The reset matters as much as the verdict: falling back to a fixed backoff
+ * kept an account out for five hours when its window reopened in sixteen
+ * minutes, and it was the only one with Fable left.
+ */
+function spentAccountWindow(result: LimitProbeResult): { resetAt?: number } | null {
+  if (typeof result.fiveHour === 'number' && result.fiveHour >= SPENT) {
+    return result.fiveHourReset !== undefined ? { resetAt: result.fiveHourReset } : {};
+  }
+  if (typeof result.sevenDay === 'number' && result.sevenDay >= SPENT) {
+    return result.sevenDayReset !== undefined ? { resetAt: result.sevenDayReset } : {};
+  }
+  return null;
+}
+
+/** The first model whose own window is spent, for when the probe named none. */
+function spentModelWindow(result: LimitProbeResult) {
+  return (
+    (result.models ?? []).find((m) => typeof m.utilization === 'number' && m.utilization >= SPENT) ??
+    null
+  );
 }

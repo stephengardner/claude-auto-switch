@@ -294,3 +294,25 @@ describe('renderDashboard (color)', () => {
     expect(noColor).not.toContain(String.fromCharCode(27));
   });
 });
+
+describe('the sign-in question', () => {
+  const opts = { color: false as const };
+  const asked = 'Sign in "work" again? The dashboard steps aside while you do.';
+
+  it('offers Y as the default, because Enter already confirms', () => {
+    // confirmKey has always taken Enter as yes. The label said [y/N], which
+    // advertises the opposite, so the quickest key looked like the wrong one
+    // and every sign-in was answered by hunting for y.
+    const out = renderDashboard(snapshot([account()]), { ...opts, confirm: asked });
+    expect(out).toContain('[Y/n]');
+    expect(out).not.toContain('[y/N]');
+  });
+
+  it('names Enter in the footer, so the default is discoverable without guessing', () => {
+    const out = renderDashboard(snapshot([account()]), { ...opts, confirm: asked });
+    expect(out).toContain('enter or y confirm');
+    // The guard stays: l sits next to j and k, so a stray press must not sign
+    // anything in just because the next keystroke happened to arrive.
+    expect(out).toContain('any other key cancels');
+  });
+});
