@@ -74,6 +74,20 @@ export function writeUsageSnapshot(snapshot: UsageSnapshot, c: PathCtx = {}): vo
 }
 
 /**
+ * How old the stored snapshot is, judged by its NEWEST entry; Infinity when
+ * there is nothing. The newest entry rather than the oldest, because one
+ * account that could not be probed (signed out, rate-limited) must not make a
+ * fresh snapshot read as ancient and trigger refreshes that cannot help it.
+ */
+export function snapshotAgeMs(c: PathCtx = {}, now: () => number = () => Date.now()): number {
+  const stamps = Object.values(readUsageSnapshot(c).accounts)
+    .map((entry) => entry.at)
+    .filter((at): at is number => typeof at === 'number' && Number.isFinite(at));
+  if (stamps.length === 0) return Infinity;
+  return Math.max(0, now() - Math.max(...stamps));
+}
+
+/**
  * Whose stored login answers for this account's usage.
  *
  * A running Claude keeps its own copy of the login fresher than the profile's,

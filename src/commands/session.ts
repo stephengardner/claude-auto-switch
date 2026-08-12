@@ -35,7 +35,8 @@ import { confirmSessionCap } from '../usage/confirm-cap.js';
 import { resolveSessionIdentity } from '../session/session-identity.js';
 import { nextModel } from '../usage/next-model.js';
 import { createTerminalWriter } from '../ui/terminal-writer.js';
-import { readUsageSnapshot } from '../usage/usage-store.js';
+import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-store.js';
+import { startUsageRefresher } from '../usage/usage-refresher.js';
 import { chooseAccountForModel, modelChangeMessage } from '../usage/model-preference.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
 import { wantsContinue, withoutContinue } from '../launcher/continue-args.js';
@@ -75,7 +76,7 @@ import { takeLease, touchLease, releaseLease } from '../session/lease.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
 import { ensureLoginUsable, readinessMessage, swapMode } from '../session/preflight.js';
 import { renewalIsDue, refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
-import { withCredentialLock, withCredentialLockIfFree } from '../claude/locks.js';
+import { withCredentialLock, withCredentialLockIfFree, acquireLockDir } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { appendEvent, type EventDetail } from '../events/log.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -703,6 +704,29 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // swap loop borrows it, so terminal mode is never toggled mid-swap.
   const terminalInput = openTerminalInput();
 
+  // Keep the usage snapshot alive for the whole run, whatever the proactive
+  // setting is. Refreshing was coupled to proactive rotation (a feature, off
+  // by default), so with no dashboard open NOTHING refreshed: rotation chose
+  // targets from hours-old numbers and idle profiles' logins quietly rotted.
+  const usageWatch = startUsageRefresher(
+    {
+      refresh: () => refreshUsage(listAccounts(context.ctx), context.ctx),
+      snapshotAgeMs: () => snapshotAgeMs(context.ctx),
+      tryLock: () => acquireLockDir(path.join(home, 'usage-refresh.lock'), { waitMs: 0 }),
+      onOutcome: (outcome, detail) => {
+        if (outcome === 'error') {
+          const minutes = Number.isFinite(detail.ageMs) ? Math.round(detail.ageMs / 60_000) : null;
+          logEvent(
+            'usage refresh failed; rotation is choosing from ' +
+              (minutes === null ? 'no data at all' : `data ${minutes} minutes old`),
+            { kind: 'usage-refresh', data: { outcome, ...detail } },
+          );
+        }
+      },
+    },
+    Math.max(30, context.config.rotation.usageCheckSeconds) * 1000,
+  );
+
   // Watch our own headroom and hand the session to a roomier account before the
   // current one runs out. The switch goes through the normal request path, so
   // the conversation moves in place rather than restarting.
@@ -1078,6 +1102,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
   // No more sessions will run: stop watching usage and restore the terminal.
   proactive.stop();
+  usageWatch.stop();
   terminalInput.close();
   // The last write of the run: put the child's terminal modes back once more
   // (a flush that landed after the per-session reset can have switched them
