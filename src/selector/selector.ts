@@ -26,24 +26,28 @@ export type SelectResult<T extends SelectableAccount = SelectableAccount> =
  * (e.g. a registry Account with its `dir`), not just the minimal shape.
  */
 export function select<T extends SelectableAccount>(input: SelectInput<T>): SelectResult<T> {
+  const ordered = eligibleInOrder(input);
+  const best = ordered[0];
+  return best ? { ok: true, account: best } : { ok: false, reason: explain(input) };
+}
+
+/**
+ * Every account that could run, in the order this policy would try them.
+ *
+ * `select` is the first of these. Callers that must choose among several (the
+ * rotation planner needs the whole list, because the best account depends on
+ * which model still has room) take the list instead of re-deriving eligibility
+ * themselves. One definition, so a second copy cannot drift from it.
+ */
+export function eligibleInOrder<T extends SelectableAccount>(input: SelectInput<T>): T[] {
   const { accounts, loggedIn, capped, pinned } = input;
-  const eligible = accounts.filter(
-    (a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name),
-  );
-
-  if (eligible.length === 0) {
-    return { ok: false, reason: explain(input) };
-  }
-
-  if (pinned !== undefined) {
-    const pinnedAccount = eligible.find((a) => a.name === pinned);
-    if (pinnedAccount) return { ok: true, account: pinnedAccount };
-  }
-
-  const best = eligible.reduce((current, candidate) =>
-    isBetter(candidate, current) ? candidate : current,
-  );
-  return { ok: true, account: best };
+  const eligible = accounts.filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name));
+  const sorted = [...eligible].sort((a, b) => (isBetter(a, b) ? -1 : isBetter(b, a) ? 1 : 0));
+  if (pinned === undefined) return sorted;
+  const pinnedAccount = sorted.find((a) => a.name === pinned);
+  // A pinned account leads when it is still eligible; the rest keep their order
+  // behind it, so rotation past the pin is still priority order.
+  return pinnedAccount ? [pinnedAccount, ...sorted.filter((a) => a !== pinnedAccount)] : sorted;
 }
 
 /** Lower priority number wins; ties broken by name ascending. */

@@ -73,6 +73,7 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
       // alone and a model-scoped one keeps its scope.
       confirmCap: (account, renderedText) => confirmCap(account.dir, renderedText),
       modelPreference: context.config.rotation.modelPreference,
+      modelStrategy: context.config.rotation.modelStrategy,
       defaultBackoffMinutes: context.config.rotation.defaultBackoffMinutes,
       ledger: loadLedger(context.ctx),
       out: context.out,

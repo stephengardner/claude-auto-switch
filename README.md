@@ -215,7 +215,11 @@ ccx models --strategy account-first   use each account up instead
 `modelPreference` is the chain both strategies walk. A chain of one
 (`["fable"]`) means never fall back: when Fable is gone everywhere ccx says so
 rather than moving you to a model you did not choose. `preferSameModel: false`
-ignores models entirely and rotates on account limits alone.
+ignores models entirely and rotates on account limits alone (interactive
+sessions only; headless runs always plan by model).
+
+Both ways of running follow this: an interactive session and a headless
+`ccx -p ...` request use the same planner, so the setting means one thing.
 
 This applies only when a model is actually in play, meaning you passed
 `--model` or pinned one in your session `settings.json`. With nothing pinned,

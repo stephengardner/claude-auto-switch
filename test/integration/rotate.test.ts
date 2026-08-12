@@ -95,6 +95,66 @@ describe('autoRotateHeadless', () => {
     expect(result.ledger.caps[0]!.capUntil).toBe(5555);
   });
 
+  it('walks the ACCOUNTS on one model before falling back (model-first)', async () => {
+    // The headless path used to change model on the spot and stay put, which
+    // ignored the strategy entirely: a setting that governs one of the two
+    // ways to run is a setting that lies about what it does.
+    const runs: Array<{ dir: string; model: string | undefined }> = [];
+    const run = async (_bin: string, args: string[], opts?: RunOptions) => {
+      const at = args.indexOf('--model');
+      runs.push({
+        dir: opts?.env?.CLAUDE_CONFIG_DIR ?? '',
+        model: at >= 0 ? args[at + 1] : undefined,
+      });
+      // Out of Fable everywhere; fine on the fallback.
+      return runs.length <= 2
+        ? { stdout: "you've reached your Fable 5 limit", stderr: '', exitCode: 1 }
+        : { stdout: 'done', stderr: '', exitCode: 0 };
+    };
+
+    const result = await autoRotateHeadless(['-p', 'hi', '--model', 'fable'], {
+      ...base,
+      ledger: { caps: [] },
+      run,
+      modelPreference: ['fable', 'opus'],
+      modelStrategy: 'model-first',
+      confirmCap: () => Promise.resolve({ limited: true, model: 'Fable' }),
+    });
+
+    expect(result.exitCode).toBe(0);
+    // A on Fable, then B on Fable (not A on Opus), and only then the fallback.
+    expect(runs.map((r) => `${r.dir}:${r.model}`)).toEqual([
+      '/dir/A:fable',
+      '/dir/B:fable',
+      '/dir/A:opus',
+    ]);
+  });
+
+  it('walks the MODELS on one account first when told to (account-first)', async () => {
+    const runs: Array<{ dir: string; model: string | undefined }> = [];
+    const run = async (_bin: string, args: string[], opts?: RunOptions) => {
+      const at = args.indexOf('--model');
+      runs.push({
+        dir: opts?.env?.CLAUDE_CONFIG_DIR ?? '',
+        model: at >= 0 ? args[at + 1] : undefined,
+      });
+      return runs.length <= 1
+        ? { stdout: "you've reached your Fable 5 limit", stderr: '', exitCode: 1 }
+        : { stdout: 'done', stderr: '', exitCode: 0 };
+    };
+
+    await autoRotateHeadless(['-p', 'hi', '--model', 'fable'], {
+      ...base,
+      ledger: { caps: [] },
+      run,
+      modelPreference: ['fable', 'opus'],
+      modelStrategy: 'account-first',
+      confirmCap: () => Promise.resolve({ limited: true, model: 'Fable' }),
+    });
+
+    expect(runs.map((r) => `${r.dir}:${r.model}`)).toEqual(['/dir/A:fable', '/dir/A:opus']);
+  });
+
   it('starts the next model and keeps the account after a model-scoped cap', async () => {
     // The recorded cap is only half the job: the run itself must continue on
     // the fallback model instead of ending on an account with room left.

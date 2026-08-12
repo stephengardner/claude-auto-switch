@@ -1,9 +1,10 @@
 import type { ClaudeInvoker } from '../invoker.js';
-import { select, type SelectableAccount } from '../selector/selector.js';
+import { select, eligibleInOrder, type SelectableAccount } from '../selector/selector.js';
+import { planRotation, spentKey, type RotationStrategy } from '../usage/rotation-plan.js';
+import { modelInArgs } from '../usage/model-args.js';
 import { markCapped, cappedNames, clearAccount } from '../ledger/ledger.js';
 import type { Ledger } from '../ledger/ledger.schema.js';
 import type { CapDecision } from '../usage/confirm-cap.js';
-import { nextModel } from '../usage/next-model.js';
 import { withModel } from '../usage/model-args.js';
 import { launchHeadless, type HeadlessRunner } from './launcher.js';
 
@@ -31,6 +32,13 @@ export interface AutoRotateDeps<T extends RotatableAccount> {
    * Opus). Empty disables model fallback and rotates on accounts alone.
    */
   modelPreference?: string[];
+  /**
+   * Which runs out first, the model or the account. Same setting the
+   * interactive path follows, so `ccx models` means one thing everywhere: a
+   * strategy that governed only one of the two ways to run is a setting that
+   * lies about what it does.
+   */
+  modelStrategy?: RotationStrategy;
   /** Starting ledger; threaded through and returned updated for the caller to persist. */
   ledger: Ledger;
   run?: HeadlessRunner;
@@ -60,14 +68,21 @@ export async function autoRotateHeadless<T extends RotatableAccount>(
   let ledger = deps.ledger;
   let rotations = 0;
   /**
-   * Models proven spent during THIS run.
+   * "account|model" pairs proven spent during THIS run.
    *
-   * A per-model limit stops the model, not the account, so the useful move is to
-   * change model rather than to walk the accounts. Without this the loop kept
-   * picking the same account and the same exhausted model until it ran out of
-   * attempts and reported that everything was capped.
+   * Per account, like the interactive path: one account running out of a model
+   * says nothing about another account's window, and holding it as a bare list
+   * of models is what moved a whole run off a model that other accounts still
+   * had. Each confirmed limit removes exactly one pairing, which is also what
+   * bounds the loop.
    */
-  const spentModels: string[] = [];
+  const spentThisRun = new Set<string>();
+  /**
+   * The model in use, once something has told us what it is. A confirmed cap
+   * names it even when the operator passed no `--model`, and without that the
+   * first rotation is blind.
+   */
+  let modelInUse: string | null = modelInArgs(args);
   let runArgs = args;
   // Room for the whole preference chain on every account, or the loop gives up
   // before it has actually tried the fallbacks.
@@ -76,13 +91,40 @@ export async function autoRotateHeadless<T extends RotatableAccount>(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const capped = cappedNames(ledger, deps.now());
-    const sel = select({ accounts: deps.accounts, loggedIn: deps.loggedIn, capped, pinned: deps.pinned });
+    const selectInput = {
+      accounts: deps.accounts,
+      loggedIn: deps.loggedIn,
+      capped,
+      ...(deps.pinned !== undefined ? { pinned: deps.pinned } : {}),
+    };
+    const sel = select(selectInput);
     if (!sel.ok) {
       deps.out(`cannot run: ${sel.reason}`);
       return { exitCode: 1, rotations, ledger };
     }
 
-    const account = sel.account;
+    // The account AND the model, decided together, by the same planner the
+    // interactive path uses. Usage numbers are not read here: an unmeasured
+    // model counts as room worth trying, and the pairs proven spent during
+    // this run are the evidence that accumulates. So `model-first` walks the
+    // accounts on one model before falling back, and `account-first` walks the
+    // models on one account, exactly as configured.
+    const ordered = eligibleInOrder(selectInput);
+    const plan = planRotation({
+      candidates: ordered.map((a) => ({ name: a.name, models: {} })),
+      modelInUse,
+      preference: chain,
+      strategy: deps.modelStrategy ?? 'model-first',
+      spentThisRun,
+    });
+    if (plan.kind === 'exhausted') break;
+
+    const account = ordered.find((a) => a.name === plan.account) ?? sel.account;
+    if (plan.model) {
+      if (plan.changedModel) deps.out(plan.reason);
+      runArgs = withModel(args, plan.model);
+      modelInUse = plan.model;
+    }
     const headless = await launchHeadless(runArgs, account, { claude: deps.claude, run: deps.run });
     const { classification } = headless;
 
@@ -113,21 +155,17 @@ export async function autoRotateHeadless<T extends RotatableAccount>(
       });
       rotations++;
 
-      // A model-scoped limit: change MODEL and stay here. The account still has
-      // room, so rotating away from it would be giving up something that works.
+      // A model-scoped limit stops that MODEL on THIS account. It is recorded
+      // as one pairing and handed back to the planner, which decides whether
+      // the next attempt is the same model somewhere else or another model
+      // here. Deciding it inline was what made this path ignore the strategy.
       if (confirmed.model) {
-        if (!spentModels.some((m) => m.toLowerCase() === confirmed.model!.toLowerCase())) {
-          spentModels.push(confirmed.model);
-        }
-        const fallback = nextModel(chain, spentModels);
-        if (fallback) {
-          runArgs = withModel(runArgs, fallback);
-          deps.out(
-            `${account.name} is out of ${confirmed.model}; switching to ${fallback} and carrying on...`,
-          );
-          continue;
-        }
-        deps.out(`${account.name} is out of ${confirmed.model} and there is no other model left to try`);
+        spentThisRun.add(spentKey(account.name, confirmed.model));
+        // What the model in use actually was, whatever the flags said: this is
+        // often the only place it is known, since a headless run without
+        // `--model` is on Claude's default.
+        modelInUse = modelInUse ?? confirmed.model;
+        deps.out(`${account.name} is out of ${confirmed.model}...`);
         continue;
       }
 

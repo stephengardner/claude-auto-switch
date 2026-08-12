@@ -34,7 +34,8 @@ semantic versioning.
   `account-first` uses each account up across the chain before moving on. A
   one-model chain (`ccx models fable`) means never fall back: ccx reports that
   Fable is gone everywhere rather than switching you to something you did not
-  ask for.
+  ask for. Interactive sessions and headless `ccx -p` runs follow the same
+  planner, so the setting means one thing wherever you run.
 
 ### Changed
 
