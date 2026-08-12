@@ -4,6 +4,57 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.39.0]
+
+### Fixed
+
+- **"Please run /login" out of nowhere, at its root.** A refresh token is
+  single-use: renewing rotates it, and every other copy dies that instant.
+  With one directory per session, an account's login lived in several places
+  at once (the profile plus every live session on that account), each renewing
+  on its own clock, and whoever renewed first killed the rest. The profile was
+  often the stalest copy, so new sessions started on a corpse and demanded a
+  sign-in immediately. The profile is now the hub and sync runs both ways: a
+  renewal that happened anywhere is carried into every running session before
+  its next refresh can die, and a dead profile login is recovered from a live
+  session of the same account instead of asking you to sign in.
+
+- **A session signed in as the wrong account no longer refuses to switch.**
+  After a mid-session /login the session can be a different account than ccx
+  believes. The limit banner on screen belonged to the ACTUAL account, but the
+  cap check asked the BELIEVED account, got "not capped", and refused to
+  switch, on every render, forever. The check now asks the login the session
+  is actually running on, resolves who it belongs to, records the cap against
+  that account, and rotates; the next launch realigns the session with the
+  chosen account.
+
+- **Random characters in the terminal, third time, and why the second fix did
+  not hold.** Killed children leave mouse tracking on, and the reset ran in
+  onExit, which is BEFORE ConPTY flushes the dead child's trailing output;
+  that flush re-enabled the modes the reset had just turned off. The reset now
+  runs after the flush window, the run's last act is one more reset, and a
+  crash guard covers a wrapper that dies without its finally blocks.
+
+- **Usage is watched for every session, not only when a feature asks.**
+  Refreshing the usage snapshot was coupled to proactive rotation (off by
+  default), so with no dashboard open, nothing refreshed anything: a snapshot
+  ten hours stale while seven sessions ran, rotation choosing targets from the
+  morning's numbers, and idle profiles' logins quietly rotting. Every session
+  now keeps the snapshot alive, cheaply (fresh-enough skip plus a try-lock so
+  concurrent sessions never multiply the probes).
+
+### Added
+
+- **Several sessions can run one account at the same time, visibly.** Session
+  leases are per session (account + pid) instead of per account, so every
+  session keeps its no-renew protection instead of the last one silently
+  taking the only slot.
+
+- **The event log says why, not just what.** Events carry a kind and the
+  evidence behind the decision (who was believed, who was actual, what the
+  probe answered, what was recorded), so "why did it do that" is answerable
+  from `ccx history` alone.
+
 ## [1.38.0]
 
 ### Fixed
