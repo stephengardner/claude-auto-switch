@@ -2,7 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { sharedLoginGroups, renewalWouldBreakOthers, profileAlreadyHolding } from './duplicate-guard.js';
+import {
+  sharedLoginGroups,
+  renewalWouldBreakOthers,
+  carryTargets,
+  profileAlreadyHolding,
+} from './duplicate-guard.js';
 
 /**
  * Two profiles holding one account is not a tidiness problem. Renewing a login
@@ -93,22 +98,32 @@ describe('two profiles holding one token that are NOT the same account', () => {
     return { ...profile(name, { refresh }), ...(email ? { email } : {}) };
   }
 
-  it('does not treat them as sharing a login, so the renewal is not carried across', () => {
+  it('still counts them for renewal SAFETY: rotation kills the token, whoever holds it', () => {
+    // Protection follows the token. A contaminated sibling loses the login
+    // physically when the token rotates, so leaving it out of this answer
+    // would let a renewal sign a live session out.
+    const main = owned('main', 'shared', 'stephen@shopsheriff.com');
+    const phx = owned('phx', 'shared', 'stephen@phoenixtechnologies.io');
+    expect(renewalWouldBreakOthers(main, [main, phx])).toEqual(['phx']);
+  });
+
+  it('does not CARRY the renewal across to them', () => {
     // This is contamination, not sharing, and carrying the renewal across is
     // what made it permanent: once two profiles held one token, every renewal
     // copied the new one over the sibling, so they could never come apart and
     // signing in again was undone minutes later by the next renewal.
     const main = owned('main', 'shared', 'stephen@shopsheriff.com');
     const phx = owned('phx', 'shared', 'stephen@phoenixtechnologies.io');
-    expect(renewalWouldBreakOthers(main, [main, phx])).toEqual([]);
+    expect(carryTargets(main, [main, phx])).toEqual([]);
   });
 
-  it('still carries across for a genuine duplicate of the SAME account', () => {
-    // The case this exists for: signing in twice while the browser is still
-    // signed in gives one account two profiles, and renewing either one would
-    // otherwise kill the other.
+  it('carries across for a genuine duplicate of the SAME account', () => {
+    // The case the carry exists for: signing in twice while the browser is
+    // still signed in gives one account two profiles, and renewing either one
+    // would otherwise kill the other.
     const one = owned('one', 'shared', 'same@example.com');
     const two = owned('two', 'shared', 'same@example.com');
+    expect(carryTargets(one, [one, two])).toEqual(['two']);
     expect(renewalWouldBreakOthers(one, [one, two])).toEqual(['two']);
   });
 
@@ -117,6 +132,6 @@ describe('two profiles holding one token that are NOT the same account', () => {
     // refusing on unknown would break the duplicate case this protects.
     const known = owned('known', 'shared', 'same@example.com');
     const nameless = owned('nameless', 'shared');
-    expect(renewalWouldBreakOthers(known, [known, nameless])).toEqual(['nameless']);
+    expect(carryTargets(known, [known, nameless])).toEqual(['nameless']);
   });
 });

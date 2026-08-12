@@ -185,7 +185,9 @@ function currentSessionDir(context: CliContext): string {
   const live = liveLeases(context.ctx)
     .map((lease) => lease.configDir)
     .filter((dir): dir is string => typeof dir === 'string' && dir.length > 0);
-  return live[0] ?? path.join(configHome(context.ctx), 'session');
+  // liveLeases sorts oldest first, so the LAST entry is the most recently
+  // refreshed session, which is the honest subject to inspect.
+  return live[live.length - 1] ?? path.join(configHome(context.ctx), 'session');
 }
 
 /** Session history: ccx must SHARE ~/.claude/projects, never fork it. */

@@ -7,7 +7,9 @@ function writer(overrides: Partial<TerminalWriterDeps> = {}) {
   const exitHooks: Array<() => void> = [];
   const w = createTerminalWriter({
     line: (t) => said.push(t),
-    resetModes: () => resets.push(Date.now()),
+    resetModes: () => {
+      resets.push(Date.now());
+    },
     onProcessExit: (fn) => exitHooks.push(fn),
     ...overrides,
   });
@@ -120,5 +122,24 @@ describe('the crash guard', () => {
     });
     w.childStarted();
     expect(() => crash()).not.toThrow();
+  });
+
+  it('retries at exit when the run-ending reset reported failure', () => {
+    // resetChildTerminalModes returns false when the write did not happen.
+    // Clearing the dirty flag on that answer would make this exit hook skip
+    // its retry, and the shell would keep receiving mouse reports.
+    const attempts: boolean[] = [];
+    let succeed = false;
+    const { w, crash } = writer({
+      resetModes: () => {
+        attempts.push(succeed);
+        return succeed;
+      },
+    });
+    w.childStarted();
+    w.runEnding(); // fails: returns false, so the modes stay dirty
+    succeed = true;
+    crash(); // the guard gets its one retry, and this time it lands
+    expect(attempts).toEqual([false, true]);
   });
 });

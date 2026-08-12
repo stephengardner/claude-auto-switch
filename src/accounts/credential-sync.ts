@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import {
   credentialPath,
@@ -8,7 +8,8 @@ import {
   sessionIdentityEmail,
 } from './credential-vault.js';
 import { readExpiresAt } from '../usage/token-expiry.js';
-import { withCredentialLockIfFree } from '../claude/locks.js';
+import { acquireLockDir, CREDENTIALS_LOCK_DIR, withCredentialLockIfFree } from '../claude/locks.js';
+import { copySecretFile } from '../util/secret-file.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { liveLeases } from '../session/lease.js';
 import type { PathCtx } from '../config/paths.js';
@@ -110,6 +111,42 @@ export function decidePull(e: PullEvidence): PullDecision {
 
 export type PullResult = 'pulled' | 'skipped' | 'busy';
 
+type SnapshotOutcome<T> = { ok: true; value: T } | { ok: false; reason: 'busy' | 'unreadable' };
+
+/**
+ * Copy the source login under ITS OWN credential lock, then hand back a private
+ * snapshot to work from.
+ *
+ * installCredential validates its source and then reads it again, and between
+ * those reads a live refresh can replace the file. Claude's writes are not
+ * guaranteed atomic (a killed refresh leaves a partial file, which is why
+ * isUsableCredential exists at all), so the copy is taken while nothing can be
+ * writing, and everything after that operates on the immutable snapshot.
+ * Try-only: a busy source lock means a refresh is mid-write, which is exactly
+ * when to come back later rather than wait.
+ */
+function withSourceSnapshot<T>(sourceDir: string, fn: (snapshot: string) => T): SnapshotOutcome<T> {
+  const lock = acquireLockDir(path.join(sourceDir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
+  if (!lock.held) return { ok: false, reason: 'busy' };
+  const snapshot = `${credentialPath(sourceDir)}.snapshot.${process.pid}`;
+  try {
+    copySecretFile(credentialPath(sourceDir), snapshot);
+  } catch {
+    lock.release();
+    return { ok: false, reason: 'unreadable' };
+  }
+  lock.release();
+  try {
+    return { ok: true, value: fn(snapshot) };
+  } finally {
+    try {
+      rmSync(snapshot, { force: true });
+    } catch {
+      /* a leftover snapshot is owner-only and replaced next time */
+    }
+  }
+}
+
 /**
  * Carry a renewal that happened elsewhere INTO this running session.
  *
@@ -131,7 +168,16 @@ export function pullProfileIntoSession(
     const evidence = readPullEvidence(account, sessionDir);
     const decision = decidePull(evidence);
     if (!decision.pull) return;
-    if (!installCredential(sessionDir, credentialPath(account.dir))) return;
+    // From a snapshot taken under the PROFILE's own lock, so a refresh that is
+    // mid-write when we look can never be half-copied into a running session.
+    const installed = withSourceSnapshot(account.dir, (snapshot) =>
+      installCredential(sessionDir, snapshot),
+    );
+    if (!installed.ok) {
+      if (installed.reason === 'busy') result = 'busy';
+      return;
+    }
+    if (!installed.value) return;
     result = 'pulled';
     logCredentialEvent(
       {
@@ -192,7 +238,13 @@ export function recoverLoginFromLiveSession(
     if (!isUsableCredential(credentialPath(lease.configDir))) continue;
     const identity = sessionIdentityEmail(lease.configDir);
     if (!identity || identity.trim().toLowerCase() !== wanted) continue;
-    if (!installCredential(account.dir, credentialPath(lease.configDir))) continue;
+    // Snapshot under the SESSION's own lock: its Claude can be mid-refresh at
+    // this exact moment, and adopting half a write would destroy the profile
+    // login this is trying to save.
+    const adopted = withSourceSnapshot(lease.configDir, (snapshot) =>
+      installCredential(account.dir, snapshot),
+    );
+    if (!adopted.ok || !adopted.value) continue;
     logCredentialEvent(
       {
         account: account.name,

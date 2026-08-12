@@ -120,8 +120,11 @@ function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // EPERM means the process EXISTS but belongs to someone else. Only "no
+    // such process" proves it is gone, and this check guards a DELETE of a
+    // directory holding a live login: guessing "dead" signs a session out.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 

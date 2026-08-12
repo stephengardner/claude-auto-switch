@@ -160,6 +160,8 @@ export function liveLeases(c: PathCtx = {}, options: LeaseOptions = {}): Session
   }
   // Oldest first, so a consumer that folds these into a per-account map keeps
   // the FRESHEST announcement, whatever order the directory listed them in.
+  // Which also means index 0 is the STALEST live session: a consumer that
+  // wants "the current one" takes the last element, never the first.
   return live.sort((a, b) => a.at - b.at);
 }
 

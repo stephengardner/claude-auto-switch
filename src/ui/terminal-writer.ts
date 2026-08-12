@@ -27,8 +27,12 @@ import { resetChildTerminalModes } from './child-terminal-modes.js';
 export interface TerminalWriterDeps {
   /** Where a line goes; defaults to stderr with a newline. */
   line?: (text: string) => void;
-  /** Puts the child's terminal modes back; defaults to the real sequences. */
-  resetModes?: () => void;
+  /**
+   * Puts the child's terminal modes back; defaults to the real sequences.
+   * `false` means the write did not happen, and the modes stay dirty so a
+   * later chance (the crash guard) can try again.
+   */
+  resetModes?: () => boolean | void;
   /** Registers the crash guard; defaults to process.on('exit'). */
   onProcessExit?: (fn: () => void) => void;
 }
@@ -80,12 +84,16 @@ export function createTerminalWriter(deps: TerminalWriterDeps = {}): TerminalWri
   };
 
   const putModesBack = (): void => {
+    let restored = false;
     try {
-      resetModes();
+      restored = resetModes() !== false;
     } catch {
       /* a terminal that rejects the reset is not worth crashing over */
     }
-    modesDirty = false;
+    // Only a write that HAPPENED cleans the slate. Clearing on failure would
+    // make the crash guard skip its one retry, and the shell would keep
+    // receiving mouse reports as typed text.
+    if (restored) modesDirty = false;
   };
 
   return {

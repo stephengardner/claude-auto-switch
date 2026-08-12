@@ -104,6 +104,20 @@ describe('carrying a renewal into a running session', () => {
     expect(pullProfileIntoSession({ name: 'work', dir: profile }, session, scratch(root))).toBe('skipped');
   });
 
+  it('reports busy when the PROFILE is mid-refresh, and copies nothing', () => {
+    // The snapshot is taken under the profile's own lock, because Claude's
+    // credential writes are not guaranteed atomic and half a login must never
+    // reach a running session.
+    const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-'));
+    const profile = dirWithLogin(root, 'profile', 'new', 9_000);
+    const session = dirWithLogin(root, 'session', 'old', 1_000, 'a@example.com');
+    mkdirSync(path.join(profile, '.oauth_refresh.lock'), { recursive: true });
+    expect(
+      pullProfileIntoSession({ name: 'work', dir: profile, email: 'a@example.com' }, session, scratch(root)),
+    ).toBe('busy');
+    expect(credentialFingerprint(session)).not.toBe(credentialFingerprint(profile));
+  });
+
   it('reports busy instead of waiting when a refresh holds the lock', () => {
     // A busy lock means a refresh is mid-write, which is exactly when to come
     // back next tick. This runs on the poll that relays the session's screen,
@@ -164,6 +178,20 @@ describe('recovering a dead profile login from a live session', () => {
     expect(recoverLoginFromLiveSession({ name: 'work', dir: profile }, null, c).recovered).toBe(
       false,
     );
+  });
+
+  it('skips a live session that is mid-refresh rather than adopting half a write', () => {
+    const { root, c } = home();
+    const profile = dirWithLogin(root, 'profile', 'dead', 1);
+    const live = dirWithLogin(root, 'live-session', 'fresh', 9_000, 'a@example.com');
+    mkdirSync(path.join(live, '.oauth_refresh.lock'), { recursive: true });
+    takeLease('work', live, c);
+    const before = credentialFingerprint(profile);
+    expect(
+      recoverLoginFromLiveSession({ name: 'work', dir: profile, email: 'a@example.com' }, null, c)
+        .recovered,
+    ).toBe(false);
+    expect(credentialFingerprint(profile)).toBe(before);
   });
 
   it('never adopts from the session that is asking', () => {

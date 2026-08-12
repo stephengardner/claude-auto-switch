@@ -89,8 +89,25 @@ export function sharedLoginGroups(profiles: ProfileLike[]): Array<{ fingerprint:
 /**
  * Would renewing this profile's login also invalidate another profile's?
  *
- * Matching tokens alone is NOT enough to answer yes. Callers use this list to
- * decide who a renewal gets carried across to, and carrying it to a profile
+ * TOKEN equality and nothing else, deliberately. Renewal rotates the refresh
+ * token at the server, so every profile holding that token loses it PHYSICALLY,
+ * whoever it is registered to. A contaminated sibling (same token, different
+ * registered account) is still killed by the rotation, so filtering it out of
+ * this answer would let a renewal sign a live session out. Protection follows
+ * the token; only the CARRY follows the account (see carryTargets).
+ */
+export function renewalWouldBreakOthers(profile: ProfileLike, profiles: ProfileLike[]): string[] {
+  const { refresh } = tokensOf(profile.dir);
+  if (!refresh) return [];
+  return profiles
+    .filter((other) => other.name !== profile.name && tokensOf(other.dir).refresh === refresh)
+    .map((other) => other.name);
+}
+
+/**
+ * Which profiles a renewal should be CARRIED across to.
+ *
+ * Same token AND the same registered account. Carrying a renewal to a profile
  * registered for a DIFFERENT account is what turned a one-off mix-up into a
  * permanent one: from the moment two profiles held one token, every renewal
  * copied the new token over the other, so they could never come apart, and
@@ -100,8 +117,10 @@ export function sharedLoginGroups(profiles: ProfileLike[]): Array<{ fingerprint:
  *
  * Same token plus different registered accounts is contamination. The fix for
  * that is `ccx login <name>`, which `ccx doctor` already prints, not a copy.
+ * The contaminated holder still counts for renewal SAFETY, which is why this
+ * is a separate question from renewalWouldBreakOthers.
  */
-export function renewalWouldBreakOthers(profile: ProfileLike, profiles: ProfileLike[]): string[] {
+export function carryTargets(profile: ProfileLike, profiles: ProfileLike[]): string[] {
   const { refresh } = tokensOf(profile.dir);
   if (!refresh) return [];
   return profiles

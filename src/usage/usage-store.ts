@@ -4,7 +4,7 @@ import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
-import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
+import { renewalWouldBreakOthers, carryTargets } from '../accounts/duplicate-guard.js';
 import { sessionIdentityEmail } from '../accounts/credential-vault.js';
 import { renewAndCarry } from '../accounts/shared-login.js';
 import { liveLeases, type LeaseOptions, type SessionLease } from '../session/lease.js';
@@ -273,8 +273,15 @@ export async function refreshUsage(
       }
       // Renewal rotates the token, so it is the single most likely reason a
       // login stops working. Record what happened, with the reason.
+      // The carry list is NARROWER than the protection cohort above: siblings
+      // holding this token are all protected from an unsafe renewal, but only
+      // the ones registered for the SAME account receive the renewed login.
+      // Carrying into a contaminated holder is what made contamination
+      // permanent.
       const { result: renewal, carried } = mayRenew
-        ? await renewAndCarry(account, accounts, siblings, () => renew(account.dir))
+        ? await renewAndCarry(account, accounts, carryTargets(account, accounts), () =>
+            renew(account.dir),
+          )
         : { result: { status: 'not-needed' as const }, carried: [] as string[] };
       if (renewal.status === 'refreshed') {
         logCredentialEvent({ account: account.name, kind: 'renewed' }, c);

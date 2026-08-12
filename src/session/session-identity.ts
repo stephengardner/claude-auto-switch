@@ -69,6 +69,17 @@ export function resolveSessionIdentity(
   };
 }
 
+/**
+ * A privacy-conscious label for an address: enough to recognise, not the whole
+ * thing. Used when an UNREGISTERED identity has to be named in the shared
+ * event log; registered identities are logged by account name instead.
+ */
+export function maskEmail(email: string): string {
+  const [local = '', domain = ''] = email.split('@');
+  const head = local.slice(0, 1) || '*';
+  return domain ? `${head}***@${domain}` : `${head}***`;
+}
+
 function decideMismatch(
   sessionEmail: string | null,
   actual: RegisteredAccount | null,

@@ -32,7 +32,7 @@ import {
 } from '../launcher/notify.js';
 import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
 import { confirmSessionCap } from '../usage/confirm-cap.js';
-import { resolveSessionIdentity } from '../session/session-identity.js';
+import { resolveSessionIdentity, maskEmail } from '../session/session-identity.js';
 import { nextModel } from '../usage/next-model.js';
 import { createTerminalWriter } from '../ui/terminal-writer.js';
 import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-store.js';
@@ -57,7 +57,7 @@ import {
   writeAndCarry,
   type SharingSnapshot,
 } from '../accounts/shared-login.js';
-import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
+import { carryTargets } from '../accounts/duplicate-guard.js';
 import {
   pullProfileIntoSession,
   recoverLoginFromLiveSession,
@@ -377,17 +377,26 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       verdict = decision.limited ? 'limited' : 'allowed';
       limitedModel = decision.model;
       limitedResetAt = decision.resetAt;
+      // Identities are logged by ACCOUNT NAME when they resolve to one, and as
+      // a masked address when they do not: the event log is a rotating shared
+      // file the dashboard renders, and a raw address is a stronger identifier
+      // than it needs to carry.
+      const identityLabel = identity.actual
+        ? identity.actual.name
+        : identity.email
+          ? maskEmail(identity.email)
+          : null;
       refusalData = {
         askedOf: decision.askedOf,
         ...(decision.detail ? { detail: decision.detail } : {}),
         ...(current ? { believed: current.name } : {}),
-        ...(identity.email ? { sessionIdentity: identity.email } : {}),
+        ...(identityLabel ? { sessionIdentity: identityLabel } : {}),
       };
       if (decision.limited && identity.mismatch) {
         if (identity.actual) {
           capOwner = identity.actual.name;
           logEvent(
-            `this session is signed in as ${identity.email}, not "${current?.name}"; ` +
+            `this session is actually "${identity.actual.name}", not "${current?.name}"; ` +
               `the limit on screen belongs to "${identity.actual.name}" and is recorded there`,
             {
               kind: 'identity-mismatch',
@@ -400,13 +409,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
             },
           );
         } else {
-          capUnregisteredEmail = identity.email;
+          capUnregisteredEmail = identity.email ? maskEmail(identity.email) : 'an unknown login';
           logEvent(
-            `this session is signed in as ${identity.email}, which is not a registered ` +
+            `this session is signed in as ${capUnregisteredEmail}, which is not a registered ` +
               'account; rotating off it without recording a cap against anyone',
             {
               kind: 'identity-mismatch',
-              data: { believed: current?.name ?? null, actual: null, email: identity.email },
+              data: { believed: current?.name ?? null, actual: null, email: capUnregisteredEmail },
             },
           );
         }
@@ -492,7 +501,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       carried = writeAndCarry(
         account,
         accounts,
-        renewalWouldBreakOthers(account, accounts),
+        carryTargets(account, accounts),
         // Keeps the account's previous credential as a rollback cushion.
         () => void installCredential(account.dir, sessionCreds),
       );
@@ -905,7 +914,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       if (!account) return { kind: 'ok', exitCode: 1 };
       // Read BEFORE the renewal: it rotates the token, so afterwards there is
       // no shared value left to identify who was sharing it.
-      const sharing = snapshotSharing(account, accounts, renewalWouldBreakOthers(account, accounts));
+      const sharing = snapshotSharing(account, accounts, carryTargets(account, accounts));
       // Check the login BEFORE copying it into the session. A login that merely
       // expired is renewed here, which is safe precisely because nothing is using
       // this account yet, and a login that is genuinely finished is named, with
