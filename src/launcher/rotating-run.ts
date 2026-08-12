@@ -87,7 +87,14 @@ export async function autoRotateHeadless<T extends RotatableAccount>(
   // Room for the whole preference chain on every account, or the loop gives up
   // before it has actually tried the fallbacks.
   const chain = deps.modelPreference ?? [];
-  const maxAttempts = deps.accounts.length * Math.max(1, chain.length) + 1;
+  // Every (account, model) pairing, and then some. Sized from the RESOLVED
+  // chain, not the preference: the model in use leads the chain even when it
+  // is not on the list, so `--model sonnet` with a fable/opus preference has
+  // three models to get through, and it may only be learned mid-run from a
+  // confirmed cap. Sizing this from the preference alone stopped the loop
+  // before it had tried every pairing. It is a backstop either way, since the
+  // planner reports exhaustion once the pairs run out.
+  const maxAttempts = deps.accounts.length * (Math.max(1, chain.length) + 1) + 1;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const capped = cappedNames(ledger, deps.now());

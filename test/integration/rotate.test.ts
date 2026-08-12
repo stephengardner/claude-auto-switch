@@ -130,6 +130,40 @@ describe('autoRotateHeadless', () => {
     ]);
   });
 
+  it('tries every pairing when the model in use is not in the preference', async () => {
+    // The chain leads with the model in use even when it is not on the list,
+    // so --model sonnet against a fable/opus preference has THREE models to
+    // get through. Sizing the loop from the preference alone stopped it after
+    // five attempts, leaving a pairing untried.
+    const runs: string[] = [];
+    let lastModel = 'sonnet';
+    const run = async (_bin: string, args: string[], opts?: RunOptions) => {
+      const at = args.indexOf('--model');
+      lastModel = at >= 0 ? (args[at + 1] as string) : 'sonnet';
+      runs.push(`${opts?.env?.CLAUDE_CONFIG_DIR ?? ''}:${lastModel}`);
+      return { stdout: 'limit reached', stderr: '', exitCode: 1 };
+    };
+
+    const result = await autoRotateHeadless(['-p', 'hi', '--model', 'sonnet'], {
+      ...base,
+      ledger: { caps: [] },
+      run,
+      modelPreference: ['fable', 'opus'],
+      modelStrategy: 'model-first',
+      confirmCap: () => Promise.resolve({ limited: true, model: lastModel }),
+    });
+
+    expect(result.exitCode).toBe(1); // everything really was out
+    expect(runs).toEqual([
+      '/dir/A:sonnet',
+      '/dir/B:sonnet',
+      '/dir/A:fable',
+      '/dir/B:fable',
+      '/dir/A:opus',
+      '/dir/B:opus',
+    ]);
+  });
+
   it('walks the MODELS on one account first when told to (account-first)', async () => {
     const runs: Array<{ dir: string; model: string | undefined }> = [];
     const run = async (_bin: string, args: string[], opts?: RunOptions) => {
