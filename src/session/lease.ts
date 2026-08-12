@@ -47,9 +47,18 @@ function leasesDir(c: PathCtx): string {
   return path.join(configHome(c), 'sessions-live');
 }
 
-/** Where a given account's file lives. Named after the account, so it is one per account. */
-export function leasePath(account: string, c: PathCtx = {}): string {
-  return path.join(leasesDir(c), `${encodeURIComponent(account)}.json`);
+/**
+ * Where THIS process's file for a given account lives.
+ *
+ * Named after the account AND the pid: several sessions can run one account at
+ * the same time, and when the file was per-account the last session to start
+ * silently took the only slot. The other sessions could not refresh the
+ * announcement (not their pid), so their protection lapsed while they ran,
+ * which is one of the ways a renewal killed a live session's login. Reading is
+ * by CONTENT, so files written before the pid suffix existed still count.
+ */
+export function leasePath(account: string, c: PathCtx = {}, pid: number = process.pid): string {
+  return path.join(leasesDir(c), `${encodeURIComponent(account)}__${pid}.json`);
 }
 
 function processIsAlive(pid: number): boolean {
@@ -149,14 +158,21 @@ export function liveLeases(c: PathCtx = {}, options: LeaseOptions = {}): Session
     }
     live.push(lease);
   }
-  return live;
+  // Oldest first, so a consumer that folds these into a per-account map keeps
+  // the FRESHEST announcement, whatever order the directory listed them in.
+  return live.sort((a, b) => a.at - b.at);
 }
 
-/** The live announcement for one account, or null when nothing is using it. */
+/**
+ * The live announcement for one account, or null when nothing is using it.
+ * With several sessions on one account, the most recently refreshed one: that
+ * is the session whose copy of the login is most plausibly the freshest.
+ */
 export function leaseFor(
   account: string,
   c: PathCtx = {},
   options: LeaseOptions = {},
 ): SessionLease | null {
-  return liveLeases(c, options).find((l) => l.account === account) ?? null;
+  const mine = liveLeases(c, options).filter((l) => l.account === account);
+  return mine[mine.length - 1] ?? null;
 }

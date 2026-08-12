@@ -57,6 +57,10 @@ import {
   type SharingSnapshot,
 } from '../accounts/shared-login.js';
 import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
+import {
+  pullProfileIntoSession,
+  recoverLoginFromLiveSession,
+} from '../accounts/credential-sync.js';
 import { decideSaveBack } from '../accounts/save-back.js';
 import {
   freshMirrorState,
@@ -611,6 +615,32 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     });
   };
 
+  /**
+   * Carry a renewal that happened ELSEWHERE into this running session.
+   *
+   * The mirror above is the other direction (this session renews, the profile
+   * receives). Without this one, a renewal by any OTHER holder of the login (a
+   * sibling session, a session start, the dashboard) retires the lineage this
+   * session is holding, and its next refresh dies with "please run /login" in
+   * the middle of working. Throttled: the common case is "same login on both
+   * sides" and it needs checking, not checking every 400ms.
+   */
+  let lastPullCheck = 0;
+  const pullRenewedLogin = (account: Account): void => {
+    const now = Date.now();
+    if (now - lastPullCheck < 5_000) return;
+    lastPullCheck = now;
+    if (pullProfileIntoSession(account, sessionDir, context.ctx) === 'pulled') {
+      // What was just installed came FROM the profile, so it is not a change
+      // to mirror back; settling it here saves an identity lookup per pull.
+      mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
+      logEvent(`the "${account.name}" login was renewed elsewhere; this session picked it up`, {
+        kind: 'credential-sync',
+        data: { account: account.name, direction: 'pull' },
+      });
+    }
+  };
+
   /** Remove the live credential from the shared session dir so it never lingers. */
   const scrubSessionCreds = (): void => {
     try {
@@ -801,11 +831,32 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // this account yet, and a login that is genuinely finished is named, with
       // the command that fixes it, rather than turning into Claude saying you are
       // logged out for no visible reason.
-      const readiness = await ensureLoginUsable({
-        hasLogin: () => hasLogin(account.dir),
-        renewalDue: () => renewalIsDue(account.dir),
-        renew: () => refreshCredentialIfExpired(account.dir, { ctx: context.ctx }),
-      });
+      const checkReadiness = () =>
+        ensureLoginUsable({
+          hasLogin: () => hasLogin(account.dir),
+          renewalDue: () => renewalIsDue(account.dir),
+          renew: () => refreshCredentialIfExpired(account.dir, { ctx: context.ctx }),
+        });
+      let readiness = await checkReadiness();
+      if (readiness.state === 'needs-login') {
+        // The stored login is dead, but a LIVE session of this account may be
+        // running on a renewed one the hub never heard about: its Claude
+        // refreshed, the mirror had not landed yet, and the profile kept the
+        // retired copy. Adopting the live one is the difference between
+        // starting normally and demanding a sign-in the operator does not owe.
+        const recovered = recoverLoginFromLiveSession(account, sessionDir, context.ctx);
+        if (recovered.recovered) {
+          logEvent(
+            `the stored "${account.name}" login was dead; adopted the working one from ` +
+              `its live session (pid ${recovered.fromPid})`,
+            {
+              kind: 'credential-sync',
+              data: { account: account.name, direction: 'recover', fromPid: recovered.fromPid },
+            },
+          );
+          readiness = await checkReadiness();
+        }
+      }
       if (readiness.state === 'renewed') {
         logCredentialEvent(
           {
@@ -868,6 +919,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         if (!current) return;
         touchLease(current.name, context.ctx);
         mirrorSessionLoginToProfile(current);
+        pullRenewedLogin(current);
       };
       const switchWatch = (): string | null => {
         const request = readSwitchRequest(context.ctx);
