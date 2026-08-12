@@ -88,7 +88,20 @@ export interface MarkCappedInput {
   model?: string;
 }
 
-/** Record (or replace) a cap for an account. Returns a new Ledger. */
+/**
+ * Record (or replace) a cap for an account. Returns a new Ledger.
+ *
+ * A model-scoped write replaces only the record for THAT model, so an account
+ * can hold one per model. Replacing everything for the account was fine while
+ * caps were only read as "can this account run at all", and wrong the moment
+ * rotation started planning from them: capping Fable and then Opus on one
+ * account erased the Fable record, and the next run offered Fable back to an
+ * account whose Fable window was demonstrably closed.
+ *
+ * An account-wide write still replaces everything for the account, which is
+ * right: nothing about that account is usable, so no per-model detail survives
+ * as anything but noise.
+ */
 export function markCapped(ledger: Ledger, input: MarkCappedInput): Ledger {
   const capUntil =
     input.resetAt !== undefined && input.resetAt !== null
@@ -105,7 +118,12 @@ export function markCapped(ledger: Ledger, input: MarkCappedInput): Ledger {
     ...(input.model ? { model: input.model } : {}),
   };
 
-  return { caps: [...ledger.caps.filter((c) => c.account !== input.account), record] };
+  const sameModel = (c: CapRecord): boolean =>
+    (c.model ?? '').toLowerCase() === (input.model ?? '').toLowerCase();
+  const superseded = (c: CapRecord): boolean =>
+    c.account === input.account && (input.model === undefined ? true : sameModel(c));
+
+  return { caps: [...ledger.caps.filter((c) => !superseded(c)), record] };
 }
 
 /**

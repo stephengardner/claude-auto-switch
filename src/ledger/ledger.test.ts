@@ -70,6 +70,32 @@ describe('what rotation can learn from limits recorded earlier', () => {
     ]);
   });
 
+  it('keeps one record PER MODEL on an account', () => {
+    // Writing a cap used to drop every record for the account, so capping
+    // Fable and then Opus erased the Fable one, and the next run offered Fable
+    // back to an account whose Fable window was demonstrably closed.
+    let ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    ledger = markCapped(ledger, { account: 'a', now, resetAt: later, model: 'Opus' });
+    expect(activeModelCaps(ledger, now)).toEqual([
+      { account: 'a', model: 'Fable' },
+      { account: 'a', model: 'Opus' },
+    ]);
+  });
+
+  it('replaces the record for the SAME model rather than adding another', () => {
+    let ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    ledger = markCapped(ledger, { account: 'a', now, resetAt: later + 5, model: 'fable' });
+    expect(activeModelCaps(ledger, now)).toEqual([{ account: 'a', model: 'fable' }]);
+  });
+
+  it('an account-wide limit replaces every record for that account', () => {
+    // Nothing about the account is usable, so per-model detail is only noise.
+    let ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: later, model: 'Fable' });
+    ledger = markCapped(ledger, { account: 'a', now, resetAt: later });
+    expect(activeModelCaps(ledger, now)).toEqual([]);
+    expect(isCapped(ledger, 'a', now)).toBe(true);
+  });
+
   it('leaves out account-wide limits, which are a different question', () => {
     // Those already remove the account entirely, via cappedNames.
     const ledger = markCapped({ caps: [] }, { account: 'main', now, resetAt: later });
