@@ -203,6 +203,34 @@ describe('createEscapeBuffer', () => {
     expect(buffer.push('M')).toBe('');
   });
 
+  it('gives up a mouse fragment the moment what follows CANNOT belong to one', () => {
+    // The old rule ended a sequence on any character in the final-byte range,
+    // so typing "hello" after a stalled fragment sent the child
+    // "ESC[<35;10h", a private-mode set it never asked for, and showed
+    // "ello". The grammar of a mouse report is known exactly, so anything
+    // outside it is proof the report is not coming.
+    const { buffer } = buffered();
+    buffer.push(`${ESC}[<35;10`);
+    expect(buffer.push('hello')).toBe('hello');
+  });
+
+  it('does the same when the whole thing arrives in one chunk', () => {
+    const { buffer } = buffered();
+    expect(buffer.push(`${ESC}[<35;10hello`)).toBe('hello');
+  });
+
+  it('still completes a fragment whose REAL tail arrives', () => {
+    const { buffer } = buffered();
+    buffer.push(`${ESC}[<35;10`);
+    expect(buffer.push(';8M')).toBe(`${ESC}[<35;10;8M`);
+  });
+
+  it('leaves other sequences to the ordinary rule', () => {
+    // Only ESC [ < has a grammar this narrow; an arrow key must still work.
+    const { buffer } = buffered();
+    expect(buffer.push(`${ESC}[A`)).toBe(`${ESC}[A`);
+  });
+
   it('leaves typed digits alone when they cannot finish a real report', () => {
     // "ESC[<35" plus a typed "12M" is not a report: Cb;Cx;Cy needs three
     // parameters. Counting separators alone ate the "12" and delivered "M",

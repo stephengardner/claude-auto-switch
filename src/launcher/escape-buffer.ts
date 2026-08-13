@@ -51,7 +51,33 @@ export function splitTrailingPartial(text: string): { ready: string; pending: st
   const at = text.lastIndexOf(ESC);
   if (at === -1) return { ready: text, pending: '' };
   const tail = text.slice(at);
+
+  // A mouse report that has been PROVEN dead, because what followed it cannot
+  // belong to one. Waiting on it would swallow whatever that was, and the old
+  // rule was worse still: any character in the final-byte range ended the
+  // sequence, so typing "hello" after a stalled fragment sent the child
+  // "ESC[<35;10h" (a private-mode set it never asked for) and showed "ello".
+  const dead = deadMouseFragment(tail);
+  if (dead !== null) return { ready: text.slice(0, at) + tail.slice(dead), pending: '' };
+
   return isComplete(tail) ? { ready: text, pending: '' } : { ready: text.slice(0, at), pending: tail };
+}
+
+/**
+ * Where a mouse report stops making sense, or null while it still might.
+ *
+ * Only `ESC [ <` sequences: their grammar is known exactly (digits and
+ * semicolons, ended by M or m), so anything else is proof the sequence is
+ * never going to arrive, and the bytes from that point are real input.
+ */
+function deadMouseFragment(seq: string): number | null {
+  if (!seq.startsWith(`${ESC}[<`)) return null;
+  for (let i = 3; i < seq.length; i += 1) {
+    const ch = seq[i] as string;
+    if (/[0-9;]/.test(ch)) continue;
+    return /[Mm]/.test(ch) ? null : i; // a final byte is fine; anything else is not
+  }
+  return null; // still only digits and separators: it could yet be finished
 }
 
 /** Does this sequence have everything it needs to be understood? */
