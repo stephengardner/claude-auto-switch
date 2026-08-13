@@ -5,6 +5,7 @@ import { invokerArgs } from '../invoker.js';
 import { saveToken, extractToken } from '../daemon/token-store.js';
 import { configHome } from '../config/paths.js';
 import { writeSecretFile, redactSecrets } from '../util/secret-file.js';
+import { openTerminalInput } from '../launcher/terminal-input.js';
 import { getClaude, type CliContext } from '../context.js';
 
 function cleanEnv(): Record<string, string> {
@@ -45,27 +46,26 @@ export async function tokenCommand(context: CliContext, name: string): Promise<n
       env: cleanEnv(),
     });
 
+    // The SAME relay a session uses, rather than a second copy of it. This was
+    // a hand-rolled loop that passed raw bytes straight through, so it had
+    // every problem that one was built to solve: a sequence split across two
+    // reads arrived in halves, and mouse reports the terminal was sending
+    // because of some other program went into the token prompt as text. A
+    // second implementation of an already-solved thing is how a fix comes to
+    // cover one path and not the other.
+    const input = openTerminalInput();
+
     let output = '';
     child.onData((data) => {
       output += data;
       process.stdout.write(data);
+      input.observeChildOutput(data);
     });
-
-    const stdin = process.stdin as NodeJS.ReadStream & {
-      setRawMode?: (v: boolean) => void;
-      isTTY?: boolean;
-    };
-    if (stdin.isTTY) stdin.setRawMode?.(true);
-    stdin.resume();
-    const onInput = (d: Buffer): void => {
-      child.write(d.toString('utf8'));
-    };
-    stdin.on('data', onInput);
+    const detachInput = input.attach((text) => child.write(text));
 
     child.onExit(({ exitCode }) => {
-      stdin.off('data', onInput);
-      if (stdin.isTTY) stdin.setRawMode?.(false);
-      stdin.pause();
+      detachInput();
+      input.close();
 
       const clean = stripAnsi(output);
       const token = extractToken(clean);

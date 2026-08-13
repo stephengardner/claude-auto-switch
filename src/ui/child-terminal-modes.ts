@@ -1,31 +1,29 @@
 /**
- * Putting back the terminal modes a child left switched on.
+ * Putting back the terminal modes a child may have left switched on.
  *
- * Claude's interface turns on mouse tracking and bracketed paste when it starts,
- * and turns them off again when it exits normally. Measured against the real
- * binary, it sets all five of these:
+ * Corrected after two failed attempts at the stray-characters bug, both of
+ * which were built on a claim in THIS comment that turned out to be false. It
+ * used to say Claude sets ?1000h, ?1002h, ?1003h, ?1006h and ?2004h, "measured
+ * against the real binary". It does not. The shipped binary's entire private
+ * mode vocabulary is:
  *
- *   ?1000h click tracking      ?1002h drag tracking
- *   ?1003h ANY-MOTION tracking ?1006h SGR encoding
- *   ?2004h bracketed paste
+ *   ?1049 alternate screen   ?9001 win32 input   ?1004 focus reporting
+ *   ?2026 synchronised output ?1007 alternate scroll
+ *   ?1006 SGR mouse encoding  ?1000 click tracking
  *
- * ccx ends a session by killing it, on every rotation, every account switch and
- * the no-conversation retry. A kill skips the child's exit handler, so none of
- * those get turned off, and the terminal carries on reporting. With ?1003h still
- * set, EVERY mouse movement sends a report; with ?1006h it is sent in the SGR
- * form, and once nothing is prepared to read them they land wherever input goes
- * next as literal text:
+ * There is no ?1002, no ?1003 and no ?2004 anywhere in it. So "a killed child
+ * left motion tracking on" was never what was happening, and every fix aimed at
+ * that premise missed. The reports that actually reached the operator's input
+ * box carried button 35, which is motion, and nothing Claude enables can
+ * produce those: the mode belonged to the TERMINAL, set by something else,
+ * possibly long before ccx ran.
  *
- *   ;171;15M5;111;6M
- *
- * which is a cursor position, not a random character. That is what has been
- * appearing in the operator's input box.
- *
- * So ccx puts them back itself. It cannot ask a process it just killed to do it,
- * and it must not assume the next session will: the reports are generated in the
- * gap, before anything is listening. Sending a mode off that is already off does
- * nothing, so this is safe to send on every exit rather than only after a kill,
- * which also covers a child that crashed.
+ * That is why the real defence lives in launcher/mouse-gate.ts, which drops
+ * reports a child cannot have asked for whatever the terminal is doing. This
+ * reset stays because it is still worth leaving a terminal tidy: a kill skips
+ * the child's own cleanup, so ?1000h and ?1006h really can be left on, and
+ * sending an off for a mode that is already off does nothing. It is a courtesy,
+ * not the fix, and describing it as the fix cost two attempts.
  */
 
 /** Cursor restored too: a killed interface can leave it hidden. */

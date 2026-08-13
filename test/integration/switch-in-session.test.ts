@@ -79,6 +79,33 @@ function readRuns(runsLog: string): RunEntry[] {
 }
 
 /**
+ * Wait until the session has actually STARTED before acting on it.
+ *
+ * A fixed sleep here was a race, and it lost: session start grew more work
+ * (sweeping dead session directories, seeding settings, the first usage
+ * refresh, carrying a renewed login in), so on a loaded machine the switch
+ * request landed BEFORE the first launch and the session simply started on the
+ * requested account. The test then failed for a reason that had nothing to do
+ * with what it was checking. Waiting for the observable event instead makes it
+ * immune to however long startup takes.
+ */
+async function firstLaunch(runsLog: string, timeoutMs = 20_000): Promise<RunEntry> {
+  const launches = await waitFor(
+    'the session to launch',
+    () => {
+      try {
+        return readRuns(runsLog).filter((r) => r.type === 'launch');
+      } catch {
+        return []; // the log does not exist until the fake writes its first line
+      }
+    },
+    (found) => found.length > 0,
+    timeoutMs,
+  );
+  return launches[0]!;
+}
+
+/**
  * These tests drive a REAL pseudo-terminal, which is the only way to exercise
  * the switch machinery honestly. Some environments will not allocate one (the
  * hosted macOS runners refuse: `posix_spawnp failed`), and a test that cannot
@@ -233,7 +260,9 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     setActive('A', context.ctx);
 
     const running = runCommand(context, []);
-    await sleep(120);
+    // The session must be RUNNING before it can be switched in place; a fixed
+    // sleep raced startup and lost, and the session then simply started on B.
+    await firstLaunch(runsLog);
     writeSwitchRequest('B', Date.now(), 'seamless', context.ctx);
     expect(await running).toBe(0);
 
@@ -345,7 +374,7 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     setActive('A', context.ctx);
 
     const running = runCommand(context, []);
-    await sleep(120);
+    await firstLaunch(runsLog); // same race as the seamless case
     writeSwitchRequest('B', Date.now(), 'restart', context.ctx);
     expect(await running).toBe(0);
 
