@@ -143,11 +143,23 @@ export function filterMouseReports(text: string, modes: MouseModes): FilterResul
   let dropped = 0;
   let unrequestedMotion = false;
   let i = 0;
+  // Jumps between candidates and copies the text between them in one piece.
+  // Walking character by character made every paste O(one allocation per
+  // character), and a paste is the largest input this ever sees.
   while (i < text.length) {
-    const report = reportAt(text, i);
+    const next = text.indexOf(`${ESC}[`, i);
+    if (next === -1) {
+      forward += text.slice(i);
+      break;
+    }
+    forward += text.slice(i, next);
+
+    const report = reportAt(text, next);
     if (!report) {
-      forward += text[i];
-      i += 1;
+      // Not a report: keep the introducer and carry on looking after it. A
+      // report can only start at an `ESC [`, so nothing is skipped past.
+      forward += text.slice(next, next + 2);
+      i = next + 2;
       continue;
     }
     const allowed = report.motion ? wantsMotion : wantsAny;
@@ -202,22 +214,65 @@ export function unfinishedModeTail(text: string): string {
   return couldStillBecomeOne && tail.length <= 64 ? tail : '';
 }
 
+/** Bracketed paste: everything between these is CONTENT, not keys. */
+const PASTE_START = `${ESC}[200~`;
+const PASTE_END = `${ESC}[201~`;
+
 export function createMouseGate(): MouseGate {
   let modes: MouseModes = NO_MOUSE;
   let carried = '';
+  let pasting = false;
   return {
     observeOutput: (text) => {
       const whole = carried + text;
       modes = applyModeChanges(modes, whole);
       carried = unfinishedModeTail(whole);
     },
-    filterInput: (text) => filterMouseReports(text, modes),
+    filterInput: (text) => {
+      // Pasted text is DATA. A file that happens to contain the bytes of a
+      // mouse report would otherwise be silently edited on its way in, which
+      // is a worse bug than the one this file fixes: stray characters are
+      // visible, quietly corrupted input is not. The terminal marks the
+      // boundaries precisely so this can be got right.
+      if (!pasting && !text.includes(PASTE_START)) {
+        return filterMouseReports(text, modes);
+      }
+      let forward = '';
+      let dropped = 0;
+      let unrequestedMotion = false;
+      let rest = text;
+      while (rest.length > 0) {
+        if (pasting) {
+          const end = rest.indexOf(PASTE_END);
+          if (end === -1) {
+            forward += rest; // the paste continues into the next chunk
+            break;
+          }
+          forward += rest.slice(0, end + PASTE_END.length);
+          rest = rest.slice(end + PASTE_END.length);
+          pasting = false;
+          continue;
+        }
+        const start = rest.indexOf(PASTE_START);
+        const upto = start === -1 ? rest : rest.slice(0, start);
+        const filtered = filterMouseReports(upto, modes);
+        forward += filtered.forward;
+        dropped += filtered.dropped;
+        unrequestedMotion = unrequestedMotion || filtered.unrequestedMotion;
+        if (start === -1) break;
+        forward += PASTE_START;
+        rest = rest.slice(start + PASTE_START.length);
+        pasting = true;
+      }
+      return { forward, dropped, unrequestedMotion };
+    },
     childChanged: () => {
       // A new child has asked for nothing yet. Assuming otherwise would carry
       // the previous one's modes into a program that never set them, which is
       // the inheritance this whole file exists to break.
       modes = NO_MOUSE;
       carried = '';
+      pasting = false;
     },
     modes: () => modes,
   };

@@ -146,6 +146,60 @@ describe('what must never be touched', () => {
   });
 });
 
+describe('pasted text, which is data and not keys', () => {
+  it('never edits content that happens to contain report bytes', () => {
+    // Quietly corrupting what someone pasted is a worse bug than the visible
+    // one this file fixes. The terminal marks the boundaries so it can be got
+    // right, and inside them nothing is interpreted.
+    const gate = createMouseGate();
+    const paste = `${ESC}[200~a line${motion(9, 9)} and more${ESC}[201~`;
+    expect(gate.filterInput(paste).forward).toBe(paste);
+  });
+
+  it('goes back to filtering after the paste ends', () => {
+    const gate = createMouseGate();
+    const stream = `${ESC}[200~pasted${ESC}[201~${motion(1, 2)}typed`;
+    expect(gate.filterInput(stream).forward).toBe(`${ESC}[200~pasted${ESC}[201~typed`);
+  });
+
+  it('keeps a paste whole when it spans several chunks', () => {
+    const gate = createMouseGate();
+    expect(gate.filterInput(`${ESC}[200~first`).forward).toBe(`${ESC}[200~first`);
+    // Mid-paste: even this must survive, because it is content.
+    expect(gate.filterInput(motion(5, 5)).forward).toBe(motion(5, 5));
+    expect(gate.filterInput(`last${ESC}[201~`).forward).toBe(`last${ESC}[201~`);
+    // And the very next report, outside the paste, is filtered again.
+    expect(gate.filterInput(motion(6, 6)).forward).toBe('');
+  });
+
+  it('still filters what comes BEFORE a paste in the same chunk', () => {
+    const gate = createMouseGate();
+    const stream = `${motion(1, 2)}${ESC}[200~x${ESC}[201~`;
+    expect(gate.filterInput(stream).forward).toBe(`${ESC}[200~x${ESC}[201~`);
+  });
+
+  it('does not stay stuck in a paste when the session changes', () => {
+    const gate = createMouseGate();
+    gate.filterInput(`${ESC}[200~unfinished`);
+    gate.childChanged();
+    expect(gate.filterInput(motion(1, 2)).forward).toBe('');
+  });
+});
+
+describe('a large paste', () => {
+  it('is copied in pieces rather than a character at a time', () => {
+    // Not a timing assertion: this checks the result is exact for input far
+    // larger than anything typed, which is where the old character-by-character
+    // loop cost one allocation per byte.
+    const gate = createMouseGate();
+    const big = 'x'.repeat(200_000);
+    const started = Date.now();
+    const result = gate.filterInput(`${ESC}[A${big}`);
+    expect(result.forward).toBe(`${ESC}[A${big}`);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
 describe('the gate over a session', () => {
   it('starts closed, opens on what the child declares, and closes for the next child', () => {
     const gate = createMouseGate();
