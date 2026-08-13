@@ -164,7 +164,8 @@ function parseRecords(text: string): EventRecord[] {
  * Generous on purpose. Trimming rewrites the file, so it should be rare, and a
  * few hundred kilobytes of text costs nothing to hold.
  */
-const TRIM_BYTES = 64 * 1024;
+/** Exported so tests assert the real bound rather than a copy of the number. */
+export const TRIM_BYTES = 64 * 1024;
 
 /**
  * Append one event.

@@ -1,8 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmdirSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  mkdirSync,
+  rmdirSync,
+  existsSync,
+  statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { appendEvent, readEvents, formatEvent, eventsFilePath } from './log.js';
+import { appendEvent, readEvents, formatEvent, eventsFilePath, TRIM_BYTES } from './log.js';
 
 function home(): string {
   return mkdtempSync(path.join(tmpdir(), 'cas-ev-'));
@@ -265,6 +273,10 @@ describe('keeping the file bounded without losing what matters', () => {
     const lines = readFileSync(eventsFilePath(h), 'utf8').split('\n').filter((l) => l.trim());
     // A trim definitely happened: fewer lines survive than were appended.
     expect(lines.length).toBeLessThan(written);
+    // The bound that actually exists is a BYTE bound, and the size is checked
+    // after every append, so the live file is never left over it. A line count
+    // alone would pass with records of any size.
+    expect(statSync(eventsFilePath(h)).size).toBeLessThanOrEqual(TRIM_BYTES);
     // Trimming happens in bulk, so the file sits between the cap and the trim
     // threshold rather than exactly at the cap.
     expect(lines.length).toBeLessThanOrEqual(2000);

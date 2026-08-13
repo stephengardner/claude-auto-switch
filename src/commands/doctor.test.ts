@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -226,6 +226,11 @@ describe('doctorCommand', () => {
     const out = lines.join('\n');
     expect(out).toContain('your own status line is in place');
     expect(out).toContain('ccx on');
+    // And doctor only LOOKS. A checkup that quietly rewrote the settings it was
+    // reporting on would be a far worse bug than the one it is reporting.
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
+      statusLine: { type: 'command', command: 'starship' },
+    });
   });
 
   it('FAILS when the settings file cannot be read as settings', async () => {

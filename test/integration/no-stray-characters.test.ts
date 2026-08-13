@@ -60,15 +60,28 @@ function handClock() {
       },
       clearTimer: (handle: unknown) => void timers.delete(handle as number),
     },
-    /** Move time forward, firing anything that comes due on the way. */
+    /**
+     * Move time forward, firing what comes due AT ITS OWN DEADLINE.
+     *
+     * The deadline matters, not just the order: the abandon callback reads the
+     * clock to decide how long it will wait for the tail. Jumping straight to
+     * the target first would date the abandonment late and hand the test a
+     * wider window than production has, which is how a test starts passing for
+     * a reason that does not exist outside it.
+     */
     advance(ms: number) {
-      current += ms;
-      for (const [handle, timer] of [...timers]) {
-        if (timer.at <= current) {
-          timers.delete(handle);
-          timer.fn();
-        }
+      const target = current + ms;
+      for (;;) {
+        const due = [...timers.entries()]
+          .filter(([, timer]) => timer.at <= target)
+          .sort((a, b) => a[1].at - b[1].at)[0];
+        if (!due) break;
+        const [handle, timer] = due;
+        timers.delete(handle);
+        current = timer.at;
+        timer.fn();
       }
+      current = target;
     },
   };
 }
