@@ -59,6 +59,15 @@ export interface RenderOptions {
   confirm?: string;
   /** The name prompt, when the dashboard is asking for one. */
   prompt?: { label: string; text: string; error?: string };
+  /**
+   * How many columns there are to draw in.
+   *
+   * The table fitted an 80-column terminal with one character to spare, which
+   * is not fitting, it is luck: a longer account name or a longer wait pushed
+   * it over and the whole row wrapped. The bars are the elastic part, so they
+   * give up width first and the numbers, names and statuses stay whole.
+   */
+  width?: number;
 }
 
 import { codes, paint, shadeForUsed } from '../ui/style.js';
@@ -73,6 +82,33 @@ import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
  * number is printed beside it for anyone who wants it.
  */
 const BAR = 10;
+
+/** Below this a bar says nothing useful, so the number stands on its own. */
+const BAR_MIN = 4;
+
+/** Everything in a gauge that is not the bar: a space and a padded percent. */
+const GAUGE_EXTRA = 5;
+
+/**
+ * The widest bar that still lets a row fit.
+ *
+ * Shrinks rather than wraps, and disappears entirely rather than squeezing the
+ * numbers out: a row that wraps is unreadable, whereas a row of bare
+ * percentages is merely plainer.
+ */
+function barWidthFor(width: number | undefined, nameW: number, statusW: number): number {
+  if (!width || width <= 0) return BAR;
+  const fixed = 3 + nameW + 2 + 2 * 2 + 2 + statusW + GAUGE_EXTRA * 3;
+  const each = Math.floor((width - fixed) / 3);
+  if (each >= BAR) return BAR;
+  return each >= BAR_MIN ? each : 0;
+}
+
+/** Shorten a label to fit, marking that something was cut. */
+function fit(text: string, width: number): string {
+  if (width <= 0) return '';
+  return text.length <= width ? text : `${text.slice(0, Math.max(1, width - 1))}…`;
+}
 
 /**
  * A wait, at the coarsest useful precision: minutes within the hour, hours
@@ -115,13 +151,22 @@ function statusColor(a: DashboardAccount, now: number): string {
  */
 const shadeFor = shadeForUsed;
 
-/** A window drawn the way the usage page draws it: bar, then the number. */
-function gauge(used: number | null, color: boolean): string {
-  return `${paint(bar(used, BAR), shadeFor(used), color)} ${pct(used).padStart(4)}`;
+/**
+ * A window drawn the way the usage page draws it: bar, then the number.
+ *
+ * A zero-width bar is a real answer, not a failure: on a narrow terminal the
+ * number alone still says everything, and it is the wrapping that would make
+ * the screen unreadable.
+ */
+function gauge(used: number | null, color: boolean, barWidth: number): string {
+  const drawn = barWidth > 0 ? `${paint(bar(used, barWidth), shadeFor(used), color)} ` : '';
+  return `${drawn}${pct(used).padStart(4)}`;
 }
 
 /** Printable width of a gauge, which is what the header has to line up with. */
-const GAUGE_W = BAR + 1 + 4;
+function gaugeWidth(barWidth: number): number {
+  return barWidth > 0 ? barWidth + 1 + 4 : 4;
+}
 
 /**
  * A window's utilization as a whole percent, or `?` when nobody has read it.
@@ -211,15 +256,41 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const color = options.color ?? true;
   const { accounts, events, now } = snapshot;
 
-  const nameW = Math.max('ACCOUNT'.length, ...accounts.map((a) => a.name.length));
+  const fullNameW = Math.max('ACCOUNT'.length, ...accounts.map((a) => a.name.length));
+  const nameW0 = fullNameW; // before the width clamp below, for sizing the bars
   // The model column is named after the model it is showing, so the header
   // says FABLE rather than MODEL and the row underneath is just a bar.
   const modelName = columnModel(accounts, now);
   const statusW = Math.max('STATUS'.length, ...accounts.map((a) => statusText(a, now).length + 2));
+  // The bars give up width before anything else does.
+  const barW = barWidthFor(options.width, nameW0, statusW);
+  const GAUGE_W = gaugeWidth(barW);
+
+  // A column is as wide as the wider of its heading and its contents, so the
+  // two line up at every terminal width. Once the bars are gone the headings
+  // shorten too, rather than pushing the row back over the edge they were just
+  // shrunk to fit inside.
+  const labels = barW > 0
+    ? ['5-HOUR', 'WEEK', (modelName ?? 'MODEL').toUpperCase()]
+    : ['5H', 'WK', (modelName ?? 'MODEL').toUpperCase()];
+  const colW = labels.map((l) => Math.max(GAUGE_W, l.length));
+
+
+  // The NAME is elastic too, once the bars have already gone. A long account
+  // name in a narrow terminal would otherwise push the row over on its own,
+  // and a wrapped row is the thing all of this exists to prevent.
+  const others = 3 + 2 + colW.reduce((a, b) => a + b, 0) + 4 + 2 + statusW;
+  const nameW = Math.min(
+    fullNameW,
+    options.width ? Math.max(3, options.width - others) : fullNameW,
+  );
 
   // Two-char gutter: selection cursor then active marker, both plain-text
   // visible so the active row is clear even without color.
-  const rowWidth = 3 + nameW + 2 + GAUGE_W * 3 + 4 + 2 + statusW;
+  const rowWidth = Math.min(
+    options.width ?? Number.MAX_SAFE_INTEGER,
+    nameW + others,
+  );
   const rule = paint('─'.repeat(rowWidth), codes.dim, color);
 
   const title = paint('claude-auto-switch', codes.bold, color);
@@ -228,7 +299,9 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const titleLine = `${title}   ${paint(`active: ${active?.name ?? 'none'}${onModel}`, codes.dim, color)}`;
 
   const header = paint(
-    `   ${'ACCOUNT'.padEnd(nameW)}  ${'5-HOUR'.padEnd(GAUGE_W)}  ${'WEEK'.padEnd(GAUGE_W)}  ${(modelName ?? 'MODEL').toUpperCase().padEnd(GAUGE_W)}  STATUS`,
+    `   ${fit('ACCOUNT', nameW).padEnd(nameW)}  ${labels
+      .map((l, i) => l.padEnd(colW[i] as number))
+      .join('  ')}  STATUS`,
     codes.dim,
     color,
   );
@@ -236,15 +309,19 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const rows = accounts.map((a, i) => {
     const cursor = i === options.selected ? paint('▸', codes.cyan, color) : ' ';
     const marker = a.active ? paint('*', codes.cyan, color) : ' ';
-    const name = a.active
-      ? paint(a.name.padEnd(nameW), `${codes.bold}${codes.cyan}`, color)
-      : a.name.padEnd(nameW);
+    const shown = fit(a.name, nameW).padEnd(nameW);
+    const name = a.active ? paint(shown, `${codes.bold}${codes.cyan}`, color) : shown;
     // Each window drawn on its own, so a spent model window is visible even
     // when the hour and the week are healthy. Collapsing them into one number
     // hid exactly the one that stops you.
-    const five = gauge(fiveHourNow(a, now), color);
-    const week = gauge(weekNow(a, now), color);
-    const model = gauge(modelUsedNow(a, modelName, now), color);
+    // Padded by VISIBLE width: a gauge carries colour codes, so padding by
+    // string length would count the escape bytes and leave every coloured
+    // cell short.
+    const pad = (text: string, i: number): string =>
+      text + ' '.repeat(Math.max(0, (colW[i] as number) - GAUGE_W));
+    const five = pad(gauge(fiveHourNow(a, now), color, barW), 0);
+    const week = pad(gauge(weekNow(a, now), color, barW), 1);
+    const model = pad(gauge(modelUsedNow(a, modelName, now), color, barW), 2);
     const dot = paint('●', statusColor(a, now), color);
     return `${cursor}${marker} ${name}  ${five}  ${week}  ${model}  ${dot} ${statusText(a, now)}`;
   });

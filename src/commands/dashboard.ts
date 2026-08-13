@@ -168,7 +168,7 @@ export async function dashboardCommand(
   }
 
   if (options.once) {
-    context.out(renderDashboard(build(), { color }));
+    context.out(renderDashboard(build(), { color, width: process.stdout.columns }));
     return 0;
   }
 
@@ -510,6 +510,9 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         color: deps.color,
         interactive: true,
         selected,
+        // Read every frame, not once at start: a window resized mid-session is
+        // exactly when a fixed-width table starts wrapping.
+        ...(process.stdout.columns ? { width: process.stdout.columns } : {}),
         ...(ui.confirm ? { confirm: ui.confirm.question } : {}),
         ...(ui.notice ? { notice: ui.notice } : {}),
         ...(ui.prompt

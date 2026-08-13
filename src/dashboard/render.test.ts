@@ -156,6 +156,49 @@ describe('renderDashboard (plain)', () => {
     expect(row).toContain('██████████'); // spent reads full
   });
 
+  it('never draws wider than the terminal it was given', () => {
+    // It fitted 80 columns with one character to spare, which is luck rather
+    // than fitting: a longer name or a longer wait wrapped the row, and a
+    // wrapped row is unreadable.
+    const wide = account({
+      name: 'a-rather-long-account-name',
+      cappedUntil: NOW + 12 * 24 * 60 * 60_000,
+      usage: { fiveHour: 1, sevenDay: 1, models: [{ name: 'Fable', utilization: 1 }] },
+    });
+    for (const width of [100, 80, 64, 50]) {
+      const out = renderDashboard(snapshot([wide]), { ...opts, width });
+      for (const line of out.split('\n')) {
+        expect(line.length, `at width ${width}: ${line}`).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  it('gives up the bars before it gives up the numbers', () => {
+    // A row of bare percentages is plainer; a wrapped row is useless. So the
+    // elastic part goes first and the facts stay.
+    const out = renderDashboard(
+      snapshot([account({ name: 'x', usage: { fiveHour: 0.55, sevenDay: 0.62 } })]),
+      { ...opts, width: 46 },
+    );
+    expect(out).toContain('55%');
+    expect(out).toContain('62%');
+    expect(out).not.toContain('░'); // no room for bars at this width
+  });
+
+  it('lines the headings up with the numbers under them at any width', () => {
+    const out = renderDashboard(
+      snapshot([account({ name: 'x', usage: { fiveHour: 0.55, sevenDay: 0.62 } })]),
+      { ...opts, width: 50 },
+    );
+    const [header, row] = [
+      out.split('\n').find((l) => l.includes('ACCOUNT'))!,
+      out.split('\n').find((l) => / x /.test(l))!,
+    ];
+    // The status column is the last thing on both lines, so if the columns
+    // before it have drifted, these two no longer start at the same place.
+    expect(header.indexOf('STATUS')).toBe(row.indexOf('●'));
+  });
+
   it('says what to do when there are no accounts, instead of an empty table', () => {
     // Whoever sees this has just installed ccx. A header with nothing under it
     // reads as broken, and leaves them guessing.
