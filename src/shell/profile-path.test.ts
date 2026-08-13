@@ -53,8 +53,13 @@ describe('an injected environment is the whole world', () => {
       { ...onWindows, queryProfile },
     );
     expect(asked).toBe(0);
-    expect(sandboxed).toContain('sandbox');
-    expect(sandboxed.toLowerCase()).not.toContain('onedrive');
+    // Pinned exactly, not just "contains sandbox". Both home variables are set
+    // here on purpose: a resolver that worked out the platform twice could pick
+    // the POSIX home and then join it with Windows separators, and a loose
+    // assertion would have called that a pass.
+    expect(sandboxed).toBe(
+      'C:\\tmp\\sandbox\\Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1',
+    );
 
     // With nothing injected it is real CLI use, and the real answer is right.
     expect(defaultPowerShellProfile({}, { ...onWindows, queryProfile })).toContain('OneDrive');

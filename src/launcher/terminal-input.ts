@@ -14,7 +14,7 @@
  * touch the terminal's mode.
  */
 
-import { createEscapeBuffer } from './escape-buffer.js';
+import { createEscapeBuffer, type EscapeBufferOptions } from './escape-buffer.js';
 import { createMouseGate, STOP_UNREQUESTED_MOTION, type MouseGate } from './mouse-gate.js';
 
 type Writer = (data: string) => void;
@@ -37,6 +37,13 @@ export interface TerminalInputDeps {
   out?: (text: string) => void;
   /** Injected in tests. */
   gate?: MouseGate;
+  /**
+   * Timing for the escape buffer. Injected so tests can drive the clock rather
+   * than sleep: the windows here are measured in a few hundred milliseconds,
+   * and a test that waits out a real one is deciding by how busy the machine
+   * is, not by whether the code is right.
+   */
+  escapeBuffer?: EscapeBufferOptions;
   /**
    * Told once when reports are being dropped that the session never asked for.
    *
@@ -74,7 +81,7 @@ export function openTerminalInput(
   // the middle of one used to deliver its halves as two separate writes, and the
   // reader then showed the tail as typed text: mouse reports turning up in the
   // prompt as "35;112;43M" with their ESC[< prefix gone.
-  const buffer = createEscapeBuffer((held) => send(held));
+  const buffer = createEscapeBuffer((held) => send(held), deps.escapeBuffer);
 
   /**
    * Everything the operator types reaches the child through here, and nothing

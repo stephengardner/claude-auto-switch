@@ -61,7 +61,11 @@ export function defaultPowerShellProfile(c: PathCtx = {}, deps: ProfileDeps = {}
   }
 
   // Fallback: prefer the OneDrive-redirected Documents folder when present.
-  const root = platform === 'win32' && env.OneDrive ? env.OneDrive : homeDir(c);
+  // homeDir is given the platform we actually resolved, not left to work it out
+  // again: it picks USERPROFILE or HOME by platform, and disagreeing here would
+  // join a POSIX home with Windows separators.
+  const root =
+    platform === 'win32' && env.OneDrive ? env.OneDrive : homeDir({ platform, env });
   return p.join(root, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1');
 }
 

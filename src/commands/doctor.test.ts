@@ -214,6 +214,39 @@ describe('doctorCommand', () => {
     expect(lines.join('\n')).toContain('everything is in order');
   });
 
+  it('leaves a status line of your own alone, and says so', async () => {
+    const lines: string[] = [];
+    const c = context(lines);
+    const file = settingsPath(c.ctx);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ statusLine: { type: 'command', command: 'starship' } }));
+
+    const code = await doctorCommand(c, cleanDeps);
+    expect(code).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('your own status line is in place');
+    expect(out).toContain('ccx on');
+  });
+
+  it('FAILS when the settings file cannot be read as settings', async () => {
+    // ccx refuses to write over a file it cannot parse, so the status line will
+    // never appear until someone fixes the file. That is a real problem, not a
+    // note, and the report has to say so rather than quietly staying silent.
+    for (const contents of ['{ not json at all', '[1, 2, 3]']) {
+      const lines: string[] = [];
+      const c = context(lines);
+      const file = settingsPath(c.ctx);
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, contents, 'utf8');
+
+      const code = await doctorCommand(c, cleanDeps);
+      expect(code).toBe(1);
+      const out = lines.join('\n');
+      expect(out).toContain('could not be read as settings');
+      expect(out).toContain('valid JSON object');
+    }
+  });
+
   it('mentions the status line when nothing on screen says ccx is running', async () => {
     // The shim is transparent, so an unwired status line means there is no
     // sign at all that account switching is happening. Worth saying, without
