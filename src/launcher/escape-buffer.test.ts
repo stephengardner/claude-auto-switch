@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { splitTrailingPartial, createEscapeBuffer } from './escape-buffer.js';
+import {
+  splitTrailingPartial,
+  createEscapeBuffer,
+  type EscapeBufferOptions,
+} from './escape-buffer.js';
 
 const ESC = '\x1b';
 const BEL = '\x07';
@@ -80,20 +84,32 @@ describe('splitTrailingPartial', () => {
 });
 
 describe('createEscapeBuffer', () => {
-  /** A buffer whose flush timer is driven by hand, so nothing depends on timing. */
-  function buffered() {
+  /** A buffer whose flush timer and clock are driven by hand. */
+  function buffered(extra: Partial<EscapeBufferOptions> = {}) {
     const flushed: string[] = [];
-    let fire: (() => void) | null = null;
+    const timers: Array<() => void> = [];
+    const clock = { at: 1000 };
     const buffer = createEscapeBuffer((t) => flushed.push(t), {
+      now: () => clock.at,
       setTimer: (fn) => {
-        fire = fn;
-        return 1;
+        timers.push(fn);
+        return timers.length;
       },
       clearTimer: () => {
-        fire = null;
+        timers.length = 0;
       },
+      ...extra,
     });
-    return { buffer, flushed, tick: () => fire?.() };
+    return {
+      buffer,
+      flushed,
+      clock,
+      tick: () => {
+        const fire = timers.pop();
+        timers.length = 0;
+        fire?.();
+      },
+    };
   }
 
   it('REASSEMBLES a sequence split across two chunks', () => {
@@ -137,18 +153,50 @@ describe('createEscapeBuffer', () => {
     expect(buffer.abandoned()).toBe(1);
   });
 
-  it('does not leave the ORPHANED TAIL to arrive as typed text', () => {
-    // The other half of the same failure: after the fragment is abandoned, the
-    // remainder of that report must not be forwarded either, or the reader
-    // shows ";10M" exactly as before.
+  it('SWALLOWS the orphaned tail, which is the character the operator sees', () => {
+    // The decisive half. Dropping the prefix is not enough: the rest of that
+    // report still arrives, carries no Escape, and nothing downstream can tell
+    // it from typing. ";10M" is exactly the ";30M" in the screenshot.
     const { buffer, tick } = buffered();
     buffer.push(`${ESC}[<35;101`);
     tick();
-    // Whatever completes the abandoned report is inert on its own; what
-    // matters is that the NEXT complete report still gets through intact.
     const rest = buffer.push(`;10M${ESC}[<35;102;11M`);
-    expect(rest).not.toContain(`${ESC}[<35;101`);
-    expect(rest.endsWith(`${ESC}[<35;102;11M`)).toBe(true);
+    expect(rest).toBe(`${ESC}[<35;102;11M`); // the tail is gone, the next report intact
+  });
+
+  it('swallows a tail that is itself split across chunks', () => {
+    const { buffer, tick } = buffered();
+    buffer.push(`${ESC}[<35;101`);
+    tick();
+    expect(buffer.push(';10')).toBe(''); // params, still no final byte
+    expect(buffer.push('M')).toBe(''); // finished, and eaten
+    expect(buffer.push('hello')).toBe('hello'); // back to normal immediately
+  });
+
+  it('swallows the raw payload of an abandoned ORIGINAL-encoding report', () => {
+    const { buffer, tick } = buffered();
+    buffer.push(`${ESC}[M`);
+    tick();
+    expect(buffer.push(' !"typed')).toBe('typed'); // three payload bytes eaten
+  });
+
+  it('never eats a KEYSTROKE that follows an abandoned fragment', () => {
+    // The narrowness matters: only what could finish that report is taken, and
+    // ordinary typing does not look like it.
+    const { buffer, tick } = buffered();
+    buffer.push(`${ESC}[<35;101`);
+    tick();
+    expect(buffer.push('hello')).toBe('hello');
+  });
+
+  it('stops waiting for a tail once the window has passed', () => {
+    // Otherwise a much later keystroke that happens to look like a tail would
+    // be swallowed for no reason.
+    const { buffer, clock, tick } = buffered({ abandonAfterMs: 250 });
+    buffer.push(`${ESC}[<35;101`);
+    tick();
+    clock.at += 5_000; // long enough that anything arriving now is the operator
+    expect(buffer.push(';10M')).toBe(';10M');
   });
 
   it('still lets a lone Escape through, which is why the wait exists at all', () => {

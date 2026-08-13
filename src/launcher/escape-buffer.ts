@@ -123,6 +123,56 @@ export interface EscapeBufferOptions {
   abandonAfterMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
+  /** Injected in tests, so the suffix window does not depend on real time. */
+  now?: () => number;
+}
+
+/**
+ * The remains of a mouse report whose beginning was dropped.
+ *
+ * Dropping the beginning is only half the job. The rest of that report still
+ * arrives, and it carries no Escape, so nothing downstream can tell it from
+ * something the operator typed: `;10M` is forwarded and shown, which is the
+ * `;30M` in the reported screenshot. So what was abandoned is remembered just
+ * long enough to swallow its own tail.
+ */
+type ExpectedTail = { kind: 'sgr' } | { kind: 'x10'; bytes: number };
+
+/** What, if anything, an abandoned fragment will send along afterwards. */
+export function tailExpectedAfter(fragment: string): ExpectedTail | null {
+  // SGR: ESC [ < params, finished by M or m.
+  if (/^\x1b\[<[0-9;]*$/.test(fragment)) return { kind: 'sgr' };
+  // The original encoding: ESC [ M then exactly three raw bytes.
+  if (fragment.startsWith(`${ESC}[M`)) {
+    const have = fragment.length - 3;
+    return have < 3 ? { kind: 'x10', bytes: 3 - have } : null;
+  }
+  return null;
+}
+
+/**
+ * Eat the part of `chunk` that belongs to a report already dropped.
+ *
+ * Deliberately narrow. Only what could actually finish THAT report is taken,
+ * so a keystroke arriving in the same window survives: after an SGR fragment
+ * the tail is digits and semicolons ending in M or m, and typing "hello" does
+ * not look like that.
+ */
+export function consumeExpectedTail(
+  chunk: string,
+  expected: ExpectedTail,
+): { rest: string; still: ExpectedTail | null } {
+  if (expected.kind === 'x10') {
+    const take = Math.min(expected.bytes, chunk.length);
+    const left = expected.bytes - take;
+    return { rest: chunk.slice(take), still: left > 0 ? { kind: 'x10', bytes: left } : null };
+  }
+  const match = /^[0-9;]*[Mm]?/.exec(chunk);
+  const eaten = match?.[0] ?? '';
+  if (eaten.length === 0) return { rest: chunk, still: null }; // not ours after all
+  const finished = /[Mm]$/.test(eaten);
+  // Params with no final byte yet: the tail is itself split, so keep waiting.
+  return { rest: chunk.slice(eaten.length), still: finished ? null : { kind: 'sgr' } };
 }
 
 export interface EscapeBuffer {
@@ -158,9 +208,14 @@ export function createEscapeBuffer(
   const setTimer = options.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
   const clearTimer = options.clearTimer ?? ((h) => clearTimeout(h as NodeJS.Timeout));
 
+  const now = options.now ?? (() => Date.now());
+
   let pending = '';
   let timer: unknown = null;
   let abandonedCount = 0;
+  /** The tail of a dropped report, and how long it is worth waiting for. */
+  let expected: ExpectedTail | null = null;
+  let expectedUntil = 0;
 
   const stopTimer = (): void => {
     if (timer !== null) {
@@ -169,9 +224,30 @@ export function createEscapeBuffer(
     }
   };
 
+  /** Give up on the fragment being held, remembering what it still owes. */
+  const abandon = (fragment: string): void => {
+    abandonedCount += 1;
+    expected = tailExpectedAfter(fragment);
+    // Bounded, so a keystroke that happens to look like a tail much later is
+    // still delivered. A genuine tail arrives in the same breath as the rest.
+    expectedUntil = now() + abandonMs;
+  };
+
   return {
     push(chunk: string): string {
       stopTimer();
+      // Swallow what belongs to a report whose beginning was already dropped.
+      // Without this the fix is half a fix: the prefix is gone and the tail
+      // still reaches the reader as text, which is the stray characters.
+      if (expected) {
+        if (now() <= expectedUntil) {
+          const { rest, still } = consumeExpectedTail(chunk, expected);
+          chunk = rest;
+          expected = still;
+        } else {
+          expected = null;
+        }
+      }
       const { ready, pending: held } = splitTrailingPartial(pending + chunk);
       pending = held;
       if (pending) {
@@ -189,7 +265,7 @@ export function createEscapeBuffer(
               onFlush(held2);
               return;
             }
-            abandonedCount += 1;
+            abandon(held2);
           },
           isKey ? waitMs : abandonMs,
         );
@@ -202,12 +278,12 @@ export function createEscapeBuffer(
       pending = '';
       // Only a real key is worth handing on at shutdown; a fragment is not.
       if (couldBeEscapeKey(held)) return held;
-      if (held) abandonedCount += 1;
+      if (held) abandon(held);
       return '';
     },
     reset(): void {
       stopTimer();
-      if (pending) abandonedCount += 1;
+      if (pending) abandon(pending);
       pending = '';
     },
     abandoned(): number {
