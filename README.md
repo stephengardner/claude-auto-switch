@@ -20,10 +20,15 @@ npm install -g claude-auto-switch
 
 ccx add work        # log in an account (opens your browser)
 ccx add personal    # add another to switch between
-ccx on              # set up once: your terminal and your editor
+ccx on              # set up once: terminal, editor, status line
 ```
 
 That is the entire setup. Now use Claude normally.
+
+`ccx on` does three things and tells you about each one: it makes `claude` run
+through ccx in your shell, points the Claude Code editor extension at your
+accounts, and adds a line to Claude's own status bar so you can always see which
+account you are on. `ccx off` undoes all three.
 
 > Adding a second account? Your browser is still signed in to the first one, so
 > sign out at claude.ai first (or use a different browser profile). Otherwise
@@ -59,12 +64,8 @@ Claude, so it cannot break Claude in your editor.
 
 Running out of room is much less annoying when you can see it coming.
 
-**In Claude itself.** Add one line to your Claude `settings.json` and the account
-and its remaining room appear in Claude's own status line:
-
-```json
-"statusLine": { "type": "command", "command": "ccx statusline" }
-```
+**In Claude itself.** `ccx on` puts the account and its remaining room into
+Claude's own status line, so every session shows where you stand:
 
 ```
 work Fable 87% left              plenty of room
@@ -72,9 +73,17 @@ work Fable 22% left              getting low
 ! work Fable spent resets 10h    out, and when it comes back
 ```
 
-Already have a status line? Keep it: `ccx statusline --wrap <your command>` runs
-yours and adds ccx to the end. Add `--compact` to drop the account name if your
-line already shows it. `ccx statusline --install` prints the snippet.
+Restart Claude once after `ccx on` to see it. This works the same on a new
+machine: it is part of setup, not something to remember.
+
+Already have a status line? You keep it. ccx runs yours and adds its part to the
+end, and `ccx off` puts your original back exactly as it was. Nothing else in
+your settings is touched, and a settings file ccx cannot parse is left alone
+rather than rewritten.
+
+Prefer to wire it yourself? `ccx on --no-statusline` skips it, and
+`ccx statusline --install` prints the snippet to paste. `--compact` drops the
+account name if your line already shows it.
 
 **On demand.** `ccx usage` spells out every window on every account, what is
 closest to stopping each one, and where there is room right now:
@@ -91,6 +100,21 @@ account for the models that still work.
 on it: `enter` to switch, `f` to switch instantly, `a` to add an account, `n` to
 rename one, `l` to sign one in again, `e` to enable or disable, `r` to rotate.
 
+It also answers the question the numbers are really being read for, on the
+`next →` line:
+
+```
+next → staying here, on fable (46% left)
+next → over on phx, on fable (80% left)
+next → staying here, on opus (changed)
+```
+
+That is not a guess. It runs the same planner the switch itself runs, over the
+same usage figures and the same rule you configured, so it tells you where you
+will land, which model you will be on, and whether the model is about to change.
+No other tool can say it: it needs your usage, your policy and what this run has
+already spent, together.
+
 ## What you get
 
 - **Switching on a real limit, not a guess.** Claude's limit message only starts
@@ -100,7 +124,8 @@ rename one, `l` to sign one in again, `e` to enable or disable, `r` to rotate.
 - **Your conversation continues** on the new account, in place.
 - **Your history stays yours.** ccx sessions read and write your normal
   `~/.claude`, so `/resume` and project memories are exactly where they always
-  were, whether you launch Claude through ccx or not.
+  were, whether you launch Claude through ccx or not. The only thing ccx *adds*
+  there is the `statusLine` key, and `ccx off` takes it back out.
 - **Careful with your logins.** Credentials are written whole or not at all, the
   previous one is always kept, and a signed-out or damaged credential is never
   written over a good account. Before a login is copied into an account, ccx

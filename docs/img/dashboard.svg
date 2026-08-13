@@ -1,23 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="939" height="366" viewBox="0 0 939 366" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
-  <rect width="939" height="366" rx="10" fill="#1b1e24"/>
-  <rect width="939" height="32" rx="10" fill="#22262e"/>
-  <rect y="22" width="939" height="10" fill="#22262e"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="821" height="387" viewBox="0 0 821 387" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
+  <rect width="821" height="387" rx="10" fill="#1b1e24"/>
+  <rect width="821" height="32" rx="10" fill="#22262e"/>
+  <rect y="22" width="821" height="10" fill="#22262e"/>
   <circle cx="21" cy="16" r="5.5" fill="#ec6a5f"/>
   <circle cx="40" cy="16" r="5.5" fill="#f4bf50"/>
   <circle cx="59" cy="16" r="5.5" fill="#61c454"/>
-  <text x="469.5" y="20.5" fill="#8b93a1" font-size="12" text-anchor="middle">ccx dashboard</text>
-  <text x="22.0" y="52" fill="#dcdfe4" font-weight="600" xml:space="preserve">claude-auto-switch</text><text x="198.4" y="52" fill="#dcdfe4" opacity="0.6" xml:space="preserve">active: work</text>
-  <text x="22.0" y="73" fill="#dcdfe4" opacity="0.6" xml:space="preserve">────────────────────────────────────────────────────────────────────────────</text>
-  <text x="22.0" y="94" fill="#dcdfe4" opacity="0.6" xml:space="preserve">   ACCOUNT   EMAIL                 PLAN  PRI  5H   WEEK  MODEL       STATUS</text>
-  <text x="22.0" y="115" fill="#56b6c2" xml:space="preserve">▸</text><text x="30.4" y="115" fill="#56b6c2" xml:space="preserve">*</text><text x="47.2" y="115" fill="#56b6c2" font-weight="600" xml:space="preserve">work    </text><text x="114.4" y="115" fill="#dcdfe4" xml:space="preserve">  work@example.com      max   0    </text><text x="408.4" y="115" fill="#dcdfe4" opacity="0.6" xml:space="preserve">34%</text><text x="450.4" y="115" fill="#dcdfe4" opacity="0.6" xml:space="preserve">22% </text><text x="500.8" y="115" fill="#dcdfe4" opacity="0.6" xml:space="preserve">Fable 5%  </text><text x="601.6" y="115" fill="#98c379" xml:space="preserve">●</text><text x="610.0" y="115" fill="#dcdfe4" xml:space="preserve"> ready</text>
-  <text x="22.0" y="136" fill="#dcdfe4" xml:space="preserve">   personal  personal@example.com  max   1    </text><text x="408.4" y="136" fill="#dcdfe4" opacity="0.6" xml:space="preserve">0% </text><text x="450.4" y="136" fill="#dcdfe4" opacity="0.6" xml:space="preserve">68% </text><text x="500.8" y="136" fill="#e06c75" xml:space="preserve">Fable 100%</text><text x="601.6" y="136" fill="#98c379" xml:space="preserve">●</text><text x="610.0" y="136" fill="#dcdfe4" xml:space="preserve"> ready</text>
-  <text x="22.0" y="157" fill="#dcdfe4" xml:space="preserve">   spare     spare@example.com     max   2    </text><text x="408.4" y="157" fill="#dcdfe4" opacity="0.6" xml:space="preserve">0% </text><text x="450.4" y="157" fill="#dcdfe4" opacity="0.6" xml:space="preserve">3%  </text><text x="500.8" y="157" fill="#dcdfe4" opacity="0.6" xml:space="preserve">Fable 0%  </text><text x="601.6" y="157" fill="#98c379" xml:space="preserve">●</text><text x="610.0" y="157" fill="#dcdfe4" xml:space="preserve"> ready</text>
-  <text x="22.0" y="178" fill="#dcdfe4" opacity="0.6" xml:space="preserve">────────────────────────────────────────────────────────────────────────────</text>
-  <text x="22.0" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  work: 5h 34% (back in 1h 28m)   week 22% (back in 3d 14h)   Fable 5% (back in 2d)</text>
-  <text x="22.0" y="220" fill="#dcdfe4" opacity="0.6" xml:space="preserve">────────────────────────────────────────────────────────────────────────────</text>
-  <text x="22.0" y="241" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  09:04  session on work</text>
-  <text x="22.0" y="262" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  09:12  switching to &quot;personal&quot; (no restart; takes effect within ~30s)</text>
-  <text x="22.0" y="283" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  09:26  session on work</text>
-  <text x="22.0" y="304" fill="#dcdfe4" opacity="0.6" xml:space="preserve">────────────────────────────────────────────────────────────────────────────</text>
-  <text x="22.0" y="325" fill="#dcdfe4" opacity="0.6" xml:space="preserve">j/k move  ·  enter use  ·  f now  ·  a add  ·  n rename  ·  l sign in  ·  e enable  ·  r rotate  ·  q quit</text>
+  <text x="410.5" y="20.5" fill="#8b93a1" font-size="12" text-anchor="middle">ccx dashboard</text>
+  <text x="22.0" y="52" fill="#dcdfe4" font-weight="600" xml:space="preserve">claude-auto-switch</text><text x="198.4" y="52" fill="#dcdfe4" opacity="0.6" xml:space="preserve">active: work · prefers fable</text>
+  <text x="22.0" y="73" fill="#dcdfe4" opacity="0.6" xml:space="preserve">───────────────────────────────────────────────────────────────────────</text>
+  <text x="22.0" y="94" fill="#dcdfe4" opacity="0.6" xml:space="preserve">   ACCOUNT   5-HOUR           WEEK             FABLE            STATUS</text>
+  <text x="22.0" y="115" fill="#56b6c2" xml:space="preserve">▸</text><text x="30.4" y="115" fill="#56b6c2" xml:space="preserve">*</text><text x="47.2" y="115" fill="#56b6c2" font-weight="600" xml:space="preserve">work    </text><text x="131.2" y="115" fill="#b6e3a1" xml:space="preserve">███░░░░░░░</text><text x="215.2" y="115" fill="#dcdfe4" xml:space="preserve">  34%  </text><text x="274.0" y="115" fill="#b6e3a1" xml:space="preserve">██░░░░░░░░</text><text x="358.0" y="115" fill="#dcdfe4" xml:space="preserve">  22%  </text><text x="416.8" y="115" fill="#b6e3a1" xml:space="preserve">█░░░░░░░░░</text><text x="500.8" y="115" fill="#dcdfe4" xml:space="preserve">   5%  </text><text x="559.6" y="115" fill="#98c379" xml:space="preserve">●</text><text x="568.0" y="115" fill="#dcdfe4" xml:space="preserve"> ready</text>
+  <text x="22.0" y="136" fill="#dcdfe4" xml:space="preserve">   personal  </text><text x="131.2" y="136" fill="#b6e3a1" xml:space="preserve">░░░░░░░░░░</text><text x="215.2" y="136" fill="#dcdfe4" xml:space="preserve">   0%  </text><text x="274.0" y="136" fill="#f5d98b" xml:space="preserve">███████░░░</text><text x="358.0" y="136" fill="#dcdfe4" xml:space="preserve">  68%  </text><text x="416.8" y="136" fill="#ff7b86" xml:space="preserve">██████████</text><text x="500.8" y="136" fill="#dcdfe4" xml:space="preserve"> 100%  </text><text x="559.6" y="136" fill="#98c379" xml:space="preserve">●</text><text x="568.0" y="136" fill="#dcdfe4" xml:space="preserve"> ready</text>
+  <text x="22.0" y="157" fill="#dcdfe4" xml:space="preserve">   spare     </text><text x="131.2" y="157" fill="#b6e3a1" xml:space="preserve">░░░░░░░░░░</text><text x="215.2" y="157" fill="#dcdfe4" xml:space="preserve">   0%  </text><text x="274.0" y="157" fill="#b6e3a1" xml:space="preserve">█░░░░░░░░░</text><text x="358.0" y="157" fill="#dcdfe4" xml:space="preserve">   3%  </text><text x="416.8" y="157" fill="#b6e3a1" xml:space="preserve">░░░░░░░░░░</text><text x="500.8" y="157" fill="#dcdfe4" xml:space="preserve">   0%  </text><text x="559.6" y="157" fill="#98c379" xml:space="preserve">●</text><text x="568.0" y="157" fill="#dcdfe4" xml:space="preserve"> ready</text>
+  <text x="22.0" y="178" fill="#dcdfe4" opacity="0.6" xml:space="preserve">───────────────────────────────────────────────────────────────────────</text>
+  <text x="22.0" y="199" fill="#56b6c2" xml:space="preserve">  next → staying here, on fable (95% left)</text>
+  <text x="22.0" y="220" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  work (work@example.com · max · priority 0): 5h 34% (back in 1h 28m)   week 22% (back in 3…</text>
+  <text x="22.0" y="241" fill="#dcdfe4" opacity="0.6" xml:space="preserve">───────────────────────────────────────────────────────────────────────</text>
+  <text x="22.0" y="262" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  09:04  session on work</text>
+  <text x="22.0" y="283" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  09:12  switching to &quot;personal&quot; (no restart; takes effect within ~30s)</text>
+  <text x="22.0" y="304" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  09:26  session on work</text>
+  <text x="22.0" y="325" fill="#dcdfe4" opacity="0.6" xml:space="preserve">───────────────────────────────────────────────────────────────────────</text>
+  <text x="22.0" y="346" fill="#dcdfe4" opacity="0.6" xml:space="preserve">j/k move  ·  enter use  ·  q quit  ·  r rotate  ·  f now  ·  a add  ·  l sign in</text>
 </svg>

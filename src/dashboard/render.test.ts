@@ -160,13 +160,31 @@ describe('renderDashboard (plain)', () => {
     // It fitted 80 columns with one character to spare, which is luck rather
     // than fitting: a longer name or a longer wait wrapped the row, and a
     // wrapped row is unreadable.
+    // Long in every direction that free text can be long: the name, the
+    // address, the status, the model name, the events and the prediction. The
+    // first version of this test used short values and passed while the detail
+    // line ran to 120 characters in a 92-column frame.
     const wide = account({
       name: 'a-rather-long-account-name',
+      email: 'someone.with.a.long.address@a-long-domain.example.com',
+      plan: 'max-with-a-long-plan-name',
       cappedUntil: NOW + 12 * 24 * 60 * 60_000,
-      usage: { fiveHour: 1, sevenDay: 1, models: [{ name: 'Fable', utilization: 1 }] },
+      usage: {
+        fiveHour: 1,
+        sevenDay: 1,
+        fiveHourReset: NOW + 90 * 60_000,
+        models: [{ name: 'claude-fable-5-with-a-very-long-name', utilization: 1, resetsAt: NOW + 9e6 }],
+      },
     });
-    for (const width of [100, 80, 64, 50]) {
-      const out = renderDashboard(snapshot([wide]), { ...opts, width });
+    for (const width of [100, 92, 80, 64, 50]) {
+      const out = renderDashboard(
+        {
+          ...snapshot([wide], ['09:12  switching to "personal" (no restart; takes effect within ~30s)']),
+          nextUp: 'over on a-rather-long-account-name, on claude-fable-5 (80% left)',
+          model: 'claude-fable-5',
+        },
+        { ...opts, width, interactive: true, selected: 0 },
+      );
       for (const line of out.split('\n')) {
         expect(line.length, `at width ${width}: ${line}`).toBeLessThanOrEqual(width);
       }

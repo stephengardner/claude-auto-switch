@@ -294,6 +294,8 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     nameW + others,
   );
   const rule = paint('─'.repeat(rowWidth), codes.dim, color);
+  /** What a line of free text has to fit inside: the window, not the table. */
+  const maxLine = options.width ?? Number.MAX_SAFE_INTEGER;
 
   const title = paint('claude-auto-switch', codes.bold, color);
   const active = accounts.find((a) => a.active);
@@ -302,7 +304,8 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // Opus while the preference is still Fable, and the title would have said so
   // with confidence.
   const onModel = snapshot.model ? ` · prefers ${snapshot.model}` : '';
-  const titleLine = `${title}   ${paint(`active: ${active?.name ?? 'none'}${onModel}`, codes.dim, color)}`;
+  const subtitle = fit(`active: ${active?.name ?? 'none'}${onModel}`, Math.max(0, maxLine - 21));
+  const titleLine = `${title}   ${paint(subtitle, codes.dim, color)}`;
 
   const header = paint(
     `   ${fit('ACCOUNT', nameW).padEnd(nameW)}  ${labels
@@ -347,18 +350,18 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // state it is in; ccx knows the policy and the numbers, so it can say what
   // happens next before it happens.
   if (snapshot.nextUp) {
-    lines.push(paint(`  next → ${snapshot.nextUp}`, codes.cyan, color));
+    lines.push(paint(fit(`  next → ${snapshot.nextUp}`, maxLine), codes.cyan, color));
   }
 
   // Everything about the highlighted account, including when each window returns.
   const highlighted = accounts[options.selected ?? 0];
   if (options.interactive && highlighted) {
-    lines.push(paint(`  ${detailLine(highlighted, now)}`, codes.dim, color));
+    lines.push(paint(fit(`  ${detailLine(highlighted, now)}`, maxLine), codes.dim, color));
     lines.push(rule);
   }
 
   if (events.length > 0) {
-    for (const e of events.slice(-5)) lines.push(paint(`  ${e}`, codes.dim, color));
+    for (const e of events.slice(-5)) lines.push(paint(fit(`  ${e}`, maxLine), codes.dim, color));
     lines.push(rule);
   }
 
@@ -369,11 +372,11 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // [y/N], which advertises the opposite, so the one key everyone reaches for
   // looked like the key that would cancel.
   if (options.confirm) {
-    lines.push(paint(`  ${options.confirm}  [Y/n]`, codes.yellow, color));
+    lines.push(paint(fit(`  ${options.confirm}  [Y/n]`, maxLine), codes.yellow, color));
   }
 
   if (options.notice) {
-    lines.push(paint(`  ${options.notice}`, codes.yellow, color));
+    lines.push(paint(fit(`  ${options.notice}`, maxLine), codes.yellow, color));
   }
 
   // While a name is being typed, the footer explains that box instead of the
@@ -390,13 +393,31 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     // it should not sign anyone in.
     lines.push(paint('  enter or y confirm  ·  any other key cancels', codes.dim, color));
   } else if (options.interactive) {
-    lines.push(
-      paint(
-        'j/k move  ·  enter use  ·  f now  ·  a add  ·  n rename  ·  l sign in  ·  e enable  ·  r rotate  ·  q quit',
-        codes.dim,
-        color,
-      ),
-    );
+    // The hints drop off the end rather than wrapping. The ones that survive
+    // are the ones you need most, in that order, so a narrow terminal loses
+    // the rarely-used keys instead of losing the shape of the screen.
+    // Ordered by how badly you need them, because the tail is what gets
+    // dropped. Moving and choosing come first, then LEAVING: a narrow window
+    // that hid `q quit` would take away the one key someone stuck here has to
+    // know. The occasional ones go last.
+    const hints = [
+      'j/k move',
+      'enter use',
+      'q quit',
+      'r rotate',
+      'f now',
+      'a add',
+      'l sign in',
+      'n rename',
+      'e enable',
+    ];
+    const shown: string[] = [];
+    for (const hint of hints) {
+      const next = [...shown, hint].join('  ·  ');
+      if (next.length > maxLine) break;
+      shown.push(hint);
+    }
+    lines.push(paint(shown.join('  ·  '), codes.dim, color));
   }
 
   return lines.join('\n');
