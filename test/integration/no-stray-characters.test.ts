@@ -40,8 +40,10 @@ async function relay() {
   const stdin = new PassThrough();
   const corrections: string[] = [];
   const received: string[] = [];
+  const reports: Array<{ dropped: number; toldTerminalToStop: boolean }> = [];
   const input = openTerminalInput(stdin as unknown as NodeJS.ReadStream, {
     out: (text) => corrections.push(text),
+    onUnrequestedReports: (detail) => reports.push(detail),
   });
   const detach = input.attach((text) => received.push(text));
   // The child starts and says what it wants, exactly as Claude does.
@@ -50,6 +52,7 @@ async function relay() {
     input,
     detach,
     corrections,
+    reports,
     /** Feed a chunk the way the terminal would, then let the relay run. */
     async feed(chunk: string, thenWaitMs = 5) {
       stdin.write(chunk);
@@ -100,6 +103,17 @@ describe('a mouse moving over a program that asked for clicks', () => {
     const r = await relay();
     await r.feed(motion(99, 8));
     expect(r.corrections.join('')).toContain(`${ESC}[?1003l`);
+    r.close();
+  });
+
+  it('SAYS SO, so a recurrence does not start with guessing again', async () => {
+    // This bug survived two fixes partly because nothing recorded what was
+    // happening, and each attempt began from scratch.
+    const r = await relay();
+    await r.feed(`${motion(99, 8)}${motion(100, 9)}`);
+    expect(r.reports).toHaveLength(1); // reported once, not once per movement
+    expect(r.reports[0]?.dropped).toBeGreaterThan(0);
+    expect(r.reports[0]?.toldTerminalToStop).toBe(true);
     r.close();
   });
 });

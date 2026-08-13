@@ -775,7 +775,17 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
   // Claim the operator's keyboard once for the whole run; every session in the
   // swap loop borrows it, so terminal mode is never toggled mid-swap.
-  const terminalInput = openTerminalInput();
+  const terminalInput = openTerminalInput(process.stdin, {
+    onUnrequestedReports: ({ dropped, toldTerminalToStop }) => {
+      logEvent(
+        'this terminal is reporting mouse activity nothing asked for; dropping those ' +
+          `reports so they cannot appear as typed text${
+            toldTerminalToStop ? ', and telling it to stop' : ''
+          }`,
+        { kind: 'mouse-reports-dropped', data: { dropped, toldTerminalToStop } },
+      );
+    },
+  });
 
   // Keep the usage snapshot alive for the whole run, whatever the proactive
   // setting is. Refreshing was coupled to proactive rotation (a feature, off

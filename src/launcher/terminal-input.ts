@@ -37,6 +37,16 @@ export interface TerminalInputDeps {
   out?: (text: string) => void;
   /** Injected in tests. */
   gate?: MouseGate;
+  /**
+   * Told once when reports are being dropped that the session never asked for.
+   *
+   * Silence here would be a mistake repeated. This bug survived two fixes
+   * partly because nothing recorded what was happening, so each attempt began
+   * by guessing again. If it ever comes back, the log should already say that
+   * the terminal was reporting mouse activity nobody requested, and whether
+   * telling it to stop worked.
+   */
+  onUnrequestedReports?: (detail: { dropped: number; toldTerminalToStop: boolean }) => void;
 }
 
 type Stdin = NodeJS.ReadStream & {
@@ -72,17 +82,21 @@ export function openTerminalInput(
    * never asked for cannot reach it.
    */
   const send = (text: string): void => {
-    const { forward, unrequestedMotion } = gate.filterInput(text);
+    const { forward, dropped, unrequestedMotion } = gate.filterInput(text);
     if (unrequestedMotion && !correctedTerminal) {
       // Dropping the reports keeps them off the screen; this stops them being
       // sent at all, which is the difference between hiding the symptom and
       // ending it. Once per run: the terminal either listens or it does not.
       correctedTerminal = true;
+      let told = true;
       try {
         out(STOP_UNREQUESTED_MOTION);
       } catch {
-        /* a terminal that will not take it is no reason to fail a keystroke */
+        // A terminal that will not take it is no reason to fail a keystroke,
+        // and the gate keeps working regardless; the report says which it was.
+        told = false;
       }
+      deps.onUnrequestedReports?.({ dropped, toldTerminalToStop: told });
     }
     if (forward) target?.(forEnter(forward));
   };
