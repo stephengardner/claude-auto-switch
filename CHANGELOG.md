@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.43.0]
+
+### Added
+
+- **`ccx on` now sets up Claude's status line for you.** Until now, seeing
+  which account you were on meant reading the README and hand-editing
+  `settings.json`, which nobody does on a new machine. The shim is transparent
+  by design, so without this there was nothing on screen to say ccx was even
+  running. Setup now covers it, on any machine.
+
+  The edit is deliberately narrow, because that file holds your hooks and your
+  permission rules. It merges one key and carries everything else through
+  untouched. A status line you already had is **wrapped**, never replaced: it
+  keeps printing and ccx adds its part to the end. `ccx off` puts your original
+  back exactly as it was, fields and all. A settings file that does not parse
+  is left alone rather than rewritten, the file is replaced by an atomic rename
+  so a failed write cannot leave you with half a settings file, and ccx will
+  not wrap your line at all if it cannot first save a copy to restore.
+
+  `statusLine` is the only thing ccx adds to `~/.claude`. Skip it with
+  `ccx on --no-statusline`.
+
+### Fixed
+
+- **The dashboard no longer draws past the edge of the window.** Every line
+  that carries free text (the account detail, the events, the `next →`
+  prediction, the typing box and its errors, notices, confirmations and the
+  title) is now measured against the terminal. The key hints are ordered by
+  how much you need them and drop from the tail, so a narrow window loses
+  `e enable` rather than `q quit`.
+
 ## [1.42.0]
 
 ### Added
