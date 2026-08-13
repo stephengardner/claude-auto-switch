@@ -40,8 +40,8 @@ describe('a window that has reset', () => {
       ]),
       opts,
     );
-    expect(out).toContain('Fable 0%');
-    expect(out).not.toContain('Fable 100%');
+    expect(out).toContain('FABLE'); // the column is named after the model
+    expect(out).not.toContain('100%'); // and reads empty now the window reset
   });
 
   it('still shows a model window that is genuinely spent', () => {
@@ -58,7 +58,8 @@ describe('a window that has reset', () => {
       ]),
       opts,
     );
-    expect(out).toContain('Fable 100%');
+    expect(out).toContain('FABLE');
+    expect(out).toContain('100%'); // still spent: the window has not reset
   });
 
   it('picks the worst model by CURRENT usage, not by the highest recorded', () => {
@@ -80,7 +81,8 @@ describe('a window that has reset', () => {
       ]),
       opts,
     );
-    expect(out).toContain('Opus 50%');
+    expect(out).toContain('OPUS'); // Fable's window is over, so Opus is the one that binds
+    expect(out).toContain(' 50%');
   });
 
   it('names the OPEN model when an expired one is listed first and both read empty', () => {
@@ -102,8 +104,8 @@ describe('a window that has reset', () => {
       ]),
       opts,
     );
-    expect(out).toContain('Opus 0%');
-    expect(out).not.toContain('Fable');
+    expect(out).toContain('OPUS');
+    expect(out).not.toContain('FABLE');
   });
 
   it('reads the account-wide columns as empty once they reset', () => {
@@ -131,11 +133,83 @@ describe('renderDashboard (plain)', () => {
     expect(out).toContain('personal');
   });
 
-  it('shows a priority column with the account priority', () => {
-    const out = renderDashboard(snapshot([account({ name: 'work', priority: 2 })]), opts);
-    expect(out).toContain('PRI');
-    const workRow = out.split('\n').find((l) => l.includes('work'))!;
-    expect(workRow).toMatch(/\b2\b/);
+  it('names the account priority where there is room to explain it', () => {
+    // The table gave its width to the bars, so priority moved to the line that
+    // describes the highlighted account. Row ORDER still carries it as well.
+    const out = renderDashboard(snapshot([account({ name: 'work', priority: 2 })]), {
+      ...opts,
+      interactive: true,
+    });
+    expect(out).toContain('priority 2');
+  });
+
+  it('draws each window as a bar, so the state reads without arithmetic', () => {
+    // The same bar language as `ccx usage`, deliberately: two pages describing
+    // the same numbers in two visual dialects taught the operator to distrust
+    // both.
+    const out = renderDashboard(
+      snapshot([account({ name: 'w', usage: { fiveHour: 0, sevenDay: 1 } })]),
+      opts,
+    );
+    const row = out.split('\n').find((l) => / w /.test(l))!;
+    expect(row).toContain('░░░░░░░░░░'); // empty reads empty
+    expect(row).toContain('██████████'); // spent reads full
+  });
+
+  it('shows the SAME model in every row of the model column', () => {
+    // A column named after one model must contain that model's number in every
+    // row. Filling each cell with that account's own worst model made the
+    // header a lie for any row whose worst was something else, and the table
+    // compared two different things while looking like it compared one.
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'main',
+          usage: {
+            fiveHour: 0,
+            sevenDay: 0,
+            models: [
+              { name: 'Fable', utilization: 1, resetsAt: NOW + 9_000_000 },
+              { name: 'Opus', utilization: 0.1, resetsAt: NOW + 9_000_000 },
+            ],
+          },
+        }),
+        account({
+          name: 'phx',
+          usage: {
+            fiveHour: 0,
+            sevenDay: 0,
+            models: [
+              { name: 'Fable', utilization: 0.2, resetsAt: NOW + 9_000_000 },
+              { name: 'Opus', utilization: 0.9, resetsAt: NOW + 9_000_000 },
+            ],
+          },
+        }),
+      ]),
+      opts,
+    );
+    expect(out).toContain('FABLE');
+    const phx = out.split('\n').find((l) => l.includes('phx'))!;
+    expect(phx).toContain('20%'); // its FABLE, which the column is about
+    expect(phx).not.toContain('90%'); // not its Opus, which the header does not name
+  });
+
+  it('says where rotation goes next, which the table cannot show', () => {
+    // The one thing on this screen no other tool has: not the state, but what
+    // the state is about to cause.
+    const out = renderDashboard(
+      { ...snapshot([account()]), nextUp: 'over on phx, on fable (80% left)' },
+      opts,
+    );
+    expect(out).toContain('next → over on phx, on fable (80% left)');
+  });
+
+  it('names the model in use beside the active account', () => {
+    const out = renderDashboard(
+      { ...snapshot([account({ name: 'a', active: true })]), model: 'fable' },
+      opts,
+    );
+    expect(out).toContain('active: a · on fable');
   });
 
   it('marks the active account and names it in the subtitle', () => {
@@ -190,9 +264,9 @@ describe('renderDashboard (plain)', () => {
       ]),
       opts,
     );
-    expect(out).toContain('5H');
+    expect(out).toContain('5-HOUR');
     expect(out).toContain('WEEK');
-    expect(out).toContain('MODEL');
+    expect(out).toContain('FABLE'); // the model column is named after the model
 
     const hourly = out.split('\n').find((l) => l.includes('hourly'))!;
     expect(hourly).toContain('42%');
@@ -201,7 +275,8 @@ describe('renderDashboard (plain)', () => {
     const modelout = out.split('\n').find((l) => l.includes('modelout'))!;
     expect(modelout).toContain('0%'); // the hour, still fine
     expect(modelout).toContain('62%'); // the week, still fine
-    expect(modelout).toContain('Fable 100%'); // and the one that stops you
+    expect(modelout).toContain('100%'); // and the one that stops you
+    expect(modelout).toContain('██████████'); // drawn full, so it reads at a glance
 
     // Nothing read yet reads as a dash, never as zero: "0%" would claim the
     // account is completely free when the truth is that nobody has looked.
@@ -230,7 +305,7 @@ describe('renderDashboard (plain)', () => {
       },
       { ...opts, interactive: true, selected: 0 },
     );
-    const detail = out.split('\n').find((l) => l.includes('work:'))!;
+    const detail = out.split('\n').find((l) => /^\s*work.*:/.test(l))!;
     expect(detail).toContain('5h 50%');
     expect(detail).toContain('week 62%');
     expect(detail).toContain('Fable 100%');
@@ -258,7 +333,7 @@ describe('renderDashboard (plain)', () => {
       },
       { ...opts, interactive: true, selected: 0 },
     );
-    const detail = out.split('\n').find((l) => l.includes('work:'))!;
+    const detail = out.split('\n').find((l) => /^\s*work.*:/.test(l))!;
     expect(detail).toContain('back in 3d');
     expect(detail).not.toContain('72h');
     expect(detail).toContain('1h 35m'); // hours keep their minutes

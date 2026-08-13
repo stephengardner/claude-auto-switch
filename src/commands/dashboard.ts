@@ -21,6 +21,10 @@ import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
+import { describeNextUp } from '../dashboard/next-up.js';
+import { usableCapacity } from '../usage/usable-capacity.js';
+import { activeModelCaps } from '../ledger/ledger.js';
+import { spentKey } from '../usage/rotation-plan.js';
 
 export interface DashboardOptions {
   /** Print a single frame and exit (no live loop). */
@@ -107,8 +111,61 @@ export async function dashboardCommand(
       events: readEvents(home, 5).map(formatEvent),
       now,
       refreshMs,
+      ...nextMove(context, accts, usage, cappedUntil, loggedIn, now),
     });
   };
+
+  /**
+   * The one line the table cannot show: what rotation does NEXT.
+   *
+   * Built from the same pieces the real thing uses (usable capacity, the
+   * ledger's model caps, the operator's policy), so the dashboard predicts
+   * what will happen rather than describing something adjacent to it.
+   */
+  function nextMove(
+    ctx: CliContext,
+    accounts: Array<{ name: string; enabled: boolean; priority: number }>,
+    usage: Map<string, { models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> }>,
+    capped: Map<string, number>,
+    loggedIn: Set<string>,
+    at: number,
+  ): { model?: string; nextUp?: string } {
+    const rotation = ctx.config.rotation;
+    const model = rotation.modelPreference[0];
+    if (!rotation.preferSameModel || !model) return {};
+    const knownSpent = activeModelCaps(loadLedger(ctx.ctx), at);
+    const candidates = accounts
+      .filter((a) => a.enabled && loggedIn.has(a.name) && (capped.get(a.name) ?? 0) <= at)
+      .sort((x, y) => x.priority - y.priority || x.name.localeCompare(y.name))
+      .map((a) => {
+        const capacity = usableCapacity(
+          usage.get(a.name) as Parameters<typeof usableCapacity>[0],
+          at,
+        );
+        const fromLedger = Object.fromEntries(
+          knownSpent.filter((c) => c.account === a.name).map((c) => [c.model, 1]),
+        );
+        return {
+          name: a.name,
+          models: { ...capacity.models, ...fromLedger },
+          ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
+        };
+      });
+    const current = getActive(ctx.ctx);
+    const nextUp = describeNextUp({
+      candidates,
+      current,
+      modelInUse: model,
+      preference: rotation.modelPreference,
+      strategy: rotation.modelStrategy,
+      // Whatever the current account has already used up counts, so the line
+      // does not promise a model this account has just run out of.
+      spentThisRun: new Set(
+        current ? knownSpent.filter((c) => c.account === current).map((c) => spentKey(c.account, c.model)) : [],
+      ),
+    });
+    return { model, ...(nextUp ? { nextUp } : {}) };
+  }
 
   if (options.once) {
     context.out(renderDashboard(build(), { color }));
