@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { resolveRealClaude, whereItIsUsuallyInstalled } from './real-claude.js';
@@ -76,15 +76,49 @@ describe('finding claude when PATH does not know about it', () => {
     expect(posix.every((p) => !p.endsWith('.exe'))).toBe(true);
   });
 
-  it('resolves from a known location when PATH is empty', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'cas-known-'));
-    const installed = path.join(dir, 'claude.exe');
+  it('finds a REAL install through the real search when PATH knows nothing', () => {
+    // Only onPath is stubbed, so the known-location search, the launchability
+    // filter and the pick all run for real. Injecting findCandidates instead
+    // would replace the very thing under test, leaving a test that passes
+    // whether the fallback exists or not.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-home-'));
+    const isWindows = process.platform === 'win32';
+    const binDir = path.join(home, '.local', 'bin');
+    mkdirSync(binDir, { recursive: true });
+    const installed = path.join(binDir, isWindows ? 'claude.exe' : 'claude');
     writeFileSync(installed, 'binary');
+    if (!isWindows) chmodSync(installed, 0o755);
+
+    const previous = { home: process.env.HOME, profile: process.env.USERPROFILE };
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const claude = resolveRealClaude({
+        platform: process.platform,
+        onPath: () => [], // this machine's PATH does not mention claude
+      });
+      expect(claude.bin).toBe(installed);
+    } finally {
+      process.env.HOME = previous.home;
+      process.env.USERPROFILE = previous.profile;
+    }
+  });
+
+  it('steps over something unlaunchable to reach the real install', () => {
+    // Existing is not enough: a DIRECTORY named claude, or a file without the
+    // executable bit, would otherwise be picked and hide a working install.
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-unlaunchable-'));
+    const decoy = path.join(dir, 'claude');
+    mkdirSync(decoy); // a directory, not a program
+    const real = path.join(dir, 'real-claude');
+    writeFileSync(real, 'binary');
+    if (process.platform !== 'win32') chmodSync(real, 0o755);
+
     const claude = resolveRealClaude({
-      platform: 'win32',
-      findCandidates: () => [installed], // PATH found nothing; this came from the known list
+      platform: process.platform === 'win32' ? 'linux' : process.platform,
+      onPath: () => [decoy, real],
     });
-    expect(claude.bin).toBe(installed);
+    expect(claude.bin).toBe(real);
   });
 
   it('says where it looked, and how to fix it, when there is nothing to find', () => {

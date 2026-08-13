@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { ClaudeInvoker } from '../invoker.js';
 import { RealClaudeError } from '../util/errors.js';
@@ -8,6 +8,13 @@ export interface ResolveDeps {
   config?: { realClaudePath?: string | null };
   /** Returns candidate absolute paths for `claude` (like `where`/`which -a`). */
   findCandidates?: () => string[];
+  /**
+   * Just the PATH lookup, so a test can simulate a machine where PATH knows
+   * nothing while still exercising the real search of known locations. Without
+   * this seam the only way to test discovery is to replace all of it, which
+   * leaves a test that passes whether the discovery exists or not.
+   */
+  onPath?: () => string[];
   /** Predicate marking a candidate as our own shim, to be skipped. */
   isShim?: (candidate: string) => boolean;
   platform?: NodeJS.Platform;
@@ -25,7 +32,8 @@ export function resolveRealClaude(deps: ResolveDeps = {}): ClaudeInvoker {
   if (configured) return { bin: configured, prefixArgs: [] };
 
   const platform = deps.platform ?? process.platform;
-  const findCandidates = deps.findCandidates ?? (() => defaultFindCandidates(platform));
+  const findCandidates =
+    deps.findCandidates ?? (() => defaultFindCandidates(platform, deps.onPath));
   const isShim = deps.isShim ?? defaultIsShim;
 
   const candidates = findCandidates().filter((candidate) => !isShim(candidate));
@@ -130,10 +138,34 @@ function deriveExeFromCmd(cmdPath: string): string | null {
  *
  * So a miss on PATH is not an answer, it is a reason to go and look.
  */
-function defaultFindCandidates(platform: NodeJS.Platform): string[] {
-  return [...onPath(platform), ...whereItIsUsuallyInstalled(platform)].filter((candidate) =>
-    existsSync(candidate),
+export function defaultFindCandidates(
+  platform: NodeJS.Platform,
+  fromPath: () => string[] = () => onPath(platform),
+): string[] {
+  return [...fromPath(), ...whereItIsUsuallyInstalled(platform)].filter((candidate) =>
+    canBeLaunched(candidate, platform),
   );
+}
+
+/**
+ * Is this something we could actually run?
+ *
+ * Existing is not enough. A directory can be named `claude`, and on POSIX a
+ * file can exist without the executable bit. Either would be taken as the
+ * answer, and since the first candidate wins, an unusable one hides a working
+ * install further down the list. Failing to find Claude at all is a better
+ * outcome than that: it says so, where this would report a launch failure
+ * nobody could explain.
+ */
+function canBeLaunched(candidate: string, platform: NodeJS.Platform): boolean {
+  try {
+    if (!statSync(candidate).isFile()) return false;
+    if (platform === 'win32') return true; // no executable bit to consult
+    accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function onPath(platform: NodeJS.Platform): string[] {
