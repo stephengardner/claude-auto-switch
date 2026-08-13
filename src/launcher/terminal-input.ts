@@ -104,15 +104,17 @@ export function openTerminalInput(
 
   return {
     attach(write: Writer) {
-      // A new reader starts from nothing: a fragment held for the previous one
-      // is meaningless to this one, and the modes the previous one enabled are
-      // not this one's. Carrying either across is how a swap put stray
-      // characters into a freshly started session.
-      buffer.reset();
-      gate.childChanged();
       target = write;
       return () => {
         if (target === write) target = null;
+        // Cleared when the OLD reader lets go, never when a new one arrives.
+        // A child writes its mode declarations the instant it starts, and the
+        // relay is watching its output before it is attached to, so resetting
+        // on attach would wipe what the new child had already said and leave
+        // ccx dropping reports it genuinely asked for. Ending the previous
+        // session is the moment nothing is owed to anybody.
+        buffer.reset();
+        gate.childChanged();
       };
     },
     observeChildOutput(text: string) {

@@ -189,6 +189,25 @@ describe('createEscapeBuffer', () => {
     expect(flushed).toEqual([]);
   });
 
+  it('waits for the three payload bytes of an ORIGINAL-encoding mouse report', () => {
+    // ESC [ M puts its final byte BEFORE its payload, so the ordinary CSI rule
+    // calls it finished at the M and forwards it three bytes short. The
+    // coordinates then arrive alone and are shown as typed text: the same bug
+    // as the SGR one, by a different route, and reachable whenever a program
+    // enables tracking without SGR encoding.
+    const { buffer } = buffered();
+    expect(buffer.push(`${ESC}[M`)).toBe('');
+    expect(buffer.push(' !"')).toBe(`${ESC}[M !"`);
+  });
+
+  it('does not mistake a parameterised CSI M for the mouse form', () => {
+    // Only a BARE ESC [ M is a mouse report; anything with parameters is an
+    // ordinary sequence and must not be held waiting for payload that is
+    // never coming.
+    const { buffer } = buffered();
+    expect(buffer.push(`${ESC}[3M`)).toBe(`${ESC}[3M`);
+  });
+
   it('forwards a burst of complete sequences untouched', () => {
     const { buffer } = buffered();
     const burst = `${MOUSE}${ESC}[<35;125;50M`;

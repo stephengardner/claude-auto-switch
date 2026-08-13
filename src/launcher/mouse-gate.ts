@@ -177,11 +177,39 @@ export interface MouseGate {
   modes(): MouseModes;
 }
 
+/**
+ * The tail of some output that might be the START of a mode declaration.
+ *
+ * The child's output arrives in whatever chunks the pseudo-terminal produces,
+ * so `ESC[?1003h` can straddle two of them. Scanning each chunk on its own
+ * would miss it, and missing an ENABLE is the expensive direction: ccx would
+ * then drop reports the child had genuinely asked for, breaking mouse support
+ * to fix a mouse bug.
+ *
+ * Only an unterminated candidate is kept, so nothing is ever counted twice.
+ */
+export function unfinishedModeTail(text: string): string {
+  const at = text.lastIndexOf(ESC);
+  if (at === -1) return '';
+  const tail = text.slice(at);
+  // Anything that could still GROW into "ESC [ ? params h|l", including the
+  // introducer on its own. Looking only for a complete "ESC[?" would lose a
+  // declaration split at the Escape itself, which is the split a byte-at-a-time
+  // stream produces every time.
+  const couldStillBecomeOne = /^\x1b(\[(\?[0-9;]*)?)?$/.test(tail);
+  // Bounded, so output that merely starts one and never finishes cannot make
+  // this grow without limit.
+  return couldStillBecomeOne && tail.length <= 64 ? tail : '';
+}
+
 export function createMouseGate(): MouseGate {
   let modes: MouseModes = NO_MOUSE;
+  let carried = '';
   return {
     observeOutput: (text) => {
-      modes = applyModeChanges(modes, text);
+      const whole = carried + text;
+      modes = applyModeChanges(modes, whole);
+      carried = unfinishedModeTail(whole);
     },
     filterInput: (text) => filterMouseReports(text, modes),
     childChanged: () => {
@@ -189,6 +217,7 @@ export function createMouseGate(): MouseGate {
       // the previous one's modes into a program that never set them, which is
       // the inheritance this whole file exists to break.
       modes = NO_MOUSE;
+      carried = '';
     },
     modes: () => modes,
   };

@@ -59,6 +59,14 @@ function isComplete(seq: string): boolean {
   if (seq.length < 2) return false; // a bare Escape could still be the start
   const kind = seq[1] as string;
 
+  // The ORIGINAL mouse encoding: ESC [ M then exactly three raw bytes for
+  // button, column and row. Its final byte arrives before its payload, so the
+  // rule below would call it complete at the `M` and forward it three bytes
+  // short; the coordinates then arrive on their own and are shown as text.
+  // This is only reachable on the INPUT path, where a bare `ESC [ M` is always
+  // a mouse report and never Delete-Line.
+  if (kind === '[' && seq[2] === 'M') return seq.length >= 6;
+
   // CSI: ESC [ params intermediates final. The final byte is what ends it.
   if (kind === '[') {
     for (let i = 2; i < seq.length; i += 1) {

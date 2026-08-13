@@ -44,6 +44,42 @@ describe('what a program has asked the terminal for', () => {
   });
 });
 
+describe('a declaration that arrives in pieces', () => {
+  it('is still seen when it straddles two chunks of output', () => {
+    // The child's output arrives in whatever chunks the pseudo-terminal makes,
+    // and scanning each on its own would miss this. Missing an ENABLE is the
+    // expensive direction: ccx would drop reports the child really did ask
+    // for, breaking mouse support in the name of fixing a mouse bug.
+    const gate = createMouseGate();
+    gate.observeOutput(`${ESC}[?100`);
+    gate.observeOutput('3h');
+    expect(gate.modes().motion).toBe(true);
+    expect(gate.filterInput(motion(1, 2)).forward).toBe(motion(1, 2));
+  });
+
+  it('is still seen when it is split byte by byte', () => {
+    const gate = createMouseGate();
+    for (const ch of `${ESC}[?1003h`) gate.observeOutput(ch);
+    expect(gate.modes().motion).toBe(true);
+  });
+
+  it('counts a declaration once, however the chunks fall', () => {
+    // The carried tail must never re-apply something already applied, or an
+    // enable followed by a disable could be resurrected.
+    const gate = createMouseGate();
+    gate.observeOutput(`${ESC}[?1003`);
+    gate.observeOutput(`h${ESC}[?1003l`);
+    expect(gate.modes().motion).toBe(false);
+  });
+
+  it('does not hoard output that merely looks like the start of one', () => {
+    const gate = createMouseGate();
+    gate.observeOutput(`${ESC}[?${'x'.repeat(500)}`);
+    gate.observeOutput(`${ESC}[?1003h`);
+    expect(gate.modes().motion).toBe(true);
+  });
+});
+
 describe('reports the program never asked for', () => {
   it('drops every report when nothing is enabled', () => {
     const result = filterMouseReports(`${motion(99, 8)}${press(10, 4)}`, NO_MOUSE);
