@@ -29,8 +29,23 @@ function windowIsOut(
   return typeof utilization === 'number' && utilization >= 1 && windowIsOpen(resetsAt, now);
 }
 
+/**
+ * The parts of a usage entry this actually reads.
+ *
+ * Declared structurally rather than as the whole stored entry, so a caller
+ * holding the same windows in a different shape does not have to assert its
+ * way in. A cast there would keep compiling if the windows were ever dropped,
+ * and `accountWideOut` would quietly become false: an account reported as
+ * usable when every window on it is spent.
+ */
+export type CapacityWindows = Pick<
+  UsageEntry,
+  'fiveHour' | 'sevenDay' | 'fiveHourReset' | 'sevenDayReset'
+> &
+  Partial<Pick<UsageEntry, 'models'>>;
+
 /** What an account can still be asked to do, according to `entry`, right now. */
-export function usableCapacity(entry: UsageEntry | undefined, now: number): UsableCapacity {
+export function usableCapacity(entry: CapacityWindows | undefined, now: number): UsableCapacity {
   const models: Record<string, number | null> = {};
   for (const model of entry?.models ?? []) {
     // Dropping an expired entry makes that model "unmeasured", which the chooser

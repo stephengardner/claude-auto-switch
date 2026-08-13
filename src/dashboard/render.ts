@@ -34,6 +34,17 @@ export interface DashboardSnapshot {
   events: string[];
   now: number;
   refreshMs: number;
+  /** The model in use, when anything pins one. Shown beside the active account. */
+  model?: string;
+  /**
+   * Where rotation would go next, already in words.
+   *
+   * Computed by the caller, which has the policy and the ledger, so this
+   * renderer stays a pure function of what it is given. It is the one thing on
+   * this screen that no other tool can show: not the state, but the
+   * consequence of it.
+   */
+  nextUp?: string;
 }
 
 export interface RenderOptions {
@@ -48,10 +59,56 @@ export interface RenderOptions {
   confirm?: string;
   /** The name prompt, when the dashboard is asking for one. */
   prompt?: { label: string; text: string; error?: string };
+  /**
+   * How many columns there are to draw in.
+   *
+   * The table fitted an 80-column terminal with one character to spare, which
+   * is not fitting, it is luck: a longer account name or a longer wait pushed
+   * it over and the whole row wrapped. The bars are the elastic part, so they
+   * give up width first and the numbers, names and statuses stay whole.
+   */
+  width?: number;
 }
 
-import { codes, paint } from '../ui/style.js';
+import { codes, paint, shadeForUsed } from '../ui/style.js';
+import { bar } from '../usage/report.js';
 import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
+
+/**
+ * How wide each window's bar is drawn.
+ *
+ * Short on purpose: this table carries three of them per row plus a status,
+ * and the bar is here to be read at a glance rather than measured. The precise
+ * number is printed beside it for anyone who wants it.
+ */
+const BAR = 10;
+
+/** Below this a bar says nothing useful, so the number stands on its own. */
+const BAR_MIN = 4;
+
+/** Everything in a gauge that is not the bar: a space and a padded percent. */
+const GAUGE_EXTRA = 5;
+
+/**
+ * The widest bar that still lets a row fit.
+ *
+ * Shrinks rather than wraps, and disappears entirely rather than squeezing the
+ * numbers out: a row that wraps is unreadable, whereas a row of bare
+ * percentages is merely plainer.
+ */
+function barWidthFor(width: number | undefined, nameW: number, statusW: number): number {
+  if (!width || width <= 0) return BAR;
+  const fixed = 3 + nameW + 2 + 2 * 2 + 2 + statusW + GAUGE_EXTRA * 3;
+  const each = Math.floor((width - fixed) / 3);
+  if (each >= BAR) return BAR;
+  return each >= BAR_MIN ? each : 0;
+}
+
+/** Shorten a label to fit, marking that something was cut. */
+function fit(text: string, width: number): string {
+  if (width <= 0) return '';
+  return text.length <= width ? text : `${text.slice(0, Math.max(1, width - 1))}…`;
+}
 
 /**
  * A wait, at the coarsest useful precision: minutes within the hour, hours
@@ -85,49 +142,74 @@ function statusColor(a: DashboardAccount, now: number): string {
 }
 
 
-/** Plain usage text for an account: the binding window, or empty when unknown. */
-/** The same scale everywhere: spent is red, nearly spent is amber. */
-function shadeFor(used: number | null): string {
-  if (used === null) return codes.dim;
-  if (used >= 1) return codes.red;
-  if (used >= 0.9) return codes.yellow;
-  return codes.dim;
+/**
+ * The same scale as `ccx usage`, deliberately.
+ *
+ * The two pages describe the same numbers, and having one call 90% "amber" and
+ * the other call it green taught the operator to distrust both. One function,
+ * one meaning, everywhere.
+ */
+const shadeFor = shadeForUsed;
+
+/**
+ * A window drawn the way the usage page draws it: bar, then the number.
+ *
+ * A zero-width bar is a real answer, not a failure: on a narrow terminal the
+ * number alone still says everything, and it is the wrapping that would make
+ * the screen unreadable.
+ */
+function gauge(used: number | null, color: boolean, barWidth: number): string {
+  const drawn = barWidth > 0 ? `${paint(bar(used, barWidth), shadeFor(used), color)} ` : '';
+  return `${drawn}${pct(used).padStart(4)}`;
 }
 
-/** A window's utilization as a whole percent, or a dash when it is unknown. */
-function pct(used: number | null | undefined): string {
-  return typeof used === 'number' ? `${Math.round(used * 100)}%` : '-';
+/** Printable width of a gauge, which is what the header has to line up with. */
+function gaugeWidth(barWidth: number): number {
+  return barWidth > 0 ? barWidth + 1 + 4 : 4;
 }
 
 /**
- * The per-model window that matters, which is the one closest to its limit.
+ * A window's utilization as a whole percent, or `?` when nobody has read it.
  *
- * Shown by name (for example `Fable 100%`) rather than folded into an average:
- * an account can be at 6% for the hour and still refuse to run Fable, and an
- * average hides exactly the number that stops you.
+ * `?` and not `0%`, and not a blank: zero would claim the account is entirely
+ * free when the truth is that it has not been measured, and a blank reads as a
+ * rendering fault. The usage page says `?` for the same thing, so the two
+ * pages answer "unknown" the same way.
  */
-function worstModel(
-  a: DashboardAccount,
-  now: number,
-): { name: string; utilization: number; resetsAt?: number | null } | null {
-  const models = (a.usage?.models ?? []).filter((m) => typeof m.utilization === 'number');
-  if (models.length === 0) return null;
-  // Ranked on usage as it stands now, so a window that has already reset does
-  // not keep the column pinned at the number it hit before it rolled over, and
-  // a tie goes to a model whose window is still running.
-  const measured = (m: { utilization: number; resetsAt?: number | null }) => ({
-    used: m.utilization,
-    resetsAt: m.resetsAt,
-  });
-  return models.reduce((worst, m) =>
-    bindsHarder(measured(m), measured(worst), now) ? m : worst,
-  );
+function pct(used: number | null | undefined): string {
+  return typeof used === 'number' ? `${Math.round(used * 100)}%` : '?';
 }
 
-/** The worst model's usage as it stands now, for colouring the MODEL column. */
-function modelUsedNow(a: DashboardAccount, now: number): number | null {
-  const m = worstModel(a, now);
-  return m ? effectiveUtilization(m.utilization, m.resetsAt, now) : null;
+/**
+ * Which model the model column is about.
+ *
+ * ONE model for the whole column, chosen as the one that binds hardest across
+ * the accounts. Naming the column after each account's own worst model was
+ * worse than naming it "MODEL": the header said FABLE while a row underneath
+ * showed that account's Opus number, so the table quietly compared two
+ * different things and looked like it was comparing one.
+ */
+function columnModel(accounts: DashboardAccount[], now: number): string | null {
+  let best: { name: string; utilization: number; resetsAt?: number | null } | null = null;
+  for (const a of accounts) {
+    for (const m of a.usage?.models ?? []) {
+      if (typeof m.utilization !== 'number') continue;
+      const measured = (x: { utilization: number; resetsAt?: number | null }) => ({
+        used: x.utilization,
+        resetsAt: x.resetsAt,
+      });
+      if (best === null || bindsHarder(measured(m), measured(best), now)) best = m;
+    }
+  }
+  return best?.name ?? null;
+}
+
+/** THAT model's usage for this account, or null when it has no such window. */
+function modelUsedNow(a: DashboardAccount, name: string | null, now: number): number | null {
+  if (!name) return null;
+  const key = name.toLowerCase();
+  const found = (a.usage?.models ?? []).find((m) => m.name.toLowerCase() === key);
+  return found ? effectiveUtilization(found.utilization, found.resetsAt, now) : null;
 }
 
 /** The account-wide numbers as they stand now, so a reset window reads empty. */
@@ -138,19 +220,19 @@ function weekNow(a: DashboardAccount, now: number): number | null {
   return effectiveUtilization(a.usage?.sevenDay, a.usage?.sevenDayReset, now);
 }
 
-function modelText(a: DashboardAccount, now: number): string {
-  const m = worstModel(a, now);
-  return m ? `${m.name} ${pct(effectiveUtilization(m.utilization, m.resetsAt, now))}` : '-';
-}
-
 /**
  * Everything known about the highlighted account, on one line: each window, what
  * it is at, and when it comes back. The table gives the numbers at a glance; this
  * answers "and when can I use it again" without a second command.
  */
 function detailLine(a: DashboardAccount, now: number): string {
+  // Who this account IS, which the table no longer has room to say. The bars
+  // took the width the email and plan columns used to hold, and those are
+  // worth more here anyway: one account at a time, where you are looking.
+  const who = [a.email, a.plan, `priority ${a.priority}`].filter(Boolean).join(' · ');
+  const heading = who ? `${a.name} (${who})` : a.name;
   const u = a.usage;
-  if (!u) return `${a.name}: no usage read yet`;
+  if (!u) return `${heading}: no usage read yet`;
   const parts = [
     `5h ${pct(effectiveUtilization(u.fiveHour, u.fiveHourReset, now))}${resetSuffix(u.fiveHourReset, now)}`,
     `week ${pct(effectiveUtilization(u.sevenDay, u.sevenDayReset, now))}${resetSuffix(u.sevenDayReset, now)}`,
@@ -160,7 +242,7 @@ function detailLine(a: DashboardAccount, now: number): string {
       `${m.name} ${pct(effectiveUtilization(m.utilization, m.resetsAt, now))}${resetSuffix(m.resetsAt, now)}`,
     );
   }
-  return `${a.name}: ${parts.join('   ')}`;
+  return `${heading}: ${parts.join('   ')}`;
 }
 
 /** " (back in 3h)" for a window that is in the future, otherwise nothing. */
@@ -174,58 +256,99 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const color = options.color ?? true;
   const { accounts, events, now } = snapshot;
 
-  const nameW = Math.max('ACCOUNT'.length, ...accounts.map((a) => a.name.length));
-  const emailW = Math.max('EMAIL'.length, ...accounts.map((a) => (a.email ?? '').length));
-  const planW = Math.max('PLAN'.length, ...accounts.map((a) => (a.plan ?? '').length));
-  const priW = 3;
-  // Three separate columns instead of one collapsed number. The old single
-  // column showed only whichever window was worst, so an account could read
-  // "Fable 100%" with no way to see that everything else was fine, or read "6%"
-  // while a model window was spent.
-  const fiveW = Math.max('5H'.length, ...accounts.map((a) => pct(fiveHourNow(a, now)).length));
-  const weekW = Math.max('WEEK'.length, ...accounts.map((a) => pct(weekNow(a, now)).length));
-  const modelW = Math.max('MODEL'.length, ...accounts.map((a) => modelText(a, now).length));
+  const fullNameW = Math.max('ACCOUNT'.length, ...accounts.map((a) => a.name.length));
+  const nameW0 = fullNameW; // before the width clamp below, for sizing the bars
+  // The model column is named after the model it is showing, so the header
+  // says FABLE rather than MODEL and the row underneath is just a bar.
+  const modelName = columnModel(accounts, now);
   const statusW = Math.max('STATUS'.length, ...accounts.map((a) => statusText(a, now).length + 2));
+  // The bars give up width before anything else does.
+  const barW = barWidthFor(options.width, nameW0, statusW);
+  const GAUGE_W = gaugeWidth(barW);
+
+  // A column is as wide as the wider of its heading and its contents, so the
+  // two line up at every terminal width. Once the bars are gone the headings
+  // shorten too, rather than pushing the row back over the edge they were just
+  // shrunk to fit inside.
+  // The model name comes from the API and can be any length. Padded without a
+  // bound it set the column width itself, pushing the row past the terminal
+  // and squeezing the account names to nothing.
+  const modelLabel = fit((modelName ?? 'MODEL').toUpperCase(), GAUGE_W);
+  const labels = barW > 0 ? ['5-HOUR', 'WEEK', modelLabel] : ['5H', 'WK', modelLabel];
+  const colW = labels.map((l) => Math.max(GAUGE_W, l.length));
+
+
+  // The NAME is elastic too, once the bars have already gone. A long account
+  // name in a narrow terminal would otherwise push the row over on its own,
+  // and a wrapped row is the thing all of this exists to prevent.
+  const others = 3 + 2 + colW.reduce((a, b) => a + b, 0) + 4 + 2 + statusW;
+  const nameW = Math.min(
+    fullNameW,
+    options.width ? Math.max(3, options.width - others) : fullNameW,
+  );
 
   // Two-char gutter: selection cursor then active marker, both plain-text
   // visible so the active row is clear even without color.
-  const rowWidth =
-    3 + nameW + 2 + emailW + 2 + planW + 2 + priW + 2 + fiveW + 2 + weekW + 2 + modelW + 2 + statusW;
+  const rowWidth = Math.min(
+    options.width ?? Number.MAX_SAFE_INTEGER,
+    nameW + others,
+  );
   const rule = paint('─'.repeat(rowWidth), codes.dim, color);
 
   const title = paint('claude-auto-switch', codes.bold, color);
-  const activeName = accounts.find((a) => a.active)?.name ?? 'none';
-  const titleLine = `${title}   ${paint(`active: ${activeName}`, codes.dim, color)}`;
+  const active = accounts.find((a) => a.active);
+  // "prefers", not "on": the dashboard is not inside a session and cannot know
+  // which model one is actually running. After a fallback the session can be on
+  // Opus while the preference is still Fable, and the title would have said so
+  // with confidence.
+  const onModel = snapshot.model ? ` · prefers ${snapshot.model}` : '';
+  const titleLine = `${title}   ${paint(`active: ${active?.name ?? 'none'}${onModel}`, codes.dim, color)}`;
 
   const header = paint(
-    `   ${'ACCOUNT'.padEnd(nameW)}  ${'EMAIL'.padEnd(emailW)}  ${'PLAN'.padEnd(planW)}  ${'PRI'.padEnd(priW)}  ${'5H'.padEnd(fiveW)}  ${'WEEK'.padEnd(weekW)}  ${'MODEL'.padEnd(modelW)}  STATUS`,
+    `   ${fit('ACCOUNT', nameW).padEnd(nameW)}  ${labels
+      .map((l, i) => l.padEnd(colW[i] as number))
+      .join('  ')}  STATUS`,
     codes.dim,
     color,
   );
 
   const rows = accounts.map((a, i) => {
     const cursor = i === options.selected ? paint('▸', codes.cyan, color) : ' ';
-    const active = a.active ? paint('*', codes.cyan, color) : ' ';
-    const name = a.active
-      ? paint(a.name.padEnd(nameW), `${codes.bold}${codes.cyan}`, color)
-      : a.name.padEnd(nameW);
-    const email = (a.email ?? '').padEnd(emailW);
-    const plan = (a.plan ?? '').padEnd(planW);
-    const pri = String(a.priority).padEnd(priW);
-    // Each window coloured on its own, so a spent model window is visible even
-    // when the hour and the week are healthy.
-    const five = paint(pct(fiveHourNow(a, now)).padEnd(fiveW), shadeFor(fiveHourNow(a, now)), color);
-    const week = paint(pct(weekNow(a, now)).padEnd(weekW), shadeFor(weekNow(a, now)), color);
-    const model = paint(
-      modelText(a, now).padEnd(modelW),
-      shadeFor(modelUsedNow(a, now)),
-      color,
-    );
+    const marker = a.active ? paint('*', codes.cyan, color) : ' ';
+    const shown = fit(a.name, nameW).padEnd(nameW);
+    const name = a.active ? paint(shown, `${codes.bold}${codes.cyan}`, color) : shown;
+    // Each window drawn on its own, so a spent model window is visible even
+    // when the hour and the week are healthy. Collapsing them into one number
+    // hid exactly the one that stops you.
+    // Padded by VISIBLE width: a gauge carries colour codes, so padding by
+    // string length would count the escape bytes and leave every coloured
+    // cell short.
+    const pad = (text: string, i: number): string =>
+      text + ' '.repeat(Math.max(0, (colW[i] as number) - GAUGE_W));
+    const five = pad(gauge(fiveHourNow(a, now), color, barW), 0);
+    const week = pad(gauge(weekNow(a, now), color, barW), 1);
+    const model = pad(gauge(modelUsedNow(a, modelName, now), color, barW), 2);
     const dot = paint('●', statusColor(a, now), color);
-    return `${cursor}${active} ${name}  ${email}  ${plan}  ${pri}  ${five}  ${week}  ${model}  ${dot} ${statusText(a, now)}`;
+    return `${cursor}${marker} ${name}  ${five}  ${week}  ${model}  ${dot} ${statusText(a, now)}`;
   });
 
   const lines = [titleLine, rule, header, ...rows, rule];
+
+  // An empty table is not an answer. Someone seeing this has just installed
+  // ccx, and the screen should say what to do rather than showing a header
+  // with nothing under it and leaving them to guess whether it is broken.
+  if (accounts.length === 0) {
+    lines.push(paint('  no accounts yet. add one with:  ccx add <name>', codes.yellow, color));
+    lines.push(rule);
+  }
+
+  // What the table cannot show: where rotation will actually send this session
+  // when the current account runs out. Every other tool can only report the
+  // state it is in; ccx knows the policy and the numbers, so it can say what
+  // happens next before it happens.
+  if (snapshot.nextUp) {
+    lines.push(paint(`  next → ${snapshot.nextUp}`, codes.cyan, color));
+  }
 
   // Everything about the highlighted account, including when each window returns.
   const highlighted = accounts[options.selected ?? 0];

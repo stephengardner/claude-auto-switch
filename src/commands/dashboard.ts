@@ -21,6 +21,11 @@ import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
+import { describeNextUp } from '../dashboard/next-up.js';
+import { usableCapacity, type CapacityWindows } from '../usage/usable-capacity.js';
+import { activeModelCaps } from '../ledger/ledger.js';
+import { spentKey } from '../usage/rotation-plan.js';
+import { normalizeModel } from '../usage/model-preference.js';
 
 export interface DashboardOptions {
   /** Print a single frame and exit (no live loop). */
@@ -107,11 +112,69 @@ export async function dashboardCommand(
       events: readEvents(home, 5).map(formatEvent),
       now,
       refreshMs,
+      ...nextMove(context, accts, usage, cappedUntil, loggedIn, now),
     });
   };
 
+  /**
+   * The one line the table cannot show: what rotation does NEXT.
+   *
+   * Built from the same pieces the real thing uses (usable capacity, the
+   * ledger's model caps, the operator's policy), so the dashboard predicts
+   * what will happen rather than describing something adjacent to it.
+   */
+  function nextMove(
+    ctx: CliContext,
+    accounts: Array<{ name: string; enabled: boolean; priority: number }>,
+    usage: Map<string, CapacityWindows>,
+    capped: Map<string, number>,
+    loggedIn: Set<string>,
+    at: number,
+  ): { model?: string; nextUp?: string } {
+    const rotation = ctx.config.rotation;
+    // With models switched off, rotation still MOVES BETWEEN ACCOUNTS, and
+    // that is worth predicting. Returning nothing here hid the line entirely
+    // for a setting that only turns off half of what it describes.
+    const model = rotation.preferSameModel ? rotation.modelPreference[0] : null;
+    const knownSpent = activeModelCaps(loadLedger(ctx.ctx), at);
+    const candidates = accounts
+      .filter((a) => a.enabled && loggedIn.has(a.name) && (capped.get(a.name) ?? 0) <= at)
+      .sort((x, y) => x.priority - y.priority || x.name.localeCompare(y.name))
+      .map((a) => {
+        const capacity = usableCapacity(usage.get(a.name), at);
+        // Both sides keyed the SAME way before they are merged. A cap can be
+        // recorded as `claude-fable-5[1m]` while the usage snapshot calls the
+        // same window `Fable`, and unmerged those are two keys: the account
+        // then reads as having room on a model it is demonstrably capped on.
+        const byModel = (entries: Array<[string, number | null]>): Record<string, number | null> =>
+          Object.fromEntries(entries.map(([name, used]) => [normalizeModel(name), used]));
+        const fromLedger = byModel(
+          knownSpent.filter((c) => c.account === a.name).map((c) => [c.model, 1]),
+        );
+        return {
+          name: a.name,
+          models: { ...byModel(Object.entries(capacity.models)), ...fromLedger },
+          ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
+        };
+      });
+    const current = getActive(ctx.ctx);
+    const nextUp = describeNextUp({
+      candidates,
+      current,
+      modelInUse: model,
+      preference: rotation.modelPreference,
+      strategy: rotation.modelStrategy,
+      // Whatever the current account has already used up counts, so the line
+      // does not promise a model this account has just run out of.
+      spentThisRun: new Set(
+        current ? knownSpent.filter((c) => c.account === current).map((c) => spentKey(c.account, c.model)) : [],
+      ),
+    });
+    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}) };
+  }
+
   if (options.once) {
-    context.out(renderDashboard(build(), { color }));
+    context.out(renderDashboard(build(), { color, width: process.stdout.columns }));
     return 0;
   }
 
@@ -453,6 +516,9 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         color: deps.color,
         interactive: true,
         selected,
+        // Read every frame, not once at start: a window resized mid-session is
+        // exactly when a fixed-width table starts wrapping.
+        ...(process.stdout.columns ? { width: process.stdout.columns } : {}),
         ...(ui.confirm ? { confirm: ui.confirm.question } : {}),
         ...(ui.notice ? { notice: ui.notice } : {}),
         ...(ui.prompt

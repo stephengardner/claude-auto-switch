@@ -35,6 +35,10 @@ export interface SnapshotInput {
   events: string[];
   now: number;
   refreshMs: number;
+  /** The model in use, when anything pins one. */
+  model?: string;
+  /** Where rotation would go next, in words. See dashboard/next-up.ts. */
+  nextUp?: string;
 }
 
 export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
@@ -57,5 +61,12 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
     // Stable, meaningful order: preferred (lowest priority) first, ties by name.
     .sort((x, y) => x.priority - y.priority || x.name.localeCompare(y.name));
 
-  return { accounts, events: input.events, now: input.now, refreshMs: input.refreshMs };
+  return {
+    accounts,
+    events: input.events,
+    now: input.now,
+    refreshMs: input.refreshMs,
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.nextUp ? { nextUp: input.nextUp } : {}),
+  };
 }
