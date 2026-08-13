@@ -31,8 +31,17 @@ export function defaultPowerShellProfile(c: PathCtx = {}): string {
   const env = c.env ?? process.env;
   const p = platform === 'win32' ? path.win32 : path.posix;
 
-  // Ground truth, only for real CLI use on Windows (tests inject c.platform).
-  if (platform === 'win32' && c.platform === undefined && process.platform === 'win32') {
+  // Ground truth, and ONLY for real CLI use on Windows. Asking PowerShell means
+  // asking the real machine, which ignores any environment the caller injected:
+  // a run pointed at a temporary home would still be handed (and then edit) the
+  // developer's own profile. So injecting either a platform or an environment
+  // opts out of the query and keeps everything inside the world given.
+  if (
+    platform === 'win32' &&
+    c.platform === undefined &&
+    c.env === undefined &&
+    process.platform === 'win32'
+  ) {
     const real = queryRealPowerShellProfile();
     if (real) return real;
   }

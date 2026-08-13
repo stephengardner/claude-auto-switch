@@ -20,6 +20,40 @@ describe('defaultPowerShellProfile (computed fallback, injected platform)', () =
   });
 });
 
+describe('an injected environment is the whole world', () => {
+  it('stays inside a redirected home instead of asking the real machine', () => {
+    // This one bit caused real damage. `ccx off` pointed at a temporary home
+    // still asked PowerShell for its own $PROFILE, got the developer's real
+    // one back, and removed the shim from it. Anyone handing this function an
+    // environment is saying "this is the machine": honour it.
+    const c = {
+      env: { USERPROFILE: 'C:\\tmp\\sandbox', HOME: '/tmp/sandbox' },
+    };
+    const resolved = defaultPowerShellProfile(c);
+    expect(resolved).toContain('sandbox');
+    expect(resolved.toLowerCase()).not.toContain('onedrive');
+  });
+
+  it('ignores an OneDrive redirection that is not in the environment it was given', () => {
+    // The ambient OneDrive variable belongs to the real machine, not to the
+    // sandbox, so it must not pull the path back out of the given home.
+    const before = process.env.OneDrive;
+    process.env.OneDrive = 'C:\\Users\\real\\OneDrive';
+    try {
+      const resolved = defaultPowerShellProfile({
+        platform: 'win32' as const,
+        env: { USERPROFILE: 'C:\\tmp\\sandbox' },
+      });
+      expect(resolved).toBe(
+        'C:\\tmp\\sandbox\\Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1',
+      );
+    } finally {
+      if (before === undefined) delete process.env.OneDrive;
+      else process.env.OneDrive = before;
+    }
+  });
+});
+
 describe('defaultPosixProfile', () => {
   it('picks .zshrc for zsh, else .bashrc', () => {
     expect(

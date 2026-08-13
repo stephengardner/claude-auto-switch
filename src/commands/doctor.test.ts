@@ -10,6 +10,7 @@ import {
   auditCaps,
   doctorCommand,
 } from './doctor.js';
+import { settingsPath } from '../statusline/settings-install.js';
 import { addAccount } from '../accounts/registry.js';
 import { installShim } from '../shell/install-shim.js';
 import { loadConfig } from '../config/config.js';
@@ -27,6 +28,17 @@ function context(lines: string[] = []): CliContext {
     json: false,
     quiet: false,
   };
+}
+
+/** Put ccx into this sandbox's Claude status line, the way `ccx on` would. */
+function wireStatusline(c: CliContext): void {
+  const file = settingsPath(c.ctx);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(
+    file,
+    JSON.stringify({ statusLine: { type: 'command', command: 'ccx statusline' } }),
+    'utf8',
+  );
 }
 
 describe('auditGitSafety', () => {
@@ -195,9 +207,23 @@ describe('doctorCommand', () => {
 
   it('passes with a clean tracked-file list and a resolvable claude', async () => {
     const lines: string[] = [];
-    const code = await doctorCommand(context(lines), cleanDeps);
+    const c = context(lines);
+    wireStatusline(c);
+    const code = await doctorCommand(c, cleanDeps);
     expect(code).toBe(0);
     expect(lines.join('\n')).toContain('everything is in order');
+  });
+
+  it('mentions the status line when nothing on screen says ccx is running', async () => {
+    // The shim is transparent, so an unwired status line means there is no
+    // sign at all that account switching is happening. Worth saying, without
+    // calling it a failure: it is a missing convenience, not a broken tool.
+    const lines: string[] = [];
+    const code = await doctorCommand(context(lines), cleanDeps);
+    expect(code).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('status line');
+    expect(out).toContain('ccx on');
   });
 
   it('reports the problem and how to fix it when something is wrong', async () => {
