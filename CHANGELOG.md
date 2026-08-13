@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.43.1]
+
+### Added
+
+- **`ccx doctor` now checks the status line.** The shim is transparent by
+  design, so without the status line nothing on screen says ccx is running at
+  all. The checkup reports whether Claude will show your account, whether a
+  status line of your own is there instead, and points at `ccx on` when it is
+  missing.
+
+### Fixed
+
+- **A command pointed at one home no longer edits another.** Working out where
+  the PowerShell profile lives means asking the real PowerShell, which knows
+  nothing about a home directory passed in for a test. So a command aimed at a
+  temporary home was handed the real profile path and edited it. Passing an
+  environment now means "this is the machine", and everything stays inside it.
+
 ## [1.43.0]
 
 ### Added
