@@ -1,7 +1,18 @@
-import { copyFileSync, existsSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { isLink } from '../daemon/junction.js';
+import { defaultClaudeRoot } from './shared-root.js';
 
 /**
  * A session directory per running session, instead of one shared by all of them.
@@ -98,7 +109,38 @@ export function seedFromKeptSettings(sessionDir: string, c: PathCtx = {}): boole
 }
 
 /**
- * Carry a finished session's settings out before its directory is deleted.
+ * What a session changed, as opposed to everything it was holding.
+ *
+ * The kept settings win over the user's real ones when the next session is
+ * built, so anything in here overrides `~/.claude/settings.json` from now on.
+ * Keeping a whole copy therefore froze the user's settings at the moment a
+ * session last ended: editing the real file after that changed nothing, and
+ * the frozen value could not be removed by any normal means. That is exactly
+ * how `"tui": "fullscreen"` became unkillable.
+ *
+ * So only the keys that actually DIFFER from the real settings are carried,
+ * which is the smallest set that still does the job it exists for (holding a
+ * `/model` pin). It is also self-healing: once the real settings agree, the
+ * override drops out on its own.
+ */
+export function changedFromUser(
+  session: Record<string, unknown>,
+  user: Record<string, unknown>,
+): Record<string, unknown> {
+  const changed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(session)) {
+    // Deep equality, not serialised text: Claude rewrites this file and can
+    // emit the same object with its keys in a different order. Comparing the
+    // text would call that a change and make it a permanent override, which is
+    // the very thing being fixed here. Array order still counts, because the
+    // order of hooks is part of what they mean.
+    if (!isDeepStrictEqual(value, user[key])) changed[key] = value;
+  }
+  return changed;
+}
+
+/**
+ * Carry a finished session's changes out before its directory is deleted.
  *
  * Newest wins, so sweeping several dead sessions at once cannot let the oldest
  * of them overwrite a pin set later.
@@ -109,9 +151,24 @@ export function preserveSettings(sessionDir: string, c: PathCtx = {}): void {
   try {
     if (!existsSync(from)) return;
     if (existsSync(to) && statSync(to).mtimeMs >= statSync(from).mtimeMs) return;
-    copyFileSync(from, to);
+    const session = readJsonObject(from);
+    if (!session) return;
+    const user = readJsonObject(path.join(defaultClaudeRoot(c), 'settings.json')) ?? {};
+    writeFileSync(to, `${JSON.stringify(changedFromUser(session, user), null, 2)}\n`, 'utf8');
   } catch {
     /* a forgotten pin is an annoyance; throwing here would block the sweep */
+  }
+}
+
+function readJsonObject(file: string): Record<string, unknown> | null {
+  try {
+    if (!existsSync(file) || !statSync(file).isFile()) return null;
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
   }
 }
 
