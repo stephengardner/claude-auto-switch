@@ -156,6 +156,23 @@ describe('renderDashboard (plain)', () => {
     expect(row).toContain('██████████'); // spent reads full
   });
 
+  it('says what to do when there are no accounts, instead of an empty table', () => {
+    // Whoever sees this has just installed ccx. A header with nothing under it
+    // reads as broken, and leaves them guessing.
+    const out = renderDashboard(snapshot([]), opts);
+    expect(out).toContain('ccx add');
+  });
+
+  it('marks an unread window as unknown, never as empty', () => {
+    // Zero would claim the account is completely free when the truth is that
+    // nobody has looked, and that is the difference between "use this one" and
+    // "we do not know yet". The usage page says `?` for the same thing.
+    const out = renderDashboard(snapshot([account({ name: 'fresh' })]), opts);
+    const row = out.split('\n').find((l) => l.includes('fresh'))!;
+    expect(row).toContain('?');
+    expect(row).not.toContain('0%');
+  });
+
   it('shows the SAME model in every row of the model column', () => {
     // A column named after one model must contain that model's number in every
     // row. Filling each cell with that account's own worst model made the

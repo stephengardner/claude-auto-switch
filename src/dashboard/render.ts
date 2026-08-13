@@ -123,9 +123,16 @@ function gauge(used: number | null, color: boolean): string {
 /** Printable width of a gauge, which is what the header has to line up with. */
 const GAUGE_W = BAR + 1 + 4;
 
-/** A window's utilization as a whole percent, or a dash when it is unknown. */
+/**
+ * A window's utilization as a whole percent, or `?` when nobody has read it.
+ *
+ * `?` and not `0%`, and not a blank: zero would claim the account is entirely
+ * free when the truth is that it has not been measured, and a blank reads as a
+ * rendering fault. The usage page says `?` for the same thing, so the two
+ * pages answer "unknown" the same way.
+ */
 function pct(used: number | null | undefined): string {
-  return typeof used === 'number' ? `${Math.round(used * 100)}%` : '-';
+  return typeof used === 'number' ? `${Math.round(used * 100)}%` : '?';
 }
 
 /**
@@ -243,6 +250,14 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   });
 
   const lines = [titleLine, rule, header, ...rows, rule];
+
+  // An empty table is not an answer. Someone seeing this has just installed
+  // ccx, and the screen should say what to do rather than showing a header
+  // with nothing under it and leaving them to guess whether it is broken.
+  if (accounts.length === 0) {
+    lines.push(paint('  no accounts yet. add one with:  ccx add <name>', codes.yellow, color));
+    lines.push(rule);
+  }
 
   // What the table cannot show: where rotation will actually send this session
   // when the current account runs out. Every other tool can only report the
