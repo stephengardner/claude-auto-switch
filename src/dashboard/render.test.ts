@@ -160,16 +160,66 @@ describe('renderDashboard (plain)', () => {
     // It fitted 80 columns with one character to spare, which is luck rather
     // than fitting: a longer name or a longer wait wrapped the row, and a
     // wrapped row is unreadable.
+    // Long in every direction that free text can be long: the name, the
+    // address, the status, the model name, the events and the prediction. The
+    // first version of this test used short values and passed while the detail
+    // line ran to 120 characters in a 92-column frame.
     const wide = account({
       name: 'a-rather-long-account-name',
+      email: 'someone.with.a.long.address@a-long-domain.example.com',
+      plan: 'max-with-a-long-plan-name',
       cappedUntil: NOW + 12 * 24 * 60 * 60_000,
-      usage: { fiveHour: 1, sevenDay: 1, models: [{ name: 'Fable', utilization: 1 }] },
+      usage: {
+        fiveHour: 1,
+        sevenDay: 1,
+        fiveHourReset: NOW + 90 * 60_000,
+        models: [{ name: 'claude-fable-5-with-a-very-long-name', utilization: 1, resetsAt: NOW + 9e6 }],
+      },
     });
-    for (const width of [100, 80, 64, 50]) {
-      const out = renderDashboard(snapshot([wide]), { ...opts, width });
+    for (const width of [100, 92, 80, 64, 50]) {
+      const out = renderDashboard(
+        {
+          ...snapshot([wide], ['09:12  switching to "personal" (no restart; takes effect within ~30s)']),
+          nextUp: 'over on a-rather-long-account-name, on claude-fable-5 (80% left)',
+          model: 'claude-fable-5',
+        },
+        { ...opts, width, interactive: true, selected: 0 },
+      );
       for (const line of out.split('\n')) {
         expect(line.length, `at width ${width}: ${line}`).toBeLessThanOrEqual(width);
       }
+    }
+  });
+
+  it('fits the typing box, the confirmation and the empty screen too', () => {
+    // Every state of the screen, not just the table. The text someone TYPES is
+    // the most likely of all to run past the edge, because it grows keystroke
+    // by keystroke while the frame stays the same size.
+    const long = 'x'.repeat(200);
+    const states = [
+      { label: 'typing', options: { prompt: { label: 'new name:', text: long } } },
+      { label: 'typing error', options: { prompt: { label: 'new name:', text: 'n', error: long } } },
+      { label: 'confirming', options: { confirm: long } },
+      { label: 'a notice', options: { notice: long } },
+    ];
+    for (const width of [92, 64, 40]) {
+      for (const state of states) {
+        const out = renderDashboard(snapshot([account({ name: 'work' })]), {
+          ...opts,
+          width,
+          interactive: true,
+          ...state.options,
+        });
+        for (const line of out.split('\n')) {
+          expect(line.length, `${state.label} at ${width}: ${line}`).toBeLessThanOrEqual(width);
+        }
+      }
+      // Nothing added yet: the invitation to add one still has to fit.
+      const empty = renderDashboard(snapshot([]), { ...opts, width, interactive: true });
+      for (const line of empty.split('\n')) {
+        expect(line.length, `empty at ${width}: ${line}`).toBeLessThanOrEqual(width);
+      }
+      expect(empty).toContain('no accounts yet');
     }
   });
 

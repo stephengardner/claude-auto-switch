@@ -21,6 +21,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderUsageReport } from '../dist/usage/report.js';
 import { renderDashboard } from '../dist/dashboard/render.js';
+import { describeNextUp } from '../dist/dashboard/next-up.js';
 
 const OUT_DIR = path.join('docs', 'img');
 const COLS = 92;
@@ -102,8 +103,18 @@ const dashboardAnsi = renderDashboard(
     ],
     now: NOW,
     refreshMs: 3000,
+    model: 'fable',
+    // Computed by the real planner over these same invented numbers, so the
+    // picture cannot drift from what the tool would actually say.
+    nextUp: describeNextUp({
+      candidates: ACCOUNTS.map((a) => ({ name: a.name, models: { fable: a.fable } })),
+      current: ACCOUNTS.find((a) => a.active)?.name ?? null,
+      modelInUse: 'fable',
+      preference: ['fable', 'opus'],
+      strategy: 'model-first',
+    }),
   },
-  { color: true, interactive: true, selected: 0 },
+  { color: true, interactive: true, selected: 0, width: COLS },
 );
 
 // --- ANSI to SVG ----------------------------------------------------------

@@ -242,6 +242,7 @@ program
   .option('--profile <path>', 'profile path (defaults to your $PROFILE / rc file)')
   .option('--shell <shell>', 'powershell or posix (defaults to your platform)')
   .option('--no-editor', 'set up the terminal only, not editors')
+  .option('--no-statusline', "leave Claude's status line alone")
   .action((opts: { profile?: string; shell?: string; editor?: boolean }) => {
     process.exitCode = onCommand(context(), opts);
   });
@@ -252,6 +253,7 @@ program
   .option('--profile <path>', 'profile path (defaults to your $PROFILE / rc file)')
   .option('--shell <shell>', 'powershell or posix (defaults to your platform)')
   .option('--no-editor', 'remove from the terminal only')
+  .option('--no-statusline', "leave Claude's status line alone")
   .action((opts: { profile?: string; shell?: string; editor?: boolean }) => {
     process.exitCode = offCommand(context(), opts);
   });
