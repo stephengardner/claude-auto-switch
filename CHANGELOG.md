@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.41.0]
+
+### Fixed
+
+- **"could not resolve the real claude binary" on a machine where Claude is
+  installed.** ccx only ever asked PATH. When an installer adds its directory
+  to PATH, a shell (or editor) started before that never inherits it, so
+  `where claude` found nothing and ccx reported the binary as missing while
+  the operator could run it perfectly well themselves. It now looks where
+  Claude Code actually installs itself as well: the native installer's
+  `.local/bin`, the local install `claude migrate-installer` leaves behind,
+  both npm global layouts, and bun.
+
+- **A confusing line in the terminal.** A PATH miss let `where` print "INFO:
+  could not find files for the given patterns" straight to the screen, which
+  read as a fault. Finding nothing on PATH is now ordinary and silent.
+
+- **The error, when there genuinely is nothing to find,** lists every place
+  that was searched and both ways to point ccx straight at the binary,
+  instead of naming a config key and stopping.
+
 ## [1.40.0]
 
 ### Fixed

@@ -30,12 +30,35 @@ export function resolveRealClaude(deps: ResolveDeps = {}): ClaudeInvoker {
 
   const candidates = findCandidates().filter((candidate) => !isShim(candidate));
   const real = pickRealClaude(candidates, platform);
-  if (!real) {
-    throw new RealClaudeError(
-      'could not resolve the real claude binary; set realClaudePath in config or ensure Claude Code is installed',
-    );
-  }
+  if (!real) throw new RealClaudeError(cannotFindClaude(candidates, platform));
   return { bin: real, prefixArgs: [] };
+}
+
+/**
+ * Say what was actually looked for, and what to do about it.
+ *
+ * The old message named a config key and stopped there, which reads as "you
+ * have not installed Claude" to someone who plainly has. The two real causes
+ * are a PATH this process never inherited and an install somewhere unusual,
+ * and both are acted on differently.
+ */
+export function cannotFindClaude(candidates: string[], platform: NodeJS.Platform): string {
+  const looked = whereItIsUsuallyInstalled(platform);
+  const found = candidates.length > 0;
+  const lines = [
+    found
+      ? `found claude at ${candidates.join(', ')}, but none of them can be launched directly` +
+        (platform === 'win32' ? ' (Windows needs the real .exe, not a .cmd shim)' : '')
+      : 'could not find the claude binary, on PATH or where it is normally installed',
+    '',
+    'looked on PATH, and in:',
+    ...looked.map((p) => `  ${p}`),
+    '',
+    'if it is somewhere else, point ccx straight at it, once:',
+    '  set realClaudePath in ~/.claude-auto-switch/config.json',
+    '  or set CAS_REAL_CLAUDE_PATH in the environment',
+  ];
+  return lines.join('\n');
 }
 
 /**
@@ -95,19 +118,79 @@ function deriveExeFromCmd(cmdPath: string): string | null {
   }
 }
 
-/** Ask the OS where `claude` lives, keeping only paths that still exist. */
+/**
+ * Ask the OS where `claude` lives, then look where it is normally installed.
+ *
+ * PATH alone was not enough, and the way it fails is confusing: Claude is
+ * installed, the operator can run it in their own shell, and ccx says it does
+ * not exist. That happens whenever the installer added a directory to PATH
+ * that this process never inherited, which is the ordinary case for a shell
+ * (or an editor) started before the install, and for anything launched from a
+ * process with a frozen environment.
+ *
+ * So a miss on PATH is not an answer, it is a reason to go and look.
+ */
 function defaultFindCandidates(platform: NodeJS.Platform): string[] {
+  return [...onPath(platform), ...whereItIsUsuallyInstalled(platform)].filter((candidate) =>
+    existsSync(candidate),
+  );
+}
+
+function onPath(platform: NodeJS.Platform): string[] {
   const cmd = platform === 'win32' ? 'where' : 'which';
   const args = platform === 'win32' ? ['claude'] : ['-a', 'claude'];
   try {
-    const out = execFileSync(cmd, args, { encoding: 'utf8' });
+    // stderr is silenced deliberately. Finding nothing here is normal now that
+    // the known locations are searched too, and `where` announces a miss with
+    // "INFO: could not find files for the given patterns", which landed in the
+    // operator's terminal looking like a fault.
+    const out = execFileSync(cmd, args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
     return out
       .split(/\r?\n/)
       .map((line) => line.trim())
-      .filter((line) => line.length > 0 && existsSync(line));
+      .filter((line) => line.length > 0);
   } catch {
     return [];
   }
+}
+
+/**
+ * The places Claude Code actually installs itself.
+ *
+ * Listed rather than guessed at: the native installer, the local install that
+ * `claude migrate-installer` produces, and the two npm global layouts. An
+ * absent one costs a stat, and a present one turns "could not resolve the real
+ * claude binary" into a session that simply starts.
+ */
+export function whereItIsUsuallyInstalled(platform: NodeJS.Platform): string[] {
+  const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
+  const npmPackage = path.join('node_modules', '@anthropic-ai', 'claude-code', 'bin');
+
+  if (platform === 'win32') {
+    const appData = process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming');
+    const localAppData = process.env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local');
+    const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files';
+    return [
+      path.join(home, '.local', 'bin', 'claude.exe'),
+      path.join(localAppData, 'Programs', 'claude', 'claude.exe'),
+      path.join(home, '.claude', 'local', 'claude.exe'),
+      path.join(appData, 'npm', npmPackage, 'claude.exe'),
+      path.join(programFiles, 'nodejs', npmPackage, 'claude.exe'),
+      path.join(home, '.bun', 'bin', 'claude.exe'),
+    ];
+  }
+
+  return [
+    path.join(home, '.local', 'bin', 'claude'),
+    path.join(home, '.claude', 'local', 'claude'),
+    '/usr/local/bin/claude',
+    '/opt/homebrew/bin/claude',
+    path.join(home, '.bun', 'bin', 'claude'),
+    path.join('/usr/local/lib', npmPackage, 'claude'),
+  ];
 }
 
 /**

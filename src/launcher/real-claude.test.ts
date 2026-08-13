@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { resolveRealClaude } from './real-claude.js';
+import { resolveRealClaude, whereItIsUsuallyInstalled } from './real-claude.js';
 import { RealClaudeError } from '../util/errors.js';
 
 describe('resolveRealClaude', () => {
@@ -52,5 +52,54 @@ describe('resolveRealClaude', () => {
     writeFileSync(exe, '');
     const invoker = resolveRealClaude({ findCandidates: () => [cmd], platform: 'win32' });
     expect(invoker.bin).toBe(exe);
+  });
+});
+
+describe('finding claude when PATH does not know about it', () => {
+  // The reported failure on a fresh machine: Claude IS installed and runs in
+  // the operator's own shell, but the installer put its directory on a PATH
+  // this process never inherited, so `where claude` found nothing and ccx said
+  // the binary did not exist.
+
+  it('looks where Claude Code actually installs itself', () => {
+    const windows = whereItIsUsuallyInstalled('win32');
+    // The native installer, the local install `claude migrate-installer`
+    // leaves behind, and both npm global layouts.
+    expect(windows.some((p) => p.includes(path.join('.local', 'bin')))).toBe(true);
+    expect(windows.some((p) => p.includes(path.join('.claude', 'local')))).toBe(true);
+    expect(windows.some((p) => p.includes(path.join('npm', 'node_modules')))).toBe(true);
+    expect(windows.every((p) => p.endsWith('.exe'))).toBe(true);
+
+    const posix = whereItIsUsuallyInstalled('linux');
+    expect(posix).toContain('/usr/local/bin/claude');
+    expect(posix.some((p) => p.includes('homebrew'))).toBe(true);
+    expect(posix.every((p) => !p.endsWith('.exe'))).toBe(true);
+  });
+
+  it('resolves from a known location when PATH is empty', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-known-'));
+    const installed = path.join(dir, 'claude.exe');
+    writeFileSync(installed, 'binary');
+    const claude = resolveRealClaude({
+      platform: 'win32',
+      findCandidates: () => [installed], // PATH found nothing; this came from the known list
+    });
+    expect(claude.bin).toBe(installed);
+  });
+
+  it('says where it looked, and how to fix it, when there is nothing to find', () => {
+    // The old message named a config key and stopped, which reads as "you have
+    // not installed Claude" to someone who plainly has.
+    let thrown: Error | null = null;
+    try {
+      resolveRealClaude({ platform: 'win32', findCandidates: () => [] });
+    } catch (err) {
+      thrown = err as Error;
+    }
+    expect(thrown).toBeInstanceOf(RealClaudeError);
+    expect(thrown?.message).toContain('looked on PATH, and in:');
+    expect(thrown?.message).toContain('.local');
+    expect(thrown?.message).toContain('realClaudePath');
+    expect(thrown?.message).toContain('CAS_REAL_CLAUDE_PATH');
   });
 });
