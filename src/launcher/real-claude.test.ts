@@ -5,6 +5,13 @@ import path from 'node:path';
 import { resolveRealClaude, whereItIsUsuallyInstalled } from './real-claude.js';
 import { RealClaudeError } from '../util/errors.js';
 
+
+/** Put an environment variable back exactly as it was, absent included. */
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 describe('resolveRealClaude', () => {
   it('uses the configured realClaudePath when set', () => {
     const invoker = resolveRealClaude({ config: { realClaudePath: '/opt/claude' } });
@@ -99,8 +106,11 @@ describe('finding claude when PATH does not know about it', () => {
       });
       expect(claude.bin).toBe(installed);
     } finally {
-      process.env.HOME = previous.home;
-      process.env.USERPROFILE = previous.profile;
+      // Deleted rather than assigned when there was nothing there: assigning
+      // undefined stores the STRING "undefined", which is not absence, and
+      // leaks into whatever runs next.
+      restoreEnv('HOME', previous.home);
+      restoreEnv('USERPROFILE', previous.profile);
     }
   });
 
