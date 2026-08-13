@@ -173,11 +173,44 @@ describe('createEscapeBuffer', () => {
     expect(buffer.push('hello')).toBe('hello'); // back to normal immediately
   });
 
-  it('swallows the raw payload of an abandoned ORIGINAL-encoding report', () => {
+  it('NEVER eats bytes after an abandoned ORIGINAL-encoding prefix', () => {
+    // Its payload is three RAW bytes that can be any character at all, so
+    // "abc" typed afterwards is indistinguishable from a real one. Eating
+    // three real keystrokes is worse than showing three stray characters, and
+    // a genuine payload follows its prefix in the same breath anyway, so it is
+    // never what is still missing when the wait runs out.
     const { buffer, tick } = buffered();
     buffer.push(`${ESC}[M`);
     tick();
-    expect(buffer.push(' !"typed')).toBe('typed'); // three payload bytes eaten
+    expect(buffer.push('abc')).toBe('abc');
+  });
+
+  it('does not take a lone M typed after a fragment that still needed parameters', () => {
+    // "ESC[<35" is two parameters short, so an M cannot be its tail. It is a
+    // keystroke, and taking it would silently swallow what was typed.
+    const { buffer, tick } = buffered();
+    buffer.push(`${ESC}[<35`);
+    tick();
+    expect(buffer.push('M')).toBe('M');
+  });
+
+  it('does take a lone final byte once the parameters were all there', () => {
+    // "ESC[<35;101;10" has Cb, Cx and Cy: only the final byte is missing, so
+    // an M arriving now really is the tail of the report that was dropped.
+    const { buffer, tick } = buffered();
+    buffer.push(`${ESC}[<35;101;10`);
+    tick();
+    expect(buffer.push('M')).toBe('');
+  });
+
+  it('forgets an expected tail when the reader changes', () => {
+    // Otherwise the next thing typed is eaten on behalf of a session that has
+    // already ended.
+    const { buffer, tick } = buffered();
+    buffer.push(`${ESC}[<35;101`);
+    tick();
+    buffer.reset();
+    expect(buffer.push(';10M')).toBe(';10M');
   });
 
   it('never eats a KEYSTROKE that follows an abandoned fragment', () => {

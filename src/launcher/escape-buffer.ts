@@ -136,43 +136,74 @@ export interface EscapeBufferOptions {
  * `;30M` in the reported screenshot. So what was abandoned is remembered just
  * long enough to swallow its own tail.
  */
-type ExpectedTail = { kind: 'sgr' } | { kind: 'x10'; bytes: number };
+interface ExpectedTail {
+  /**
+   * How many parameter separators the dropped report has been given so far,
+   * counting the fragment AND anything since. An SGR report carries three
+   * parameters, so until there are two of these it still owes some, and a
+   * lone final byte cannot be its tail: an `M` typed by the operator is then
+   * safe from being eaten.
+   */
+  separatorsSoFar: number;
+}
 
-/** What, if anything, an abandoned fragment will send along afterwards. */
+/** Parameters are complete at Cb;Cx;Cy, which is two separators. */
+const SGR_SEPARATORS = 2;
+
+function separatorsIn(params: string): number {
+  return params.split(';').length - 1;
+}
+
+/**
+ * What, if anything, an abandoned fragment will send along afterwards.
+ *
+ * Only the SGR form, and deliberately. The original encoding's payload is
+ * three RAW bytes that can be any character at all, so `abc` typed after an
+ * abandoned `ESC [ M` is indistinguishable from a real report's payload, and
+ * eating three real keystrokes is a worse failure than showing three stray
+ * characters. A genuine payload follows its prefix in the same breath anyway,
+ * so it is never the thing that is still missing when the wait runs out.
+ */
 export function tailExpectedAfter(fragment: string): ExpectedTail | null {
-  // SGR: ESC [ < params, finished by M or m.
-  if (/^\x1b\[<[0-9;]*$/.test(fragment)) return { kind: 'sgr' };
-  // The original encoding: ESC [ M then exactly three raw bytes.
-  if (fragment.startsWith(`${ESC}[M`)) {
-    const have = fragment.length - 3;
-    return have < 3 ? { kind: 'x10', bytes: 3 - have } : null;
-  }
-  return null;
+  const sgr = /^\x1b\[<([0-9;]*)$/.exec(fragment);
+  if (!sgr) return null;
+  return { separatorsSoFar: separatorsIn(sgr[1] ?? '') };
 }
 
 /**
  * Eat the part of `chunk` that belongs to a report already dropped.
  *
- * Deliberately narrow. Only what could actually finish THAT report is taken,
- * so a keystroke arriving in the same window survives: after an SGR fragment
- * the tail is digits and semicolons ending in M or m, and typing "hello" does
- * not look like that.
+ * Deliberately narrow, because everything it takes is something the operator
+ * might have typed. Only digits and semicolons, optionally finished by M or m,
+ * and a lone final byte only when the dropped report already had its
+ * parameters. So "hello" survives, and so does a bare "M" typed after a
+ * fragment that was nowhere near complete.
  */
 export function consumeExpectedTail(
   chunk: string,
   expected: ExpectedTail,
 ): { rest: string; still: ExpectedTail | null } {
-  if (expected.kind === 'x10') {
-    const take = Math.min(expected.bytes, chunk.length);
-    const left = expected.bytes - take;
-    return { rest: chunk.slice(take), still: left > 0 ? { kind: 'x10', bytes: left } : null };
-  }
-  const match = /^[0-9;]*[Mm]?/.exec(chunk);
-  const eaten = match?.[0] ?? '';
+  const eaten = /^[0-9;]*[Mm]?/.exec(chunk)?.[0] ?? '';
   if (eaten.length === 0) return { rest: chunk, still: null }; // not ours after all
   const finished = /[Mm]$/.test(eaten);
-  // Params with no final byte yet: the tail is itself split, so keep waiting.
-  return { rest: chunk.slice(eaten.length), still: finished ? null : { kind: 'sgr' } };
+  const params = eaten.replace(/[Mm]$/, '');
+  // Counted across the WHOLE report, fragment included: a tail supplying its
+  // last parameter and its final byte together is still one report.
+  const separators = expected.separatorsSoFar + separatorsIn(params);
+
+  if (finished && separators < SGR_SEPARATORS) {
+    // A final byte arriving while the report is still short of parameters is
+    // not this report's tail. It is a keystroke, and it is not ours to take.
+    return params.length === 0
+      ? { rest: chunk, still: null }
+      : { rest: chunk.slice(params.length), still: null };
+  }
+  // Parameters with no final byte yet: the tail is itself split, so keep
+  // waiting, carrying what has been supplied so far.
+  return {
+    rest: chunk.slice(eaten.length),
+    still: finished ? null : { separatorsSoFar: separators },
+  };
 }
 
 export interface EscapeBuffer {
@@ -278,13 +309,22 @@ export function createEscapeBuffer(
       pending = '';
       // Only a real key is worth handing on at shutdown; a fragment is not.
       if (couldBeEscapeKey(held)) return held;
-      if (held) abandon(held);
+      if (held) abandonedCount += 1;
+      // Nothing is armed here either: the run is ending, so there is no later
+      // input of ours to take, and the terminal belongs to the shell next.
+      expected = null;
+      expectedUntil = 0;
       return '';
     },
     reset(): void {
       stopTimer();
-      if (pending) abandon(pending);
+      if (pending) abandonedCount += 1;
       pending = '';
+      // Cleared, never armed. Reset means the keyboard is passing to a new
+      // reader, and arming a tail here would let the next thing the operator
+      // types be eaten on behalf of a session that has already ended.
+      expected = null;
+      expectedUntil = 0;
     },
     abandoned(): number {
       return abandonedCount;
