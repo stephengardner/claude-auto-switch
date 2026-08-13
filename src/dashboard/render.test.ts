@@ -264,12 +264,12 @@ describe('renderDashboard (plain)', () => {
     expect(out).toContain('next → over on phx, on fable (80% left)');
   });
 
-  it('names the model in use beside the active account', () => {
+  it('names the PREFERRED model beside the active account, not a guess at the live one', () => {
     const out = renderDashboard(
       { ...snapshot([account({ name: 'a', active: true })]), model: 'fable' },
       opts,
     );
-    expect(out).toContain('active: a · on fable');
+    expect(out).toContain('active: a · prefers fable');
   });
 
   it('marks the active account and names it in the subtitle', () => {

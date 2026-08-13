@@ -270,9 +270,11 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // two line up at every terminal width. Once the bars are gone the headings
   // shorten too, rather than pushing the row back over the edge they were just
   // shrunk to fit inside.
-  const labels = barW > 0
-    ? ['5-HOUR', 'WEEK', (modelName ?? 'MODEL').toUpperCase()]
-    : ['5H', 'WK', (modelName ?? 'MODEL').toUpperCase()];
+  // The model name comes from the API and can be any length. Padded without a
+  // bound it set the column width itself, pushing the row past the terminal
+  // and squeezing the account names to nothing.
+  const modelLabel = fit((modelName ?? 'MODEL').toUpperCase(), GAUGE_W);
+  const labels = barW > 0 ? ['5-HOUR', 'WEEK', modelLabel] : ['5H', 'WK', modelLabel];
   const colW = labels.map((l) => Math.max(GAUGE_W, l.length));
 
 
@@ -295,7 +297,11 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
 
   const title = paint('claude-auto-switch', codes.bold, color);
   const active = accounts.find((a) => a.active);
-  const onModel = snapshot.model ? ` · on ${snapshot.model}` : '';
+  // "prefers", not "on": the dashboard is not inside a session and cannot know
+  // which model one is actually running. After a fallback the session can be on
+  // Opus while the preference is still Fable, and the title would have said so
+  // with confidence.
+  const onModel = snapshot.model ? ` · prefers ${snapshot.model}` : '';
   const titleLine = `${title}   ${paint(`active: ${active?.name ?? 'none'}${onModel}`, codes.dim, color)}`;
 
   const header = paint(

@@ -25,6 +25,7 @@ import { describeNextUp } from '../dashboard/next-up.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
 import { activeModelCaps } from '../ledger/ledger.js';
 import { spentKey } from '../usage/rotation-plan.js';
+import { normalizeModel } from '../usage/model-preference.js';
 
 export interface DashboardOptions {
   /** Print a single frame and exit (no live loop). */
@@ -131,8 +132,10 @@ export async function dashboardCommand(
     at: number,
   ): { model?: string; nextUp?: string } {
     const rotation = ctx.config.rotation;
-    const model = rotation.modelPreference[0];
-    if (!rotation.preferSameModel || !model) return {};
+    // With models switched off, rotation still MOVES BETWEEN ACCOUNTS, and
+    // that is worth predicting. Returning nothing here hid the line entirely
+    // for a setting that only turns off half of what it describes.
+    const model = rotation.preferSameModel ? rotation.modelPreference[0] : null;
     const knownSpent = activeModelCaps(loadLedger(ctx.ctx), at);
     const candidates = accounts
       .filter((a) => a.enabled && loggedIn.has(a.name) && (capped.get(a.name) ?? 0) <= at)
@@ -142,12 +145,18 @@ export async function dashboardCommand(
           usage.get(a.name) as Parameters<typeof usableCapacity>[0],
           at,
         );
-        const fromLedger = Object.fromEntries(
+        // Both sides keyed the SAME way before they are merged. A cap can be
+        // recorded as `claude-fable-5[1m]` while the usage snapshot calls the
+        // same window `Fable`, and unmerged those are two keys: the account
+        // then reads as having room on a model it is demonstrably capped on.
+        const byModel = (entries: Array<[string, number | null]>): Record<string, number | null> =>
+          Object.fromEntries(entries.map(([name, used]) => [normalizeModel(name), used]));
+        const fromLedger = byModel(
           knownSpent.filter((c) => c.account === a.name).map((c) => [c.model, 1]),
         );
         return {
           name: a.name,
-          models: { ...capacity.models, ...fromLedger },
+          models: { ...byModel(Object.entries(capacity.models)), ...fromLedger },
           ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
         };
       });
@@ -164,7 +173,7 @@ export async function dashboardCommand(
         current ? knownSpent.filter((c) => c.account === current).map((c) => spentKey(c.account, c.model)) : [],
       ),
     });
-    return { model, ...(nextUp ? { nextUp } : {}) };
+    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}) };
   }
 
   if (options.once) {
