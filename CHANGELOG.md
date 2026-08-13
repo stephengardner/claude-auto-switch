@@ -4,6 +4,38 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.42.0]
+
+### Added
+
+- **The dashboard shows what it knows, and what it is about to do.** Every
+  window is drawn with the same bar and colour scale as `ccx usage`, so the
+  two pages describe the same numbers the same way. The model column is named
+  after the model and holds that one model in every row. And a `next →` line
+  runs the real rotation planner over live usage, the ledger's model caps and
+  your `modelStrategy`, so the screen says where you will land before you land
+  there rather than only what each account currently has.
+
+### Fixed
+
+- **The table shrinks to the terminal instead of wrapping off the edge of it.**
+  It previously came to exactly 80 columns in an 80-column terminal, so a
+  longer account name or a longer wait wrapped the row. The bars now narrow,
+  then disappear, then the headings shorten, then names truncate: a row of
+  bare percentages is plainer, a wrapped row is useless.
+
+- **An unread window says `?`, never `0%`.** Zero claimed an account was
+  completely free when the truth was that nobody had measured it, which on a
+  fresh install is every account.
+
+- **A model cap and a usage window are matched by name properly**, so a limit
+  recorded as `claude-fable-5[1m]` and a window called `Fable` are one thing.
+  Unmatched, an account read as having room on a model it was capped on.
+
+- The title says which model rotation **prefers**, rather than claiming to
+  know which one a running session is on, which it cannot see from outside
+  that session.
+
 ## [1.41.0]
 
 ### Fixed
