@@ -26,19 +26,46 @@ function queryRealPowerShellProfile(): string | null {
  * `%USERPROFILE%\Documents`) and the two must not be confused. Falls back to an
  * OneDrive-aware computed path. Users can always override with `--profile`.
  */
-export function defaultPowerShellProfile(c: PathCtx = {}): string {
-  const platform = c.platform ?? process.platform;
+export interface ProfileDeps {
+  /** The machine really being run on. Injected so the Windows path is testable anywhere. */
+  hostPlatform?: NodeJS.Platform;
+  /** The `$PROFILE` lookup itself, so a test can prove when it is not used. */
+  queryProfile?: () => string | null;
+}
+
+/**
+ * Should we ask the real PowerShell where its profile is?
+ *
+ * Only when nothing has been injected. Asking PowerShell means asking the real
+ * machine, which cannot know about a context the caller made up: a run pointed
+ * at a temporary home would be handed the developer's own profile and then
+ * edit it. Injecting a platform OR an environment means "this is the machine",
+ * so we stay inside what we were given.
+ *
+ * Exported as its own predicate so this rule is tested on every host, not only
+ * on Windows.
+ */
+export function shouldAskPowerShell(c: PathCtx, host: NodeJS.Platform): boolean {
+  return host === 'win32' && c.platform === undefined && c.env === undefined;
+}
+
+export function defaultPowerShellProfile(c: PathCtx = {}, deps: ProfileDeps = {}): string {
+  const host = deps.hostPlatform ?? process.platform;
+  const platform = c.platform ?? host;
   const env = c.env ?? process.env;
   const p = platform === 'win32' ? path.win32 : path.posix;
 
-  // Ground truth, only for real CLI use on Windows (tests inject c.platform).
-  if (platform === 'win32' && c.platform === undefined && process.platform === 'win32') {
-    const real = queryRealPowerShellProfile();
+  if (shouldAskPowerShell(c, host)) {
+    const real = (deps.queryProfile ?? queryRealPowerShellProfile)();
     if (real) return real;
   }
 
   // Fallback: prefer the OneDrive-redirected Documents folder when present.
-  const root = platform === 'win32' && env.OneDrive ? env.OneDrive : homeDir(c);
+  // homeDir is given the platform we actually resolved, not left to work it out
+  // again: it picks USERPROFILE or HOME by platform, and disagreeing here would
+  // join a POSIX home with Windows separators.
+  const root =
+    platform === 'win32' && env.OneDrive ? env.OneDrive : homeDir({ platform, env });
   return p.join(root, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1');
 }
 

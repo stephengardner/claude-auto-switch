@@ -1,8 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmdirSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  mkdirSync,
+  rmdirSync,
+  existsSync,
+  statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { appendEvent, readEvents, formatEvent, eventsFilePath } from './log.js';
+import { appendEvent, readEvents, formatEvent, eventsFilePath, TRIM_BYTES } from './log.js';
 
 function home(): string {
   return mkdtempSync(path.join(tmpdir(), 'cas-ev-'));
@@ -239,27 +247,43 @@ describe('keeping the file bounded without losing what matters', () => {
     const h = home();
     appendEvent(h, 'session on second', 1000);
     // Enough to pass the byte cap, so the trim actually runs and has to fold.
-    for (let i = 0; i < 3000; i++) appendEvent(h, 'the same complaint repeated at length', 2000 + i);
+    // Long lines rather than many of them: the cap is measured in BYTES, so
+    // 300 fat events cross it exactly as well as 3000 thin ones, and each of
+    // these is a real synchronous write on a real disk.
+    const storm = `the same complaint repeated at length ${'.'.repeat(200)}`;
+    for (let i = 0; i < 300; i++) appendEvent(h, storm, 2000 + i);
     appendEvent(h, 'maxed hit its limit', 9000);
 
     const events = readEvents(h, 50);
     const messages = events.map((r) => r.msg);
     expect(messages).toContain('session on second');
     expect(messages).toContain('maxed hit its limit');
-    expect(events.find((r) => r.msg === 'the same complaint repeated at length')?.count).toBeGreaterThan(100);
+    expect(events.find((r) => r.msg === storm)?.count).toBeGreaterThan(100);
   });
 
   it('does not let the file grow without limit', () => {
     const h = home();
-    for (let i = 0; i < 3000; i++) appendEvent(h, `distinct event number ${i} with some padding`, 1000 + i);
+    // Fat events, few of them: the cap is a byte count, so this crosses it the
+    // same way while doing a tenth of the disk work. Every one of these is a
+    // synchronous write, and 3000 of them timed out whenever the rest of the
+    // suite was competing for the disk.
+    const padding = '.'.repeat(200);
+    const written = 300;
+    for (let i = 0; i < written; i++) appendEvent(h, `distinct event number ${i} ${padding}`, 1000 + i);
     const lines = readFileSync(eventsFilePath(h), 'utf8').split('\n').filter((l) => l.trim());
+    // A trim definitely happened: fewer lines survive than were appended.
+    expect(lines.length).toBeLessThan(written);
+    // The bound that actually exists is a BYTE bound, and the size is checked
+    // after every append, so the live file is never left over it. A line count
+    // alone would pass with records of any size.
+    expect(statSync(eventsFilePath(h)).size).toBeLessThanOrEqual(TRIM_BYTES);
     // Trimming happens in bulk, so the file sits between the cap and the trim
     // threshold rather than exactly at the cap.
     expect(lines.length).toBeLessThanOrEqual(2000);
     // The most recent events are the ones kept.
     expect(readEvents(h, 2).map((r) => r.msg)).toEqual([
-      'distinct event number 2998 with some padding',
-      'distinct event number 2999 with some padding',
+      `distinct event number ${written - 2} ${padding}`,
+      `distinct event number ${written - 1} ${padding}`,
     ]);
   });
 

@@ -23,6 +23,7 @@ import { codes, paint } from '../ui/style.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { ClaudeInvoker } from '../invoker.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
+import { settingsPath, readSettings, isOurs } from '../statusline/settings-install.js';
 
 export interface DoctorCheck {
   name: string;
@@ -167,6 +168,57 @@ export function auditShim(context: CliContext, deps: DoctorDeps = {}): DoctorChe
     };
   }
   return { name: 'terminal-shim', ok: true, detail: 'typing `claude` runs through ccx' };
+}
+
+/**
+ * Is ccx visible while Claude is running?
+ *
+ * The shim is transparent by design, so nothing on screen says ccx is on. The
+ * status line is the one place that can, which makes "is it wired up" worth
+ * reporting rather than leaving someone to wonder whether switching is
+ * happening at all.
+ */
+export function auditStatusline(context: CliContext): DoctorCheck {
+  const file = (() => {
+    try {
+      return settingsPath(context.ctx);
+    } catch {
+      return null;
+    }
+  })();
+  if (!file) return { name: 'statusline', ok: true, detail: 'no Claude settings to check (skipped)' };
+
+  const read = readSettings(file);
+  if (!read.ok) {
+    return {
+      name: 'statusline',
+      ok: false,
+      // Unreadable covers more than bad syntax: no permission to read the
+      // file, or valid JSON that is not a settings object. Naming only one
+      // cause would send someone looking in the wrong place.
+      detail: `${file} could not be read as settings, so ccx will not change it`,
+      fix: ['make the file readable and a valid JSON object, then run: ccx on'],
+    };
+  }
+  if (isOurs(read.settings.statusLine)) {
+    return { name: 'statusline', ok: true, detail: 'Claude shows your account and remaining room' };
+  }
+  if (read.settings.statusLine) {
+    return {
+      name: 'statusline',
+      ok: true,
+      note: true,
+      detail: 'your own status line is in place; ccx is not shown in it',
+      fix: ['ccx on'],
+    };
+  }
+  return {
+    name: 'statusline',
+    ok: true,
+    note: true,
+    detail: 'nothing on screen says which account you are on',
+    fix: ['ccx on'],
+  };
 }
 
 function samePath(a: string, b: string): boolean {
@@ -383,6 +435,7 @@ export async function runDoctor(
   const checks = [
     auditConfig(context),
     auditShim(context, deps),
+    auditStatusline(context),
     auditSharedHistory(context),
     auditSessionAccount({
       sessionDir: currentSessionDir(context),
@@ -406,6 +459,7 @@ export async function runDoctor(
 const LABELS: Record<string, string> = {
   config: 'config',
   'terminal-shim': 'terminal',
+  statusline: 'status line',
   'shared-history': 'history',
   'session-account': 'session',
   accounts: 'accounts',

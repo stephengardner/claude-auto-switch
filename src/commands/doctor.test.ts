@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -10,6 +10,7 @@ import {
   auditCaps,
   doctorCommand,
 } from './doctor.js';
+import { settingsPath } from '../statusline/settings-install.js';
 import { addAccount } from '../accounts/registry.js';
 import { installShim } from '../shell/install-shim.js';
 import { loadConfig } from '../config/config.js';
@@ -27,6 +28,17 @@ function context(lines: string[] = []): CliContext {
     json: false,
     quiet: false,
   };
+}
+
+/** Put ccx into this sandbox's Claude status line, the way `ccx on` would. */
+function wireStatusline(c: CliContext): void {
+  const file = settingsPath(c.ctx);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(
+    file,
+    JSON.stringify({ statusLine: { type: 'command', command: 'ccx statusline' } }),
+    'utf8',
+  );
 }
 
 describe('auditGitSafety', () => {
@@ -195,9 +207,61 @@ describe('doctorCommand', () => {
 
   it('passes with a clean tracked-file list and a resolvable claude', async () => {
     const lines: string[] = [];
-    const code = await doctorCommand(context(lines), cleanDeps);
+    const c = context(lines);
+    wireStatusline(c);
+    const code = await doctorCommand(c, cleanDeps);
     expect(code).toBe(0);
     expect(lines.join('\n')).toContain('everything is in order');
+  });
+
+  it('leaves a status line of your own alone, and says so', async () => {
+    const lines: string[] = [];
+    const c = context(lines);
+    const file = settingsPath(c.ctx);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ statusLine: { type: 'command', command: 'starship' } }));
+
+    const code = await doctorCommand(c, cleanDeps);
+    expect(code).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('your own status line is in place');
+    expect(out).toContain('ccx on');
+    // And doctor only LOOKS. A checkup that quietly rewrote the settings it was
+    // reporting on would be a far worse bug than the one it is reporting.
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
+      statusLine: { type: 'command', command: 'starship' },
+    });
+  });
+
+  it('FAILS when the settings file cannot be read as settings', async () => {
+    // ccx refuses to write over a file it cannot parse, so the status line will
+    // never appear until someone fixes the file. That is a real problem, not a
+    // note, and the report has to say so rather than quietly staying silent.
+    for (const contents of ['{ not json at all', '[1, 2, 3]']) {
+      const lines: string[] = [];
+      const c = context(lines);
+      const file = settingsPath(c.ctx);
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, contents, 'utf8');
+
+      const code = await doctorCommand(c, cleanDeps);
+      expect(code).toBe(1);
+      const out = lines.join('\n');
+      expect(out).toContain('could not be read as settings');
+      expect(out).toContain('valid JSON object');
+    }
+  });
+
+  it('mentions the status line when nothing on screen says ccx is running', async () => {
+    // The shim is transparent, so an unwired status line means there is no
+    // sign at all that account switching is happening. Worth saying, without
+    // calling it a failure: it is a missing convenience, not a broken tool.
+    const lines: string[] = [];
+    const code = await doctorCommand(context(lines), cleanDeps);
+    expect(code).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('status line');
+    expect(out).toContain('ccx on');
   });
 
   it('reports the problem and how to fix it when something is wrong', async () => {
