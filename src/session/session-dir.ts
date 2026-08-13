@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { isLink } from '../daemon/junction.js';
 import { defaultClaudeRoot } from './shared-root.js';
@@ -128,7 +129,12 @@ export function changedFromUser(
 ): Record<string, unknown> {
   const changed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(session)) {
-    if (JSON.stringify(value) !== JSON.stringify(user[key])) changed[key] = value;
+    // Deep equality, not serialised text: Claude rewrites this file and can
+    // emit the same object with its keys in a different order. Comparing the
+    // text would call that a change and make it a permanent override, which is
+    // the very thing being fixed here. Array order still counts, because the
+    // order of hooks is part of what they mean.
+    if (!isDeepStrictEqual(value, user[key])) changed[key] = value;
   }
   return changed;
 }

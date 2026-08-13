@@ -259,6 +259,52 @@ describe('carrying only what a session CHANGED', () => {
     expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'opus' });
   });
 
+  it('does not call a setting changed just because its keys moved', () => {
+    // Claude rewrites this file, and nothing promises it writes the keys back
+    // in the order it read them. Comparing the serialised text would call an
+    // identical object a change and pin it as an override forever, which is
+    // the same bug in miniature.
+    const { ctx, root, claudeSettings } = home();
+    writeUserSettings(claudeSettings, {
+      hooks: { PreToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'x' }] }] },
+      permissions: { allow: ['Bash(ls:*)'], deny: [] },
+    });
+    const dir = path.join(root, '4747');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, 'settings.json'),
+      JSON.stringify({
+        // Same content throughout, every object's keys written in a different
+        // order.
+        permissions: { deny: [], allow: ['Bash(ls:*)'] },
+        hooks: { PreToolUse: [{ hooks: [{ command: 'x', type: 'command' }], matcher: 'Edit' }] },
+      }),
+      'utf8',
+    );
+
+    sweepDeadSessionDirs(ctx, { isAlive: () => false });
+    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({});
+  });
+
+  it('DOES notice when an array is reordered, because order is meaning', () => {
+    // Hooks run in order, so two lists with the same entries in a different
+    // order are two different configurations.
+    const { ctx, root, claudeSettings } = home();
+    writeUserSettings(claudeSettings, { hooks: { Stop: [{ command: 'a' }, { command: 'b' }] } });
+    const dir = path.join(root, '4848');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, 'settings.json'),
+      JSON.stringify({ hooks: { Stop: [{ command: 'b' }, { command: 'a' }] } }),
+      'utf8',
+    );
+
+    sweepDeadSessionDirs(ctx, { isAlive: () => false });
+    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({
+      hooks: { Stop: [{ command: 'b' }, { command: 'a' }] },
+    });
+  });
+
   it('compares by VALUE, so an unchanged nested setting is not carried', () => {
     const { ctx, root, claudeSettings } = home();
     const hooks = { PreToolUse: [{ matcher: 'Edit', hooks: [{ command: 'x' }] }] };
