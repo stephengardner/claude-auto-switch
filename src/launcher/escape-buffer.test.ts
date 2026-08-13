@@ -125,6 +125,62 @@ describe('createEscapeBuffer', () => {
     expect(flushed).toEqual([ESC]);
   });
 
+  it('NEVER forwards an unfinished sequence when it gives up waiting', () => {
+    // The bug this file was written to prevent, reintroduced by the file
+    // itself. Holding "ESC[<35;101" and then flushing it wrote half a report
+    // to the reader; the rest arrived next chunk and ";10M" appeared in the
+    // input box. Once per pause in mouse movement, all day.
+    const { buffer, flushed, tick } = buffered();
+    expect(buffer.push(`${ESC}[<35;101`)).toBe('');
+    tick(); // the wait runs out
+    expect(flushed).toEqual([]); // dropped, not forwarded
+    expect(buffer.abandoned()).toBe(1);
+  });
+
+  it('does not leave the ORPHANED TAIL to arrive as typed text', () => {
+    // The other half of the same failure: after the fragment is abandoned, the
+    // remainder of that report must not be forwarded either, or the reader
+    // shows ";10M" exactly as before.
+    const { buffer, tick } = buffered();
+    buffer.push(`${ESC}[<35;101`);
+    tick();
+    // Whatever completes the abandoned report is inert on its own; what
+    // matters is that the NEXT complete report still gets through intact.
+    const rest = buffer.push(`;10M${ESC}[<35;102;11M`);
+    expect(rest).not.toContain(`${ESC}[<35;101`);
+    expect(rest.endsWith(`${ESC}[<35;102;11M`)).toBe(true);
+  });
+
+  it('still lets a lone Escape through, which is why the wait exists at all', () => {
+    const { buffer, flushed, tick } = buffered();
+    buffer.push(ESC);
+    tick();
+    expect(flushed).toEqual([ESC]);
+    expect(buffer.abandoned()).toBe(0);
+  });
+
+  it('forgets a held fragment when the reader changes', () => {
+    // An account swap hands the keyboard to a new session. A fragment held for
+    // the old one is meaningless to the new one, and flushing it into a fresh
+    // input box is the same stray characters by another route.
+    const { buffer } = buffered();
+    buffer.push(`${ESC}[<35;101`);
+    buffer.reset();
+    expect(buffer.push('hello')).toBe('hello');
+    expect(buffer.abandoned()).toBe(1);
+  });
+
+  it('hands on a real Escape at shutdown, but never a fragment', () => {
+    const a = buffered();
+    a.buffer.push(ESC);
+    expect(a.buffer.drain()).toBe(ESC);
+
+    const b = buffered();
+    b.buffer.push(`${ESC}[<35;101`);
+    expect(b.buffer.drain()).toBe('');
+    expect(b.buffer.abandoned()).toBe(1);
+  });
+
   it('does not release a held sequence once the rest has arrived', () => {
     const { buffer, flushed, tick } = buffered();
     buffer.push(`${ESC}[<35`);
@@ -140,9 +196,14 @@ describe('createEscapeBuffer', () => {
   });
 
   it('gives up what it holds on drain, and stops the timer', () => {
+    // Drain used to hand the FRAGMENT back, and the caller wrote it on. That
+    // is the same half-a-sequence that put stray characters on the screen, so
+    // a fragment is now dropped here and only a real Escape survives. The
+    // timer must still stop either way, or something fires after shutdown.
     const { buffer, flushed, tick } = buffered();
     buffer.push(`${ESC}[<35`);
-    expect(buffer.drain()).toBe(`${ESC}[<35`);
+    expect(buffer.drain()).toBe('');
+    expect(buffer.abandoned()).toBe(1);
     tick();
     expect(flushed).toEqual([]); // drained, so nothing fires afterwards
   });

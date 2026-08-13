@@ -9,12 +9,27 @@
  *
  *     35;112;43M35;125;50M
  *
- * which is two mouse-motion reports with their `ESC[<` prefixes gone. Motion
- * tracking produces a flood of them, so it happened again and again.
+ * which is two mouse reports with their `ESC[<` prefixes gone. Mouse tracking
+ * produces a flood of them, so it happened again and again.
  *
  * So a chunk that ends part-way through a sequence is held back until the rest
- * arrives. A lone Escape keypress looks identical to the start of a sequence, so
- * anything held is flushed after a short wait rather than being kept forever.
+ * arrives. A lone Escape keypress looks identical to the START of a sequence,
+ * so something has to give up waiting eventually.
+ *
+ * WHAT IS GIVEN UP MATTERS, and getting it wrong reintroduced the whole bug.
+ * The first version flushed whatever it was holding, which meant an unfinished
+ * `ESC[<35;101` was written on its own; the reader consumed the prefix, the
+ * rest arrived in the next chunk, and `;10M` appeared in the input box. The
+ * buffer built to prevent split sequences was splitting them itself, once per
+ * pause in mouse movement. Measured against the shipped build:
+ *
+ *     FLUSH  "\x1b[<35;101"     <- forwarded on its own
+ *     READY  ";10M\x1b[<35;102;11M"   <- and the tail lands as text
+ *
+ * So only a HELD ESCAPE THAT COULD BE A KEYPRESS is ever flushed. Anything
+ * already known to be an unfinished sequence is waited on, and dropped if it
+ * never completes: a truncated mouse report is worth nothing, and forwarding
+ * it can only corrupt what the reader shows.
  */
 
 const ESC = '\x1b';
@@ -72,9 +87,32 @@ function isComplete(seq: string): boolean {
   return true;
 }
 
+/**
+ * Could this held text be a real Escape KEYPRESS rather than the start of a
+ * sequence the terminal has not finished sending?
+ *
+ * A bare Escape can be either, and waiting forever would swallow the key. Once
+ * an introducer has arrived (`ESC [`, `ESC O`, `ESC ]`, ...) it is no longer
+ * ambiguous: the terminal is mid-sequence, and what is held is a fragment that
+ * must never reach the reader as text.
+ *
+ * `ESC` followed by an ordinary character is Alt+key, which is whole already
+ * and never reaches this question.
+ */
+export function couldBeEscapeKey(held: string): boolean {
+  return held === ESC;
+}
+
 export interface EscapeBufferOptions {
-  /** How long to hold a part-sequence before assuming it was a lone Escape. */
+  /** How long to hold a lone Escape before treating it as the key. */
   flushAfterMs?: number;
+  /**
+   * How long to wait for an unfinished SEQUENCE before giving up on it. A real
+   * one completes within microseconds, so anything still unfinished this much
+   * later is debris; it is dropped rather than forwarded, because forwarding a
+   * truncated sequence is what puts stray characters on the screen.
+   */
+  abandonAfterMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
 }
@@ -84,6 +122,17 @@ export interface EscapeBuffer {
   push(chunk: string): string;
   /** Give up anything held and return it, for shutdown. */
   drain(): string;
+  /**
+   * Forget anything held, forwarding nothing.
+   *
+   * Used when the reader changes (an account swap starts a new session): a
+   * fragment held for the old one is meaningless to the new one, and flushing
+   * it into a fresh input box is the same stray-characters bug by another
+   * route.
+   */
+  reset(): void;
+  /** How many fragments have been abandoned, for diagnostics. */
+  abandoned(): number;
 }
 
 /**
@@ -97,11 +146,13 @@ export function createEscapeBuffer(
   options: EscapeBufferOptions = {},
 ): EscapeBuffer {
   const waitMs = options.flushAfterMs ?? 25;
+  const abandonMs = options.abandonAfterMs ?? 250;
   const setTimer = options.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
   const clearTimer = options.clearTimer ?? ((h) => clearTimeout(h as NodeJS.Timeout));
 
   let pending = '';
   let timer: unknown = null;
+  let abandonedCount = 0;
 
   const stopTimer = (): void => {
     if (timer !== null) {
@@ -116,12 +167,24 @@ export function createEscapeBuffer(
       const { ready, pending: held } = splitTrailingPartial(pending + chunk);
       pending = held;
       if (pending) {
-        timer = setTimer(() => {
-          const held2 = pending;
-          pending = '';
-          timer = null;
-          if (held2) onFlush(held2);
-        }, waitMs);
+        // Two different waits, because two different things are being waited
+        // for. A lone Escape is a KEY and must be delivered. An unfinished
+        // sequence is DEBRIS once it is late, and delivering it is the bug.
+        const isKey = couldBeEscapeKey(pending);
+        timer = setTimer(
+          () => {
+            const held2 = pending;
+            pending = '';
+            timer = null;
+            if (!held2) return;
+            if (couldBeEscapeKey(held2)) {
+              onFlush(held2);
+              return;
+            }
+            abandonedCount += 1;
+          },
+          isKey ? waitMs : abandonMs,
+        );
       }
       return ready;
     },
@@ -129,7 +192,18 @@ export function createEscapeBuffer(
       stopTimer();
       const held = pending;
       pending = '';
-      return held;
+      // Only a real key is worth handing on at shutdown; a fragment is not.
+      if (couldBeEscapeKey(held)) return held;
+      if (held) abandonedCount += 1;
+      return '';
+    },
+    reset(): void {
+      stopTimer();
+      if (pending) abandonedCount += 1;
+      pending = '';
+    },
+    abandoned(): number {
+      return abandonedCount;
     },
   };
 }

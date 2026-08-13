@@ -143,8 +143,19 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         }, 400)
       : null;
 
+    // Claimed BEFORE the child's output is subscribed to, because that
+    // subscription reads it: the child can write the moment it starts, and a
+    // relay that is not there yet would miss the very mode declarations it
+    // exists to watch for.
+    const ownsInput = options.input === undefined;
+    const input = options.input ?? openTerminalInput();
+
     const dataSub = child.onData((data) => {
       process.stdout.write(data);
+      // The child's own words are the only honest record of which mouse modes
+      // it has asked the terminal for, and every byte of them passes here. The
+      // input relay uses that to refuse reports this child cannot have wanted.
+      input.observeChildOutput(data);
       if (options.debugLog) captured += data;
       if (capped || switching) return;
       totalOutput += data.length;
@@ -202,10 +213,9 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         });
     });
 
-    // Borrow the keyboard from the run's owner (or claim it just for this
-    // session when running standalone, e.g. in tests).
-    const ownsInput = options.input === undefined;
-    const input = options.input ?? openTerminalInput();
+    // Borrow the keyboard from the run's owner (or the one claimed above when
+    // running standalone, e.g. in tests). Attaching is what starts keystrokes
+    // flowing to THIS child, and it resets anything held for the last one.
     const detachInput = input.attach((text) => child.write(text));
 
     const onResize = (): void => {
