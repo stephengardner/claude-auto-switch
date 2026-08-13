@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.44.0]
+
+### Fixed
+
+- **A ccx session no longer freezes your Claude settings.** When a session
+  ended, ccx copied its whole settings file aside so a `/model` pin would
+  survive into the next one. That copy wins over `~/.claude/settings.json`,
+  so copying everything froze every setting you happened to have at that
+  moment: editing the real file changed nothing inside a ccx session, and the
+  frozen value could not be removed by any normal means.
+
+  Found the hard way, with `"tui": "fullscreen"` stuck on a machine and
+  surviving every edit to the real settings, because a copy from an old
+  session kept putting it back. Sixteen keys were overriding that file,
+  including hooks, permissions and a status line captured before `ccx on`
+  wrapped it.
+
+  Only the keys that actually differ from your real settings are carried now.
+  A `/model` pin still sticks, a setting you turn off actually turns off, and
+  a hook you add later reaches your next session. It also repairs itself: once
+  the real settings agree, the override drops out on its own.
+
 ## [1.43.1]
 
 ### Added
