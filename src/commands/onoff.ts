@@ -79,6 +79,26 @@ function statuslineMessage(result: ReturnType<typeof installStatusline>): string
   }
 }
 
+/**
+ * Every outcome gets a line, including the ones where nothing moved. Silence
+ * after `ccx off` reads as success, and a status line that is still there is
+ * the opposite of that.
+ */
+function removalMessage(result: ReturnType<typeof removeStatusline>): string {
+  switch (result.outcome) {
+    case 'removed':
+      return 'claude: status line removed';
+    case 'restored':
+      return 'claude: your previous status line is back';
+    case 'untouched':
+      return 'claude: status line is not ccx’s, left as it is';
+    case 'unreadable':
+      return `claude: left ${result.file} alone, it is not valid JSON`;
+    default:
+      return `claude: could not write ${result.file || 'settings.json'}; remove the statusLine entry by hand`;
+  }
+}
+
 /** Remove the shim from the shell, and ccx from any installed editors. */
 export function offCommand(context: CliContext, options: ShimOptions = {}): number {
   const { profilePath } = resolveTarget(context, options);
@@ -86,10 +106,7 @@ export function offCommand(context: CliContext, options: ShimOptions = {}): numb
   context.out(result === 'removed' ? `terminal: shim removed from ${profilePath}` : `terminal: no shim found`);
 
   if (options.statusline !== false) {
-    const line = removeStatusline(context.ctx);
-    if (line.outcome === 'removed') context.out('claude: status line removed');
-    else if (line.outcome === 'restored') context.out('claude: your previous status line is back');
-    else if (line.outcome === 'unreadable') context.out(`claude: left ${line.file} alone, it is not valid JSON`);
+    context.out(removalMessage(removeStatusline(context.ctx)));
   }
 
   if (options.editor !== false) {

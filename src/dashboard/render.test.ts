@@ -191,6 +191,38 @@ describe('renderDashboard (plain)', () => {
     }
   });
 
+  it('fits the typing box, the confirmation and the empty screen too', () => {
+    // Every state of the screen, not just the table. The text someone TYPES is
+    // the most likely of all to run past the edge, because it grows keystroke
+    // by keystroke while the frame stays the same size.
+    const long = 'x'.repeat(200);
+    const states = [
+      { label: 'typing', options: { prompt: { label: 'new name:', text: long } } },
+      { label: 'typing error', options: { prompt: { label: 'new name:', text: 'n', error: long } } },
+      { label: 'confirming', options: { confirm: long } },
+      { label: 'a notice', options: { notice: long } },
+    ];
+    for (const width of [92, 64, 40]) {
+      for (const state of states) {
+        const out = renderDashboard(snapshot([account({ name: 'work' })]), {
+          ...opts,
+          width,
+          interactive: true,
+          ...state.options,
+        });
+        for (const line of out.split('\n')) {
+          expect(line.length, `${state.label} at ${width}: ${line}`).toBeLessThanOrEqual(width);
+        }
+      }
+      // Nothing added yet: the invitation to add one still has to fit.
+      const empty = renderDashboard(snapshot([]), { ...opts, width, interactive: true });
+      for (const line of empty.split('\n')) {
+        expect(line.length, `empty at ${width}: ${line}`).toBeLessThanOrEqual(width);
+      }
+      expect(empty).toContain('no accounts yet');
+    }
+  });
+
   it('gives up the bars before it gives up the numbers', () => {
     // A row of bare percentages is plainer; a wrapped row is useless. So the
     // elastic part goes first and the facts stay.

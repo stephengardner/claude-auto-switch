@@ -1,4 +1,16 @@
-import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+  mkdirSync,
+  openSync,
+  writeSync,
+  fsyncSync,
+  closeSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
 import path from 'node:path';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { configHome } from '../config/paths.js';
@@ -37,11 +49,18 @@ export type InstallPlan =
   /** Already ours. No write needed. */
   | { kind: 'already' };
 
+/**
+ * Anchored on purpose. A command like `echo ccx statusline` is the user's, and
+ * a substring search would claim it: `ccx on` would replace it and `ccx off`
+ * would delete it.
+ */
+const OURS = /^ccx statusline(?:\s|$)/;
+
 /** True when this value is a status line ccx installed (wrapped or not). */
 export function isOurs(value: unknown): boolean {
   if (typeof value !== 'object' || value === null) return false;
   const command = (value as { command?: unknown }).command;
-  return typeof command === 'string' && command.includes(CCX_COMMAND);
+  return typeof command === 'string' && OURS.test(command.trim());
 }
 
 /** Shell-quote a command so wrapping someone's line survives spaces and quotes. */
@@ -148,9 +167,35 @@ export function readSettings(file: string): ReadResult {
   }
 }
 
+let tempCounter = 0;
+
+/**
+ * Replace the settings file in one step.
+ *
+ * Writing in place truncates the real file first, so a failure part way through
+ * leaves half a settings file: no hooks, no permissions, and JSON that ccx
+ * itself would then refuse to touch. Writing a complete temporary file beside
+ * it, flushing it to disk, then renaming it over the top means the file is
+ * either the old one or the new one at every instant.
+ */
 function writeSettings(file: string, settings: Record<string, unknown>): void {
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+  const dir = path.dirname(file);
+  mkdirSync(dir, { recursive: true });
+  const temp = path.join(dir, `.settings.json.ccx-${process.pid}-${tempCounter++}.tmp`);
+  try {
+    const handle = openSync(temp, 'w');
+    try {
+      writeSync(handle, `${JSON.stringify(settings, null, 2)}\n`, null, 'utf8');
+      fsyncSync(handle);
+    } finally {
+      closeSync(handle);
+    }
+    renameSync(temp, file);
+  } catch (error) {
+    // The original survived; a stray temp file next to it should not.
+    rmSync(temp, { force: true });
+    throw error;
+  }
 }
 
 function readBackup(c: PathCtx): unknown {
@@ -163,13 +208,28 @@ function readBackup(c: PathCtx): unknown {
   }
 }
 
-function writeBackup(c: PathCtx, value: unknown): void {
+/** Save what we displaced. Reports failure, because it decides whether we go on. */
+function writeBackup(c: PathCtx, value: unknown): boolean {
   try {
     const file = backupPath(c);
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    return true;
   } catch {
-    /* the status line still works without a restore point */
+    return false;
+  }
+}
+
+/**
+ * Drop the restore point. Called whenever there is nothing left to restore, so
+ * a backup from an earlier install can never reappear as someone's status line
+ * long after they stopped using it.
+ */
+function clearBackup(c: PathCtx): void {
+  try {
+    rmSync(backupPath(c), { force: true });
+  } catch {
+    /* harmless once the settings no longer point at ours */
   }
 }
 
@@ -195,8 +255,15 @@ export function installStatusline(c: PathCtx = {}): { outcome: InstallOutcome; f
   const plan = planInstall(read.settings);
   if (plan.kind === 'already') return { outcome: 'already', file };
 
+  // Save the line we are about to displace BEFORE displacing it. Wrapping with
+  // no restore point saved would mean `ccx off` could never give it back.
+  if (plan.kind === 'wrapped' && !writeBackup(c, plan.displaced)) {
+    return { outcome: 'failed', file };
+  }
+  // Nothing displaced means nothing to restore, and any older backup is stale.
+  if (plan.kind === 'installed') clearBackup(c);
+
   try {
-    if (plan.kind === 'wrapped') writeBackup(c, plan.displaced);
     writeSettings(file, plan.settings);
   } catch {
     return { outcome: 'failed', file };
@@ -226,5 +293,9 @@ export function removeStatusline(c: PathCtx = {}): { outcome: RemoveOutcome; fil
   } catch {
     return { outcome: 'failed', file };
   }
+  // The saved line is back where it belongs, so the copy has done its job.
+  // Keeping it would let a later install-and-remove restore a line the user
+  // moved on from cycles ago.
+  clearBackup(c);
   return { outcome: plan.kind, file };
 }

@@ -341,7 +341,7 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // ccx, and the screen should say what to do rather than showing a header
   // with nothing under it and leaving them to guess whether it is broken.
   if (accounts.length === 0) {
-    lines.push(paint('  no accounts yet. add one with:  ccx add <name>', codes.yellow, color));
+    lines.push(paint(fit('  no accounts yet. add one with:  ccx add <name>', maxLine), codes.yellow, color));
     lines.push(rule);
   }
 
@@ -382,16 +382,16 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // While a name is being typed, the footer explains that box instead of the
   // normal keys, because the normal keys do not apply until it is finished.
   if (options.prompt) {
-    lines.push(`  ${options.prompt.label} ${options.prompt.text}█`);
+    lines.push(`${fit(`  ${options.prompt.label} ${options.prompt.text}`, Math.max(0, maxLine - 1))}█`);
     if (options.prompt.error) {
-      lines.push(paint(`  ${options.prompt.error}`, codes.yellow, color));
+      lines.push(paint(fit(`  ${options.prompt.error}`, maxLine), codes.yellow, color));
     }
-    lines.push(paint('  enter confirm  ·  esc cancel', codes.dim, color));
+    lines.push(paint(fit('  enter confirm  ·  esc cancel', maxLine), codes.dim, color));
   } else if (options.confirm) {
     // Anything else still cancels, and that is deliberate: l sits next to j and
     // k, so a stray press while moving is likely, and the next keystroke after
     // it should not sign anyone in.
-    lines.push(paint('  enter or y confirm  ·  any other key cancels', codes.dim, color));
+    lines.push(paint(fit('  enter or y confirm  ·  any other key cancels', maxLine), codes.dim, color));
   } else if (options.interactive) {
     // The hints drop off the end rather than wrapping. The ones that survive
     // are the ones you need most, in that order, so a narrow terminal loses

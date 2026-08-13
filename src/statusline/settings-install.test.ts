@@ -92,9 +92,27 @@ describe('planning a status line install', () => {
 
   it('recognizes ours and only ours', () => {
     expect(isOurs({ command: CCX_COMMAND })).toBe(true);
+    expect(isOurs({ command: 'ccx statusline --wrap "x"' })).toBe(true);
+    expect(isOurs({ command: '  ccx statusline  ' })).toBe(true);
     expect(isOurs({ command: 'starship prompt' })).toBe(false);
     expect(isOurs('ccx statusline')).toBe(false);
     expect(isOurs(null)).toBe(false);
+  });
+
+  it('does NOT claim a command that merely mentions ccx', () => {
+    // A substring match would call these ours, and then `ccx on` replaces the
+    // user's command and `ccx off` deletes it. The name has to be the command,
+    // not a word inside one.
+    for (const command of [
+      'echo ccx statusline',
+      'my-prompt && ccx statusline',
+      'ccx statusliner',
+      '/usr/local/bin/ccx statusline',
+    ]) {
+      expect(isOurs({ command })).toBe(false);
+      expect(planInstall({ statusLine: { type: 'command', command } }).kind).toBe('wrapped');
+      expect(planRemoval({ statusLine: { type: 'command', command } }).kind).toBe('untouched');
+    }
   });
 });
 
@@ -240,6 +258,50 @@ describe('installing and removing against a real file', () => {
     writeFileSync(settingsPath(ctx), JSON.stringify({ statusLine: mine }), 'utf8');
     expect(removeStatusline(ctx).outcome).toBe('untouched');
     expect(settings().statusLine).toEqual(mine);
+  });
+
+  it('does not resurrect a status line from an EARLIER install cycle', () => {
+    // wrap starship, remove it, then decide you want no status line at all.
+    // A backup left lying around would put starship back the next time ccx was
+    // installed and removed, long after the user was done with it.
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    writeFileSync(
+      settingsPath(ctx),
+      JSON.stringify({ statusLine: { type: 'command', command: 'starship' } }),
+      'utf8',
+    );
+    expect(installStatusline(ctx).outcome).toBe('wrapped');
+    expect(removeStatusline(ctx).outcome).toBe('restored');
+
+    writeFileSync(settingsPath(ctx), JSON.stringify({}), 'utf8');
+    expect(installStatusline(ctx).outcome).toBe('installed');
+    expect(removeStatusline(ctx).outcome).toBe('removed');
+    expect('statusLine' in settings()).toBe(false);
+  });
+
+  it('leaves the file untouched rather than wrapping with no way back', () => {
+    // If the restore point cannot be saved, wrapping would strand the user's
+    // status line inside a --wrap argument with nothing able to undo it.
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const before = JSON.stringify({ statusLine: { type: 'command', command: 'starship' } });
+    writeFileSync(settingsPath(ctx), before, 'utf8');
+    // Occupy the backup PATH with a directory so writing the file cannot work.
+    mkdirSync(path.join(home, '.claude-auto-switch', 'statusline-backup.json'), {
+      recursive: true,
+    });
+
+    expect(installStatusline(ctx).outcome).toBe('failed');
+    expect(readFileSync(settingsPath(ctx), 'utf8')).toBe(before);
+  });
+
+  it('never leaves a half-written settings file behind', () => {
+    // The replacement is a rename over the top, so a reader either sees the old
+    // file or the new one. Nothing temporary is left in ~/.claude either way.
+    installStatusline(ctx);
+    const claudeDir = path.join(home, '.claude');
+    expect(readdirSync(claudeDir)).toEqual(['settings.json']);
+    removeStatusline(ctx);
+    expect(readdirSync(claudeDir)).toEqual(['settings.json']);
   });
 
   it('still removes cleanly when the backup file is gone', () => {
