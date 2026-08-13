@@ -22,7 +22,7 @@ import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { describeNextUp } from '../dashboard/next-up.js';
-import { usableCapacity } from '../usage/usable-capacity.js';
+import { usableCapacity, type CapacityWindows } from '../usage/usable-capacity.js';
 import { activeModelCaps } from '../ledger/ledger.js';
 import { spentKey } from '../usage/rotation-plan.js';
 import { normalizeModel } from '../usage/model-preference.js';
@@ -126,7 +126,7 @@ export async function dashboardCommand(
   function nextMove(
     ctx: CliContext,
     accounts: Array<{ name: string; enabled: boolean; priority: number }>,
-    usage: Map<string, { models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> }>,
+    usage: Map<string, CapacityWindows>,
     capped: Map<string, number>,
     loggedIn: Set<string>,
     at: number,
@@ -141,10 +141,7 @@ export async function dashboardCommand(
       .filter((a) => a.enabled && loggedIn.has(a.name) && (capped.get(a.name) ?? 0) <= at)
       .sort((x, y) => x.priority - y.priority || x.name.localeCompare(y.name))
       .map((a) => {
-        const capacity = usableCapacity(
-          usage.get(a.name) as Parameters<typeof usableCapacity>[0],
-          at,
-        );
+        const capacity = usableCapacity(usage.get(a.name), at);
         // Both sides keyed the SAME way before they are merged. A cap can be
         // recorded as `claude-fable-5[1m]` while the usage snapshot calls the
         // same window `Fable`, and unmerged those are two keys: the account

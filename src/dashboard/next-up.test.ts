@@ -48,6 +48,21 @@ describe('saying where rotation goes next', () => {
     expect(said).toContain('changed');
   });
 
+  it('skips an account that is out for EVERY model, not just this one', () => {
+    // accountWideOut is set from the usage snapshot when a five-hour or weekly
+    // window is spent, and it means no model on that account will run. A
+    // regression that dropped the flag on the way in would otherwise send the
+    // operator to an account that cannot serve them at all.
+    const said = describeNextUp({
+      candidates: [account('spent', { Fable: 0.1 }, true), account('fine', { Fable: 0.4 })],
+      current: null,
+      modelInUse: 'fable',
+      ...policy,
+    });
+    expect(said).toContain('fine');
+    expect(said).not.toContain('spent');
+  });
+
   it('reports honestly when there is nowhere left to go', () => {
     const said = describeNextUp({
       candidates: [account('a', { Fable: 1, Opus: 1 })],
