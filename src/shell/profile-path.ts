@@ -26,23 +26,37 @@ function queryRealPowerShellProfile(): string | null {
  * `%USERPROFILE%\Documents`) and the two must not be confused. Falls back to an
  * OneDrive-aware computed path. Users can always override with `--profile`.
  */
-export function defaultPowerShellProfile(c: PathCtx = {}): string {
-  const platform = c.platform ?? process.platform;
+export interface ProfileDeps {
+  /** The machine really being run on. Injected so the Windows path is testable anywhere. */
+  hostPlatform?: NodeJS.Platform;
+  /** The `$PROFILE` lookup itself, so a test can prove when it is not used. */
+  queryProfile?: () => string | null;
+}
+
+/**
+ * Should we ask the real PowerShell where its profile is?
+ *
+ * Only when nothing has been injected. Asking PowerShell means asking the real
+ * machine, which cannot know about a context the caller made up: a run pointed
+ * at a temporary home would be handed the developer's own profile and then
+ * edit it. Injecting a platform OR an environment means "this is the machine",
+ * so we stay inside what we were given.
+ *
+ * Exported as its own predicate so this rule is tested on every host, not only
+ * on Windows.
+ */
+export function shouldAskPowerShell(c: PathCtx, host: NodeJS.Platform): boolean {
+  return host === 'win32' && c.platform === undefined && c.env === undefined;
+}
+
+export function defaultPowerShellProfile(c: PathCtx = {}, deps: ProfileDeps = {}): string {
+  const host = deps.hostPlatform ?? process.platform;
+  const platform = c.platform ?? host;
   const env = c.env ?? process.env;
   const p = platform === 'win32' ? path.win32 : path.posix;
 
-  // Ground truth, and ONLY for real CLI use on Windows. Asking PowerShell means
-  // asking the real machine, which ignores any environment the caller injected:
-  // a run pointed at a temporary home would still be handed (and then edit) the
-  // developer's own profile. So injecting either a platform or an environment
-  // opts out of the query and keeps everything inside the world given.
-  if (
-    platform === 'win32' &&
-    c.platform === undefined &&
-    c.env === undefined &&
-    process.platform === 'win32'
-  ) {
-    const real = queryRealPowerShellProfile();
+  if (shouldAskPowerShell(c, host)) {
+    const real = (deps.queryProfile ?? queryRealPowerShellProfile)();
     if (real) return real;
   }
 

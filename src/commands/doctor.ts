@@ -193,8 +193,11 @@ export function auditStatusline(context: CliContext): DoctorCheck {
     return {
       name: 'statusline',
       ok: false,
-      detail: `${file} is not valid JSON, so ccx will not change it`,
-      fix: ['fix the JSON, then run: ccx on'],
+      // Unreadable covers more than bad syntax: no permission to read the
+      // file, or valid JSON that is not a settings object. Naming only one
+      // cause would send someone looking in the wrong place.
+      detail: `${file} could not be read as settings, so ccx will not change it`,
+      fix: ['make the file readable and a valid JSON object, then run: ccx on'],
     };
   }
   if (isOurs(read.settings.statusLine)) {
