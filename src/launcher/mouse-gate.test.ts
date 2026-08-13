@@ -186,6 +186,35 @@ describe('pasted text, which is data and not keys', () => {
   });
 });
 
+describe('a paste marker split across chunks', () => {
+  it('waits for the rest before deciding a boundary', () => {
+    // A chunk ending in "ESC[20" decides nothing. Treating it as ordinary
+    // input filtered the paste that followed; treating it as a paste left
+    // filtering off afterwards. Both drop or leak bytes.
+    const gate = createMouseGate();
+    expect(gate.filterInput(`${ESC}[20`).forward).toBe('');
+    expect(gate.filterInput(`0~${motion(9, 9)}${ESC}[201~`).forward).toBe(
+      `${ESC}[200~${motion(9, 9)}${ESC}[201~`,
+    );
+    // And filtering is back on the moment the paste has closed.
+    expect(gate.filterInput(motion(1, 2)).forward).toBe('');
+  });
+
+  it('waits for the rest of a CLOSING marker too', () => {
+    const gate = createMouseGate();
+    gate.filterInput(`${ESC}[200~content`);
+    expect(gate.filterInput(`${ESC}[201`).forward).toBe('');
+    expect(gate.filterInput('~').forward).toBe(`${ESC}[201~`);
+    expect(gate.filterInput(motion(1, 2)).forward).toBe('');
+  });
+
+  it('releases held bytes that turn out not to be a marker', () => {
+    const gate = createMouseGate();
+    expect(gate.filterInput(`${ESC}[2`).forward).toBe('');
+    expect(gate.filterInput('J').forward).toBe(`${ESC}[2J`); // an ordinary sequence
+  });
+});
+
 describe('a large paste', () => {
   it('is copied in pieces rather than a character at a time', () => {
     // Not a timing assertion: this checks the result is exact for input far

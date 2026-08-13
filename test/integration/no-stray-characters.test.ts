@@ -45,9 +45,12 @@ async function relay() {
     out: (text) => corrections.push(text),
     onUnrequestedReports: (detail) => reports.push(detail),
   });
-  const detach = input.attach((text) => received.push(text));
-  // The child starts and says what it wants, exactly as Claude does.
+  // In THIS order, because that is the order production uses: pty-session
+  // watches the child's output before it attaches the keyboard to it. Attaching
+  // first would hide a regression where attach clears the modes the child has
+  // already declared, and then drops the reports it genuinely asked for.
   input.observeChildOutput(CLAUDE_DECLARES);
+  const detach = input.attach((text) => received.push(text));
   return {
     input,
     detach,

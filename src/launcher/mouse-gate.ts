@@ -218,29 +218,59 @@ export function unfinishedModeTail(text: string): string {
 const PASTE_START = `${ESC}[200~`;
 const PASTE_END = `${ESC}[201~`;
 
+/**
+ * The trailing bytes that might be the start of a paste marker.
+ *
+ * A chunk ending in `ESC[20` decides nothing yet: the next one could make it
+ * the opening marker, in which case what follows is content and must not be
+ * touched. Deciding early gets it wrong in both directions, dropping bytes
+ * from a paste or filtering nothing after one. Bounded by the marker length,
+ * so at most a few bytes ever wait, and only until the next input arrives.
+ */
+export function partialPasteMarker(text: string): string {
+  const longest = Math.min(PASTE_START.length - 1, text.length);
+  for (let length = longest; length > 0; length -= 1) {
+    const tail = text.slice(-length);
+    // A bare Escape is never held. It is a prefix of both markers, but it is
+    // also the Escape KEY, and it is the one thing that legitimately arrives
+    // alone with nothing following: holding it swallowed the keypress.
+    if (tail === ESC) continue;
+    if (PASTE_START.startsWith(tail) || PASTE_END.startsWith(tail)) return tail;
+  }
+  return '';
+}
+
 export function createMouseGate(): MouseGate {
   let modes: MouseModes = NO_MOUSE;
   let carried = '';
   let pasting = false;
+  /** A paste marker seen only in part, waiting for the rest. */
+  let heldMarker = '';
   return {
     observeOutput: (text) => {
       const whole = carried + text;
       modes = applyModeChanges(modes, whole);
       carried = unfinishedModeTail(whole);
     },
-    filterInput: (text) => {
+    filterInput: (input) => {
+      // A marker split across two chunks is held until it resolves, so the
+      // boundary is never decided on half of one.
+      const text = heldMarker + input;
+      heldMarker = partialPasteMarker(text);
+      const body = heldMarker.length > 0 ? text.slice(0, -heldMarker.length) : text;
+
       // Pasted text is DATA. A file that happens to contain the bytes of a
       // mouse report would otherwise be silently edited on its way in, which
       // is a worse bug than the one this file fixes: stray characters are
       // visible, quietly corrupted input is not. The terminal marks the
       // boundaries precisely so this can be got right.
-      if (!pasting && !text.includes(PASTE_START)) {
-        return filterMouseReports(text, modes);
+      if (!pasting && !body.includes(PASTE_START)) {
+        return filterMouseReports(body, modes);
       }
       let forward = '';
       let dropped = 0;
       let unrequestedMotion = false;
-      let rest = text;
+      let rest = body;
       while (rest.length > 0) {
         if (pasting) {
           const end = rest.indexOf(PASTE_END);
@@ -273,6 +303,7 @@ export function createMouseGate(): MouseGate {
       modes = NO_MOUSE;
       carried = '';
       pasting = false;
+      heldMarker = '';
     },
     modes: () => modes,
   };

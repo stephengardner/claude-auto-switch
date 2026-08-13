@@ -203,6 +203,31 @@ describe('createEscapeBuffer', () => {
     expect(buffer.push('M')).toBe('');
   });
 
+  it('leaves typed digits alone when they cannot finish a real report', () => {
+    // "ESC[<35" plus a typed "12M" is not a report: Cb;Cx;Cy needs three
+    // parameters. Counting separators alone ate the "12" and delivered "M",
+    // silently changing what the operator typed.
+    const { buffer, tick } = buffered();
+    buffer.push(`${ESC}[<35`);
+    tick();
+    expect(buffer.push('12M')).toBe('12M');
+  });
+
+  it('leaves a final byte alone when a parameter is EMPTY', () => {
+    // "35;101;" has two separators but no Cy, so an M cannot finish it.
+    const { buffer, tick } = buffered();
+    buffer.push(`${ESC}[<35;101;`);
+    tick();
+    expect(buffer.push('M')).toBe('M');
+  });
+
+  it('leaves everything alone once the tail stops looking like one', () => {
+    const { buffer, tick } = buffered();
+    buffer.push(`${ESC}[<35;101`);
+    tick();
+    expect(buffer.push(';10;99;5M')).toBe(';10;99;5M'); // too many parameters
+  });
+
   it('forgets an expected tail when the reader changes', () => {
     // Otherwise the next thing typed is eaten on behalf of a session that has
     // already ended.

@@ -138,21 +138,19 @@ export interface EscapeBufferOptions {
  */
 interface ExpectedTail {
   /**
-   * How many parameter separators the dropped report has been given so far,
-   * counting the fragment AND anything since. An SGR report carries three
-   * parameters, so until there are two of these it still owes some, and a
-   * lone final byte cannot be its tail: an `M` typed by the operator is then
-   * safe from being eaten.
+   * The parameters the dropped report has been given so far, fragment
+   * included. Kept in full rather than counted, because only the actual text
+   * can say whether what arrives could FINISH a real report: counting
+   * separators alone accepted `35;101;` with an empty Cy, and turned a typed
+   * `12M` into `M` by eating the digits.
    */
-  separatorsSoFar: number;
+  paramsSoFar: string;
 }
 
-/** Parameters are complete at Cb;Cx;Cy, which is two separators. */
-const SGR_SEPARATORS = 2;
-
-function separatorsIn(params: string): number {
-  return params.split(';').length - 1;
-}
+/** A finished SGR report carries exactly Cb;Cx;Cy. */
+const COMPLETE_SGR = /^\d+;\d+;\d+$/;
+/** Still on its way to that: digits and at most two separators, nothing else. */
+const PARTIAL_SGR = /^\d*(?:;\d*){0,2}$/;
 
 /**
  * What, if anything, an abandoned fragment will send along afterwards.
@@ -167,7 +165,7 @@ function separatorsIn(params: string): number {
 export function tailExpectedAfter(fragment: string): ExpectedTail | null {
   const sgr = /^\x1b\[<([0-9;]*)$/.exec(fragment);
   if (!sgr) return null;
-  return { separatorsSoFar: separatorsIn(sgr[1] ?? '') };
+  return { paramsSoFar: sgr[1] ?? '' };
 }
 
 /**
@@ -186,23 +184,22 @@ export function consumeExpectedTail(
   const eaten = /^[0-9;]*[Mm]?/.exec(chunk)?.[0] ?? '';
   if (eaten.length === 0) return { rest: chunk, still: null }; // not ours after all
   const finished = /[Mm]$/.test(eaten);
-  const params = eaten.replace(/[Mm]$/, '');
-  // Counted across the WHOLE report, fragment included: a tail supplying its
-  // last parameter and its final byte together is still one report.
-  const separators = expected.separatorsSoFar + separatorsIn(params);
+  // The WHOLE report, fragment included: a tail supplying its last parameter
+  // and its final byte together is still one report.
+  const params = expected.paramsSoFar + eaten.replace(/[Mm]$/, '');
 
-  if (finished && separators < SGR_SEPARATORS) {
-    // A final byte arriving while the report is still short of parameters is
-    // not this report's tail. It is a keystroke, and it is not ours to take.
-    return params.length === 0
-      ? { rest: chunk, still: null }
-      : { rest: chunk.slice(params.length), still: null };
-  }
-  // Parameters with no final byte yet: the tail is itself split, so keep
-  // waiting, carrying what has been supplied so far.
+  // Nothing is taken unless it could actually finish a real report. Anything
+  // else is the operator typing, and taking a single character of that is a
+  // worse failure than the stray character this exists to prevent: one is
+  // visible, the other is silent.
+  const couldFinish = finished ? COMPLETE_SGR.test(params) : PARTIAL_SGR.test(params);
+  if (!couldFinish) return { rest: chunk, still: null };
+
   return {
     rest: chunk.slice(eaten.length),
-    still: finished ? null : { separatorsSoFar: separators },
+    // Not finished yet: the tail is itself split, so keep waiting with what
+    // has been supplied so far.
+    still: finished ? null : { paramsSoFar: params },
   };
 }
 
