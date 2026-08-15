@@ -36,6 +36,13 @@ export interface CapDecision {
   resetAt?: number;
   /** For the log, so a refusal can be understood after the fact. */
   detail?: string;
+  /**
+   * The probe said limited and ccx could not account for it in any window it
+   * can read. Not a cap, and never treated as one here, but the one refusal
+   * that can be WRONG about a limit that is really happening: everything else
+   * this file refuses is a case where the API positively reported room.
+   */
+  unverified?: true;
 }
 
 export interface ConfirmCapDeps {
@@ -185,6 +192,7 @@ function decideFromProbe(result: LimitProbeResult, modelInUse: string | null): C
     if (modelInUse && normalizeModel(model.name) !== normalizeModel(modelInUse)) {
       return {
         limited: false,
+        unverified: true,
         detail: `${model.name} is spent, but this session is running ${modelInUse}`,
       };
     }
@@ -198,7 +206,11 @@ function decideFromProbe(result: LimitProbeResult, modelInUse: string | null): C
 
   // Limited, yet every window we can read still has room. That is not proven,
   // and the rule in this file is that not proven never becomes a cap.
-  return { limited: false, detail: result.detail ?? 'limited, but no window is actually spent' };
+  return {
+    limited: false,
+    unverified: true,
+    detail: result.detail ?? 'limited, but no window is actually spent',
+  };
 }
 
 /** A window is spent at 100%; anything below it still has room. */

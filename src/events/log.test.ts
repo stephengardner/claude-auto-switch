@@ -10,7 +10,15 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { appendEvent, readEvents, formatEvent, eventsFilePath, TRIM_BYTES } from './log.js';
+import {
+  appendEvent,
+  readEvents,
+  formatEvent,
+  formatEvents,
+  eventsFilePath,
+  TRIM_BYTES,
+} from './log.js';
+import { ccxVersion } from '../util/version.js';
 
 function home(): string {
   return mkdtempSync(path.join(tmpdir(), 'cas-ev-'));
@@ -127,9 +135,77 @@ describe('a message that repeats', () => {
     const h = home();
     writeFileSync(eventsFilePath(h), `${JSON.stringify({ at: 1000, msg: 'old' })}\n`, 'utf8');
     expect(readEvents(h)).toEqual([{ at: 1000, msg: 'old' }]);
-    // And a repeat of an old line still collapses onto it.
+    // And a repeat of an old line still collapses onto it. A record from
+    // before versions existed has no build to disagree with, so refusing to
+    // fold there would fill the window with repeats for anyone who upgrades
+    // part way through a log.
     appendEvent(h, 'old', 2000);
-    expect(readEvents(h)).toEqual([{ at: 2000, msg: 'old', count: 2 }]);
+    const [folded] = readEvents(h);
+    expect(folded?.at).toBe(2000);
+    expect(folded?.msg).toBe('old');
+    expect(folded?.count).toBe(2);
+    // Carrying the NEWEST build, matching `at`: this is still happening as of
+    // that version.
+    expect(folded?.v).toBe(ccxVersion());
+  });
+});
+
+describe('which build wrote a line', () => {
+  it('stamps every event, and survives being read back', () => {
+    // A log read days later has to say which build produced it, or a report of
+    // "it did X" cannot be tied to the code that did X, and a behaviour already
+    // fixed reads as still broken.
+    const h = home();
+    appendEvent(h, 'something happened', 1000);
+    expect(readEvents(h)[0]?.v).toBe(ccxVersion());
+  });
+
+  it('does NOT fold the same message across two different builds', () => {
+    // Folding them would hide the point where the behaviour changed, which is
+    // the one thing the version is recorded to show.
+    const h = home();
+    const lines = [
+      JSON.stringify({ at: 1000, msg: 'not switching', v: '1.44.0' }),
+      JSON.stringify({ at: 2000, msg: 'not switching', v: '1.44.0' }),
+      JSON.stringify({ at: 3000, msg: 'not switching', v: '1.45.0' }),
+    ].join('\n');
+    writeFileSync(eventsFilePath(h), `${lines}\n`, 'utf8');
+
+    const records = readEvents(h, 10);
+    expect(records).toHaveLength(2);
+    expect(records[0]?.count).toBe(2);
+    expect(records[0]?.v).toBe('1.44.0');
+    expect(records[1]?.v).toBe('1.45.0');
+  });
+
+  it('names the build only where it CHANGES, not on every line', () => {
+    // One version repeated down the page is noise; the boundary is the signal.
+    const records = [
+      { at: 1000, msg: 'a', v: '1.44.0' },
+      { at: 2000, msg: 'b', v: '1.44.0' },
+      { at: 3000, msg: 'c', v: '1.45.0' },
+    ];
+    const lines = formatEvents(records);
+    expect(lines[0]).toContain('[ccx 1.44.0]');
+    expect(lines[1]).not.toContain('[ccx');
+    expect(lines[2]).toContain('[ccx 1.45.0]');
+  });
+
+  it('says nothing about a build that matches the one asking', () => {
+    // How the dashboard uses it: lines from the running ccx are unadorned, and
+    // one left over from an older build says so.
+    expect(formatEvent({ at: 1000, msg: 'x', v: '1.45.0' }, '1.45.0')).not.toContain('[ccx');
+    expect(formatEvent({ at: 1000, msg: 'x', v: '1.44.0' }, '1.45.0')).toContain('[ccx 1.44.0]');
+  });
+
+  it('ignores a version field that is not a usable string', () => {
+    const h = home();
+    const lines = [
+      JSON.stringify({ at: 1000, msg: 'numbery', v: 5 }),
+      JSON.stringify({ at: 2000, msg: 'empty', v: '' }),
+    ].join('\n');
+    writeFileSync(eventsFilePath(h), `${lines}\n`, 'utf8');
+    for (const r of readEvents(h, 10)) expect(r.v).toBeUndefined();
   });
 });
 

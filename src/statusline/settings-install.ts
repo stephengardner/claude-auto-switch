@@ -1,16 +1,5 @@
-import {
-  existsSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-  mkdirSync,
-  openSync,
-  writeSync,
-  fsyncSync,
-  closeSync,
-  renameSync,
-  rmSync,
-} from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileAtomic } from '../util/atomic-write.js';
 import path from 'node:path';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { configHome } from '../config/paths.js';
@@ -167,35 +156,15 @@ export function readSettings(file: string): ReadResult {
   }
 }
 
-let tempCounter = 0;
-
 /**
  * Replace the settings file in one step.
  *
- * Writing in place truncates the real file first, so a failure part way through
- * leaves half a settings file: no hooks, no permissions, and JSON that ccx
- * itself would then refuse to touch. Writing a complete temporary file beside
- * it, flushing it to disk, then renaming it over the top means the file is
- * either the old one or the new one at every instant.
+ * Writing in place would truncate the real file first, so a failure part way
+ * through leaves half a settings file: no hooks, no permissions, and JSON that
+ * ccx itself would then refuse to touch.
  */
 function writeSettings(file: string, settings: Record<string, unknown>): void {
-  const dir = path.dirname(file);
-  mkdirSync(dir, { recursive: true });
-  const temp = path.join(dir, `.settings.json.ccx-${process.pid}-${tempCounter++}.tmp`);
-  try {
-    const handle = openSync(temp, 'w');
-    try {
-      writeSync(handle, `${JSON.stringify(settings, null, 2)}\n`, null, 'utf8');
-      fsyncSync(handle);
-    } finally {
-      closeSync(handle);
-    }
-    renameSync(temp, file);
-  } catch (error) {
-    // The original survived; a stray temp file next to it should not.
-    rmSync(temp, { force: true });
-    throw error;
-  }
+  writeFileAtomic(file, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
 function readBackup(c: PathCtx): unknown {

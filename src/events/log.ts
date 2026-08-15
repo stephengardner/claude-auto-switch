@@ -2,6 +2,7 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync, statSync, renameSy
 import { acquireLockDir } from '../claude/locks.js';
 import path from 'node:path';
 import { writeSecretFile } from '../util/secret-file.js';
+import { ccxVersion } from '../util/version.js';
 
 /**
  * A tiny append-only event log shared between processes: `ccx run` writes swap
@@ -38,6 +39,14 @@ export interface EventRecord {
    * reproducing the moment.
    */
   data?: Record<string, unknown>;
+  /**
+   * Which ccx wrote this line.
+   *
+   * A log read days later has to say which build produced it, or a report of
+   * "it did X" cannot be tied to the code that did X, and a behaviour already
+   * fixed reads as still broken. Absent on records written before this existed.
+   */
+  v?: string;
 }
 
 /** The structured half of an event, alongside its human-readable message. */
@@ -64,7 +73,14 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
   const out: EventRecord[] = [];
   for (const record of records) {
     const previous = out[out.length - 1];
-    if (previous && previous.msg === record.msg) {
+    // Same message from a DIFFERENT build is not the same event: folding them
+    // would hide the point where the behaviour changed, which is the one thing
+    // the version is recorded to show. A record from before versions existed
+    // has nothing to disagree with, so it still folds; refusing there would
+    // fill the window with repeats for everyone who upgrades mid-log.
+    const sameBuild =
+      previous?.v === undefined || record.v === undefined || previous.v === record.v;
+    if (previous && previous.msg === record.msg && sameBuild) {
       // Clamped, because the sum of two counts read from a file can leave the
       // safe-integer range, and a count that is not a safe integer is dropped on
       // the next read, turning "a great many" into "once". No real log reaches
@@ -82,6 +98,7 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
         // that answers "is this still going, and why".
         ...(record.kind ? { kind: record.kind } : {}),
         ...(record.data ? { data: record.data } : {}),
+        ...(record.v ? { v: record.v } : {}),
       };
     } else {
       out.push(record);
@@ -138,6 +155,7 @@ function parseRecords(text: string): EventRecord[] {
             ? { count: r.count as number }
             : {}),
           ...(typeof r.kind === 'string' && r.kind.length > 0 ? { kind: r.kind } : {}),
+          ...(typeof r.v === 'string' && r.v.length > 0 ? { v: r.v } : {}),
           // A plain object only. Anything else (a string, an array, null) came
           // from a hand-edited line, and rendering it later would surprise.
           ...(r.data && typeof r.data === 'object' && !Array.isArray(r.data)
@@ -198,6 +216,7 @@ export function appendEvent(
     const record = {
       at: now,
       msg,
+      v: ccxVersion(),
       ...(detail.kind ? { kind: detail.kind } : {}),
       ...(detail.data ? { data: detail.data } : {}),
     };
@@ -273,10 +292,24 @@ function joinChunks(chunks: string[]): string {
  * the same thing has happened more than once in a row. The time shown is the
  * LAST occurrence, which is the one you want when asking "is this still going".
  */
-export function formatEvent(r: EventRecord): string {
+export function formatEvent(r: EventRecord, previousVersion?: string): string {
   const d = new Date(r.at);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   const repeat = r.count && r.count > 1 ? ` (x${r.count})` : '';
-  return `${hh}:${mm}  ${r.msg}${repeat}`;
+  // The build is shown when it CHANGES, not on every line. Repeating one
+  // version down the whole log is noise; a marker where the build changed is
+  // the thing worth seeing, because it says which lines came from which code.
+  const version = r.v && r.v !== previousVersion ? `  [ccx ${r.v}]` : '';
+  return `${hh}:${mm}  ${r.msg}${repeat}${version}`;
+}
+
+/** Format a run of events, marking each point where the build changed. */
+export function formatEvents(records: EventRecord[]): string[] {
+  let seen: string | undefined;
+  return records.map((r) => {
+    const line = formatEvent(r, seen);
+    if (r.v) seen = r.v;
+    return line;
+  });
 }

@@ -38,9 +38,10 @@ import { createTerminalWriter } from '../ui/terminal-writer.js';
 import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-store.js';
 import { startUsageRefresher } from '../usage/usage-refresher.js';
 import { planRotation, spentKey } from '../usage/rotation-plan.js';
+import { createRefusalWatch } from '../usage/refusal-watch.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
 import { planConversation, relaunchArgs, freshStartArgs } from '../launcher/conversation.js';
-import { readConversation, rememberConversation } from '../session/conversation-store.js';
+import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import {
@@ -326,6 +327,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
   // Which model was out, when the limit was about one model rather than the
   // whole account. Recorded with the limit so it never blocks other models.
+  // Counts refusals ccx could not verify, so a limit it cannot explain can
+  // never leave the session refusing forever. See usage/refusal-watch.
+  const unverifiedLimits = createRefusalWatch();
   let limitedModel: string | undefined;
   /**
    * The confirmed limit's own reset time. The PTY outcome only carries what
@@ -361,6 +365,19 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   const withCapScope = (outcome: SessionOutcome): SessionOutcome =>
     outcome.kind === 'capped' && limitedModel ? { ...outcome, cappedModel: limitedModel } : outcome;
 
+  /**
+   * The model this session is ACTUALLY running.
+   *
+   * Claude reports it to the status line on every render, and that beats what
+   * ccx asked for at launch: once the operator changes model with `/model`, the
+   * two disagree and every check downstream is answering about the wrong model.
+   * That is not theoretical. A session on Fable, believed to be on Opus, had
+   * its real Fable limit dismissed as "a limit on a model you are not using",
+   * over and over, and never rotated.
+   */
+  const runningModel = (): string | null =>
+    readRunningModel(sessionDir) ?? chosenModel ?? sessionModel(sessionDir, args);
+
   // Ground-truth cap check: rendered text only TRIGGERS this; the API decides.
   //
   // Asked of the SESSION'S OWN login, because with one directory per session
@@ -394,7 +411,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         renderedText,
         // Scoped to what this session is actually running: a spent window for
         // a model it is not on is not a limit on it.
-        { modelInUse: chosenModel ?? sessionModel(sessionDir, args) },
+        { modelInUse: runningModel() },
       );
       verdict = decision.limited ? 'limited' : 'allowed';
       limitedModel = decision.model;
@@ -408,12 +425,51 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         : identity.email
           ? maskEmail(identity.email)
           : null;
+      const running = runningModel();
       refusalData = {
         askedOf: decision.askedOf,
         ...(decision.detail ? { detail: decision.detail } : {}),
         ...(current ? { believed: current.name } : {}),
         ...(identityLabel ? { sessionIdentity: identityLabel } : {}),
+        // The model as CLAIMED and as REPORTED, separately. When these two
+        // disagree every downstream check is answering about the wrong model,
+        // and the log has to make that visible rather than print one of them.
+        ...(running ? { running } : {}),
+        ...(chosenModel ? { ccxChose: chosenModel } : {}),
       };
+
+      // The one refusal that can be wrong about a limit that is really
+      // happening. Everything else refused here is a case where the API
+      // positively reported room; this is the case where it could not account
+      // for a limit at all. Left to itself it repeats forever, which is the
+      // operator sitting blocked while the log fills with reasons not to act.
+      // Only ever escalates with a model to scope it to. Without one the
+      // outcome is an account-wide cap, which takes the whole account out of
+      // rotation on evidence nobody could prove: strictly worse than the
+      // refusal it was meant to correct. The model is known in practice (the
+      // status line reports it within seconds), and an escalation needs
+      // minutes of refusals to trigger, so this costs nothing real.
+      if (!decision.limited && decision.unverified && running) {
+        // Keyed by the model too, so a `/model` change starts its own count
+        // rather than inheriting one gathered about a model no longer in use.
+        if (unverifiedLimits.refused(`${running}:${decision.detail ?? 'unverified'}`, Date.now())) {
+          verdict = 'limited';
+          // Scoped to the model actually running, and with no reset time,
+          // because none was ever proven. That keeps the run out of this
+          // account/model pairing without writing a dated cap nobody measured.
+          limitedModel = running;
+          limitedResetAt = undefined;
+          logEvent(
+            'the limit keeps coming back and no window explains it, so rotating anyway ' +
+              'rather than leaving the session stuck',
+            { kind: 'cap-verify', data: { ...refusalData, escalated: true } },
+          );
+        }
+      } else if (decision.limited) {
+        // A limit ccx COULD account for. Whatever pattern was building was
+        // about something else.
+        unverifiedLimits.reset();
+      }
       if (decision.limited && identity.mismatch) {
         if (identity.actual) {
           capOwner = identity.actual.name;
@@ -903,7 +959,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         // pins a model, so ccx could not tell it was on Fable and rotated by
         // priority alone, straight through two accounts whose Fable was also
         // spent before reaching the one with room.
-        modelInUse: chosenModel ?? sessionModel(sessionDir, args) ?? limitedModel ?? null,
+        modelInUse: runningModel() ?? limitedModel ?? null,
         preference: rotation.modelPreference,
         strategy: rotation.modelStrategy,
         spentThisRun,
@@ -952,6 +1008,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     runSession: async (hotAccount, isContinue, runOptions) => {
       const account = accounts.find((a) => a.name === hotAccount.name);
       if (!account) return { kind: 'ok', exitCode: 1 };
+      // A new child on a new account. Whatever refusals were adding up belonged
+      // to the last one, and carrying them over would escalate here on evidence
+      // gathered somewhere else.
+      unverifiedLimits.reset();
       // Read BEFORE the renewal: it rotates the token, so afterwards there is
       // no shared value left to identify who was sharing it.
       const sharing = snapshotSharing(account, accounts, carryTargets(account, accounts));
@@ -1078,6 +1138,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         }
         activate(target);
         setActive(target.name, context.ctx);
+        // The account under this session just changed without the child
+        // restarting, so refusals counted against the old one say nothing
+        // about the new one.
+        unverifiedLimits.reset();
         syncEditorPointerIfEnabled(context);
         notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
         notifyAccountSwitch(target.name, 'switched in place');
@@ -1135,7 +1199,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // two), and it still holds the id that just failed to resume, so a
           // swap arriving before the new session's first status line would
           // resume that dead id all over again.
-          rememberConversation(sessionDir, fresh.id);
+          rememberReport(sessionDir, { id: fresh.id });
           return await runPtySession({ ...base, args: fresh.args });
         }
         // A model-scoped limit is remembered against THIS ACCOUNT and handed

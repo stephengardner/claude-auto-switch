@@ -213,6 +213,34 @@ describe('a spent window for a model this session is NOT running', () => {
     });
     expect(decision.limited).toBe(false);
     expect(decision.detail).toContain('running opus');
+    // Marked as a refusal ccx could not verify. It is the one kind that can be
+    // wrong about a limit that is really happening, so the caller counts them
+    // and stops trusting the pattern rather than refusing forever.
+    expect(decision.unverified).toBe(true);
+  });
+
+  it('marks a limit no window explains as unverified, not merely allowed', async () => {
+    // The probe says limited and every window ccx can read still has room.
+    // That is not proof of a cap, and this file never invents one, but it is
+    // also not proof of room, and recording which it was is what lets the
+    // session escape a limit the API cannot account for.
+    const decision = await confirmCap('/profiles/main', 'limit reached', {
+      modelInUse: 'opus',
+      probe: probing({ verdict: 'limited', fiveHour: 0.2, sevenDay: 0.3, models: [] }),
+    });
+    expect(decision.limited).toBe(false);
+    expect(decision.unverified).toBe(true);
+  });
+
+  it('does NOT mark an ordinary refusal as unverified', async () => {
+    // A conversation that merely talks about rate limits. The API positively
+    // reported room, so there is nothing unexplained and nothing to escalate.
+    const decision = await confirmCap('/profiles/main', 'talking about rate limits', {
+      modelInUse: 'opus',
+      probe: probing({ verdict: 'allowed', fiveHour: 0.2, sevenDay: 0.3 }),
+    });
+    expect(decision.limited).toBe(false);
+    expect(decision.unverified).toBeUndefined();
   });
 
   it('IS a limit when it names the model in use', async () => {

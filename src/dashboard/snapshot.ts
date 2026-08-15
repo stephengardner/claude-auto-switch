@@ -37,6 +37,8 @@ export interface SnapshotInput {
   refreshMs: number;
   /** The model in use, when anything pins one. */
   model?: string;
+  /** Which ccx is drawing this. */
+  version?: string;
   /** Where rotation would go next, in words. See dashboard/next-up.ts. */
   nextUp?: string;
 }
@@ -67,6 +69,7 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
     now: input.now,
     refreshMs: input.refreshMs,
     ...(input.model ? { model: input.model } : {}),
+    ...(input.version ? { version: input.version } : {}),
     ...(input.nextUp ? { nextUp: input.nextUp } : {}),
   };
 }

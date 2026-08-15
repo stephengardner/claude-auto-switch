@@ -6,7 +6,7 @@ import { hasUsableLogin, credentialFileFingerprint } from '../accounts/credentia
 import { loginIsKnownDead } from '../usage/dead-login-store.js';
 import { configHome } from '../config/paths.js';
 import { isSessionDir } from '../session/session-dir.js';
-import { rememberConversation } from '../session/conversation-store.js';
+import { rememberReport } from '../session/claude-report.js';
 import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import type { CliContext } from '../context.js';
@@ -285,11 +285,21 @@ function captureConversation(context: CliContext, input: string): void {
   try {
     const configDir = (context.ctx.env ?? process.env).CLAUDE_CONFIG_DIR;
     if (!configDir || !isSessionDir(configDir, context.ctx)) return;
-    const payload = JSON.parse(input) as { session_id?: unknown };
-    if (typeof payload.session_id === 'string' && payload.session_id !== '') {
-      rememberConversation(configDir, payload.session_id);
-    }
+    const payload = JSON.parse(input) as {
+      session_id?: unknown;
+      model?: { id?: unknown; display_name?: unknown };
+    };
+    const id = typeof payload.session_id === 'string' ? payload.session_id : '';
+    // The id is the stable name; the display name is the readable fallback for
+    // a Claude that reports one without the other.
+    const model =
+      typeof payload.model?.id === 'string'
+        ? payload.model.id
+        : typeof payload.model?.display_name === 'string'
+          ? payload.model.display_name
+          : '';
+    if (id || model) rememberReport(configDir, { ...(id ? { id } : {}), ...(model ? { model } : {}) });
   } catch {
-    /* no payload, or not JSON: the planned id still carries the run */
+    /* no payload, or not JSON: ccx carries on with what it inferred */
   }
 }
