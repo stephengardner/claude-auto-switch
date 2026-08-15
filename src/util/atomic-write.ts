@@ -1,4 +1,12 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from 'node:fs';
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -24,7 +32,12 @@ export function writeFileAtomic(file: string, contents: string): void {
   try {
     const handle = openSync(temp, 'w');
     try {
-      writeSync(handle, contents, null, 'utf8');
+      // writeFileSync on a descriptor, NOT a bare writeSync: a single write can
+      // put fewer bytes on disk than it was given, and ignoring that return
+      // value means fsyncing and renaming a truncated file, which publishes
+      // damage atomically instead of preventing it. This loops until the whole
+      // buffer is out. Encoded once, so the byte count is not in question.
+      writeFileSync(handle, Buffer.from(contents, 'utf8'));
       fsyncSync(handle);
     } finally {
       closeSync(handle);

@@ -41,6 +41,20 @@ describe('replacing a file without a gap', () => {
     expect(readFileSync(file, 'utf8')).toBe('short');
   });
 
+  it('writes ALL of it, however big and whatever is in it', () => {
+    // A single write can put fewer bytes on disk than it was given. Ignoring
+    // that would fsync and rename a truncated file, which publishes damage
+    // atomically rather than preventing it. Large enough to cross the buffer
+    // sizes where short writes actually happen, and with multi-byte characters
+    // so a byte count cannot be mistaken for a character count.
+    const file = path.join(dir(), 'big.json');
+    const contents = 'aaaaéü中\u{1f680}'.repeat(400_000);
+    writeFileAtomic(file, contents);
+    const read = readFileSync(file, 'utf8');
+    expect(read.length).toBe(contents.length);
+    expect(read).toBe(contents);
+  });
+
   it('rolls back cleanly when it cannot finish, taking its temp file with it', () => {
     // The whole point of not truncating in place: a failure must cost nothing.
     // A directory standing where the file should go makes the rename fail
