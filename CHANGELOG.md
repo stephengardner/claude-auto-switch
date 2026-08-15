@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.45.0]
+
+### Fixed
+
+- **The dashboard could say "ready" about an account it would not use.** A row
+  showed its five-hour window at 100% and "ready" on the same line. The status
+  came only from ccx's own record of limits it had been refused by, while the
+  numbers beside it came from the API, and nothing compared the two. Rotation,
+  which reads the numbers, would meanwhile have skipped that account entirely.
+
+  Status is now worked out from the same numbers the row is drawing, so the
+  table and the switching logic cannot disagree.
+
+- **A switch could put you in a different conversation.** Picking the
+  conversation back up after a swap used "continue the most recent conversation
+  in this directory". Most recent in the DIRECTORY, not the one this terminal
+  was in: with two sessions open on one project, a switch in either could
+  resume the other one's thread. Each run now names its own conversation and
+  resumes it by name, so nothing depends on which one was touched last.
+
+### Added
+
+- **How long until a spent model comes back.** When a model reads 100%, the
+  status says which model and when it returns, counting from the last window
+  that has to lift rather than the model's own: `fable spent 2d 20h`. Knowing
+  it is out is only half the question.
+
 ## [1.44.0]
 
 ### Fixed
