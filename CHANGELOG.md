@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.46.0]
+
+### Fixed
+
+- **A limit ccx could not explain no longer leaves you stuck.** ccx never turns
+  text on screen into a limit by itself: it asks the API, which is why a
+  conversation that merely talks about rate limits does not end your session.
+  That check had one failure mode, and it was the worst kind. When the API
+  could not account for a limit that was genuinely happening, ccx declined to
+  switch, and declined again, and kept declining, while the log filled with
+  reasons not to act.
+
+  Those refusals are now counted. A replayed message arrives in a burst
+  seconds after a session resumes; a real limit keeps coming back minutes
+  apart. Once the same unexplained limit has recurred three times over five
+  minutes, ccx stops trusting the check and moves you, scoped to the model you
+  are actually on and without recording a limit nobody could measure.
+
+- **ccx now knows which model you are really running.** It remembered the model
+  it picked when the session started, and that outlasted everything. The moment
+  you changed model with `/model`, the two disagreed, and a real limit on the
+  model you were actually using was dismissed as a limit on one you were not.
+  Claude reports the model on every status line render, so that is what ccx
+  uses now.
+
+### Added
+
+- **Logs say which ccx wrote them.** Every entry records the version, `ccx
+  history` marks the point where the build changed rather than repeating one
+  number down the page, and the dashboard title shows the running version. A
+  report of "it did this" can now be tied to the code that did it.
+
+- **A refusal records what it was based on.** When ccx declines to switch, the
+  log keeps the model as ccx believed it and as Claude reported it, side by
+  side. When those two disagree, every decision after them is answering about
+  the wrong model, and the log now shows that instead of printing one of them.
+
 ## [1.45.0]
 
 ### Fixed
