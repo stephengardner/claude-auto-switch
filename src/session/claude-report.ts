@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { writeFileAtomic } from '../util/atomic-write.js';
 import path from 'node:path';
 
 /**
@@ -45,9 +46,11 @@ export function rememberReport(sessionDir: string, report: ClaudeReport): void {
     // Written on every status line render, which is constant. Skip the write
     // when nothing changed rather than churning the disk for no reason.
     if (merged.id === current.id && merged.model === current.model) return;
-    const file = fileIn(sessionDir);
-    mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, `${JSON.stringify(merged)}\n`, 'utf8');
+    // Atomic, because this is written on every status line render and read in
+    // the middle of a cap decision. A reader catching a truncated file would
+    // fall back to the model ccx merely BELIEVES it is running, which is the
+    // stale answer this file exists to replace.
+    writeFileAtomic(fileIn(sessionDir), `${JSON.stringify(merged)}\n`);
   } catch {
     /* ccx still works on what it inferred; this only makes it exact */
   }
