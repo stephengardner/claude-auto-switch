@@ -39,7 +39,8 @@ import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-s
 import { startUsageRefresher } from '../usage/usage-refresher.js';
 import { planRotation, spentKey } from '../usage/rotation-plan.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
-import { wantsContinue, withoutContinue } from '../launcher/continue-args.js';
+import { planConversation, relaunchArgs, freshStartArgs } from '../launcher/conversation.js';
+import { readConversation } from '../session/conversation-store.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import {
@@ -202,7 +203,8 @@ function writeJsonSafe(file: string, data: unknown): void {
 
 /**
  * Run an interactive session with transparent hot-swap. ONE session dir holds
- * the conversation (so `--continue` finds it across swaps); each swap copies the
+ * the conversation (and the id to resume it by, so a swap comes back to THIS
+ * conversation rather than the most recent one in the folder); each swap copies the
  * chosen account's credential file into that dir (and copies the live,
  * possibly-refreshed credential back out first, so nothing is lost). This uses
  * the logins you already have, with no tokens, on Windows and Linux.
@@ -243,6 +245,18 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   const logEvent = (m: string, detail: EventDetail = {}): void =>
     appendEvent(home, m, Date.now(), detail);
   const debugLog = process.env.CAS_DEBUG ? path.join(sessionDir, 'session-debug.log') : undefined;
+
+  // Name this run's conversation before anything starts, so a swap resumes THIS
+  // thread rather than whichever one in this directory was touched last. Two
+  // sessions open on the same project used to be able to take each other's.
+  const conversation = planConversation(args);
+  args = conversation.args;
+  // Not a constant: a resume that finds nothing starts a new conversation, and
+  // the run has to carry the new id from then on.
+  let plannedConversationId = conversation.id;
+  /** The conversation to resume, preferring what Claude itself reported. */
+  const conversationId = (): string | null =>
+    readConversation(sessionDir) ?? plannedConversationId;
 
   /**
    * True while Claude owns the screen. Anything ccx writes to stderr then lands
@@ -1017,7 +1031,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       const env: Record<string, string> = token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
       // Watch for an operator-requested switch to a DIFFERENT, usable account.
       // Seamless (default) swaps credentials under the running process; 'restart'
-      // returns the name so the child is ended and the loop relaunches --continue.
+      // returns the name so the child is ended and the loop resumes this conversation.
       /**
        * Two jobs that must keep running for as long as the session is alive,
        * both about not losing a login: say we are still using this account (so
@@ -1047,11 +1061,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         if (!decision.switchTo) return null;
         const target = accounts.find((a) => a.name === decision.switchTo);
         if (!target) return null;
-        if (request?.mode === 'restart') return target.name; // end child, relaunch --continue
+        if (request?.mode === 'restart') return target.name; // end child, resume this conversation
         // Seamless only when the target's login is usable right now. This swap is
         // synchronous, so there is no chance to renew anything first, and swapping
         // in an expired login lands the running session on a dead token. When it
-        // needs work, relaunch instead: --continue keeps the same conversation and
+        // needs work, relaunch instead: resuming by id keeps the same conversation and
         // the start path renews before handing it over.
         if (
           swapMode({
@@ -1080,7 +1094,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
         ...(debugLog ? { debugLog } : {}),
       };
-      const wantContinue = isContinue && !wantsContinue(args);
+      // A relaunch after a swap resumes this run's own conversation by id.
+      // `--continue` was "the most recent one in this directory", which is a
+      // different conversation entirely whenever two sessions share a project.
+      const launchArgs = isContinue ? relaunchArgs(args, conversationId()) : args;
 
       // Not printed: which account you are on shows in Claude's status line
       // (`ccx statusline`) and in the terminal title, and a line per session
@@ -1096,11 +1113,8 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         // The chosen model is applied here, and stays applied for later
         // rotations in this run: once Fable is gone it does not come back
         // within a session, so re-checking it every time would only churn.
-        const modelArgs = chosenModel ? withModel(args, chosenModel) : args;
-        const outcome = await runPtySession({
-          ...base,
-          args: wantContinue ? [...modelArgs, '--continue'] : modelArgs,
-        });
+        const modelArgs = chosenModel ? withModel(launchArgs, chosenModel) : launchArgs;
+        const outcome = await runPtySession({ ...base, args: modelArgs });
         // If we tried to resume but the new account has no saved conversation,
         // start a fresh session on it instead of dead-ending.
         if (outcome.kind === 'no-conversation') {
@@ -1110,7 +1124,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // back into the limit we just rotated away from. And drop the resume
           // flag the operator may have typed, or "fresh" would just repeat the
           // resume that found nothing.
-          return await runPtySession({ ...base, args: withoutContinue(modelArgs) });
+          // The new conversation is NAMED, not just started. The id this run was
+          // carrying has just been shown to lead nowhere, so leaving it in place
+          // would have every later swap resume that same dead id, fail, and
+          // start over, losing the conversation on every single swap.
+          const fresh = freshStartArgs(modelArgs);
+          plannedConversationId = fresh.id;
+          return await runPtySession({ ...base, args: fresh.args });
         }
         // A model-scoped limit is remembered against THIS ACCOUNT and handed
         // back to the swap loop, which asks the planner what to do next. It

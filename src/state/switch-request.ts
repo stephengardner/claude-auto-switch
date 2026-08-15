@@ -15,7 +15,7 @@ import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
  * - 'seamless' (default): swap the credential file under the running process; it
  *   re-reads within ~30s (its cache TTL), so the SAME session moves to the new
  *   account with no restart and nothing lost.
- * - 'restart': end the process and relaunch `claude --continue` on the new
+ * - 'restart': end the process and relaunch, resuming this conversation, on the new
  *   account (instant, but reloads the TUI and loses live state).
  */
 const SwitchRequestSchema = z.object({

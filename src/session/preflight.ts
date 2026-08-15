@@ -89,7 +89,7 @@ export function readinessMessage(account: string, readiness: LoginReadiness): st
  * logged out" the pre-flight exists to prevent.
  *
  * When the login needs work, the answer is 'restart': ending the child and
- * relaunching with --continue keeps the same conversation and routes the switch
+ * relaunching with a resume keeps the same conversation and routes the switch
  * through the start path, which CAN renew first.
  */
 export function swapMode(deps: {
