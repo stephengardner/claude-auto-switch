@@ -1,5 +1,5 @@
 import { readCredentialEvents, type CredentialEvent } from '../accounts/credential-log.js';
-import { readEvents, formatEvent } from '../events/log.js';
+import { readEvents, formatEvents } from '../events/log.js';
 import { configHome } from '../config/paths.js';
 import { codes, paint } from '../ui/style.js';
 import type { CliContext } from '../context.js';
@@ -66,7 +66,7 @@ export function historyCommand(context: CliContext, options: HistoryOptions = {}
   }
 
   if (!options.logins) {
-    const switches = readEvents(configHome(context.ctx), limit).map(formatEvent);
+    const switches = formatEvents(readEvents(configHome(context.ctx), limit));
     context.out('');
     context.out(paint('switches', codes.bold, color));
     if (switches.length === 0) {

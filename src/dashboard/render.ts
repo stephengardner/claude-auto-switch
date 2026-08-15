@@ -36,6 +36,8 @@ export interface DashboardSnapshot {
   refreshMs: number;
   /** The model in use, when anything pins one. Shown beside the active account. */
   model?: string;
+  /** Which ccx is drawing this, shown in the title. */
+  version?: string;
   /**
    * Where rotation would go next, already in words.
    *
@@ -377,7 +379,11 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   /** What a line of free text has to fit inside: the window, not the table. */
   const maxLine = options.width ?? Number.MAX_SAFE_INTEGER;
 
-  const title = paint('claude-auto-switch', codes.bold, color);
+  // The build is on screen, not just in the log. A report of "it did X" has to
+  // be tied to the code that did X, and the live view is where someone is
+  // looking when they notice the X.
+  const named = snapshot.version ? `claude-auto-switch ${snapshot.version}` : 'claude-auto-switch';
+  const title = paint(named, codes.bold, color);
   const active = accounts.find((a) => a.active);
   // "prefers", not "on": the dashboard is not inside a session and cannot know
   // which model one is actually running. After a fallback the session can be on

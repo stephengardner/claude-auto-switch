@@ -16,6 +16,7 @@ import { renameAccount } from '../accounts/rename.js';
 import { assertProfileName } from '../util/names.js';
 import { secureMkdir } from '../util/secret-file.js';
 import { appendEvent, readEvents, formatEvent } from '../events/log.js';
+import { ccxVersion } from '../util/version.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -109,7 +110,8 @@ export async function dashboardCommand(
       cappedUntil,
       usage,
       active: getActive(context.ctx),
-      events: readEvents(home, 5).map(formatEvent),
+      events: readEvents(home, 5).map((r) => formatEvent(r)),
+      version: ccxVersion(),
       now,
       refreshMs,
       ...nextMove(context, accts, usage, cappedUntil, loggedIn, now),
