@@ -73,7 +73,14 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
   const out: EventRecord[] = [];
   for (const record of records) {
     const previous = out[out.length - 1];
-    if (previous && previous.msg === record.msg) {
+    // Same message from a DIFFERENT build is not the same event: folding them
+    // would hide the point where the behaviour changed, which is the one thing
+    // the version is recorded to show. A record from before versions existed
+    // has nothing to disagree with, so it still folds; refusing there would
+    // fill the window with repeats for everyone who upgrades mid-log.
+    const sameBuild =
+      previous?.v === undefined || record.v === undefined || previous.v === record.v;
+    if (previous && previous.msg === record.msg && sameBuild) {
       // Clamped, because the sum of two counts read from a file can leave the
       // safe-integer range, and a count that is not a safe integer is dropped on
       // the next read, turning "a great many" into "once". No real log reaches
@@ -91,6 +98,7 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
         // that answers "is this still going, and why".
         ...(record.kind ? { kind: record.kind } : {}),
         ...(record.data ? { data: record.data } : {}),
+        ...(record.v ? { v: record.v } : {}),
       };
     } else {
       out.push(record);
@@ -147,6 +155,7 @@ function parseRecords(text: string): EventRecord[] {
             ? { count: r.count as number }
             : {}),
           ...(typeof r.kind === 'string' && r.kind.length > 0 ? { kind: r.kind } : {}),
+          ...(typeof r.v === 'string' && r.v.length > 0 ? { v: r.v } : {}),
           // A plain object only. Anything else (a string, an array, null) came
           // from a hand-edited line, and rendering it later would surprise.
           ...(r.data && typeof r.data === 'object' && !Array.isArray(r.data)

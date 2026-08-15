@@ -443,13 +443,21 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // positively reported room; this is the case where it could not account
       // for a limit at all. Left to itself it repeats forever, which is the
       // operator sitting blocked while the log fills with reasons not to act.
-      if (!decision.limited && decision.unverified) {
-        if (unverifiedLimits.refused(decision.detail ?? 'unverified', Date.now())) {
+      // Only ever escalates with a model to scope it to. Without one the
+      // outcome is an account-wide cap, which takes the whole account out of
+      // rotation on evidence nobody could prove: strictly worse than the
+      // refusal it was meant to correct. The model is known in practice (the
+      // status line reports it within seconds), and an escalation needs
+      // minutes of refusals to trigger, so this costs nothing real.
+      if (!decision.limited && decision.unverified && running) {
+        // Keyed by the model too, so a `/model` change starts its own count
+        // rather than inheriting one gathered about a model no longer in use.
+        if (unverifiedLimits.refused(`${running}:${decision.detail ?? 'unverified'}`, Date.now())) {
           verdict = 'limited';
           // Scoped to the model actually running, and with no reset time,
           // because none was ever proven. That keeps the run out of this
           // account/model pairing without writing a dated cap nobody measured.
-          limitedModel = running ?? undefined;
+          limitedModel = running;
           limitedResetAt = undefined;
           logEvent(
             'the limit keeps coming back and no window explains it, so rotating anyway ' +
@@ -1130,6 +1138,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         }
         activate(target);
         setActive(target.name, context.ctx);
+        // The account under this session just changed without the child
+        // restarting, so refusals counted against the old one say nothing
+        // about the new one.
+        unverifiedLimits.reset();
         syncEditorPointerIfEnabled(context);
         notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
         notifyAccountSwitch(target.name, 'switched in place');

@@ -110,7 +110,10 @@ export async function dashboardCommand(
       cappedUntil,
       usage,
       active: getActive(context.ctx),
-      events: readEvents(home, 5).map((r) => formatEvent(r)),
+      // Marked against the build DRAWING the screen, so a line written by the
+      // running ccx is unadorned and one left over from an older build says so.
+      // The title already carries the current version.
+      events: readEvents(home, 5).map((r) => formatEvent(r, ccxVersion())),
       version: ccxVersion(),
       now,
       refreshMs,

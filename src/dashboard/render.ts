@@ -383,14 +383,21 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // be tied to the code that did X, and the live view is where someone is
   // looking when they notice the X.
   const named = snapshot.version ? `claude-auto-switch ${snapshot.version}` : 'claude-auto-switch';
-  const title = paint(named, codes.bold, color);
+  // Measured, not assumed to be a fixed 21 columns. The version made the title
+  // longer, and a hard-coded width would have let a narrow terminal wrap the
+  // one line that says what this screen is.
+  const shownTitle = fit(named, maxLine);
+  const title = paint(shownTitle, codes.bold, color);
   const active = accounts.find((a) => a.active);
   // "prefers", not "on": the dashboard is not inside a session and cannot know
   // which model one is actually running. After a fallback the session can be on
   // Opus while the preference is still Fable, and the title would have said so
   // with confidence.
   const onModel = snapshot.model ? ` · prefers ${snapshot.model}` : '';
-  const subtitle = fit(`active: ${active?.name ?? 'none'}${onModel}`, Math.max(0, maxLine - 21));
+  const subtitle = fit(
+    `active: ${active?.name ?? 'none'}${onModel}`,
+    Math.max(0, maxLine - shownTitle.length - 3),
+  );
   const titleLine = `${title}   ${paint(subtitle, codes.dim, color)}`;
 
   const header = paint(
