@@ -595,7 +595,15 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(retry).not.toContain('--resume');
     // It NAMES the new conversation, so the next swap resumes this one rather
     // than the id that has just been shown to lead nowhere.
-    expect(conversationOf(retry)).not.toBeNull();
+    const newId = conversationOf(retry);
+    expect(newId).not.toBeNull();
+    // And the RECORDED id is replaced too. That file is read in preference to
+    // the planned one, so leaving the failed id there would send the very next
+    // swap straight back to the conversation that does not exist.
+    const recorded = path.join(home, 'sessions', String(process.pid), 'conversation.json');
+    if (existsSync(recorded)) {
+      expect((JSON.parse(readFileSync(recorded, 'utf8')) as { id: string }).id).toBe(newId);
+    }
   });
 
   it('does NOT move off a model whose limit has already reset', async () => {

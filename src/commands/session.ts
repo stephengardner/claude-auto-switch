@@ -40,7 +40,7 @@ import { startUsageRefresher } from '../usage/usage-refresher.js';
 import { planRotation, spentKey } from '../usage/rotation-plan.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
 import { planConversation, relaunchArgs, freshStartArgs } from '../launcher/conversation.js';
-import { readConversation } from '../session/conversation-store.js';
+import { readConversation, rememberConversation } from '../session/conversation-store.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
 import {
@@ -1130,6 +1130,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // start over, losing the conversation on every single swap.
           const fresh = freshStartArgs(modelArgs);
           plannedConversationId = fresh.id;
+          // Overwrite the RECORDED id as well, not just the planned one. The
+          // recording is read first (it is normally the more accurate of the
+          // two), and it still holds the id that just failed to resume, so a
+          // swap arriving before the new session's first status line would
+          // resume that dead id all over again.
+          rememberConversation(sessionDir, fresh.id);
           return await runPtySession({ ...base, args: fresh.args });
         }
         // A model-scoped limit is remembered against THIS ACCOUNT and handed

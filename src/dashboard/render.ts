@@ -171,21 +171,42 @@ function constraintsOn(a: DashboardAccount, model: string | null, now: number): 
   return out;
 }
 
-/** Plain status text for an account, most-important state first. */
-function statusText(a: DashboardAccount, now: number, model: string | null = null): string {
+/**
+ * Plain status text for an account, most-important state first.
+ *
+ * `maxWidth` bounds it because the label can be a model name, which comes from
+ * the API and can be any length. Unbounded it sets the column width itself and
+ * pushes the whole row past the edge of the terminal. What gets shortened is
+ * the LABEL, never the time: "how long until it comes back" is the reason to
+ * read this at all, and a truncated wait would be worse than a truncated name.
+ */
+function statusText(
+  a: DashboardAccount,
+  now: number,
+  model: string | null = null,
+  maxWidth = Number.MAX_SAFE_INTEGER,
+): string {
   if (!a.enabled) return 'disabled';
   if (!a.loggedIn) return 'logged out';
 
   const blocking = constraintsOn(a, model, now);
   if (blocking.length === 0) return 'ready';
-  // The one that lifts LAST, because that is when the account is usable again.
-  // An unknown reset time sorts last: it is the least reassuring of the two,
-  // and claiming the earlier one would promise a return nobody can promise.
-  const worst = blocking.reduce((a2, b) =>
+
+  // The wait is until the LAST of them lifts, because until then the account
+  // still cannot be used. Taking the earliest would promise a return that is
+  // not coming; an unknown reset time sorts last for the same reason.
+  const latest = blocking.reduce((a2, b) =>
     (b.until ?? Number.POSITIVE_INFINITY) > (a2.until ?? Number.POSITIVE_INFINITY) ? b : a2,
   );
-  const when = worst.until && worst.until > now ? ` ${hhmm(worst.until, now)}` : '';
-  return worst.label === 'capped' ? `capped${when}` : `${worst.label} spent${when}`;
+  // Name the MODEL whenever the model is one of the things blocking, even if
+  // some other window lifts later. That is the question being asked of this
+  // screen: the column says Fable is at 100%, and the thing worth knowing is
+  // how long until Fable can be used here again.
+  const named = blocking.find((c) => c.label === model?.toLowerCase()) ?? latest;
+  const when = latest.until && latest.until > now ? ` ${hhmm(latest.until, now)}` : '';
+  const tail = named.label === 'capped' ? when : ` spent${when}`;
+  const head = named.label === 'capped' ? 'capped' : named.label;
+  return `${fit(head, Math.max(3, maxWidth - tail.length))}${tail}`;
 }
 
 /** A colored status dot: green only when the account can actually be used now. */
@@ -315,10 +336,12 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // The model column is named after the model it is showing, so the header
   // says FABLE rather than MODEL and the row underneath is just a bar.
   const modelName = columnModel(accounts, now);
-  const statusW = Math.max(
-    'STATUS'.length,
-    ...accounts.map((a) => statusText(a, now, modelName).length + 2),
-  );
+  // A share of the row, not whatever the longest model name happens to be.
+  const statusCap = options.width
+    ? Math.max('logged out'.length, Math.floor(options.width / 3))
+    : Number.MAX_SAFE_INTEGER;
+  const status = (a: DashboardAccount): string => statusText(a, now, modelName, statusCap);
+  const statusW = Math.max('STATUS'.length, ...accounts.map((a) => status(a).length + 2));
   // The bars give up width before anything else does.
   const barW = barWidthFor(options.width, nameW0, statusW);
   const GAUGE_W = gaugeWidth(barW);
@@ -389,7 +412,7 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     const week = pad(gauge(weekNow(a, now), color, barW), 1);
     const model = pad(gauge(modelUsedNow(a, modelName, now), color, barW), 2);
     const dot = paint('●', statusColor(a, now, modelName), color);
-    return `${cursor}${marker} ${name}  ${five}  ${week}  ${model}  ${dot} ${statusText(a, now, modelName)}`;
+    return `${cursor}${marker} ${name}  ${five}  ${week}  ${model}  ${dot} ${status(a)}`;
   });
 
   const lines = [titleLine, rule, header, ...rows, rule];

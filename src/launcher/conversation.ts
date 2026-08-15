@@ -52,16 +52,24 @@ export function conversationIdIn(args: string[]): string | null {
   return null;
 }
 
-/** Strip every conversation flag, including the ids they carry. */
+/** Anything that is a value rather than another flag. */
+function isOperand(value: string | undefined): boolean {
+  return typeof value === 'string' && !value.startsWith('-');
+}
+
+/** Strip every conversation flag, including whatever value it carries. */
 export function withoutConversationFlags(args: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const flag = args[i] as string;
     if (CONTINUE_FLAGS.has(flag)) continue;
     if (RESUME_FLAGS.has(flag) || flag === SESSION_ID_FLAG) {
-      // Skip the id too when there is one. A bare `--resume` carries nothing,
-      // and eating the next argument there would remove one the operator meant.
-      if (looksLikeConversationId(args[i + 1])) i += 1;
+      // Take the value with the flag, whatever shape it is. `--resume` accepts
+      // a session name or a search term as well as an id, and leaving one of
+      // those behind turns it into a stray positional argument to Claude.
+      // A BARE `--resume` (a picker) carries nothing, and eating the next
+      // argument there would remove a flag the operator meant to pass.
+      if (isOperand(args[i + 1])) i += 1;
       continue;
     }
     out.push(flag);
@@ -121,7 +129,9 @@ export function relaunchArgs(args: string[], id: string | null): string[] {
 export function freshStartArgs(
   args: string[],
   newId: () => string = randomUUID,
-): ConversationPlan {
+): { args: string[]; id: string } {
+  // Always an id, never null: a fresh start is the one case where we are the
+  // ones creating the conversation, so there is nothing to be unsure about.
   const id = newId();
   return { args: [...withoutConversationFlags(args), SESSION_ID_FLAG, id], id };
 }

@@ -396,6 +396,35 @@ describe('renderDashboard (plain)', () => {
     expect(row).not.toContain('ready');
   });
 
+  it('says how long until FABLE returns, even when another window lifts later', () => {
+    // Asked for directly: "when fable is out, 100%, I want to know how long
+    // until it returns". The column says 100%; the status has to answer how
+    // long. It names the model because that is what was asked about, and gives
+    // the wait until the account is genuinely usable for it again, which is
+    // when the LAST of the blocking windows lifts.
+    const out = renderDashboard(
+      {
+        ...snapshot([
+          account({
+            name: 'main',
+            usage: {
+              fiveHour: 0,
+              sevenDay: 1,
+              fiveHourReset: NOW + 3600_000,
+              sevenDayReset: NOW + 68 * 3600_000, // lifts LAST
+              models: [{ name: 'Fable', utilization: 1, resetsAt: NOW + 10 * 3600_000 }],
+            },
+          }),
+        ]),
+        model: 'fable',
+      },
+      opts,
+    );
+    const row = out.split('\n').find((l) => l.includes('main')) as string;
+    expect(row).toContain('fable spent'); // named for the model, not the week
+    expect(row).toContain('2d 20h'); // and the honest wait, not Fable's own 10h
+  });
+
   it('names the constraint that lifts LAST, because that is when it is usable', () => {
     const out = renderDashboard(
       {

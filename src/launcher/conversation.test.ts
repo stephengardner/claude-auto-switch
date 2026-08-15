@@ -165,6 +165,17 @@ describe('stripping conversation flags', () => {
     expect(withoutConversationFlags(['--resume', '--model', 'opus'])).toEqual(['--model', 'opus']);
   });
 
+  it('takes a NAMED resume with it, not just an id', () => {
+    // `--resume` also accepts a session name or a search term. Leaving one
+    // behind turns it into a stray positional argument to Claude, which is
+    // neither what the operator typed nor anything Claude was asked for.
+    expect(withoutConversationFlags(['--resume', 'auth-refactor', '-p'])).toEqual(['-p']);
+    expect(withoutConversationFlags(['-r', 'my session', '-p'])).toEqual(['-p']);
+    expect(relaunchArgs(['--resume', 'auth-refactor'], ID)).toEqual(['--resume', ID]);
+    // Still not treated as an id: only a real UUID can be resumed exactly.
+    expect(conversationIdIn(['--resume', 'auth-refactor'])).toBeNull();
+  });
+
   it('leaves everything else in order', () => {
     expect(withoutConversationFlags(['--model', 'opus', '--continue', '-p'])).toEqual([
       '--model',
