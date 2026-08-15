@@ -44,8 +44,14 @@ export function writeFileAtomic(file: string, contents: string): void {
     }
     renameSync(temp, file);
   } catch (error) {
-    // The original survived; a stray temp file beside it should not.
-    rmSync(temp, { force: true });
+    // The original survived; a stray temp file beside it should not. Cleanup
+    // is best effort on purpose: if removing the temp file also fails, that
+    // error must not replace the one that says what actually went wrong.
+    try {
+      rmSync(temp, { force: true });
+    } catch {
+      /* the caller needs the real failure, not this one */
+    }
     throw error;
   }
 }
