@@ -145,6 +145,23 @@ if (!PTY_AVAILABLE) {
   );
 }
 
+/**
+ * The conversation a launch is in: the id it named on a fresh start, or the id
+ * it resumed. A swap must land on the SAME one it started in.
+ *
+ * `--continue` used to be enough to assert here, but that only ever meant "the
+ * most recent conversation in this directory", which is a different thread
+ * whenever two sessions share a project. What matters is the identity.
+ */
+function conversationOf(args: string[] | undefined): string | null {
+  const list = args ?? [];
+  for (const flag of ['--session-id', '--resume']) {
+    const i = list.indexOf(flag);
+    if (i >= 0 && list[i + 1]) return list[i + 1] as string;
+  }
+  return null;
+}
+
 describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against fake-claude)', () => {
   afterEach(() => {
     delete process.env.FAKE_CLAUDE_IDLE_MS;
@@ -207,7 +224,10 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(launches).toHaveLength(2); // did NOT terminate: rotated and continued
     expect(launches[0]?.marker).toBe('A');
     expect(launches[1]?.marker).toBe('B');
-    expect(launches[1]?.args).toContain('--continue');
+    // The SAME conversation, by id, not merely "the most recent one here".
+    expect(conversationOf(launches[1]?.args)).toBe(conversationOf(launches[0]?.args));
+    expect(conversationOf(launches[1]?.args)).not.toBeNull();
+    expect(launches[1]?.args).toContain('--resume');
     const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
       caps: Array<{ account: string }>;
     }).caps;
@@ -239,7 +259,9 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(launches).toHaveLength(2); // one rotation, then stable
     expect(launches[0]?.marker).toBe('A');
     expect(launches[1]?.marker).toBe('B');
-    expect(launches[1]?.args).toContain('--continue'); // same conversation continued
+    // Same conversation, identified rather than guessed at.
+    expect(conversationOf(launches[1]?.args)).toBe(conversationOf(launches[0]?.args));
+    expect(launches[1]?.args).toContain('--resume');
     const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
       caps: Array<{ account: string }>;
     }).caps;
@@ -382,8 +404,11 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(launches).toHaveLength(2); // ended and relaunched
     expect(launches[0]?.marker).toBe('A');
     expect(launches[0]?.args).not.toContain('--continue');
+    expect(launches[0]?.args).not.toContain('--resume');
     expect(launches[1]?.marker).toBe('B'); // relaunched on B
-    expect(launches[1]?.args).toContain('--continue'); // same conversation continued
+    // Same conversation, identified rather than guessed at.
+    expect(conversationOf(launches[1]?.args)).toBe(conversationOf(launches[0]?.args));
+    expect(launches[1]?.args).toContain('--resume');
   });
 
   it('starts on an account that still has the MODEL in use, not merely a working one', async () => {
@@ -567,6 +592,18 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(retry[retry.indexOf('--model') + 1]).toBe('opus');
     // And it really is the FRESH one, not another resume.
     expect(retry).not.toContain('--continue');
+    expect(retry).not.toContain('--resume');
+    // It NAMES the new conversation, so the next swap resumes this one rather
+    // than the id that has just been shown to lead nowhere.
+    const newId = conversationOf(retry);
+    expect(newId).not.toBeNull();
+    // And the RECORDED id is replaced too. That file is read in preference to
+    // the planned one, so leaving the failed id there would send the very next
+    // swap straight back to the conversation that does not exist.
+    const recorded = path.join(home, 'sessions', String(process.pid), 'conversation.json');
+    if (existsSync(recorded)) {
+      expect((JSON.parse(readFileSync(recorded, 'utf8')) as { id: string }).id).toBe(newId);
+    }
   });
 
   it('does NOT move off a model whose limit has already reset', async () => {

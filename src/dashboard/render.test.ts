@@ -344,6 +344,124 @@ describe('renderDashboard (plain)', () => {
     expect(out).toContain('disabled');
   });
 
+  it('NEVER says ready about an account whose own row shows a spent window', () => {
+    // The reported bug, in the operator's words: "how could it be ready yet 5h
+    // is capped?". The status came from ccx's ledger, which only records limits
+    // ccx was personally refused by, while the numbers beside it came from the
+    // API. Nothing compared the two, so a row could print 100% and "ready" on
+    // the same line, and the rotation planner (which reads the numbers) would
+    // meanwhile refuse to use that account.
+    const spentFiveHour = account({
+      name: 'ninetynine',
+      usage: {
+        fiveHour: 1,
+        sevenDay: 0.2,
+        fiveHourReset: NOW + 3 * 3600_000,
+        sevenDayReset: NOW + 40 * 3600_000,
+        models: [{ name: 'Fable', utilization: 0.34, resetsAt: NOW + 40 * 3600_000 }],
+      },
+    });
+    const out = renderDashboard({ ...snapshot([spentFiveHour]), model: 'fable' }, opts);
+    const row = out.split('\n').find((l) => l.includes('ninetynine')) as string;
+    expect(row).toContain('100%');
+    expect(row).not.toContain('ready');
+    expect(row).toContain('5h spent');
+    expect(row).toContain('3h 0m'); // and when it comes back
+  });
+
+  it('names the MODEL when only that is spent, since the account still works', () => {
+    // The account-wide windows are fine, so it can still serve other models.
+    // Calling it "ready" under a column reading 100% is the same lie in a
+    // smaller place.
+    const out = renderDashboard(
+      {
+        ...snapshot([
+          account({
+            name: 'maxed',
+            usage: {
+              fiveHour: 0.05,
+              sevenDay: 0.82,
+              fiveHourReset: NOW + 3600_000,
+              sevenDayReset: NOW + 40 * 3600_000,
+              models: [{ name: 'Fable', utilization: 1, resetsAt: NOW + 40 * 3600_000 }],
+            },
+          }),
+        ]),
+        model: 'fable',
+      },
+      opts,
+    );
+    const row = out.split('\n').find((l) => l.includes('maxed')) as string;
+    expect(row).toContain('fable spent');
+    expect(row).not.toContain('ready');
+  });
+
+  it('says how long until FABLE returns, even when another window lifts later', () => {
+    // Asked for directly: "when fable is out, 100%, I want to know how long
+    // until it returns". The column says 100%; the status has to answer how
+    // long. It names the model because that is what was asked about, and gives
+    // the wait until the account is genuinely usable for it again, which is
+    // when the LAST of the blocking windows lifts.
+    const out = renderDashboard(
+      {
+        ...snapshot([
+          account({
+            name: 'main',
+            usage: {
+              fiveHour: 0,
+              sevenDay: 1,
+              fiveHourReset: NOW + 3600_000,
+              sevenDayReset: NOW + 68 * 3600_000, // lifts LAST
+              models: [{ name: 'Fable', utilization: 1, resetsAt: NOW + 10 * 3600_000 }],
+            },
+          }),
+        ]),
+        model: 'fable',
+      },
+      opts,
+    );
+    const row = out.split('\n').find((l) => l.includes('main')) as string;
+    expect(row).toContain('fable spent'); // named for the model, not the week
+    expect(row).toContain('2d 20h'); // and the honest wait, not Fable's own 10h
+  });
+
+  it('names the constraint that lifts LAST, because that is when it is usable', () => {
+    const out = renderDashboard(
+      {
+        ...snapshot([
+          account({
+            name: 'both',
+            usage: {
+              fiveHour: 1,
+              sevenDay: 1,
+              fiveHourReset: NOW + 2 * 3600_000, // back soon
+              sevenDayReset: NOW + 4 * 24 * 3600_000, // the real wait
+            },
+          }),
+        ]),
+      },
+      opts,
+    );
+    const row = out.split('\n').find((l) => l.includes('both')) as string;
+    expect(row).toContain('week spent 4d');
+  });
+
+  it('says ready again once a spent window has actually reset', () => {
+    // A number past its own reset records a limit that has already lifted.
+    // Reporting it would send someone away from an account that is free.
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'lifted',
+          usage: { fiveHour: 1, sevenDay: 0.3, fiveHourReset: NOW - 60_000 },
+        }),
+      ]),
+      opts,
+    );
+    const row = out.split('\n').find((l) => l.includes('lifted')) as string;
+    expect(row).toContain('ready');
+  });
+
   it('shows recent events (last 5) when present', () => {
     const out = renderDashboard(snapshot([account()], ['e1', 'e2', 'e3', 'e4', 'e5', 'e6']), opts);
     expect(out).toContain('e6');

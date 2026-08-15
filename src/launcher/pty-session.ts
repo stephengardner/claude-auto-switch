@@ -7,12 +7,12 @@ import { writeSecretFile } from '../util/secret-file.js';
 import { normalizeExitCode } from './exit-code.js';
 import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
-import { wantsContinue } from './continue-args.js';
+import { wantsExistingConversation } from './conversation.js';
 
 export interface PtySessionOptions {
   claude: ClaudeInvoker;
   args: string[];
-  /** CLAUDE_CONFIG_DIR for the session (kept constant across swaps so --continue works). */
+  /** CLAUDE_CONFIG_DIR for the session (kept constant across swaps so the resume works). */
   configDir: string;
   /** Extra env for this launch (e.g. CLAUDE_CODE_OAUTH_TOKEN for the active account). */
   env?: Record<string, string>;
@@ -21,7 +21,7 @@ export interface PtySessionOptions {
   /**
    * Polled periodically; return an account name when the operator has picked a
    * different account mid-session, and the child is ended so the swap loop
-   * relaunches --continue on it. Return null to keep running.
+   * relaunches, resuming this conversation on it. Return null to keep running.
    */
   switchWatch?: () => string | null;
   /**
@@ -33,7 +33,7 @@ export interface PtySessionOptions {
   /**
    * Called when cap-looking text renders, with that text; resolves true ONLY if
    * the account is actually limited (verified against the API). Rendered text
-   * alone is untrustworthy: --continue and the resume picker REPLAY history,
+   * alone is untrustworthy: resuming a conversation REPLAYS history,
    * including old cap messages, and code on screen can mention rate limits.
    * When absent, a text match is trusted as-is (legacy behavior).
    */
@@ -88,13 +88,13 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     let lastHit: { reason?: string; resetAt?: number } | null = null;
     let pendingVerify: Promise<boolean> | null = null;
     let finalized = false;
-    // The "No conversation found to continue" error only matters on a --continue
+    // The "No conversation found to continue" error only matters on a resuming
     // launch, and the real one prints in the FIRST flush of output. Watching any
     // longer would let a REPLAYED conversation that merely contains that phrase
     // kill the session (the same trap as replayed cap text).
     // Shared with the retry that strips these flags, so the check that decides
     // "this was a resume" and the code that undoes a resume cannot disagree.
-    const watchNoConversation = wantsContinue(options.args);
+    const watchNoConversation = wantsExistingConversation(options.args);
     let totalOutput = 0;
 
     let weKilled = false;
@@ -125,7 +125,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
 
     // The operator can pick a different account mid-session (dashboard Enter /
     // `ccx use`); poll for that and end the child so the swap loop relaunches
-    // --continue on the chosen account, in place.
+    // resume this conversation on the chosen account, in place.
     const switchPoll = options.switchWatch
       ? setInterval(() => {
           // Housekeeping FIRST, and never behind the early return below. The
@@ -160,7 +160,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       if (capped || switching) return;
       totalOutput += data.length;
       window = (window + data).slice(-4000);
-      // A --continue with nothing to resume: signal a fresh relaunch is needed.
+      // A resume with nothing to resume: signal a fresh relaunch is needed.
       if (
         watchNoConversation &&
         totalOutput <= 6000 &&
@@ -170,7 +170,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         setTimeout(() => safeKill(), 100);
         return;
       }
-      // Cap-looking text is a TRIGGER, never a verdict. --continue and the
+      // Cap-looking text is a TRIGGER, never a verdict. A resumed conversation and the
       // resume picker replay history (old cap messages included), and code on
       // screen can mention rate limits; acting on text alone falsely capped
       // every account in turn. Verify against the API and only act when the

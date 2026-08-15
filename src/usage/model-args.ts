@@ -25,7 +25,7 @@ const MODEL_EQUALS = '--model=';
 /**
  * A model name never starts with `-`, so a token that does is the NEXT option,
  * not this flag's value. Swallowing it would quietly drop something like
- * `--continue` and change what the session does.
+ * a resume flag and change what the session does.
  */
 function isValue(token: string | undefined): token is string {
   return typeof token === 'string' && token.length > 0 && !token.startsWith('-');

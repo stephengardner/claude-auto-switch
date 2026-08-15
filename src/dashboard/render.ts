@@ -125,20 +125,95 @@ function hhmm(epochMs: number, now: number): string {
   return restHours === 0 ? `${days}d` : `${days}d ${restHours}h`;
 }
 
-/** Plain status text for an account, most-important state first. */
-function statusText(a: DashboardAccount, now: number): string {
-  if (!a.enabled) return 'disabled';
-  if (!a.loggedIn) return 'logged out';
-  if (a.cappedUntil && a.cappedUntil > now) return `capped ${hhmm(a.cappedUntil, now)}`;
-  return 'ready';
+/**
+ * What is stopping this account right now, read from the SAME numbers the row
+ * is drawing.
+ *
+ * The status used to come only from ccx's ledger, which records limits ccx
+ * itself was refused by. So an account whose five-hour window read 100% right
+ * there in its own row could still be labelled "ready", because ccx had never
+ * personally been turned away from it: the usage came from the API, the status
+ * came from the ledger, and the two were never compared. It also disagreed
+ * with the rotation planner, which uses the numbers and would have skipped
+ * that account.
+ *
+ * A window counts as spent at 100% while it is still open, which is exactly
+ * `usableCapacity`'s rule, so the table and the planner cannot drift apart.
+ */
+interface Constraint {
+  label: string;
+  until?: number | null;
 }
 
-/** A colored status dot for an account: green ready, yellow capped, red/dim otherwise. */
-function statusColor(a: DashboardAccount, now: number): string {
+function constraintsOn(a: DashboardAccount, model: string | null, now: number): Constraint[] {
+  const out: Constraint[] = [];
+  // ccx's own record of being refused. Kept separate from the numbers because
+  // it is different evidence: this one was measured by being told no.
+  if (a.cappedUntil && a.cappedUntil > now) out.push({ label: 'capped', until: a.cappedUntil });
+
+  const spent = (used: number | null | undefined, resetsAt: number | null | undefined): boolean =>
+    (effectiveUtilization(used, resetsAt, now) ?? 0) >= 1;
+
+  const u = a.usage;
+  if (u) {
+    // Account-wide windows stop everything, whatever model you are on.
+    if (spent(u.fiveHour, u.fiveHourReset)) out.push({ label: '5h', until: u.fiveHourReset });
+    if (spent(u.sevenDay, u.sevenDayReset)) out.push({ label: 'week', until: u.sevenDayReset });
+    // The model this table is showing. The account may still serve others, so
+    // this is named rather than reported as the account being out.
+    const found = model
+      ? (u.models ?? []).find((m) => m.name.toLowerCase() === model.toLowerCase())
+      : undefined;
+    if (found && spent(found.utilization, found.resetsAt)) {
+      out.push({ label: found.name.toLowerCase(), until: found.resetsAt });
+    }
+  }
+  return out;
+}
+
+/**
+ * Plain status text for an account, most-important state first.
+ *
+ * `maxWidth` bounds it because the label can be a model name, which comes from
+ * the API and can be any length. Unbounded it sets the column width itself and
+ * pushes the whole row past the edge of the terminal. What gets shortened is
+ * the LABEL, never the time: "how long until it comes back" is the reason to
+ * read this at all, and a truncated wait would be worse than a truncated name.
+ */
+function statusText(
+  a: DashboardAccount,
+  now: number,
+  model: string | null = null,
+  maxWidth = Number.MAX_SAFE_INTEGER,
+): string {
+  if (!a.enabled) return 'disabled';
+  if (!a.loggedIn) return 'logged out';
+
+  const blocking = constraintsOn(a, model, now);
+  if (blocking.length === 0) return 'ready';
+
+  // The wait is until the LAST of them lifts, because until then the account
+  // still cannot be used. Taking the earliest would promise a return that is
+  // not coming; an unknown reset time sorts last for the same reason.
+  const latest = blocking.reduce((a2, b) =>
+    (b.until ?? Number.POSITIVE_INFINITY) > (a2.until ?? Number.POSITIVE_INFINITY) ? b : a2,
+  );
+  // Name the MODEL whenever the model is one of the things blocking, even if
+  // some other window lifts later. That is the question being asked of this
+  // screen: the column says Fable is at 100%, and the thing worth knowing is
+  // how long until Fable can be used here again.
+  const named = blocking.find((c) => c.label === model?.toLowerCase()) ?? latest;
+  const when = latest.until && latest.until > now ? ` ${hhmm(latest.until, now)}` : '';
+  const tail = named.label === 'capped' ? when : ` spent${when}`;
+  const head = named.label === 'capped' ? 'capped' : named.label;
+  return `${fit(head, Math.max(3, maxWidth - tail.length))}${tail}`;
+}
+
+/** A colored status dot: green only when the account can actually be used now. */
+function statusColor(a: DashboardAccount, now: number, model: string | null = null): string {
   if (!a.enabled) return codes.dim;
   if (!a.loggedIn) return codes.red;
-  if (a.cappedUntil && a.cappedUntil > now) return codes.yellow;
-  return codes.green;
+  return constraintsOn(a, model, now).length > 0 ? codes.yellow : codes.green;
 }
 
 
@@ -261,7 +336,12 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // The model column is named after the model it is showing, so the header
   // says FABLE rather than MODEL and the row underneath is just a bar.
   const modelName = columnModel(accounts, now);
-  const statusW = Math.max('STATUS'.length, ...accounts.map((a) => statusText(a, now).length + 2));
+  // A share of the row, not whatever the longest model name happens to be.
+  const statusCap = options.width
+    ? Math.max('logged out'.length, Math.floor(options.width / 3))
+    : Number.MAX_SAFE_INTEGER;
+  const status = (a: DashboardAccount): string => statusText(a, now, modelName, statusCap);
+  const statusW = Math.max('STATUS'.length, ...accounts.map((a) => status(a).length + 2));
   // The bars give up width before anything else does.
   const barW = barWidthFor(options.width, nameW0, statusW);
   const GAUGE_W = gaugeWidth(barW);
@@ -331,8 +411,8 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     const five = pad(gauge(fiveHourNow(a, now), color, barW), 0);
     const week = pad(gauge(weekNow(a, now), color, barW), 1);
     const model = pad(gauge(modelUsedNow(a, modelName, now), color, barW), 2);
-    const dot = paint('●', statusColor(a, now), color);
-    return `${cursor}${marker} ${name}  ${five}  ${week}  ${model}  ${dot} ${statusText(a, now)}`;
+    const dot = paint('●', statusColor(a, now, modelName), color);
+    return `${cursor}${marker} ${name}  ${five}  ${week}  ${model}  ${dot} ${status(a)}`;
   });
 
   const lines = [titleLine, rule, header, ...rows, rule];

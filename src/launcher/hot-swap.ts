@@ -34,7 +34,7 @@ export interface HotSwapDeps {
   currentAccount?: () => string;
   /**
    * Run one claude session (the real impl runs it inside a PTY). `isContinue`
-   * resumes the same conversation (--continue) after a swap.
+   * resumes the same conversation, by id, after a swap.
    */
   runSession: (
     account: HotSwapAccount,
@@ -106,7 +106,7 @@ export interface HotSwapDeps {
 /**
  * Drive an interactive session with transparent hot-swap: run on a healthy
  * account, and each time it caps, swap to the next healthy account and resume
- * the SAME conversation (--continue), in place. Returns the exit code of the
+ * the SAME conversation, resumed by id, in place. Returns the exit code of the
  * session that ended normally, or 1 if every account is capped.
  *
  * This is the pure orchestration; the PTY I/O and account credential wiring are
@@ -212,7 +212,7 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
       const target = deps.resolveAccount(outcome.switchTo);
       // A manual pick overrides a prior cap-avoidance for that account.
       capped.delete(outcome.switchTo);
-      // Relaunch the SAME conversation (--continue): on the requested account if
+      // Relaunch the SAME conversation, by id: on the requested account if
       // it resolves, otherwise fall back to the current one so ending the child
       // never drops the session.
       forced = target ?? account;

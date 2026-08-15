@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
  * per-model breakdown (e.g. Fable's weekly window), each with a utilization
  * percent and a reset time.
  *
- * Rendered cap text on screen is never trusted directly (--continue and the
+ * Rendered cap text on screen is never trusted directly (a resumed conversation and the
  * resume picker replay old cap messages, and code can mention rate limits); this
  * endpoint is the ground truth used to confirm or refute a cap before switching.
  */

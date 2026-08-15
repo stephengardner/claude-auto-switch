@@ -6,6 +6,7 @@ import { hasUsableLogin, credentialFileFingerprint } from '../accounts/credentia
 import { loginIsKnownDead } from '../usage/dead-login-store.js';
 import { configHome } from '../config/paths.js';
 import { isSessionDir } from '../session/session-dir.js';
+import { rememberConversation } from '../session/conversation-store.js';
 import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
 import type { CliContext } from '../context.js';
@@ -190,8 +191,8 @@ async function wrapExisting(
   context: CliContext,
   command: string,
   options: StatuslineOptions,
+  stdin: string,
 ): Promise<string> {
-  const stdin = await readStdin();
   let existing = '';
   try {
     existing = await runCapturing(command, stdin);
@@ -258,11 +259,37 @@ export async function statuslineCommand(
     context.out(SNIPPET);
     return 0;
   }
+  // Read once, here: Claude's payload can only be consumed a single time, and
+  // it carries the one thing nothing else can tell us, which conversation this
+  // session is actually in.
+  const input = await readStdin();
+  captureConversation(context, input);
+
   if (options.wrap) {
-    context.out(await wrapExisting(context, options.wrap, options));
+    context.out(await wrapExisting(context, options.wrap, options, input));
     return 0;
   }
 
   context.out(statuslineSegment(context, options));
   return 0;
+}
+
+/**
+ * Record the conversation Claude says this session is in.
+ *
+ * The only place ccx is ever told this. An account swap has to resume the same
+ * thread, and "the most recent conversation in this directory" is a different
+ * thing whenever two sessions share a project.
+ */
+function captureConversation(context: CliContext, input: string): void {
+  try {
+    const configDir = (context.ctx.env ?? process.env).CLAUDE_CONFIG_DIR;
+    if (!configDir || !isSessionDir(configDir, context.ctx)) return;
+    const payload = JSON.parse(input) as { session_id?: unknown };
+    if (typeof payload.session_id === 'string' && payload.session_id !== '') {
+      rememberConversation(configDir, payload.session_id);
+    }
+  } catch {
+    /* no payload, or not JSON: the planned id still carries the run */
+  }
 }
