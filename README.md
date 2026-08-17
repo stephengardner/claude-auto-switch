@@ -15,7 +15,7 @@ ours, and no telemetry.
 
 ## Install and go
 
-```
+```sh
 npm install -g claude-auto-switch
 
 ccx add work        # log in an account (opens your browser)
@@ -43,7 +43,7 @@ account you are on. `ccx off` undoes all three.
 
 After `ccx on`, just run `claude` exactly as before:
 
-```
+```sh
 claude
 ```
 
@@ -67,7 +67,7 @@ Running out of room is much less annoying when you can see it coming.
 **In Claude itself.** `ccx on` puts the account and its remaining room into
 Claude's own status line, so every session shows where you stand:
 
-```
+```sh
 work Fable 87% left              plenty of room
 work Fable 22% left              getting low
 ! work Fable spent resets 10h    out, and when it comes back
@@ -103,7 +103,7 @@ rename one, `l` to sign one in again, `e` to enable or disable, `r` to rotate.
 It also answers the question the numbers are really being read for, on the
 `next →` line:
 
-```
+```sh
 next → staying here, on fable (46% left)
 next → over on phx, on fable (80% left)
 next → staying here, on opus (changed)
@@ -122,7 +122,7 @@ left, whether it can be used right now and when it comes back, and where
 rotation goes next. It is the same view the live dashboard draws, so the two
 cannot disagree.
 
-```
+```sh
 ccx state
 ```
 
@@ -237,7 +237,7 @@ Everything works with no config. To tune it, add an optional
 `ccx models` shows and sets this; the config keys are there if you prefer to
 edit the file.
 
-```
+```sh
 ccx models                            what you have now
 ccx models fable opus                 use Fable, fall back to Opus
 ccx models fable                      only ever Fable, never fall back
@@ -307,7 +307,7 @@ area of Anthropic's terms, so use your own judgment.
 
 ## Development
 
-```
+```sh
 npm run verify   # typecheck + lint + tests
 ```
 

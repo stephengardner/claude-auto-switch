@@ -80,6 +80,53 @@ describe('the state another program reads', () => {
     expect(a?.status.until).toBe(NOW + 10 * HOUR);
   });
 
+  it('matches a model by what it IS, not by how it is spelled', () => {
+    // The API calls the window `Fable`; a session names the same model
+    // `claude-fable-5[1m]`. Compared as text those are different, and a spent
+    // model would read as ready, which is the exact failure this whole status
+    // rule exists to prevent.
+    for (const spelling of ['fable', 'Fable', 'claude-fable-5', 'claude-fable-5[1m]']) {
+      const payload = toStatePayload(
+        snapshot(
+          [
+            account({
+              usage: {
+                fiveHour: 0.1,
+                sevenDay: 0.2,
+                models: [{ name: 'Fable', utilization: 1, resetsAt: NOW + 10 * HOUR }],
+              },
+            }),
+          ],
+          { model: spelling },
+        ),
+      );
+      const status = payload.accounts[0]?.status;
+      expect(status?.state, `spelled ${spelling}`).toBe('blocked');
+      expect(status?.label, `spelled ${spelling}`).toBe('fable');
+      expect(status?.until, `spelled ${spelling}`).toBe(NOW + 10 * HOUR);
+    }
+  });
+
+  it('does not confuse a DIFFERENT model for the one in use', () => {
+    // Fable spent while running Opus says nothing about this session, and
+    // calling that blocked would be the mirror image of the same mistake.
+    const payload = toStatePayload(
+      snapshot(
+        [
+          account({
+            usage: {
+              fiveHour: 0.1,
+              sevenDay: 0.2,
+              models: [{ name: 'Fable', utilization: 1, resetsAt: NOW + 10 * HOUR }],
+            },
+          }),
+        ],
+        { model: 'claude-opus-5[1m]' },
+      ),
+    );
+    expect(payload.accounts[0]?.status.state).toBe('ready');
+  });
+
   it('lists EVERYTHING blocking, not only the one it names', () => {
     // The name answers "when can I use this"; the list answers "why". A UI
     // that wants to explain the wait needs both.

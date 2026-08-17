@@ -1,4 +1,5 @@
 import { effectiveUtilization } from '../usage/window-open.js';
+import { normalizeModel } from '../usage/model-preference.js';
 import type { DashboardAccount } from './render.js';
 
 /**
@@ -64,8 +65,15 @@ export function constraintsOn(
     if (spent(u.sevenDay, u.sevenDayReset)) out.push({ label: 'week', until: u.sevenDayReset });
     // The model being asked about. The account may still serve others, so this
     // is named rather than reported as the account being out entirely.
-    const found = model
-      ? (u.models ?? []).find((m) => m.name.toLowerCase() === model.toLowerCase())
+    //
+    // Matched through normalizeModel, not by lowercasing: the API calls a
+    // window `Fable` while a session names the same model
+    // `claude-fable-5[1m]`, and comparing those as text says they are
+    // different. A spent model would then read as ready, which is the exact
+    // failure this whole status rule exists to prevent.
+    const key = model ? normalizeModel(model) : null;
+    const found = key
+      ? (u.models ?? []).find((m) => normalizeModel(m.name) === key)
       : undefined;
     if (found && spent(found.utilization, found.resetsAt)) {
       out.push({ label: found.name.toLowerCase(), until: found.resetsAt });
@@ -97,7 +105,8 @@ export function accountStatus(
   // Name the MODEL whenever the model is one of the things blocking, even if
   // something else lifts later. That is the question being asked: the column
   // says Fable is at 100%, and what matters is when Fable can be used again.
-  const named = constraints.find((c) => c.label === model?.toLowerCase()) ?? latest;
+  const modelKey = model ? normalizeModel(model) : null;
+  const named = constraints.find((c) => modelKey && normalizeModel(c.label) === modelKey) ?? latest;
   return {
     state: 'blocked',
     constraints,

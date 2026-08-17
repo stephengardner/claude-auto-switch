@@ -22,6 +22,13 @@ export async function listCommand(
 ): Promise<number> {
   const accounts = listAccounts(context.ctx);
   if (accounts.length === 0) {
+    // A reader asking for JSON gets JSON, even when the answer is "nothing".
+    // Prose here is a parse error at the worst possible moment: first run,
+    // before any account exists.
+    if (context.json) {
+      context.out(JSON.stringify({ schemaVersion: 1, accounts: [] }, null, 2));
+      return 0;
+    }
     context.out('no accounts registered (run: ccx add <name>)');
     return 0;
   }

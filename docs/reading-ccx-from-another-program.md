@@ -12,7 +12,7 @@ Use the commands below instead. They are a contract; the directory layout is not
 
 ## Everything, in one read
 
-```
+```sh
 ccx state
 ```
 
@@ -82,7 +82,7 @@ window look expired.
 
 ## Acting on it
 
-```
+```sh
 ccx use <name>       # switch the active account
 ccx rotate           # move to the next account with room
 ccx enable <name>    # put an account back in rotation
@@ -97,7 +97,7 @@ These are ordinary commands with exit codes: zero means it happened.
 Every machine-readable output carries `schemaVersion` and wraps its rows, so you
 never have to remember which ones do:
 
-```
+```sh
 ccx status --json    # { schemaVersion, accounts: [...] }  health per account
 ccx usage --json     # { schemaVersion, accounts: {...} }  raw usage windows
 ccx list --json      # { schemaVersion, accounts: [...] }  the registry
