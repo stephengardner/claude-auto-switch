@@ -13,6 +13,13 @@ import type { CliContext } from '../context.js';
 export async function usageCommand(context: CliContext): Promise<number> {
   const accounts = listAccounts(context.ctx);
   if (accounts.length === 0) {
+    // A reader asking for JSON gets JSON, even when the answer is "nothing".
+    // Prose here is a parse error at the worst possible moment: first run,
+    // before any account exists.
+    if (context.json) {
+      context.out(JSON.stringify({ schemaVersion: 1, accounts: {} }, null, 2));
+      return 0;
+    }
     context.out('no accounts registered (run: ccx add <name>)');
     return 0;
   }
@@ -20,7 +27,10 @@ export async function usageCommand(context: CliContext): Promise<number> {
   const now = Date.now();
 
   if (context.json) {
-    context.out(JSON.stringify(snap.accounts, null, 2));
+  // Wrapped rather than bare, so every machine-readable output on this CLI has
+  // the same envelope. Two of five carrying a schemaVersion was a trap for
+  // whoever wrote against the other three.
+    context.out(JSON.stringify({ schemaVersion: 1, accounts: snap.accounts }, null, 2));
     return 0;
   }
 

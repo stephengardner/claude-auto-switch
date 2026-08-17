@@ -75,6 +75,7 @@ export interface RenderOptions {
 import { codes, paint, shadeForUsed } from '../ui/style.js';
 import { bar } from '../usage/report.js';
 import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
+import { accountStatus } from './account-status.js';
 
 /**
  * How wide each window's bar is drawn.
@@ -128,53 +129,7 @@ function hhmm(epochMs: number, now: number): string {
 }
 
 /**
- * What is stopping this account right now, read from the SAME numbers the row
- * is drawing.
- *
- * The status used to come only from ccx's ledger, which records limits ccx
- * itself was refused by. So an account whose five-hour window read 100% right
- * there in its own row could still be labelled "ready", because ccx had never
- * personally been turned away from it: the usage came from the API, the status
- * came from the ledger, and the two were never compared. It also disagreed
- * with the rotation planner, which uses the numbers and would have skipped
- * that account.
- *
- * A window counts as spent at 100% while it is still open, which is exactly
- * `usableCapacity`'s rule, so the table and the planner cannot drift apart.
- */
-interface Constraint {
-  label: string;
-  until?: number | null;
-}
-
-function constraintsOn(a: DashboardAccount, model: string | null, now: number): Constraint[] {
-  const out: Constraint[] = [];
-  // ccx's own record of being refused. Kept separate from the numbers because
-  // it is different evidence: this one was measured by being told no.
-  if (a.cappedUntil && a.cappedUntil > now) out.push({ label: 'capped', until: a.cappedUntil });
-
-  const spent = (used: number | null | undefined, resetsAt: number | null | undefined): boolean =>
-    (effectiveUtilization(used, resetsAt, now) ?? 0) >= 1;
-
-  const u = a.usage;
-  if (u) {
-    // Account-wide windows stop everything, whatever model you are on.
-    if (spent(u.fiveHour, u.fiveHourReset)) out.push({ label: '5h', until: u.fiveHourReset });
-    if (spent(u.sevenDay, u.sevenDayReset)) out.push({ label: 'week', until: u.sevenDayReset });
-    // The model this table is showing. The account may still serve others, so
-    // this is named rather than reported as the account being out.
-    const found = model
-      ? (u.models ?? []).find((m) => m.name.toLowerCase() === model.toLowerCase())
-      : undefined;
-    if (found && spent(found.utilization, found.resetsAt)) {
-      out.push({ label: found.name.toLowerCase(), until: found.resetsAt });
-    }
-  }
-  return out;
-}
-
-/**
- * Plain status text for an account, most-important state first.
+ * The status as a line of text, from the shared rule.
  *
  * `maxWidth` bounds it because the label can be a model name, which comes from
  * the API and can be any length. Unbounded it sets the column width itself and
@@ -188,34 +143,24 @@ function statusText(
   model: string | null = null,
   maxWidth = Number.MAX_SAFE_INTEGER,
 ): string {
-  if (!a.enabled) return 'disabled';
-  if (!a.loggedIn) return 'logged out';
+  const status = accountStatus(a, model, now);
+  if (status.state === 'disabled') return 'disabled';
+  if (status.state === 'logged-out') return 'logged out';
+  if (status.state === 'ready') return 'ready';
 
-  const blocking = constraintsOn(a, model, now);
-  if (blocking.length === 0) return 'ready';
-
-  // The wait is until the LAST of them lifts, because until then the account
-  // still cannot be used. Taking the earliest would promise a return that is
-  // not coming; an unknown reset time sorts last for the same reason.
-  const latest = blocking.reduce((a2, b) =>
-    (b.until ?? Number.POSITIVE_INFINITY) > (a2.until ?? Number.POSITIVE_INFINITY) ? b : a2,
-  );
-  // Name the MODEL whenever the model is one of the things blocking, even if
-  // some other window lifts later. That is the question being asked of this
-  // screen: the column says Fable is at 100%, and the thing worth knowing is
-  // how long until Fable can be used here again.
-  const named = blocking.find((c) => c.label === model?.toLowerCase()) ?? latest;
-  const when = latest.until && latest.until > now ? ` ${hhmm(latest.until, now)}` : '';
-  const tail = named.label === 'capped' ? when : ` spent${when}`;
-  const head = named.label === 'capped' ? 'capped' : named.label;
+  const when = status.until ? ` ${hhmm(status.until, now)}` : '';
+  const capped = status.label === 'capped';
+  const tail = capped ? when : ` spent${when}`;
+  const head = capped ? 'capped' : (status.label as string);
   return `${fit(head, Math.max(3, maxWidth - tail.length))}${tail}`;
 }
 
 /** A colored status dot: green only when the account can actually be used now. */
 function statusColor(a: DashboardAccount, now: number, model: string | null = null): string {
-  if (!a.enabled) return codes.dim;
-  if (!a.loggedIn) return codes.red;
-  return constraintsOn(a, model, now).length > 0 ? codes.yellow : codes.green;
+  const state = accountStatus(a, model, now).state;
+  if (state === 'disabled') return codes.dim;
+  if (state === 'logged-out') return codes.red;
+  return state === 'blocked' ? codes.yellow : codes.green;
 }
 
 
