@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.47.0]
+
+### Added
+
+- **`ccx state`: everything ccx knows, as JSON, for another program to read.**
+  Every account, what it has left, whether it can be used right now and when it
+  comes back, and where rotation goes next. It runs the same code path the live
+  dashboard draws from, so a tool reading ccx and the screen in front of you
+  can never describe different states.
+
+  The usable-or-not answer travels with the numbers rather than being left for
+  the reader to work out. That rule is easy to get subtly wrong and the failure
+  is invisible, which this project knows because it got it wrong itself: the
+  dashboard printed "ready" beside a window reading 100% while rotation refused
+  to touch that account.
+
+  If you are building on ccx, read
+  [docs/reading-ccx-from-another-program.md](docs/reading-ccx-from-another-program.md).
+  The files under `~/.claude-auto-switch/` are ccx's own bookkeeping and change
+  shape between releases; the commands are the contract.
+
+### Changed
+
+- **Every machine-readable output now carries a `schemaVersion`** and wraps its
+  rows: `status`, `usage` and `list` join `doctor` and `history`. Two of five
+  having one was a trap for whoever wrote against the other three. `--json` on
+  those three now returns `{ schemaVersion, accounts }` rather than a bare
+  array or map, and answers with an empty envelope rather than prose when no
+  account has been added yet.
+
 ## [1.46.0]
 
 ### Fixed
