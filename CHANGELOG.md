@@ -12,7 +12,8 @@ semantic versioning.
   Every account, what it has left, whether it can be used right now and when it
   comes back, and where rotation goes next. It runs the same code path the live
   dashboard draws from, so a tool reading ccx and the screen in front of you
-  can never describe different states.
+  judge the state by the same rules. Each call is still a snapshot of the
+  moment it was taken.
 
   The usable-or-not answer travels with the numbers rather than being left for
   the reader to work out. That rule is easy to get subtly wrong and the failure

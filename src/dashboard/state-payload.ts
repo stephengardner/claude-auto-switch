@@ -6,10 +6,11 @@ import type { DashboardSnapshot } from './render.js';
  *
  * The dashboard's snapshot is already a render-agnostic view of everything ccx
  * knows, so this is that same snapshot in a shape a program can depend on
- * rather than a shape a terminal can paint. Built from the identical data the
- * live screen is built from, which is the point: a second surface that
- * assembled its own view would drift from the first, and it would drift on
- * exactly the thing that matters, which account can be used right now.
+ * rather than a shape a terminal can paint. Built the same way the live screen is,
+ * which is the point: a second surface deciding these things for itself would
+ * drift from the first, and it would drift on exactly the thing that matters,
+ * which account can be used right now. Each call is still a snapshot of its
+ * own moment; what is shared is the rules, not the reading.
  *
  * The derived status travels WITH the numbers on purpose. A consumer that
  * re-derived "is this account usable" from the raw windows would be

@@ -16,8 +16,9 @@ Use the commands below instead. They are a contract; the directory layout is not
 ccx state
 ```
 
-Always JSON, no flag needed. This is the same view the live dashboard draws, so
-the two cannot disagree.
+Always JSON, no flag needed. It is built the same way the live dashboard is, so
+both judge the state by the same rules. Each call is a snapshot of the moment it
+was taken, not a subscription: poll it if you want to keep up.
 
 ```json
 {
