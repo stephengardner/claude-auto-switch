@@ -12,6 +12,9 @@ export async function statusCommand(context: CliContext, name?: string): Promise
   }
 
   const healths = await probeAll(targets, { claude: getClaude(context) });
-  context.out(JSON.stringify(healths, null, 2));
+  // Wrapped rather than bare, so every machine-readable output on this CLI has
+  // the same envelope. Two of five carrying a schemaVersion was a trap for
+  // whoever wrote against the other three.
+  context.out(JSON.stringify({ schemaVersion: 1, accounts: healths }, null, 2));
   return 0;
 }

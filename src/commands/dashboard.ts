@@ -17,6 +17,7 @@ import { assertProfileName } from '../util/names.js';
 import { secureMkdir } from '../util/secret-file.js';
 import { appendEvent, readEvents, formatEvent } from '../events/log.js';
 import { ccxVersion } from '../util/version.js';
+import { toStatePayload, STATE_SCHEMA_VERSION } from '../dashboard/state-payload.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -33,6 +34,15 @@ export interface DashboardOptions {
   once?: boolean;
   /** Refresh interval in seconds. */
   interval?: string;
+  /**
+   * Emit the state as JSON instead of drawing it, and exit.
+   *
+   * Deliberately the same code path as the screen rather than a second one
+   * beside it. Two surfaces assembling their own view of ccx would drift, and
+   * they would drift on the thing that matters most: which account can
+   * actually be used right now.
+   */
+  json?: boolean;
 }
 
 const HEALTH_REPROBE_MS = 20_000;
@@ -53,6 +63,27 @@ export async function dashboardCommand(
 ): Promise<number> {
   const initial = listAccounts(context.ctx);
   if (initial.length === 0) {
+    // A reader asking for JSON gets JSON, even when the answer is "nothing".
+    // Prose here would be a parse error at the worst possible moment: first run.
+    if (options.json) {
+      context.out(
+        JSON.stringify(
+          {
+            schemaVersion: STATE_SCHEMA_VERSION,
+            ccxVersion: ccxVersion(),
+            now: Date.now(),
+            active: null,
+            preferredModel: null,
+            nextUp: null,
+            accounts: [],
+            events: [],
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
     context.out('no accounts registered (run: ccx add <name>)');
     return 0;
   }
@@ -176,6 +207,11 @@ export async function dashboardCommand(
       ),
     });
     return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}) };
+  }
+
+  if (options.json) {
+    context.out(JSON.stringify(toStatePayload(build()), null, 2));
+    return 0;
   }
 
   if (options.once) {

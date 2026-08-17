@@ -68,9 +68,20 @@ program
   .alias('watch')
   .description('live account dashboard (auto-refreshing)')
   .option('--once', 'print a single frame and exit')
+  .option('--json', 'emit the state as JSON instead of drawing it')
   .option('--interval <seconds>', 'refresh interval in seconds')
-  .action(async (opts: { once?: boolean; interval?: string }) => {
+  .action(async (opts: { once?: boolean; json?: boolean; interval?: string }) => {
     process.exitCode = await dashboardCommand(context(), opts);
+  });
+
+// The same thing the dashboard draws, for something other than a terminal to
+// read. A separate name because that is what a caller is looking for, but the
+// same code path, so the two can never disagree about the state they describe.
+program
+  .command('state')
+  .description('everything ccx knows, as JSON, for another program to read')
+  .action(async () => {
+    process.exitCode = await dashboardCommand(context(), { json: true });
   });
 
 program

@@ -51,7 +51,10 @@ export async function listCommand(
   });
 
   if (context.json) {
-    context.out(JSON.stringify(rows, null, 2));
+  // Wrapped rather than bare, so every machine-readable output on this CLI has
+  // the same envelope. Two of five carrying a schemaVersion was a trap for
+  // whoever wrote against the other three.
+    context.out(JSON.stringify({ schemaVersion: 1, accounts: rows }, null, 2));
     return 0;
   }
 

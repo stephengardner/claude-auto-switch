@@ -20,7 +20,10 @@ export async function usageCommand(context: CliContext): Promise<number> {
   const now = Date.now();
 
   if (context.json) {
-    context.out(JSON.stringify(snap.accounts, null, 2));
+  // Wrapped rather than bare, so every machine-readable output on this CLI has
+  // the same envelope. Two of five carrying a schemaVersion was a trap for
+  // whoever wrote against the other three.
+    context.out(JSON.stringify({ schemaVersion: 1, accounts: snap.accounts }, null, 2));
     return 0;
   }
 

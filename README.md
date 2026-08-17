@@ -115,6 +115,22 @@ will land, which model you will be on, and whether the model is about to change.
 No other tool can say it: it needs your usage, your policy and what this run has
 already spent, together.
 
+## Building something on top of it
+
+`ccx state` prints everything ccx knows as JSON: every account, what it has
+left, whether it can be used right now and when it comes back, and where
+rotation goes next. It is the same view the live dashboard draws, so the two
+cannot disagree.
+
+```
+ccx state
+```
+
+That is the supported way to read ccx from another program. The files under
+`~/.claude-auto-switch/` are ccx's own bookkeeping and change shape between
+releases. See [reading ccx from another
+program](docs/reading-ccx-from-another-program.md).
+
 ## What you get
 
 - **Switching on a real limit, not a guess.** Claude's limit message only starts

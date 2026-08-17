@@ -43,8 +43,15 @@ function setup(names: string[]) {
 const allSignedIn = (accounts: Array<{ name: string }>) =>
   Promise.resolve(accounts.map((a) => ({ name: a.name, loggedIn: true }))) as never;
 
-const rows = (lines: string[]): Array<{ name: string; loggedIn: string }> =>
-  JSON.parse(lines.join('\n')) as Array<{ name: string; loggedIn: string }>;
+/** The rows out of the JSON envelope every machine-readable output now uses. */
+const rows = (lines: string[]): Array<{ name: string; loggedIn: string }> => {
+  const payload = JSON.parse(lines.join('\n')) as {
+    schemaVersion: number;
+    accounts: Array<{ name: string; loggedIn: string }>;
+  };
+  expect(payload.schemaVersion).toBe(1);
+  return payload.accounts;
+};
 
 describe('ccx list', () => {
   it('shows a refused login as NOT logged in, whatever the probe says', async () => {
