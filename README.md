@@ -119,8 +119,8 @@ already spent, together.
 
 `ccx state` prints everything ccx knows as JSON: every account, what it has
 left, whether it can be used right now and when it comes back, and where
-rotation goes next. It is the same view the live dashboard draws, so the two
-cannot disagree.
+rotation goes next. It is built the same way the live dashboard is, so both
+judge the state by the same rules.
 
 ```sh
 ccx state
