@@ -148,3 +148,37 @@ describe('the usage-credits block', () => {
     expect(r.creditsCarryPastLimit).toBeUndefined();
   });
 });
+
+describe('credits when the endpoint omits the spend cap', () => {
+  const body = (extra: Record<string, unknown>) => ({
+    five_hour: { utilization: 0, resets_at: null },
+    seven_day: { utilization: 100, resets_at: '2026-08-24T23:59:59Z' },
+    extra_usage: extra,
+    limits: [{ kind: 'weekly_all', percent: 100, severity: 'critical', is_active: true }],
+  });
+
+  // Deliberate, and pinned here so it cannot be changed by accident.
+  //
+  // `is_enabled: true` is the endpoint affirmatively saying extra usage is on.
+  // `spend_limit_reached` is a secondary guard, and treating its ABSENCE as
+  // "cap reached" would mean that the day the field stops being sent, every
+  // account with credits silently starts being capped account-wide again. That
+  // is the failure this whole change exists to remove, and it would come back
+  // without a single test going red.
+  //
+  // The two directions are not symmetric. Wrongly believing credits carry an
+  // account costs one attempt that the server refuses. Wrongly believing they
+  // do not takes a working account out of rotation for hours.
+  it('still treats enabled credits as carrying when the field is omitted', async () => {
+    const r = await probeUsage(credsFile(), usageFetch(body({ is_enabled: true })));
+    expect(r.creditsCarryPastLimit).toBe(true);
+  });
+
+  it('still treats enabled credits as carrying when the field is null', async () => {
+    const r = await probeUsage(
+      credsFile(),
+      usageFetch(body({ is_enabled: true, spend_limit_reached: null })),
+    );
+    expect(r.creditsCarryPastLimit).toBe(true);
+  });
+});

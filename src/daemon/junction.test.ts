@@ -39,6 +39,9 @@ describe('junction', () => {
     mkdirSync(real);
     writeFileSync(path.join(real, 'settings.json'), '{}', 'utf8');
     expect(() => setTarget(real, path.join(b, 'a'))).toThrow(/refusing/);
+    // Throwing is not the point; SURVIVING is. A regression that removed the
+    // directory and then threw would pass on the throw assertion alone.
+    expect(existsSync(path.join(real, 'settings.json'))).toBe(true);
   });
 
   it('replaces an EMPTY real directory, because there is nothing to lose', () => {

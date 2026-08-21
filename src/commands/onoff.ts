@@ -60,10 +60,15 @@ export function onCommand(context: CliContext, options: ShimOptions = {}): numbe
       // error escape reported a raw stack trace instead of what went wrong,
       // while making a completed setup look like it had done nothing.
       try {
-        context.out(enableEditor(context, editor).message);
+        // The RESULT, not just the absence of a throw: enableEditor reports an
+        // expected failure as { ok: false }, so reading only exceptions let a
+        // genuine failure exit 0 and report success.
+        const result = enableEditor(context, editor);
+        context.out(result.message);
+        if (!result.ok) editorFailed = true;
       } catch (err) {
         editorFailed = true;
-        context.out(`${editor}: not set up (${(err as Error).message})`);
+        context.out(`${editor}: not set up (${thrownReason(err)})`);
       }
     }
   }
@@ -125,4 +130,23 @@ export function offCommand(context: CliContext, options: ShimOptions = {}): numb
     }
   }
   return 0;
+}
+
+/**
+ * A readable reason out of anything that can be thrown.
+ *
+ * Anything at all can be thrown, so an `as Error` assertion is a guess: a
+ * thrown string prints "undefined" and a thrown null throws a TypeError from
+ * inside the handler that exists to keep the command alive.
+ */
+export function thrownReason(err: unknown): string {
+  // An Error answers for itself, INCLUDING when it has nothing to say: falling
+  // through to String() for a blank one yields the bare word "Error", which
+  // reads like a reason and is not one.
+  if (err instanceof Error) {
+    const message = err.message.trim();
+    return message.length > 0 ? message : 'no reason given';
+  }
+  const text = String(err ?? '').trim();
+  return text.length > 0 && text !== '[object Object]' ? text : 'no reason given';
 }
