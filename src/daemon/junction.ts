@@ -49,7 +49,15 @@ export function setTarget(linkPath: string, targetDir: string, ops: JunctionOps 
     stat = null;
   }
   if (stat && !stat.isSymbolicLink()) {
-    throw new Error(`refusing to replace non-link path: ${linkPath}`);
+    // An EMPTY directory holds nothing that could be lost, and refusing on one
+    // is not protection, it is an outage: a left-behind empty "editor-active"
+    // folder made setup throw a stack trace and stop, after the shell shim and
+    // status line had already been installed. Anything with contents, or a real
+    // file, is still refused, because that could be a real config folder.
+    if (!(stat.isDirectory() && isEmptyDirectory(linkPath))) {
+      throw new Error(`refusing to replace non-link path: ${linkPath}`);
+    }
+    fs.rmdirSync(linkPath);
   }
 
   const platform = ops.platform ?? process.platform;
@@ -70,4 +78,13 @@ export function removeTarget(linkPath: string): void {
     throw new Error(`refusing to remove non-link path: ${linkPath}`);
   }
   removeLink(linkPath);
+}
+
+/** True only when the path is a directory with no entries at all. */
+function isEmptyDirectory(dir: string): boolean {
+  try {
+    return fs.readdirSync(dir).length === 0;
+  } catch {
+    return false;
+  }
 }

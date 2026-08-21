@@ -52,12 +52,22 @@ export function onCommand(context: CliContext, options: ShimOptions = {}): numbe
     context.out(statuslineMessage(installStatusline(context.ctx)));
   }
 
+  let editorFailed = false;
   if (options.editor !== false) {
     for (const editor of detectEditors(context.ctx)) {
-      context.out(enableEditor(context, editor).message);
+      // One editor failing must not take the whole command down. By this point
+      // the shell shim and status line are already installed, and letting the
+      // error escape reported a raw stack trace instead of what went wrong,
+      // while making a completed setup look like it had done nothing.
+      try {
+        context.out(enableEditor(context, editor).message);
+      } catch (err) {
+        editorFailed = true;
+        context.out(`${editor}: not set up (${(err as Error).message})`);
+      }
     }
   }
-  return 0;
+  return editorFailed ? 1 : 0;
 }
 
 /**
