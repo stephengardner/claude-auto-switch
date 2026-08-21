@@ -3,6 +3,7 @@ import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-
 import { detectEditors } from '../editor/settings.js';
 import { enableEditor, disableEditor } from './editor.js';
 import { installStatusline, removeStatusline } from '../statusline/settings-install.js';
+import { thrownReason } from '../util/thrown-reason.js';
 import type { CliContext } from '../context.js';
 
 export interface ShimOptions {
@@ -130,23 +131,4 @@ export function offCommand(context: CliContext, options: ShimOptions = {}): numb
     }
   }
   return 0;
-}
-
-/**
- * A readable reason out of anything that can be thrown.
- *
- * Anything at all can be thrown, so an `as Error` assertion is a guess: a
- * thrown string prints "undefined" and a thrown null throws a TypeError from
- * inside the handler that exists to keep the command alive.
- */
-export function thrownReason(err: unknown): string {
-  // An Error answers for itself, INCLUDING when it has nothing to say: falling
-  // through to String() for a blank one yields the bare word "Error", which
-  // reads like a reason and is not one.
-  if (err instanceof Error) {
-    const message = err.message.trim();
-    return message.length > 0 ? message : 'no reason given';
-  }
-  const text = String(err ?? '').trim();
-  return text.length > 0 && text !== '[object Object]' ? text : 'no reason given';
 }
