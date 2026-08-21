@@ -169,7 +169,11 @@ function decideFromProbe(result: LimitProbeResult, modelInUse: string | null): C
   // reached by assumption (any "limited" verdict without a model became
   // account-wide), which locked out an account with 2% of its five-hour window
   // used because its Fable was gone.
-  const accountWindow = spentAccountWindow(result);
+  // Usage credits carry the account past its plan limit, so a spent plan window
+  // is not the account being out of room. Missing this is how an operator who
+  // had bought credits was told every account had hit its limit, and could not
+  // start Claude at all.
+  const accountWindow = result.creditsCarryPastLimit ? null : spentAccountWindow(result);
   if (accountWindow) {
     return { limited: true, ...accountWindow, ...(result.detail ? { detail: result.detail } : {}) };
   }

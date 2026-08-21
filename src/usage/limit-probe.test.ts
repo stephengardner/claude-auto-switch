@@ -102,3 +102,49 @@ describe('probeLimit verdict', () => {
     expect((await probeLimit(credsFile(), '', boom)).verdict).toBe('unknown');
   });
 });
+
+describe('the usage-credits block', () => {
+  /** The real shape returned by the endpoint, trimmed to what matters here. */
+  const withCredits = (extra: Record<string, unknown> | null) => ({
+    five_hour: { utilization: 0, resets_at: null },
+    seven_day: { utilization: 100, resets_at: '2026-08-24T23:59:59Z' },
+    extra_usage: extra,
+    limits: [{ kind: 'weekly_all', percent: 100, severity: 'critical', is_active: true }],
+  });
+
+  it('reports that credits carry the account when they are on', async () => {
+    const r = await probeUsage(credsFile(), usageFetch(withCredits({
+      is_enabled: true,
+      spend_limit_reached: false,
+      monthly_limit: 50000,
+      used_credits: 25511,
+    })));
+    expect(r.creditsCarryPastLimit).toBe(true);
+  });
+
+  it('does not, once the spend cap is reached', async () => {
+    // Credits that cannot be spent carry nothing.
+    const r = await probeUsage(credsFile(), usageFetch(withCredits({
+      is_enabled: true,
+      spend_limit_reached: true,
+    })));
+    expect(r.creditsCarryPastLimit).toBeUndefined();
+  });
+
+  it('does not when they are switched off, which is the common case', async () => {
+    // Taken from a real response: enabled false with disabled_reason set, even
+    // though credits had been bought before.
+    const r = await probeUsage(credsFile(), usageFetch(withCredits({
+      is_enabled: false,
+      disabled_reason: 'out_of_credits',
+      credits_ever_enabled: true,
+      user_disabled: false,
+    })));
+    expect(r.creditsCarryPastLimit).toBeUndefined();
+  });
+
+  it('does not when the endpoint says nothing about credits at all', async () => {
+    const r = await probeUsage(credsFile(), usageFetch(withCredits(null)));
+    expect(r.creditsCarryPastLimit).toBeUndefined();
+  });
+});

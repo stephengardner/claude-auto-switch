@@ -45,6 +45,13 @@ export interface LimitProbeResult {
   sevenDayReset?: number;
   /** Per-model weekly windows (Fable, Opus, ...). */
   models?: ModelWindow[];
+  /**
+   * True when usage credits will carry this account PAST its plan limit.
+   *
+   * A spent plan window then says nothing about whether work will be served, so
+   * it must not be read as the account being out of room.
+   */
+  creditsCarryPastLimit?: boolean;
   detail?: string;
 }
 
@@ -72,9 +79,16 @@ interface UsageLimit {
   is_active?: boolean | null;
   scope?: { model?: { display_name?: string | null } | null } | null;
 }
+/** The "usage credits" block: paid usage beyond the plan's included limits. */
+interface ExtraUsage {
+  is_enabled?: boolean | null;
+  /** True once the spend cap is reached, at which point credits stop covering. */
+  spend_limit_reached?: boolean | null;
+}
 interface UsageResponse {
   five_hour?: UsageWindow | null;
   seven_day?: UsageWindow | null;
+  extra_usage?: ExtraUsage | null;
   limits?: UsageLimit[] | null;
 }
 
@@ -145,8 +159,15 @@ export async function probeLimit(
         ...(l.severity ? { severity: l.severity } : {}),
       }));
 
+    // Credits only carry the account while they are switched ON and the spend
+    // cap has not been reached. Either one missing and a spent plan window
+    // really does mean no more work.
+    const credits = data.extra_usage;
+    const creditsCarry = credits?.is_enabled === true && credits.spend_limit_reached !== true;
+
     const usage: LimitProbeResult = {
       verdict: 'allowed',
+      ...(creditsCarry ? { creditsCarryPastLimit: true } : {}),
       ...(fiveHour !== undefined ? { fiveHour } : {}),
       ...(sevenDay !== undefined ? { sevenDay } : {}),
       ...(epochMs(data.five_hour?.resets_at) !== undefined
