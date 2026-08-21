@@ -1,3 +1,5 @@
+import { thrownReason } from '../util/thrown-reason.js';
+
 /**
  * What the dashboard says when a sign-in does not get off the ground.
  *
@@ -15,30 +17,6 @@
  * about what.
  */
 
-/** The reason out of anything that can be thrown, without ever throwing itself. */
-function reasonOf(err: unknown): string {
-  // Wrapped, because reading the reason can ITSELF throw: a rejection can carry
-  // any value, and a `toString` or `Symbol.toPrimitive` that throws would take
-  // the exception straight back out through this recovery path and end the
-  // dashboard. A formatter that can kill the program it exists to keep alive is
-  // the same bug in miniature.
-  try {
-    // An Error answers for itself, INCLUDING when it has nothing to say. Falling
-    // through to String() for a blank one yields the bare word "Error", which
-    // reads like a reason and is not one.
-    if (err instanceof Error) {
-      const message = err.message.trim();
-      return message.length > 0 ? message : 'no reason given';
-    }
-    const text = String(err ?? '').trim();
-    // A thrown undefined, or an object that stringifies to nothing useful, would
-    // otherwise produce a message with a dangling colon and no reason after it.
-    return text.length > 0 && text !== '[object Object]' ? text : 'no reason given';
-  } catch {
-    return 'no reason given';
-  }
-}
-
 export function signInFailureNotice(account: string, err: unknown): string {
-  return `sign-in for "${account}" could not start: ${reasonOf(err)}`;
+  return `sign-in for "${account}" could not start: ${thrownReason(err)}`;
 }

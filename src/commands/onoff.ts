@@ -3,6 +3,7 @@ import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-
 import { detectEditors } from '../editor/settings.js';
 import { enableEditor, disableEditor } from './editor.js';
 import { installStatusline, removeStatusline } from '../statusline/settings-install.js';
+import { thrownReason } from '../util/thrown-reason.js';
 import type { CliContext } from '../context.js';
 
 export interface ShimOptions {
@@ -52,12 +53,27 @@ export function onCommand(context: CliContext, options: ShimOptions = {}): numbe
     context.out(statuslineMessage(installStatusline(context.ctx)));
   }
 
+  let editorFailed = false;
   if (options.editor !== false) {
     for (const editor of detectEditors(context.ctx)) {
-      context.out(enableEditor(context, editor).message);
+      // One editor failing must not take the whole command down. By this point
+      // the shell shim and status line are already installed, and letting the
+      // error escape reported a raw stack trace instead of what went wrong,
+      // while making a completed setup look like it had done nothing.
+      try {
+        // The RESULT, not just the absence of a throw: enableEditor reports an
+        // expected failure as { ok: false }, so reading only exceptions let a
+        // genuine failure exit 0 and report success.
+        const result = enableEditor(context, editor);
+        context.out(result.message);
+        if (!result.ok) editorFailed = true;
+      } catch (err) {
+        editorFailed = true;
+        context.out(`${editor}: not set up (${thrownReason(err)})`);
+      }
     }
   }
-  return 0;
+  return editorFailed ? 1 : 0;
 }
 
 /**

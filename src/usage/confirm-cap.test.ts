@@ -353,3 +353,52 @@ describe('how WIDE a confirmed limit really is', () => {
     expect(decision.limited).toBe(false);
   });
 });
+
+describe('usage credits, which carry an account past its plan limit', () => {
+  const probing = (result: LimitProbeResult) => () => Promise.resolve(result);
+
+  it('does not call a spent plan window an account-wide cap when credits carry it', async () => {
+    // The production failure: every account read as week-spent, so ccx refused
+    // to start Claude at all, for an operator who had bought usage credits and
+    // did have usage. Credits are exactly the case where a spent PLAN window
+    // says nothing about whether work will be served.
+    const decision = await confirmCap('/profiles/main', 'usage limit reached', {
+      probe: probing({
+        verdict: 'limited',
+        fiveHour: 0,
+        sevenDay: 1,
+        sevenDayReset: 4242,
+        creditsCarryPastLimit: true,
+      }),
+    });
+    expect(decision.model).toBeUndefined();
+    expect(decision.resetAt).not.toBe(4242);
+    expect(decision.limited).toBe(false);
+  });
+
+  it('still records the account-wide cap when credits are NOT carrying it', async () => {
+    const decision = await confirmCap('/profiles/main', 'usage limit reached', {
+      probe: probing({ verdict: 'limited', fiveHour: 0, sevenDay: 1, sevenDayReset: 4242 }),
+    });
+    expect(decision.limited).toBe(true);
+    expect(decision.model).toBeUndefined();
+    expect(decision.resetAt).toBe(4242);
+  });
+
+  it('still scopes to a spent MODEL when credits carry the plan window', async () => {
+    // Credits cover the plan limit; they do not conjure a model whose own
+    // weekly window is finished. The account keeps working on other models.
+    const decision = await confirmCap('/profiles/main', 'limit reached', {
+      probe: probing({
+        verdict: 'limited',
+        fiveHour: 0,
+        sevenDay: 1,
+        creditsCarryPastLimit: true,
+        models: [{ name: 'Fable', utilization: 1, resetsAt: 777 }],
+      }),
+    });
+    expect(decision.limited).toBe(true);
+    expect(decision.model).toBe('Fable');
+    expect(decision.resetAt).toBe(777);
+  });
+});

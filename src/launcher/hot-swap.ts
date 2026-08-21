@@ -46,13 +46,16 @@ export interface HotSwapDeps {
   /** ccx status messages (never stdout, and never into Claude's screen). */
   notify: (message: string) => void;
   /**
-   * Somewhere to run when every account has hit a limit, used when those limits
-   * are about ONE MODEL rather than the accounts themselves. Refusing to start
-   * in that situation is wrong: the session works fine on another model, and
-   * declining to launch reads as being signed out instead of being told to
-   * switch models.
+   * Somewhere to run when every account has hit a limit.
+   *
+   * Returning null here means REFUSING TO START CLAUDE AT ALL, which is the
+   * worst thing this tool can do and should be reserved for having nothing to
+   * launch. ccx is not the authority on whether the server will serve a
+   * request: usage credits, a limit recorded against the wrong account, or a
+   * window that reset early all make it wrong in the direction of refusing work
+   * that would have succeeded. See src/session/last-resort.ts.
    */
-  lastResort?: () => { account: HotSwapAccount; message: string } | null;
+  lastResort?: (excluding: Set<string>) => { account: HotSwapAccount; message: string } | null;
   /**
    * Accounts already known to have a rejected login, so they are skipped without
    * being launched first.
@@ -133,7 +136,12 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
   // When the operator picks an account mid-session, we relaunch on THAT account
   // next (instead of the policy pick), resuming the same conversation.
   let forced: HotSwapAccount | null = null;
-  let triedLastResort = false;
+  /**
+   * Accounts already offered as a last resort. Bounded retry: a one-shot flag
+   * meant that if the only account it could offer turned out to need a login,
+   * there was no second attempt and the run ended by refusing to start at all.
+   */
+  const lastResortsTried = new Set<string>();
 
   for (;;) {
     const account: HotSwapAccount | null =
@@ -144,9 +152,14 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
       // than the accounts, run anyway and let Claude say so: it can still work
       // on another model. Watching for limits is off for that run, otherwise it
       // would be ended immediately by the very limit we already know about.
-      const fallback = triedLastResort ? null : deps.lastResort?.();
+      let fallback = deps.lastResort?.(new Set([...lastResortsTried, ...needsLogin])) ?? null;
+      // Bounded HERE, not by trusting the callback to honour `excluding`. One
+      // that ignores it and keeps naming the same account spins this loop
+      // forever, which is a hang rather than a wrong answer, and the caller
+      // cannot see it happening.
+      if (fallback && lastResortsTried.has(fallback.account.name)) fallback = null;
       if (fallback) {
-        triedLastResort = true;
+        lastResortsTried.add(fallback.account.name);
         deps.notify(fallback.message);
         const outcome = await deps.runSession(fallback.account, !first, { ignoreLimits: true });
         // The last resort is chosen for having ROOM, which says nothing about
