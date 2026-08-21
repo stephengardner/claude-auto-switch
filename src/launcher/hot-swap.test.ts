@@ -521,3 +521,40 @@ describe('a limit about ONE MODEL', () => {
     expect(seen).toEqual(['a', 'a', 'b']);
   });
 });
+
+describe('when every account looks spent', () => {
+  it('tries another last resort after one turns out to need a login', async () => {
+    // A one-shot flag meant the first dead login ended the run by refusing to
+    // start anything, which is the outcome this path exists to prevent.
+    const offered: string[] = [];
+    const ran: string[] = [];
+    const notes: string[] = [];
+    const pool = ['a', 'b'];
+    const deps: HotSwapDeps = {
+      nextAccount: () => null, // everything looks capped
+      resolveAccount: () => null,
+      lastResort: (excluding) => {
+        const pick = pool.find((n) => !excluding.has(n));
+        if (!pick) return null;
+        offered.push(pick);
+        return { account: { name: pick, dir: '/d/' + pick }, message: 'starting on ' + pick };
+      },
+      runSession: (account) => {
+        ran.push(account.name);
+        return Promise.resolve(
+          account.name === 'a'
+            ? ({ kind: 'needs-login', exitCode: 1 } as SessionOutcome)
+            : ({ kind: 'ok', exitCode: 0 } as SessionOutcome),
+        );
+      },
+      markCapped: () => {},
+      notify: (m) => notes.push(m),
+      report: (m) => notes.push(m),
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(0);
+    expect(offered).toEqual(['a', 'b']);
+    expect(ran).toEqual(['a', 'b']);
+    expect(notes.join(' ')).not.toContain('every account has hit its limit');
+  });
+});

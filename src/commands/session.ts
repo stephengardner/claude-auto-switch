@@ -23,6 +23,7 @@ import {
 import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { runHotSwapSession, type SessionOutcome } from '../launcher/hot-swap.js';
+import { lastResortStart } from '../session/last-resort.js';
 import { sessionDirFor, sweepDeadSessionDirs, seedFromKeptSettings } from '../session/session-dir.js';
 import { runPtySession } from '../launcher/pty-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
@@ -989,22 +990,17 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     // Every account has hit a limit. If those limits are about ONE MODEL, the
     // session still works on another model, so start it and say which model is
     // out. Refusing here is what made a Fable limit look like being signed out.
-    lastResort: () => {
-      const limit = modelOnlyLimit(loadLedger(context.ctx), Date.now());
-      if (!limit) return null;
-      const usable = accounts.filter((a) => a.enabled && hasWorkingLogin(a.dir, context.ctx));
-      const pick = usable.find((a) => a.name === getActive(context.ctx)) ?? usable[0];
-      if (!pick) return null;
-      const when = limit.resetsAt
-        ? ` It frees up ${new Date(limit.resetsAt).toLocaleString()}.`
-        : '';
-      return {
-        account: { name: pick.name, dir: pick.dir },
-        message:
-          `every account is out of ${limit.model}, but nothing else is limited.` +
-          `${when} Starting on "${pick.name}" anyway: switch models with /model to keep working.`,
-      };
-    },
+    // Never a refusal to launch: see src/session/last-resort.ts. ccx is not the
+    // authority on whether the server will serve a request, and being wrong
+    // here costs the operator the whole session.
+    lastResort: (excluding) =>
+      lastResortStart({
+        usable: accounts
+          .filter((a) => a.enabled && !excluding.has(a.name) && hasWorkingLogin(a.dir, context.ctx))
+          .map((a) => ({ name: a.name, dir: a.dir })),
+        active: getActive(context.ctx),
+        modelOnly: modelOnlyLimit(loadLedger(context.ctx), Date.now()),
+      }),
     runSession: async (hotAccount, isContinue, runOptions) => {
       const account = accounts.find((a) => a.name === hotAccount.name);
       if (!account) return { kind: 'ok', exitCode: 1 };
