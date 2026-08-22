@@ -44,23 +44,28 @@ function isHeadless(args: string[]): boolean {
  * is Phase 4).
  */
 export async function runCommand(context: CliContext, passthroughArgs: string[]): Promise<number> {
-  const accounts = listAccounts(context.ctx);
-  if (accounts.length === 0) {
-    context.out('no accounts registered (run: ccx add <name>)');
-    return 1;
-  }
-
-  // A SUBCOMMAND is not a session. `claude update`, `claude mcp list` and the
-  // rest manage the installation and take their own options, and the session
-  // path adds `--session-id` for resuming a conversation, which they reject
-  // outright ("error: unknown option '--session-id'"). With the transparent
-  // shim installed every one of them comes through here, so installing ccx
-  // quietly broke them. They run straight through on the active account's
-  // config, with nothing added and no session machinery.
+  // A SUBCOMMAND is not a session. `claude update`, `claude mcp list`, `claude
+  // rc` and the rest manage the installation or its background sessions and
+  // take their own options, while the session path adds `--session-id` for
+  // resuming a conversation, which they reject outright. With the transparent
+  // shim installed every one of them arrives here, so installing ccx quietly
+  // broke them.
+  //
+  // FIRST, before accounts are even looked at. A subcommand needs no account:
+  // it runs with the arguments and environment exactly as they arrived. Placing
+  // it after the check below meant `claude update` answered "no accounts
+  // registered" on an installation that had not added any yet, which is the
+  // moment somebody is most likely to be running it.
   const subcommand = claudeSubcommandIn(passthroughArgs);
   if (subcommand) {
     const { exitCode } = await launchPassthrough(passthroughArgs, { claude: getClaude(context) });
     return exitCode;
+  }
+
+  const accounts = listAccounts(context.ctx);
+  if (accounts.length === 0) {
+    context.out('no accounts registered (run: ccx add <name>)');
+    return 1;
   }
 
   // Interactive sessions with stored tokens get transparent hot-swap: the token

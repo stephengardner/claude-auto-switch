@@ -804,3 +804,25 @@ describe('claude subcommands through the shim', () => {
     expect(launches[0]?.args).toContain('--session-id');
   });
 });
+
+describe('a subcommand needs no ccx account', () => {
+  afterEach(() => {
+    delete process.env.FAKE_CLAUDE_RUNS_LOG;
+  });
+
+  it('runs on an installation with nothing registered yet', async () => {
+    // Routing this after the account check meant `claude update` answered "no
+    // accounts registered" on a fresh install, which is exactly when somebody
+    // is most likely to run it.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-subcmd-noacct-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    expect(await runCommand(context, ['update'])).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.args).toEqual(['update']);
+  });
+});

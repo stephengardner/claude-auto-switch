@@ -2,8 +2,8 @@
  * Telling a claude SUBCOMMAND apart from a session.
  *
  * ccx exists to choose an account for a session. `claude update`, `claude mcp
- * list` and the rest are not sessions: they manage the installation or its
- * configuration, and they take their own options.
+ * list`, `claude stop <id>` and the rest are not sessions: they manage the
+ * installation or its background sessions, and they take their own options.
  *
  * Routing them through the session path is not merely unnecessary, it breaks
  * them. That path adds `--session-id <uuid>` so a swap can resume the same
@@ -11,23 +11,29 @@
  *
  *     $ claude mcp list
  *     error: unknown option '--session-id'
+ *     $ claude rc
+ *     Error: Could not reach the server to look up session <uuid>.
  *
- * With the transparent shim installed, every one of these goes through ccx, so
- * installing ccx quietly broke `claude update` for the operator. They pass
- * straight through instead, unmodified.
+ * With the transparent shim installed every one of these goes through ccx, so
+ * installing ccx quietly broke them. They pass straight through instead.
  */
 
 /**
- * The subcommands the real CLI defines, including the aliases, which are
- * separate words to the parser.
+ * Every command the real CLI accepts, aliases included, since an alias is a
+ * separate word to the parser.
  *
- * NOT every entry here appears in `claude --help`. `rc` (Remote Control) is
- * hidden and was found only by running it, after it had already been reported
- * broken. The CLI ships as a native binary, so the full list cannot be read out
- * of it; this is best effort, and `subcommand.test.ts` guards the half that can
- * be checked by asserting every DOCUMENTED command appears here.
+ * MANY OF THESE ARE UNDOCUMENTED. `claude --help` lists neither `rc` nor the
+ * whole background-session family, and the CLI ships as a native binary, so
+ * there is nothing to read the real list out of. Each was confirmed by running
+ * `claude <name> --help` and getting that command's own usage back.
+ *
+ * That makes drift the expected failure, not a surprise: a command missing from
+ * here is not a wrong answer, it is a broken command, found only when somebody
+ * hits it. `subcommand.test.ts` closes what can be closed by checking this list
+ * against a real CLI when one is present.
  */
 export const SUBCOMMANDS = new Set([
+  // Documented in `claude --help`.
   'agents',
   'auth',
   'auto-mode',
@@ -39,31 +45,41 @@ export const SUBCOMMANDS = new Set([
   'plugin',
   'plugins',
   'project',
-  // Remote Control. Absent from `claude --help`, so it can only be known by
-  // having been told: through the session path it became
-  // "Could not reach the server to look up session <uuid>".
-  'rc',
   'setup-token',
   'ultrareview',
   'update',
   'upgrade',
+  // Undocumented. Remote Control, and `rc` is its alias.
+  'remote-control',
+  'rc',
+  // Undocumented: managing background sessions. `kill` is an alias of `stop`.
+  'attach',
+  'kill',
+  'logs',
+  'respawn',
+  'rm',
+  'stop',
 ]);
 
 /**
  * The subcommand these arguments invoke, or null when they are a session.
  *
- * The FIRST bare word decides, and if it is not a subcommand the answer is null
- * rather than "keep looking". That is what keeps a prompt from being mistaken
- * for one: `claude fix the update script` has to stay a session, and it does,
- * because "fix" settles it. Flags are skipped so that a value belonging to one
- * (`--model opus`) is never read as the word that decides.
+ * Only the FIRST argument is considered, which is the whole trick. Reading past
+ * a flag would mean knowing which flags take a value, and a table of flag
+ * arities drifts out of date in silence: with one, `--model update` classifies
+ * "update" as a command and a real session loses account rotation without a
+ * word about it.
+ *
+ * So anything that does not begin with a command is a session. That is the safe
+ * direction on purpose, because the two mistakes do not cost the same. Calling a
+ * subcommand a session is the behaviour ccx has always had and shows up as a
+ * loud error. Calling a session a subcommand silently drops the account
+ * rotation that is the entire point of the tool.
+ *
+ * The cost is that `claude --verbose mcp list` stays on the session path. That
+ * is rare, unchanged from before, and recoverable by dropping the flag.
  */
 export function claudeSubcommandIn(args: readonly string[]): string | null {
-  for (const arg of args) {
-    // Everything after `--` is an argument, never a command.
-    if (arg === '--') return null;
-    if (arg.startsWith('-')) continue;
-    return SUBCOMMANDS.has(arg) ? arg : null;
-  }
-  return null;
+  const first = args[0];
+  return first !== undefined && SUBCOMMANDS.has(first) ? first : null;
 }
