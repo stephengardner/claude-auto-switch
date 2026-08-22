@@ -78,3 +78,76 @@ describe('refusals that stop being credible', () => {
     expect(watch.refused(REASON, 2 * MIN)).toBe(true);
   });
 });
+
+describe('what the caller must key on', () => {
+  const MINUTE = 60_000;
+
+  it('never escalates when the reason keeps changing wording', () => {
+    // The hazard this file has to be used carefully to avoid, and the one that
+    // stranded a real session: the count resets whenever the key changes, so
+    // keying on the REASON means every variation in wording starts over. The
+    // net gets weaker the more ways ccx fails to explain the limit.
+    const watch = createRefusalWatch();
+    const reasons = [
+      'fable is spent, but this session is running opus',
+      'could not confirm usage limit',
+      'fable is spent, but this session is running opus',
+      'unknown',
+      'fable is spent, but this session is running opus',
+      'could not confirm usage limit',
+    ];
+    let fired = false;
+    reasons.forEach((reason, i) => {
+      if (watch.refused(reason, i * MINUTE)) fired = true;
+    });
+    expect(fired).toBe(false); // six refusals over five minutes, and nothing happens
+  });
+
+  it('escalates over the same span once the key is the SUBJECT, not the wording', () => {
+    // The same six refusals, keyed on what is actually true of all of them:
+    // this session, on this model, is blocked.
+    const watch = createRefusalWatch();
+    let firedAt = -1;
+    for (let i = 0; i < 6; i += 1) {
+      if (watch.refused('opus[1m]', i * MINUTE) && firedAt < 0) firedAt = i;
+    }
+    expect(firedAt).toBeGreaterThanOrEqual(0);
+  });
+
+  it('still starts a fresh count when the model actually changes', () => {
+    // A /model change IS a different situation, so it should not inherit a
+    // pattern gathered about a model no longer in use.
+    const watch = createRefusalWatch();
+    expect(watch.refused('fable', 0)).toBe(false);
+    expect(watch.refused('fable', 4 * MINUTE)).toBe(false);
+    expect(watch.refused('opus', 8 * MINUTE)).toBe(false);
+    expect(watch.count()).toBe(1);
+  });
+});
+
+describe('evidence that an all-clear should have thrown away', () => {
+  const MINUTE = 60_000;
+
+  it('does not escalate from a timestamp taken before the API reported room', () => {
+    // An unverified refusal, then a conclusive "you have room", then two more
+    // refusals. Counting the first one still would reach the spread on evidence
+    // the all-clear already answered, and bench the account for it.
+    const watch = createRefusalWatch();
+    expect(watch.refused('fable', 0)).toBe(false);
+    watch.reset(); // the API positively reported room at minute 3
+    expect(watch.refused('fable', 4 * MINUTE)).toBe(false);
+    expect(watch.refused('fable', 5 * MINUTE)).toBe(false);
+    // Three refusals in total, but only two since the all-clear, and those two
+    // are one minute apart rather than five.
+    expect(watch.count()).toBe(2);
+  });
+
+  it('escalates once the refusals AFTER the all-clear earn it on their own', () => {
+    const watch = createRefusalWatch();
+    watch.refused('fable', 0);
+    watch.reset();
+    expect(watch.refused('fable', 10 * MINUTE)).toBe(false);
+    expect(watch.refused('fable', 11 * MINUTE)).toBe(false);
+    expect(watch.refused('fable', 13 * MINUTE)).toBe(true);
+  });
+});

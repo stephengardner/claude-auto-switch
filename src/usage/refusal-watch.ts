@@ -47,7 +47,13 @@ export interface RefusalWatch {
 
 export function createRefusalWatch(options: RefusalWatchOptions = {}): RefusalWatch {
   const after = options.after ?? 3;
-  const spreadMs = options.spreadMs ?? 5 * 60_000;
+  // Two minutes, not five. The spread is here to exclude a REPLAY, and a
+  // resumed conversation re-renders its old cap text within seconds of
+  // starting, so two minutes is already a twentyfold margin over the thing it
+  // guards against. Five minutes bought no extra certainty and cost the
+  // operator three more minutes of sitting blocked, with a scheduled task
+  // failing every ten.
+  const spreadMs = options.spreadMs ?? 2 * 60_000;
   let reason: string | null = null;
   let times: number[] = [];
 
