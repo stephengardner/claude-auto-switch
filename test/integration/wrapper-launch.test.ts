@@ -10,16 +10,20 @@ import { loadConfig } from '../../src/config/config.js';
 import { getActive } from '../../src/state/active.js';
 import { loadLedger } from '../../src/ledger/ledger.js';
 import type { CliContext } from '../../src/context.js';
+import type { LimitVerdict } from '../../src/usage/limit-probe.js';
 
 // The "command" the editor would hand the wrapper: node running the fake claude.
 const fakeClaude = fileURLToPath(new URL('../fake-claude/fake-claude.mjs', import.meta.url));
 
-function makeContext(home: string): CliContext {
+function makeContext(home: string, verdict: LimitVerdict = 'limited'): CliContext {
   const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home } };
   return {
     ctx,
     config: loadConfig(ctx),
-    claude: { bin: process.execPath, prefixArgs: [fakeClaude] }, // health probes use the fake
+    claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+    // Text only TRIGGERS a cap; the account decides. Injected here so these
+    // tests exercise a VERIFIED limit rather than reaching the network.
+    verifyCap: () => Promise.resolve(verdict), // health probes use the fake
     out: () => {},
     err: () => {},
     json: false,
