@@ -4,6 +4,7 @@ import type { Config } from './config/config.schema.js';
 import type { PathCtx } from './config/paths.js';
 import type { ClaudeInvoker } from './invoker.js';
 import type { LimitVerdict } from './usage/limit-probe.js';
+import type { BlockedWatchOptions } from './launcher/blocked-watch.js';
 
 /** Everything a command needs: paths context, config, output sink, and flags. */
 export interface CliContext {
@@ -13,6 +14,12 @@ export interface CliContext {
   claude?: ClaudeInvoker;
   /** Injected in tests: overrides the API limit verification (usage/limit-probe). */
   verifyCap?: (renderedText: string) => Promise<LimitVerdict>;
+  /**
+   * Injected in tests: how quickly a session counts as blocked. Production uses
+   * the defaults in blocked-watch (three walls over two minutes), which no test
+   * can wait for.
+   */
+  blockedWatch?: BlockedWatchOptions;
   /** Injected in tests: overrides the API lookup of who a stored login belongs to. */
   lookupOwner?: (dir: string) => Promise<string | null>;
   out: (message: string) => void;

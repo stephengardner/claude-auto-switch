@@ -1125,6 +1125,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         switchWatch,
         onTick,
         verifyCap,
+        ...(context.blockedWatch ? { blockedWatch: context.blockedWatch } : {}),
         input: terminalInput,
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
         ...(debugLog ? { debugLog } : {}),
