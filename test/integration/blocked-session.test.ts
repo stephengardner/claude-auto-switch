@@ -144,6 +144,29 @@ describe('a session that keeps hitting a wall nobody can explain', () => {
     });
     expect(outcome.kind).not.toBe('capped');
   }, 30_000);
+  it('does not lose a real cap that lands during the refute backoff', async () => {
+    // A refuted replay starts a backoff. A GENUINE limit arriving inside that
+    // window is suppressed rather than probed, and if the child then exits, the
+    // exit-time probe is the only chance to catch it. Clearing the buffer at
+    // the hit made that match vanish, so the session resolved ok on a real cap.
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-blocked-late-'));
+    mkdirSync(dir, { recursive: true });
+    process.env.FAKE_CLAUDE_CAP_EVERY_MS = '250';
+    process.env.FAKE_CLAUDE_IDLE_MS = '1400';
+    let call = 0;
+    const outcome = await runPtySession({
+      claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+      args: [],
+      configDir: dir,
+      // Refuted once, which opens the backoff; genuine from then on.
+      verifyCap: () => { call += 1; return Promise.resolve(call > 1); },
+      // Long enough that every later wall is suppressed, never probed.
+      refuteBackoffMs: 10_000,
+      // Out of reach, so the hold cannot be what ends this.
+      blockedWatch: { after: 99 },
+    });
+    expect(outcome.kind).toBe('capped');
+  }, 30_000);
   it('still ends as a normal cap when the probe DOES confirm one', async () => {
     // The ordinary path has to keep working: a confirmed limit is a real cap,
     // not an unproven hold, and it carries whatever the probe reported.

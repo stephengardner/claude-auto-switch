@@ -100,6 +100,17 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     const blockedWatch = createBlockedWatch(options.blockedWatch);
     const refuteBackoffMs = options.refuteBackoffMs ?? 20_000;
     /**
+     * A match that was seen but never probed, because a backoff or an in-flight
+     * probe was in the way.
+     *
+     * Held rather than discarded. Clearing the rolling buffer at the hit stops
+     * one message being read as many, but a GENUINE cap can land inside the
+     * backoff right after a refuted replay, and if the child then exits this is
+     * the only surviving record of it. Without this the exit-time probe reads an
+     * empty buffer and the session resolves "ok" on a real limit.
+     */
+    let unprobed: { text: string; hit: { reason?: string; resetAt?: number } } | null = null;
+    /**
      * How long an UNPROVEN limit holds a pairing out of rotation.
      *
      * Nothing was measured, so there is no window to report. Long enough to
@@ -230,7 +241,11 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         return;
       }
 
-      if (verifying || Date.now() < suppressUntil) return;
+      if (verifying || Date.now() < suppressUntil) {
+        unprobed = { text: snapshot, hit };
+        return;
+      }
+      unprobed = null;
       if (!options.verifyCap) {
         capped = { reason: hit.reason, resetAt: hit.resetAt };
         setTimeout(safeKill, 150);
@@ -357,25 +372,32 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         if (switching || noConversation || (capped && !verifying)) return finalize();
         const timeboxed = (p: Promise<boolean>): Promise<boolean> =>
           Promise.race([p, new Promise<boolean>((r) => setTimeout(() => r(false), 12_000))]);
-        if (pendingVerify) {
+        // Only while it is genuinely still running. A settled promise here is
+        // a refusal that already happened, and awaiting it again would finalize
+        // without ever looking at a match that arrived afterwards.
+        if (pendingVerify && verifying) {
           void timeboxed(pendingVerify).then((confirmed) => {
             if (confirmed && !capped) capped = lastHit ?? {};
             finalize();
           });
           return;
         }
-        const hit = matchesCapText(window);
-        if (hit && options.verifyCap) {
+        // The held match first, then whatever is still in the buffer.
+        const live = matchesCapText(window);
+        const pending = unprobed ?? (live ? { text: window, hit: live } : null);
+        if (pending && options.verifyCap) {
           // Deliberately ignores the refute-backoff: a REAL cap can land inside
-          // the 20s window right after a refuted replay, and the child is gone
-          // so one probe here is the only chance to catch it.
-          void timeboxed(options.verifyCap(window).catch(() => false)).then((confirmed) => {
-            if (confirmed) capped = { reason: hit.reason, resetAt: hit.resetAt };
+          // the backoff right after a refuted replay, and the child is gone so
+          // one probe here is the only chance to catch it.
+          void timeboxed(options.verifyCap(pending.text).catch(() => false)).then((confirmed) => {
+            if (confirmed) capped = { reason: pending.hit.reason, resetAt: pending.hit.resetAt };
             finalize();
           });
           return;
         }
-        if (hit && !options.verifyCap) capped = { reason: hit.reason, resetAt: hit.resetAt };
+        if (pending && !options.verifyCap) {
+          capped = { reason: pending.hit.reason, resetAt: pending.hit.resetAt };
+        }
         finalize();
       }, 250);
     });
