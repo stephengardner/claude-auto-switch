@@ -604,17 +604,20 @@ describe('an unproven hold, which is a nudge rather than a verdict', () => {
     expect(excluded[2]).toEqual(['a']);
   });
 
-  it('never writes a hold to the ledger, because it measured nothing', async () => {
+  it('leaves neither a ledger entry nor a model pairing behind', async () => {
     // The ledger is the shared record other sessions read and avoid accounts
     // over. A two-minute guess has no business in it, and neither does a model
     // pairing attributed on the same absent evidence.
     const accounts = pool(['a', 'b']);
     const marked: string[] = [];
+    const notes: string[] = [];
+    const seen: string[] = [];
     let call = 0;
     const deps: HotSwapDeps = {
       nextAccount: (ex) => accounts.find((x) => !ex.has(x.name)) ?? null,
       resolveAccount: (name) => accounts.find((x) => x.name === name) ?? null,
-      runSession: () => {
+      runSession: (account) => {
+        seen.push(account.name);
         call += 1;
         if (call === 1) {
           return Promise.resolve({
@@ -622,18 +625,37 @@ describe('an unproven hold, which is a nudge rather than a verdict', () => {
             exitCode: 1,
             unproven: true,
             cappedModel: 'Fable', // must NOT be recorded either
-            resetAt: Date.now() + 60_000,
+            resetAt: Date.now() - 1, // already lifted, so 'a' is selectable again
+          } as SessionOutcome);
+        }
+        if (call === 2) {
+          // A REAL Fable limit now. First time for this pairing, so it should
+          // change model and stay here rather than give the account up.
+          return Promise.resolve({
+            kind: 'capped',
+            exitCode: 1,
+            cappedModel: 'Fable',
           } as SessionOutcome);
         }
         return Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome);
       },
       markCapped: (a) => marked.push(a),
-      notify: () => {},
+      notify: (m) => notes.push(m),
       report: () => {},
     };
 
     expect(await runHotSwapSession(deps)).toBe(0);
-    expect(marked).toEqual([]);
+    // Exactly ONE write, from the confirmed cap below. Two would mean the hold
+    // reached the ledger as well.
+    expect(marked).toEqual(['a']);
+    // The ledger is only half of it. A hold must not leave a model pairing in
+    // the run's own state either, and that is invisible until something later
+    // depends on it: the confirmed Fable cap below is the FIRST time this
+    // account and model have run out, so it must take the model-scoped path
+    // and stay put. If the hold had leaked the pairing, that budget would
+    // already be spent and the account would be evicted instead.
+    expect(notes.join(' ')).toContain('staying here on another model');
+    expect(seen).toEqual(['a', 'a', 'a']);
   });
   it('keeps the account out while the hold is still in force', async () => {
     const accounts = pool(['a', 'b']);
