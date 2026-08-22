@@ -94,6 +94,17 @@ if (process.env.FAKE_CLAUDE_EMIT_CAP) {
   process.stdout.write("You've reached your Fable 5 limit. Run /usage-credits to continue.\n");
 }
 
+// Keep hitting the same wall, which is what a real one does: the operator
+// tries again and the message comes back. A single emission can reproduce a
+// session that was refused once, never one that is STUCK.
+const capEvery = Number(process.env.FAKE_CLAUDE_CAP_EVERY_MS) || 0;
+if (capEvery > 0) {
+  const t = setInterval(() => {
+    process.stdout.write("You have reached your Fable 5 limit. Run /usage-credits to continue.\n");
+  }, capEvery);
+  if (t.unref) t.unref();
+}
+
 // Stay alive when asked, so a test can interrupt the run (cap or switch) before
 // it exits. Killed by the parent (child.kill) ends it immediately.
 const idleMs = Number(process.env.FAKE_CLAUDE_IDLE_MS) || 0;
@@ -106,4 +117,13 @@ if (idleMs > 0) {
   }, idleMs);
 } else {
   process.exit(0);
+}
+
+
+// Ordinary output with no limit in it. Used to prove a single cap message does
+// not keep re-matching from the rolling buffer as later output arrives.
+const chatterEvery = Number(process.env.FAKE_CLAUDE_CHATTER_EVERY_MS) || 0;
+if (chatterEvery > 0) {
+  const c = setInterval(() => { process.stdout.write("working on it" + String.fromCharCode(10)); }, chatterEvery);
+  if (c.unref) c.unref();
 }

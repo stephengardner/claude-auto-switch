@@ -5,6 +5,8 @@ import { matchesCapText } from './cap-detect.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { normalizeExitCode } from './exit-code.js';
+import { createBlockedWatch, type BlockedWatchOptions } from './blocked-watch.js';
+import { createCapOutcome } from './cap-outcome.js';
 import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
 import { wantsExistingConversation } from './conversation.js';
@@ -50,6 +52,18 @@ export interface PtySessionOptions {
    * never toggles global terminal state mid-teardown.
    */
   input?: TerminalInput;
+  /**
+   * Thresholds for deciding the session is blocked. Injected in tests so the
+   * pattern can be reached in seconds instead of minutes; production uses the
+   * defaults in blocked-watch.
+   */
+  blockedWatch?: BlockedWatchOptions;
+  /**
+   * How long a REFUTED match backs off before another probe. Injected in tests
+   * so the case where a wall recurs AFTER the backoff has expired can be
+   * reached in seconds; production uses 20s.
+   */
+  refuteBackoffMs?: number;
 }
 
 function cleanEnv(extra: Record<string, string>): Record<string, string> {
@@ -77,7 +91,35 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     });
 
     const startedAt = Date.now();
-    let capped: { reason?: string; resetAt?: number } | null = null;
+    // The rule about which limit answer wins lives in cap-outcome, not here.
+    const cap = createCapOutcome();
+    /**
+     * Is the SESSION getting anywhere, asked without reference to any probe.
+     * See blocked-watch: every other guard here resolves uncertainty to "do not
+     * act", so something has to be able to say "still stuck" that none of them
+     * can veto.
+     */
+    const blockedWatch = createBlockedWatch(options.blockedWatch);
+    const refuteBackoffMs = options.refuteBackoffMs ?? 20_000;
+    /**
+     * A match that was seen but never probed, because a backoff or an in-flight
+     * probe was in the way.
+     *
+     * Held rather than discarded. Clearing the rolling buffer at the hit stops
+     * one message being read as many, but a GENUINE cap can land inside the
+     * backoff right after a refuted replay, and if the child then exits this is
+     * the only surviving record of it. Without this the exit-time probe reads an
+     * empty buffer and the session resolves "ok" on a real limit.
+     */
+    let unprobed: { text: string; hit: { reason?: string; resetAt?: number } } | null = null;
+    /**
+     * How long an UNPROVEN limit holds a pairing out of rotation.
+     *
+     * Nothing was measured, so there is no window to report. Long enough to
+     * move off this account and model, short enough that being wrong costs a
+     * couple of minutes rather than the hours a confirmed cap buys.
+     */
+    const UNPROVEN_HOLD_MS = 2 * 60_000;
     let noConversation = false;
     let window = '';
     let captured = '';
@@ -134,7 +176,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
           // circuited this poll the session went quiet and its protection could
           // lapse while it was still running.
           options.onTick?.();
-          if (capped || switching || noConversation) return;
+          if (cap.isSet() || switching || noConversation) return;
           const target = options.switchWatch!();
           if (target) {
             switching = target;
@@ -157,7 +199,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // input relay uses that to refuse reports this child cannot have wanted.
       input.observeChildOutput(data);
       if (options.debugLog) captured += data;
-      if (capped || switching) return;
+      if (cap.isSet() || switching) return;
       totalOutput += data.length;
       window = (window + data).slice(-4000);
       // A resume with nothing to resume: signal a fresh relaunch is needed.
@@ -177,13 +219,37 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // account is confirmed limited. Refuted matches back off briefly so a
       // replay cannot spam probes.
       if (options.ignoreLimits) return;
-      if (verifying || Date.now() < suppressUntil) return;
       const hit = matchesCapText(window);
       if (!hit) return;
+      // Cleared HERE, before anything can return early. One message is one
+      // episode, and leaving it in the rolling buffer means the next unrelated
+      // output re-matches the same text: three checks of a single wall would
+      // then look like three walls and raise a hold nobody hit.
       const snapshot = window;
       window = '';
+
+      // Counted BEFORE the suppression below, and that ordering is the whole
+      // point. A hit arriving inside the refute backoff, or while a probe was
+      // in flight, used to return above this line and never be seen at all: the
+      // one signal that says "this session is STILL stuck" was thrown away to
+      // avoid re-probing. So the session could be walled off indefinitely while
+      // every guard agreed there was nothing to act on.
+      if (blockedWatch.sawLimitText(Date.now()) && !switching) {
+        cap.hold({
+          reason: hit.reason ?? 'the same limit keeps coming back and nothing explains it',
+          resetAt: Date.now() + UNPROVEN_HOLD_MS,
+        });
+        if (!exited) setTimeout(safeKill, 150);
+        return;
+      }
+
+      if (verifying || Date.now() < suppressUntil) {
+        unprobed = { text: snapshot, hit };
+        return;
+      }
+      unprobed = null;
       if (!options.verifyCap) {
-        capped = { reason: hit.reason, resetAt: hit.resetAt };
+        cap.confirm({ reason: hit.reason, resetAt: hit.resetAt });
         setTimeout(safeKill, 150);
         return;
       }
@@ -197,18 +263,31 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         .then((confirmed) => {
           verifying = false;
           if (confirmed) {
-            if (!capped && !switching) {
-              capped = { reason: hit.reason, resetAt: hit.resetAt };
+            // ONLY on a confirmed cap. Clearing it on every probe result, as
+            // this first did, hands the veto straight back to the guard this
+            // watch exists to be independent of: a refuted probe backs off for
+            // 20s, so any wall recurring more slowly than that gets probed,
+            // refuted, and the count reset, for ever. It would have shipped
+            // doing nothing at all in the case it was written for.
+            blockedWatch.changed();
+            // Overwrites whatever is there, and that matters when the thing
+            // there is the unproven two-minute hold this watch sets. A probe
+            // still in flight when the hold lands would otherwise have its
+            // CONFIRMED reason and reset time thrown away, and the pairing
+            // would come back into rotation minutes before the real limit
+            // expires, straight into the same wall.
+            if (!switching) {
+              cap.confirm({ reason: hit.reason, resetAt: hit.resetAt });
               if (!exited) setTimeout(safeKill, 150);
             }
           } else {
-            suppressUntil = Date.now() + 20_000;
+            suppressUntil = Date.now() + refuteBackoffMs;
           }
           return confirmed;
         })
         .catch(() => {
           verifying = false;
-          suppressUntil = Date.now() + 20_000;
+          suppressUntil = Date.now() + refuteBackoffMs;
           return false;
         });
     });
@@ -262,8 +341,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         resolve(
           switching
             ? { kind: 'switch', exitCode, switchTo: switching, ranMs }
-            : capped
-              ? { kind: 'capped', exitCode, reason: capped.reason, resetAt: capped.resetAt, ranMs }
+            : cap.get()
+              ? { kind: 'capped', exitCode, reason: cap.get()!.reason, resetAt: cap.get()!.resetAt, ranMs }
               : noConversation
                 ? { kind: 'no-conversation', exitCode, ranMs }
                 : { kind: 'ok', exitCode, ranMs },
@@ -286,29 +365,57 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         // last redraw re-enabled the very modes the reset had just turned off.
         // That is how the fix shipped and the garbage survived it.
         resetChildTerminalModes();
-        if (capped || switching || noConversation) return finalize();
+        // A capped outcome waits for a probe that is still in flight. The
+        // fallback hold schedules a kill 150ms later, so without this the exit
+        // handler finalizes first and a probe resolving afterwards can never
+        // replace the unproven two-minute hold with the confirmed window: the
+        // outcome has already resolved. Bounded, because the probe aborts at 8s
+        // and the wait below is timeboxed at 12s.
+        if (switching || noConversation || (cap.isSet() && !verifying)) return finalize();
         const timeboxed = (p: Promise<boolean>): Promise<boolean> =>
           Promise.race([p, new Promise<boolean>((r) => setTimeout(() => r(false), 12_000))]);
-        if (pendingVerify) {
+        // Only while it is genuinely still running. A settled promise here is
+        // a refusal that already happened, and awaiting it again would finalize
+        // without ever looking at a match that arrived afterwards.
+        /**
+         * The last chance to catch a real limit: the match that was held
+         * because something was in the way, else whatever is still in the
+         * buffer. Deliberately ignores the refute backoff, since the child is
+         * gone and there will be no other opportunity.
+         */
+        const verifyHeldThenFinalize = (): void => {
+          const live = matchesCapText(window);
+          const pending = unprobed ?? (live ? { text: window, hit: live } : null);
+          if (pending && options.verifyCap) {
+            void timeboxed(options.verifyCap(pending.text).catch(() => false)).then((confirmed) => {
+              if (confirmed) {
+                cap.confirm({ reason: pending.hit.reason, resetAt: pending.hit.resetAt });
+              }
+              finalize();
+            });
+            return;
+          }
+          if (pending && !options.verifyCap) {
+            cap.confirm({ reason: pending.hit.reason, resetAt: pending.hit.resetAt });
+          }
+          finalize();
+        };
+
+        if (pendingVerify && verifying) {
           void timeboxed(pendingVerify).then((confirmed) => {
-            if (confirmed && !capped) capped = lastHit ?? {};
-            finalize();
+            if (confirmed) {
+              cap.confirm(lastHit ?? {});
+              return finalize();
+            }
+            // Refuted, which settles that match and NOTHING ELSE. A genuine cap
+            // can have arrived while this probe was running and been held
+            // rather than probed; finalizing here threw it away and resolved a
+            // real limit as a clean exit.
+            verifyHeldThenFinalize();
           });
           return;
         }
-        const hit = matchesCapText(window);
-        if (hit && options.verifyCap) {
-          // Deliberately ignores the refute-backoff: a REAL cap can land inside
-          // the 20s window right after a refuted replay, and the child is gone
-          // so one probe here is the only chance to catch it.
-          void timeboxed(options.verifyCap(window).catch(() => false)).then((confirmed) => {
-            if (confirmed) capped = { reason: hit.reason, resetAt: hit.resetAt };
-            finalize();
-          });
-          return;
-        }
-        if (hit && !options.verifyCap) capped = { reason: hit.reason, resetAt: hit.resetAt };
-        finalize();
+        verifyHeldThenFinalize();
       }, 250);
     });
   });
