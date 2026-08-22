@@ -619,3 +619,20 @@ describe('the sign-in question', () => {
     expect(out).toContain('any other key cancels');
   });
 });
+
+describe('the footer on a narrow terminal', () => {
+  it('keeps the quit hint, whatever else it has to drop', () => {
+    // The hints fall off the end rather than wrapping, so whichever one is
+    // last to fit is the one lost. Losing "how do I get out of this" is the
+    // one outcome that leaves somebody stuck, and naming esc made that hint
+    // longer, so it must not sit behind hints you could have guessed.
+    for (const width of [80, 60, 40, 30, 24]) {
+      const out = renderDashboard(snapshot([account()]), {
+        color: false,
+        interactive: true,
+        width,
+      });
+      expect(out, `width ${width}`).toContain('q/esc quit');
+    }
+  });
+});

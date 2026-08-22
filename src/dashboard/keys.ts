@@ -33,7 +33,13 @@ export function dispatchKey(
   selected: number,
   count: number,
 ): KeyOutcome {
+  // Esc quits too, matched on the KEY rather than on its first byte, because
+  // byte0 is optional and a caller that omits it would otherwise not quit. A
+  // chunk that IS a bare Escape is the key itself; one that merely STARTS with
+  // it is an arrow or function key (`[A`), a different string, which still
+  // reaches navigation and keeps moving the selection.
   if (key === 'q' || byte0 === 3 || byte0 === 4) return { selected, action: 'quit' };
+  if (key === '') return { selected, action: 'quit' };
   if (key === 'j' || key === '\x1b[B') return { selected: clamp(selected + 1, count), action: 'move' };
   if (key === 'k' || key === '\x1b[A') return { selected: clamp(selected - 1, count), action: 'move' };
   // Enter (also u / p) activates the highlighted account: it becomes the one

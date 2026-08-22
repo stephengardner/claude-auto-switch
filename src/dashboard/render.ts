@@ -435,13 +435,16 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     // are the ones you need most, in that order, so a narrow terminal loses
     // the rarely-used keys instead of losing the shape of the screen.
     // Ordered by how badly you need them, because the tail is what gets
-    // dropped. Moving and choosing come first, then LEAVING: a narrow window
-    // that hid `q quit` would take away the one key someone stuck here has to
-    // know. The occasional ones go last.
+    // dropped. LEAVING comes first: a narrow window that hid the quit hint
+    // would take away the one key someone stuck here has to know, and every
+    // other key can be found by trying. It used to sit third, which was fine
+    // while it read `q quit`; naming esc as well made it four columns longer
+    // and moved it closer to falling off the end, so it is no longer allowed to
+    // be the one that drops. The occasional ones go last.
     const hints = [
+      'q/esc quit',
       'j/k move',
       'enter use',
-      'q quit',
       'r rotate',
       'f now',
       'a add',

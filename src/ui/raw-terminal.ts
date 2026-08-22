@@ -62,27 +62,63 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
   const proc = options.proc ?? process;
   const onEnd = options.onEnd;
 
+  /**
+   * Is the terminal actually out of raw mode?
+   *
+   * Asked rather than assumed. A stream with no raw mode to begin with reports
+   * nothing here, and that counts as off: there is nothing to hand back.
+   */
+  const rawIsOff = (): boolean => (stdin as { isRaw?: boolean }).isRaw !== true;
+
+  /**
+   * Tracked apart from `restored`, because a restore that could not clear raw
+   * mode leaves the exit and signal hooks armed and they call this again. The
+   * dashboard's epilogue leaves the alternate screen, and sending that twice
+   * pops a screen the second time that was never entered.
+   */
+  let epilogueWritten = false;
   let restored = false;
   const restore = (): void => {
     if (restored) return;
-    restored = true;
+
     try {
       stdin.setRawMode?.(false);
     } catch {
-      /* not raw-capable; nothing to undo */
+      /* retried just below; this is the failure that matters */
     }
+    if (!rawIsOff()) {
+      // One retry. The failure worth surviving here is transient, and giving up
+      // hands the shell a console mode it never set.
+      try {
+        stdin.setRawMode?.(false);
+      } catch {
+        /* nothing further to try; the guard below keeps the exit hook armed */
+      }
+    }
+
     try {
       stdin.pause();
     } catch {
       /* already closed */
     }
-    if (options.epilogue) {
+    if (options.epilogue && !epilogueWritten) {
+      epilogueWritten = true;
       try {
         stdout.write(options.epilogue);
       } catch {
         /* the terminal is already gone */
       }
     }
+
+    // Marked done, and the process hooks released, ONLY once the terminal is
+    // really back. Setting the flag first meant a failed attempt disarmed the
+    // safety net: the exit hook returned early, the process ended with raw mode
+    // still on, and the shell it handed back to died. On Windows that takes the
+    // window with it, which is the intermittent "q closed my whole terminal".
+    // Staying un-restored costs nothing (restoring twice is harmless) and keeps
+    // the exit and signal hooks armed for another attempt.
+    if (!rawIsOff()) return;
+    restored = true;
     proc.off('exit', restore);
     for (const signal of SIGNALS) proc.off(signal, onSignal);
   };
@@ -99,6 +135,14 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
       onEnd(signal); // the owner wants to wind down on its own terms
       return;
     }
+    // Re-raising means letting the DEFAULT action happen, and that requires our
+    // handler to be gone. `restore` now stands the handlers down only once the
+    // terminal is really back, so a restore that could not clear raw mode would
+    // leave this registered: the re-raised signal arrives here again, fails to
+    // restore again, and re-raises again, for ever. A terminal we could not fix
+    // is not a reason to refuse to die, so the handlers come off here
+    // regardless. The exit hook is deliberately left alone.
+    for (const other of SIGNALS) proc.off(other, onSignal);
     // Falls back whenever re-raising is not actually possible, including when
     // there is no kill to call: optional chaining would otherwise swallow the
     // call silently and the program would neither exit nor re-raise.
