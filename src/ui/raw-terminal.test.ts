@@ -259,3 +259,52 @@ describe('a restore that does not take', () => {
     expect(count('exit')).toBe(0);
   });
 });
+
+describe('a signal arriving while the terminal cannot be restored', () => {
+  it('cannot re-enter its own handler', () => {
+    // restore() now leaves the signal handlers armed while the terminal is
+    // still raw, so it can try again. Re-raising into a handler that is still
+    // registered delivers the signal straight back here: it fails to restore
+    // again, re-raises again, and never terminates. That is an unkillable
+    // process rather than a wrong answer, so the handlers come off before the
+    // re-raise. A terminal we could not fix is not a reason to refuse to die.
+    const stdin = {
+      isRaw: false,
+      setRawMode(v: boolean) {
+        if (v) stdin.isRaw = true; // and never clears
+      },
+      resume: () => {},
+      pause: () => {},
+    };
+    const handlers = new Map<string, ((...a: unknown[]) => void)[]>();
+    let kills = 0;
+    const proc = {
+      on: (event: string, fn: (...a: unknown[]) => void) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), fn]);
+        return proc;
+      },
+      off: (event: string, fn: (...a: unknown[]) => void) => {
+        handlers.set(event, (handlers.get(event) ?? []).filter((f) => f !== fn));
+        return proc;
+      },
+      kill: () => {
+        kills += 1;
+        if (kills > 5) throw new Error('re-entered: the handler was still registered');
+        // A real re-raise lands on whatever handler is still attached.
+        for (const fn of [...(handlers.get('SIGINT') ?? [])]) fn('SIGINT');
+      },
+    };
+
+    claimRawTerminal({
+      stdin: stdin as unknown as NodeJS.ReadStream & { setRawMode?: (v: boolean) => void },
+      stdout: { write: () => true },
+      proc: proc as unknown as RawTerminalOptions['proc'],
+    });
+
+    for (const fn of [...(handlers.get('SIGINT') ?? [])]) fn('SIGINT');
+
+    expect(kills).toBe(1);
+    expect((handlers.get('SIGINT') ?? []).length).toBe(0);
+    expect(stdin.isRaw).toBe(true); // still raw, and it terminated anyway
+  });
+});

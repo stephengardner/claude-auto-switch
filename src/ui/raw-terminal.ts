@@ -135,6 +135,14 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
       onEnd(signal); // the owner wants to wind down on its own terms
       return;
     }
+    // Re-raising means letting the DEFAULT action happen, and that requires our
+    // handler to be gone. `restore` now stands the handlers down only once the
+    // terminal is really back, so a restore that could not clear raw mode would
+    // leave this registered: the re-raised signal arrives here again, fails to
+    // restore again, and re-raises again, for ever. A terminal we could not fix
+    // is not a reason to refuse to die, so the handlers come off here
+    // regardless. The exit hook is deliberately left alone.
+    for (const other of SIGNALS) proc.off(other, onSignal);
     // Falls back whenever re-raising is not actually possible, including when
     // there is no kill to call: optional chaining would otherwise swallow the
     // call silently and the program would neither exit nor re-raise.
