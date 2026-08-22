@@ -2,7 +2,8 @@ import { listAccounts } from '../accounts/registry.js';
 import { getActive } from '../state/active.js';
 import { probeAll } from '../health/prober.js';
 import { select } from '../selector/selector.js';
-import { launchWatched } from '../launcher/launcher.js';
+import { launchWatched, launchPassthrough } from '../launcher/launcher.js';
+import { claudeSubcommandIn } from '../launcher/subcommand.js';
 import { autoRotateHeadless } from '../launcher/rotating-run.js';
 import { loadLedger, saveLedger, cappedNames, markCapped } from '../ledger/ledger.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -43,6 +44,24 @@ function isHeadless(args: string[]): boolean {
  * is Phase 4).
  */
 export async function runCommand(context: CliContext, passthroughArgs: string[]): Promise<number> {
+  // A SUBCOMMAND is not a session. `claude update`, `claude mcp list`, `claude
+  // rc` and the rest manage the installation or its background sessions and
+  // take their own options, while the session path adds `--session-id` for
+  // resuming a conversation, which they reject outright. With the transparent
+  // shim installed every one of them arrives here, so installing ccx quietly
+  // broke them.
+  //
+  // FIRST, before accounts are even looked at. A subcommand needs no account:
+  // it runs with the arguments and environment exactly as they arrived. Placing
+  // it after the check below meant `claude update` answered "no accounts
+  // registered" on an installation that had not added any yet, which is the
+  // moment somebody is most likely to be running it.
+  const subcommand = claudeSubcommandIn(passthroughArgs);
+  if (subcommand) {
+    const { exitCode } = await launchPassthrough(passthroughArgs, { claude: getClaude(context) });
+    return exitCode;
+  }
+
   const accounts = listAccounts(context.ctx);
   if (accounts.length === 0) {
     context.out('no accounts registered (run: ccx add <name>)');
