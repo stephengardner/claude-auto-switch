@@ -6,6 +6,7 @@ import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { normalizeExitCode } from './exit-code.js';
 import { createBlockedWatch, type BlockedWatchOptions } from './blocked-watch.js';
+import { createCapOutcome } from './cap-outcome.js';
 import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
 import { wantsExistingConversation } from './conversation.js';
@@ -90,7 +91,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     });
 
     const startedAt = Date.now();
-    let capped: { reason?: string; resetAt?: number } | null = null;
+    // The rule about which limit answer wins lives in cap-outcome, not here.
+    const cap = createCapOutcome();
     /**
      * Is the SESSION getting anywhere, asked without reference to any probe.
      * See blocked-watch: every other guard here resolves uncertainty to "do not
@@ -174,7 +176,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
           // circuited this poll the session went quiet and its protection could
           // lapse while it was still running.
           options.onTick?.();
-          if (capped || switching || noConversation) return;
+          if (cap.isSet() || switching || noConversation) return;
           const target = options.switchWatch!();
           if (target) {
             switching = target;
@@ -197,7 +199,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // input relay uses that to refuse reports this child cannot have wanted.
       input.observeChildOutput(data);
       if (options.debugLog) captured += data;
-      if (capped || switching) return;
+      if (cap.isSet() || switching) return;
       totalOutput += data.length;
       window = (window + data).slice(-4000);
       // A resume with nothing to resume: signal a fresh relaunch is needed.
@@ -232,11 +234,11 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // one signal that says "this session is STILL stuck" was thrown away to
       // avoid re-probing. So the session could be walled off indefinitely while
       // every guard agreed there was nothing to act on.
-      if (blockedWatch.sawLimitText(Date.now()) && !capped && !switching) {
-        capped = {
+      if (blockedWatch.sawLimitText(Date.now()) && !switching) {
+        cap.hold({
           reason: hit.reason ?? 'the same limit keeps coming back and nothing explains it',
           resetAt: Date.now() + UNPROVEN_HOLD_MS,
-        };
+        });
         if (!exited) setTimeout(safeKill, 150);
         return;
       }
@@ -247,7 +249,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       }
       unprobed = null;
       if (!options.verifyCap) {
-        capped = { reason: hit.reason, resetAt: hit.resetAt };
+        cap.confirm({ reason: hit.reason, resetAt: hit.resetAt });
         setTimeout(safeKill, 150);
         return;
       }
@@ -275,7 +277,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
             // would come back into rotation minutes before the real limit
             // expires, straight into the same wall.
             if (!switching) {
-              capped = { reason: hit.reason, resetAt: hit.resetAt };
+              cap.confirm({ reason: hit.reason, resetAt: hit.resetAt });
               if (!exited) setTimeout(safeKill, 150);
             }
           } else {
@@ -339,8 +341,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         resolve(
           switching
             ? { kind: 'switch', exitCode, switchTo: switching, ranMs }
-            : capped
-              ? { kind: 'capped', exitCode, reason: capped.reason, resetAt: capped.resetAt, ranMs }
+            : cap.get()
+              ? { kind: 'capped', exitCode, reason: cap.get()!.reason, resetAt: cap.get()!.resetAt, ranMs }
               : noConversation
                 ? { kind: 'no-conversation', exitCode, ranMs }
                 : { kind: 'ok', exitCode, ranMs },
@@ -369,7 +371,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         // replace the unproven two-minute hold with the confirmed window: the
         // outcome has already resolved. Bounded, because the probe aborts at 8s
         // and the wait below is timeboxed at 12s.
-        if (switching || noConversation || (capped && !verifying)) return finalize();
+        if (switching || noConversation || (cap.isSet() && !verifying)) return finalize();
         const timeboxed = (p: Promise<boolean>): Promise<boolean> =>
           Promise.race([p, new Promise<boolean>((r) => setTimeout(() => r(false), 12_000))]);
         // Only while it is genuinely still running. A settled promise here is
@@ -386,15 +388,15 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
           const pending = unprobed ?? (live ? { text: window, hit: live } : null);
           if (pending && options.verifyCap) {
             void timeboxed(options.verifyCap(pending.text).catch(() => false)).then((confirmed) => {
-              if (confirmed && !capped) {
-                capped = { reason: pending.hit.reason, resetAt: pending.hit.resetAt };
+              if (confirmed) {
+                cap.confirm({ reason: pending.hit.reason, resetAt: pending.hit.resetAt });
               }
               finalize();
             });
             return;
           }
           if (pending && !options.verifyCap) {
-            capped = { reason: pending.hit.reason, resetAt: pending.hit.resetAt };
+            cap.confirm({ reason: pending.hit.reason, resetAt: pending.hit.resetAt });
           }
           finalize();
         };
@@ -402,7 +404,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         if (pendingVerify && verifying) {
           void timeboxed(pendingVerify).then((confirmed) => {
             if (confirmed) {
-              if (!capped) capped = lastHit ?? {};
+              cap.confirm(lastHit ?? {});
               return finalize();
             }
             // Refuted, which settles that match and NOTHING ELSE. A genuine cap
