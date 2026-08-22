@@ -10,6 +10,7 @@ import { signedInAndNotRejected } from '../health/signed-in.js';
 import { appendEvent } from '../events/log.js';
 import { ensureEditorReady } from './editor-ready.js';
 import { configHome } from '../config/paths.js';
+import { confirmCap } from '../usage/confirm-cap.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 
@@ -29,21 +30,46 @@ async function pickAccount(context: CliContext): Promise<Account | undefined> {
   return picked;
 }
 
-/** After a run, if it capped: record it and flip the active account for next time. */
+/**
+ * After a run, if it capped: record it and flip the active account for next time.
+ *
+ * Text only TRIGGERS this; the account's own usage decides, exactly as in every
+ * other cap-recording path. This one was missed when that rule was applied. It
+ * wrote the cap straight from the classification, so any limit-looking text in
+ * an editor session, a replayed cap message or a conversation merely discussing
+ * rate limits, benched a healthy account for the default five hours AND moved
+ * the operator's active account off it.
+ */
 async function handleCap(
   context: CliContext,
   chosen: Account,
   classification: CapClassification,
+  renderedText: string,
 ): Promise<void> {
   if (classification.kind !== 'capped') return;
   const home = configHome(context.ctx);
+  // The injected verdict when a test supplies one, exactly as the session path
+  // does; otherwise ask the account's own credential.
+  const decision = context.verifyCap
+    ? { limited: (await context.verifyCap(renderedText)) === 'limited' }
+    : await confirmCap(chosen.dir, renderedText);
+  if (!decision.limited) {
+    appendEvent(
+      home,
+      `limit text in the editor, but "${chosen.name}" shows no spent window; nothing recorded`,
+      Date.now(),
+    );
+    return;
+  }
   saveLedger(
     markCapped(loadLedger(context.ctx), {
       account: chosen.name,
       now: Date.now(),
-      resetAt: classification.resetAt ?? null,
+      resetAt: ('resetAt' in decision ? decision.resetAt : undefined) ?? classification.resetAt ?? null,
       backoffMinutes: context.config.rotation.defaultBackoffMinutes,
       reason: classification.reason ?? 'usage cap',
+      // A model-scoped limit leaves the account working on everything else.
+      ...('model' in decision && decision.model ? { model: decision.model } : {}),
     }),
     context.ctx,
   );
@@ -75,7 +101,7 @@ export async function wrapperLaunch(context: CliContext, argv: string[]): Promis
   }
   ensureEditorReady(chosen.dir, context.ctx);
   const result = await spawnWatched(argv[0]!, argv.slice(1), { CLAUDE_CONFIG_DIR: chosen.dir });
-  await handleCap(context, chosen, result.classification);
+  await handleCap(context, chosen, result.classification, result.stderr);
   return result.exitCode;
 }
 
@@ -92,7 +118,7 @@ export async function editorLaunch(context: CliContext, args: string[]): Promise
   }
   ensureEditorReady(chosen.dir, context.ctx);
   const result = await launchWatched(args, { name: chosen.name, dir: chosen.dir }, { claude });
-  await handleCap(context, chosen, result.classification);
+  await handleCap(context, chosen, result.classification, result.stderr);
   return result.exitCode;
 }
 

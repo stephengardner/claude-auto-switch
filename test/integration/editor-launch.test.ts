@@ -10,15 +10,19 @@ import { loadConfig } from '../../src/config/config.js';
 import { getActive } from '../../src/state/active.js';
 import { loadLedger } from '../../src/ledger/ledger.js';
 import type { CliContext } from '../../src/context.js';
+import type { LimitVerdict } from '../../src/usage/limit-probe.js';
 
 const fakeClaude = fileURLToPath(new URL('../fake-claude/fake-claude.mjs', import.meta.url));
 
-function makeContext(home: string): CliContext {
+function makeContext(home: string, verdict: LimitVerdict = 'limited'): CliContext {
   const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home } };
   return {
     ctx,
     config: loadConfig(ctx),
     claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+    // Text only TRIGGERS a cap; the account decides. Injected here so these
+    // tests exercise a VERIFIED limit rather than reaching the network.
+    verifyCap: () => Promise.resolve(verdict),
     out: () => {},
     err: () => {},
     json: false,
@@ -75,3 +79,27 @@ describe('editorLaunch (against fake-claude)', () => {
   });
 });
 
+
+describe('limit-looking text in an editor session', () => {
+  it('does not bench the account when the API says it has room', async () => {
+    // This path wrote the cap straight from the classification, so ANY
+    // limit-looking text in an editor session, a replayed cap message or a
+    // conversation merely discussing rate limits, benched a healthy account
+    // for the default five hours and moved the operator off it. Every other
+    // cap-recording path had already learned that text only TRIGGERS a check.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-editor-refute-'));
+    const context = makeContext(home, 'allowed');
+    const dirA = path.join(home, 'profiles', 'A');
+    const dirB = path.join(home, 'profiles', 'B');
+    await addCommand(context, 'A', { dir: dirA, login: false });
+    await addCommand(context, 'B', { dir: dirB, login: false });
+    seed(dirA, { capped: true }); // prints the limit message
+    seed(dirB, { capped: false });
+    useCommand(context, 'A');
+
+    await editorLaunch(context, ['chat']);
+
+    expect(loadLedger(context.ctx).caps).toHaveLength(0);
+    expect(getActive(context.ctx)).toBe('A'); // and the operator is not moved
+  });
+});
