@@ -331,6 +331,8 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // Counts refusals ccx could not verify, so a limit it cannot explain can
   // never leave the session refusing forever. See usage/refusal-watch.
   const unverifiedLimits = createRefusalWatch();
+  /** The probe's own words for the last refusal, so the log can repeat them. */
+  let refusalReason: string | null = null;
   let limitedModel: string | undefined;
   /**
    * The confirmed limit's own reset time. The PTY outcome only carries what
@@ -450,10 +452,24 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // refusal it was meant to correct. The model is known in practice (the
       // status line reports it within seconds), and an escalation needs
       // minutes of refusals to trigger, so this costs nothing real.
+      refusalReason = decision.detail ?? null;
       if (!decision.limited && decision.unverified && running) {
-        // Keyed by the model too, so a `/model` change starts its own count
-        // rather than inheriting one gathered about a model no longer in use.
-        if (unverifiedLimits.refused(`${running}:${decision.detail ?? 'unverified'}`, Date.now())) {
+        // Keyed by the MODEL and nothing else.
+        //
+        // The detail used to be in this key, and that inverted the whole
+        // safeguard: the counter resets when the key changes, so every variation
+        // in WORDING started the count again. A session refused for one reason,
+        // then another, then the first again, never reached the threshold. The
+        // net that exists to stop infinite refusal therefore got weaker the more
+        // ways ccx failed to explain the limit, which is exactly backwards.
+        //
+        // Measured: six refusals over five minutes, alternating between "Fable
+        // is spent but this session is running opus" and probe verdicts, with no
+        // escalation, while a scheduled task retried every ten minutes and got
+        // nowhere. What matters is that the session is BLOCKED and on which
+        // model, never which sentence explained it best. A `/model` change is
+        // still a genuinely different situation, so the model stays in the key.
+        if (unverifiedLimits.refused(running, Date.now())) {
           verdict = 'limited';
           // Scoped to the model actually running, and with no reset time,
           // because none was ever proven. That keeps the run out of this
@@ -505,8 +521,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // which includes a conversation that merely TALKS about rate limits. Far
       // too noisy for the screen; the log is where it belongs, and it carries
       // the probe's answer so the refusal can be judged later.
+      // Carries the probe's OWN reason. The old wording claimed no window was
+      // spent, which was frequently untrue: the common case is a window that IS
+      // spent on a model ccx does not believe this session is running, and that
+      // reads as "the account is fine" to anyone watching. It sent the operator,
+      // and me, looking in the wrong place for an hour.
       notice(
-        'limit text on screen, but the login this session runs on shows no spent window; not switching',
+        `limit text on screen, but not switching: ${refusalReason ?? 'the API reported room'}`,
         { kind: 'cap-verify', ...(refusalData ? { data: refusalData } : {}) },
       );
     }
