@@ -83,7 +83,12 @@ describe('a session stuck on an account nobody can explain', () => {
 
     const launches = (readFileSync(runsLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as RunEntry))
       .filter((r) => r.type === 'launch');
-    expect(launches.map((r) => r.marker)).not.toContain('roomy');
+    const accounts = launches.map((r) => r.marker);
+    // It really did run on the account under test. Only asserting that
+    // 'roomy' is absent would also pass if nothing meaningful launched at all,
+    // which would make the control agree with the fix for the wrong reason.
+    expect(accounts[0]).toBe('stuck');
+    expect(accounts).not.toContain('roomy');
   }, 40_000);
   it('moves to another account, though every probe says it has room', async () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-stuck-'));
