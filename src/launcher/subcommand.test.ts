@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { claudeSubcommandIn } from './subcommand.js';
+import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { claudeSubcommandIn, SUBCOMMANDS } from './subcommand.js';
 
 describe('telling a subcommand apart from a session', () => {
   it('recognises the subcommands that the session path was breaking', () => {
@@ -46,5 +48,37 @@ describe('telling a subcommand apart from a session', () => {
 
   it('treats everything after `--` as arguments, never a command', () => {
     expect(claudeSubcommandIn(['--', 'update'])).toBeNull();
+  });
+});
+
+describe('drift against the real CLI', () => {
+  /**
+   * The list is hand-maintained because the CLI is a native binary and cannot be
+   * read for its commands. That makes drift the obvious failure mode, and `rc`
+   * proved it: a command missing from the list is not a wrong answer, it is a
+   * broken command, discovered only when someone hit it.
+   *
+   * This closes the half that CAN be checked. Every command the CLI documents
+   * must be in the list, so an addition turns into a red test instead of a
+   * report weeks later. Hidden commands stay uncoverable; `rc` is in the list
+   * precisely because nothing automatic could have found it.
+   *
+   * Skipped where no real CLI is installed, so CI never depends on one.
+   */
+  it('knows every command that `claude --help` documents', () => {
+    const bin = process.env.CCX_TEST_CLAUDE_BIN;
+    if (!bin || !existsSync(bin)) {
+      expect(SUBCOMMANDS.has('update')).toBe(true); // list is at least present
+      return;
+    }
+    const help = execFileSync(bin, ['--help'], { encoding: 'utf8', timeout: 60_000 });
+    const section = help.slice(help.indexOf('Commands:'));
+    const documented = [...section.matchAll(/^\s{2}([a-z][a-z0-9-]*)(\|[a-z|]+)?/gm)]
+      .flatMap((m) => [m[1], ...(m[2] ? m[2].slice(1).split('|') : [])])
+      .filter((name): name is string => Boolean(name) && name !== 'help');
+
+    expect(documented.length).toBeGreaterThan(5);
+    const missing = documented.filter((name) => !SUBCOMMANDS.has(name));
+    expect(missing).toEqual([]);
   });
 });

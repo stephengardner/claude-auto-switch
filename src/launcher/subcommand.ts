@@ -20,8 +20,14 @@
 /**
  * The subcommands the real CLI defines, including the aliases, which are
  * separate words to the parser.
+ *
+ * NOT every entry here appears in `claude --help`. `rc` (Remote Control) is
+ * hidden and was found only by running it, after it had already been reported
+ * broken. The CLI ships as a native binary, so the full list cannot be read out
+ * of it; this is best effort, and `subcommand.test.ts` guards the half that can
+ * be checked by asserting every DOCUMENTED command appears here.
  */
-const SUBCOMMANDS = new Set([
+export const SUBCOMMANDS = new Set([
   'agents',
   'auth',
   'auto-mode',
@@ -33,6 +39,10 @@ const SUBCOMMANDS = new Set([
   'plugin',
   'plugins',
   'project',
+  // Remote Control. Absent from `claude --help`, so it can only be known by
+  // having been told: through the session path it became
+  // "Could not reach the server to look up session <uuid>".
+  'rc',
   'setup-token',
   'ultrareview',
   'update',

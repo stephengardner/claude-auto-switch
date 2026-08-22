@@ -2,7 +2,7 @@ import { listAccounts } from '../accounts/registry.js';
 import { getActive } from '../state/active.js';
 import { probeAll } from '../health/prober.js';
 import { select } from '../selector/selector.js';
-import { launchWatched, launch } from '../launcher/launcher.js';
+import { launchWatched, launchPassthrough } from '../launcher/launcher.js';
 import { claudeSubcommandIn } from '../launcher/subcommand.js';
 import { autoRotateHeadless } from '../launcher/rotating-run.js';
 import { loadLedger, saveLedger, cappedNames, markCapped } from '../ledger/ledger.js';
@@ -59,9 +59,7 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
   // config, with nothing added and no session machinery.
   const subcommand = claudeSubcommandIn(passthroughArgs);
   if (subcommand) {
-    const active = getActive(context.ctx);
-    const on = accounts.find((a) => a.name === active) ?? accounts[0]!;
-    const { exitCode } = await launch(passthroughArgs, on, { claude: getClaude(context) });
+    const { exitCode } = await launchPassthrough(passthroughArgs, { claude: getClaude(context) });
     return exitCode;
   }
 

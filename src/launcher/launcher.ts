@@ -35,6 +35,32 @@ export async function launch(
   return { exitCode };
 }
 
+/**
+ * Run claude with the arguments and the environment exactly as they arrived.
+ *
+ * For a SUBCOMMAND, "transparent" has to mean transparent: no added flags and
+ * no redirected config. Pointing CLAUDE_CONFIG_DIR at an account profile looked
+ * harmless and was not, because the profile is not where the operator's own
+ * configuration lives:
+ *
+ *     $ ccx run -- mcp list
+ *     No MCP servers configured.
+ *
+ * They had several. A wrong answer delivered confidently is worse than the
+ * error this replaced. Inheriting the environment also keeps the daemon's
+ * OS-level CLAUDE_CONFIG_DIR working, so a subcommand still follows the active
+ * account wherever that is set up, and behaves exactly as it did before ccx was
+ * installed where it is not.
+ */
+export async function launchPassthrough(
+  args: string[],
+  deps: LaunchDeps,
+): Promise<LaunchResult> {
+  const run = deps.run ?? runInherit;
+  const exitCode = await run(deps.claude.bin, invokerArgs(deps.claude, args));
+  return { exitCode };
+}
+
 export type HeadlessRunner = (
   bin: string,
   args: string[],
