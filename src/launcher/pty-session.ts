@@ -342,7 +342,14 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
           switching
             ? { kind: 'switch', exitCode, switchTo: switching, ranMs }
             : cap.get()
-              ? { kind: 'capped', exitCode, reason: cap.get()!.reason, resetAt: cap.get()!.resetAt, ranMs }
+              ? {
+                  kind: 'capped',
+                  exitCode,
+                  reason: cap.get()!.reason,
+                  resetAt: cap.get()!.resetAt,
+                  ranMs,
+                  ...(cap.isConfirmed() ? {} : { unproven: true as const }),
+                }
               : noConversation
                 ? { kind: 'no-conversation', exitCode, ranMs }
                 : { kind: 'ok', exitCode, ranMs },

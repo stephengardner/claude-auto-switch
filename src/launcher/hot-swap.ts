@@ -21,6 +21,12 @@ export interface SessionOutcome {
    * what changes.
    */
   cappedModel?: string;
+  /**
+   * Nothing was measured: this is the hold raised to get a stuck session
+   * moving, not a limit the account confirmed. It reports no window and makes
+   * no claim about which model is spent, so callers must not record one.
+   */
+  unproven?: true;
   /** For kind 'switch': the account the operator asked to switch to, in place. */
   switchTo?: string;
 }
@@ -132,6 +138,22 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
    * like an account-wide limit.
    */
   const modelCapped = new Set<string>();
+  /**
+   * Accounts under an UNPROVEN hold, and when it lifts.
+   *
+   * Kept apart from `capped` because they mean different things and last
+   * different lengths of time. A confirmed limit is out for its whole window,
+   * so the run remembers it permanently. A hold measured nothing and lasts two
+   * minutes; putting it in the permanent set excluded the account for the rest
+   * of the run, which turns a two-minute nudge into a whole-session ban and
+   * quietly loses an account that was probably fine.
+   */
+  const heldUntil = new Map<string, number>();
+  /** Holds still in force, dropping any that have lifted. */
+  const activeHolds = (now: number): string[] => {
+    for (const [name, until] of heldUntil) if (until <= now) heldUntil.delete(name);
+    return [...heldUntil.keys()];
+  };
   let first = true;
   // When the operator picks an account mid-session, we relaunch on THAT account
   // next (instead of the policy pick), resuming the same conversation.
@@ -145,14 +167,17 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
 
   for (;;) {
     const account: HotSwapAccount | null =
-      forced ?? deps.nextAccount(new Set([...capped, ...needsLogin]));
+      forced ?? deps.nextAccount(new Set([...capped, ...needsLogin, ...activeHolds(Date.now())]));
     forced = null;
     if (!account) {
       // Out of accounts to rotate to. If what is exhausted is one model rather
       // than the accounts, run anyway and let Claude say so: it can still work
       // on another model. Watching for limits is off for that run, otherwise it
       // would be ended immediately by the very limit we already know about.
-      let fallback = deps.lastResort?.(new Set([...lastResortsTried, ...needsLogin])) ?? null;
+      let fallback =
+        deps.lastResort?.(
+          new Set([...lastResortsTried, ...needsLogin, ...activeHolds(Date.now())]),
+        ) ?? null;
       // Bounded HERE, not by trusting the callback to honour `excluding`. One
       // that ignores it and keeps naming the same account spins this loop
       // forever, which is a hang rather than a wrong answer, and the caller
@@ -199,6 +224,19 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
     if (outcome.kind === 'capped') {
       // The session may have moved via a seamless swap; attribute to the real one.
       const capName = deps.currentAccount?.() || account.name;
+
+      // FIRST, before anything is recorded. A hold measured nothing, so it must
+      // not reach the ledger at all: that is the shared record of limits other
+      // sessions read and avoid accounts over, and a two-minute guess has no
+      // business in it. Nor the model-pairing logic below, which would attribute
+      // a spent model on the same absent evidence. A hold is a routing decision
+      // belonging to THIS run, so it lives in this run's state and nowhere else.
+      if (outcome.unproven) {
+        const until = outcome.resetAt ?? Date.now() + 2 * 60_000;
+        heldUntil.set(capName, until);
+        deps.notify(`"${capName}" is not getting anywhere; trying elsewhere for now...`);
+        continue;
+      }
       deps.markCapped(capName, outcome.reason ?? 'usage cap', outcome.resetAt);
 
       // A limit about ONE MODEL leaves the account working on every other model,
