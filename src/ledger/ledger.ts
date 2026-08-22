@@ -58,19 +58,7 @@ export function cappedNames(ledger: Ledger, now: number): Set<string> {
   return new Set(ledger.caps.filter((c) => !c.model && isActive(c, now)).map((c) => c.account));
 }
 
-/** Accounts whose limit is only about `model` (they still work on other models). */
-export function modelCappedNames(ledger: Ledger, now: number, model?: string): Set<string> {
-  return new Set(
-    ledger.caps
-      .filter((c) => c.model && isActive(c, now) && (!model || sameModel(c.model, model)))
-      .map((c) => c.account),
-  );
-}
 
-/** Every account with any active limit, whatever its scope (for display). */
-export function allLimitedNames(ledger: Ledger, now: number): Set<string> {
-  return new Set(ledger.caps.filter((c) => isActive(c, now)).map((c) => c.account));
-}
 
 /**
  * Which (account, model) pairs are known spent right now, from limits recorded
