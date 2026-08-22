@@ -345,7 +345,13 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         // last redraw re-enabled the very modes the reset had just turned off.
         // That is how the fix shipped and the garbage survived it.
         resetChildTerminalModes();
-        if (capped || switching || noConversation) return finalize();
+        // A capped outcome waits for a probe that is still in flight. The
+        // fallback hold schedules a kill 150ms later, so without this the exit
+        // handler finalizes first and a probe resolving afterwards can never
+        // replace the unproven two-minute hold with the confirmed window: the
+        // outcome has already resolved. Bounded, because the probe aborts at 8s
+        // and the wait below is timeboxed at 12s.
+        if (switching || noConversation || (capped && !verifying)) return finalize();
         const timeboxed = (p: Promise<boolean>): Promise<boolean> =>
           Promise.race([p, new Promise<boolean>((r) => setTimeout(() => r(false), 12_000))]);
         if (pendingVerify) {
