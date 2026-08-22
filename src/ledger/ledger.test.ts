@@ -79,7 +79,14 @@ describe('what rotation can learn from limits recorded earlier', () => {
     expect(limit).not.toBeNull();
     expect(limit?.model).toBe('Fable');
     expect(limit?.resetsAt).toBe(later);
-    expect(activeModelCaps(ledger, now).map((c) => c.account).sort()).toEqual(['a', 'b']);
+    // Both records, model included. This test is ABOUT model comparison, so
+    // mapping the models away would let a regression with the right accounts
+    // and the wrong models through. The stored case is preserved as written;
+    // it is the comparison that ignores case.
+    expect(activeModelCaps(ledger, now)).toEqual([
+      { account: 'a', model: 'Fable' },
+      { account: 'b', model: 'fable' },
+    ]);
   });
 
   it('keeps one record PER MODEL on an account', () => {
