@@ -202,3 +202,49 @@ describe('a session that keeps hitting a wall nobody can explain', () => {
     expect(outcome.kind).toBe('capped');
   }, 30_000);
 });
+
+describe('what a hold claims', () => {
+  afterEach(() => {
+    delete process.env.FAKE_CLAUDE_CAP_EVERY_MS;
+    delete process.env.FAKE_CLAUDE_IDLE_MS;
+  });
+
+  it('claims no model and no window, because it measured neither', async () => {
+    // A hold exists to get a stuck session moving, not to describe a limit.
+    // Reporting a model it never confirmed would leave the account selectable
+    // for everything else, parking the session exactly where it was stuck; and
+    // the planner would be told a pairing is spent on evidence nobody gathered.
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-hold-claims-'));
+    mkdirSync(dir, { recursive: true });
+    process.env.FAKE_CLAUDE_CAP_EVERY_MS = '150';
+    process.env.FAKE_CLAUDE_IDLE_MS = '30000';
+    const outcome = await runPtySession({
+      claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+      args: [],
+      configDir: dir,
+      verifyCap: () => Promise.resolve(false),
+      blockedWatch: { after: 3, spreadMs: 600, minGapMs: 100 },
+    });
+
+    expect(outcome.kind).toBe('capped');
+    expect(outcome.unproven).toBe(true);
+    expect(outcome.cappedModel).toBeUndefined();
+  }, 30_000);
+
+  it('does not mark a CONFIRMED cap as unproven', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-hold-confirmed-'));
+    mkdirSync(dir, { recursive: true });
+    process.env.FAKE_CLAUDE_CAP_EVERY_MS = '150';
+    process.env.FAKE_CLAUDE_IDLE_MS = '30000';
+    const outcome = await runPtySession({
+      claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+      args: [],
+      configDir: dir,
+      verifyCap: () => Promise.resolve(true),
+      blockedWatch: { after: 3, spreadMs: 600, minGapMs: 100 },
+    });
+
+    expect(outcome.kind).toBe('capped');
+    expect(outcome.unproven).toBeUndefined();
+  }, 30_000);
+});

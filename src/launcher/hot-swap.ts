@@ -21,6 +21,12 @@ export interface SessionOutcome {
    * what changes.
    */
   cappedModel?: string;
+  /**
+   * Nothing was measured: this is the hold raised to get a stuck session
+   * moving, not a limit the account confirmed. It reports no window and makes
+   * no claim about which model is spent, so callers must not record one.
+   */
+  unproven?: true;
   /** For kind 'switch': the account the operator asked to switch to, in place. */
   switchTo?: string;
 }

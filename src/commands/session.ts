@@ -1232,6 +1232,16 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         // and that answer fired before rotation ever got to choose: running
         // out of Fable on one account moved the whole run to Opus while
         // another account still had Fable. One decision, one place.
+        // A hold measured NOTHING, so it must not leave a model claim behind.
+        // Inheriting whatever `limitedModel` happened to hold would scope the
+        // hold to a model no probe confirmed, leaving the account selectable
+        // for everything else and the session parked exactly where it was
+        // stuck; and `spentThisRun` would tell the planner that pairing is
+        // spent on evidence nobody gathered.
+        if (outcome.kind === 'capped' && outcome.unproven) {
+          limitedModel = undefined;
+          return outcome;
+        }
         if (outcome.kind === 'capped' && limitedModel) {
           spentThisRun.add(spentKey(capOwner ?? current?.name ?? account.name, limitedModel));
         }
