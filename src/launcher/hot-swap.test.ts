@@ -558,3 +558,78 @@ describe('when every account looks spent', () => {
     expect(notes.join(' ')).not.toContain('every account has hit its limit');
   });
 });
+
+describe('an unproven hold, which is a nudge rather than a verdict', () => {
+  it('lets the account back in once the hold has lifted', async () => {
+    // A hold lasts two minutes. Putting it in the permanent set excluded the
+    // account for the whole run, turning a short nudge into a session-long ban
+    // on an account that was very likely fine.
+    const accounts = pool(['a', 'b']);
+    const seen: string[] = [];
+    const excluded: string[][] = [];
+    let call = 0;
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => {
+        excluded.push([...ex]);
+        return accounts.find((x) => !ex.has(x.name)) ?? null;
+      },
+      resolveAccount: (name) => accounts.find((x) => x.name === name) ?? null,
+      runSession: (account) => {
+        seen.push(account.name);
+        call += 1;
+        // 'a' is held (already expired), then 'b' caps for real, so selection
+        // has to come back round to 'a'.
+        if (call === 1) {
+          return Promise.resolve({
+            kind: 'capped',
+            exitCode: 1,
+            unproven: true,
+            resetAt: Date.now() - 1, // lifted already
+          } as SessionOutcome);
+        }
+        if (call === 2) return Promise.resolve({ kind: 'capped', exitCode: 1 } as SessionOutcome);
+        return Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome);
+      },
+      markCapped: () => {},
+      notify: () => {},
+      report: () => {},
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(0);
+    // 'a' is picked again immediately, because the hold had already lifted:
+    // that is the whole point, and under the old permanent set it could never
+    // have been chosen a second time in this run.
+    expect(seen).toEqual(['a', 'a', 'b']);
+    // Its second run capped for real, and THAT exclusion does persist.
+    expect(excluded[2]).toEqual(['a']);
+  });
+
+  it('keeps the account out while the hold is still in force', async () => {
+    const accounts = pool(['a', 'b']);
+    const seen: string[] = [];
+    let call = 0;
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => accounts.find((x) => !ex.has(x.name)) ?? null,
+      resolveAccount: (name) => accounts.find((x) => x.name === name) ?? null,
+      runSession: (account) => {
+        seen.push(account.name);
+        call += 1;
+        if (call === 1) {
+          return Promise.resolve({
+            kind: 'capped',
+            exitCode: 1,
+            unproven: true,
+            resetAt: Date.now() + 60_000, // still held
+          } as SessionOutcome);
+        }
+        return Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome);
+      },
+      markCapped: () => {},
+      notify: () => {},
+      report: () => {},
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(0);
+    expect(seen).toEqual(['a', 'b']); // moved on, did not come straight back
+  });
+});

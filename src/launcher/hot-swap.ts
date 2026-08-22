@@ -138,6 +138,22 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
    * like an account-wide limit.
    */
   const modelCapped = new Set<string>();
+  /**
+   * Accounts under an UNPROVEN hold, and when it lifts.
+   *
+   * Kept apart from `capped` because they mean different things and last
+   * different lengths of time. A confirmed limit is out for its whole window,
+   * so the run remembers it permanently. A hold measured nothing and lasts two
+   * minutes; putting it in the permanent set excluded the account for the rest
+   * of the run, which turns a two-minute nudge into a whole-session ban and
+   * quietly loses an account that was probably fine.
+   */
+  const heldUntil = new Map<string, number>();
+  /** Holds still in force, dropping any that have lifted. */
+  const activeHolds = (now: number): string[] => {
+    for (const [name, until] of heldUntil) if (until <= now) heldUntil.delete(name);
+    return [...heldUntil.keys()];
+  };
   let first = true;
   // When the operator picks an account mid-session, we relaunch on THAT account
   // next (instead of the policy pick), resuming the same conversation.
@@ -151,14 +167,17 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
 
   for (;;) {
     const account: HotSwapAccount | null =
-      forced ?? deps.nextAccount(new Set([...capped, ...needsLogin]));
+      forced ?? deps.nextAccount(new Set([...capped, ...needsLogin, ...activeHolds(Date.now())]));
     forced = null;
     if (!account) {
       // Out of accounts to rotate to. If what is exhausted is one model rather
       // than the accounts, run anyway and let Claude say so: it can still work
       // on another model. Watching for limits is off for that run, otherwise it
       // would be ended immediately by the very limit we already know about.
-      let fallback = deps.lastResort?.(new Set([...lastResortsTried, ...needsLogin])) ?? null;
+      let fallback =
+        deps.lastResort?.(
+          new Set([...lastResortsTried, ...needsLogin, ...activeHolds(Date.now())]),
+        ) ?? null;
       // Bounded HERE, not by trusting the callback to honour `excluding`. One
       // that ignores it and keeps naming the same account spins this loop
       // forever, which is a hang rather than a wrong answer, and the caller
@@ -219,6 +238,15 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
       if (scopedTo && !modelCapped.has(pair)) {
         modelCapped.add(pair);
         deps.notify(`"${capName}" is out of ${scopedTo}; staying here on another model...`);
+        continue;
+      }
+
+      if (outcome.unproven) {
+        // Nothing was measured, so this is a nudge rather than a verdict: set
+        // aside only until the hold lifts, then eligible again like any other.
+        const until = outcome.resetAt ?? Date.now() + 2 * 60_000;
+        heldUntil.set(capName, until);
+        deps.notify(`"${capName}" is not getting anywhere; trying elsewhere for now...`);
         continue;
       }
 
