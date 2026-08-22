@@ -604,6 +604,37 @@ describe('an unproven hold, which is a nudge rather than a verdict', () => {
     expect(excluded[2]).toEqual(['a']);
   });
 
+  it('never writes a hold to the ledger, because it measured nothing', async () => {
+    // The ledger is the shared record other sessions read and avoid accounts
+    // over. A two-minute guess has no business in it, and neither does a model
+    // pairing attributed on the same absent evidence.
+    const accounts = pool(['a', 'b']);
+    const marked: string[] = [];
+    let call = 0;
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => accounts.find((x) => !ex.has(x.name)) ?? null,
+      resolveAccount: (name) => accounts.find((x) => x.name === name) ?? null,
+      runSession: () => {
+        call += 1;
+        if (call === 1) {
+          return Promise.resolve({
+            kind: 'capped',
+            exitCode: 1,
+            unproven: true,
+            cappedModel: 'Fable', // must NOT be recorded either
+            resetAt: Date.now() + 60_000,
+          } as SessionOutcome);
+        }
+        return Promise.resolve({ kind: 'ok', exitCode: 0 } as SessionOutcome);
+      },
+      markCapped: (a) => marked.push(a),
+      notify: () => {},
+      report: () => {},
+    };
+
+    expect(await runHotSwapSession(deps)).toBe(0);
+    expect(marked).toEqual([]);
+  });
   it('keeps the account out while the hold is still in force', async () => {
     const accounts = pool(['a', 'b']);
     const seen: string[] = [];

@@ -224,6 +224,19 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
     if (outcome.kind === 'capped') {
       // The session may have moved via a seamless swap; attribute to the real one.
       const capName = deps.currentAccount?.() || account.name;
+
+      // FIRST, before anything is recorded. A hold measured nothing, so it must
+      // not reach the ledger at all: that is the shared record of limits other
+      // sessions read and avoid accounts over, and a two-minute guess has no
+      // business in it. Nor the model-pairing logic below, which would attribute
+      // a spent model on the same absent evidence. A hold is a routing decision
+      // belonging to THIS run, so it lives in this run's state and nowhere else.
+      if (outcome.unproven) {
+        const until = outcome.resetAt ?? Date.now() + 2 * 60_000;
+        heldUntil.set(capName, until);
+        deps.notify(`"${capName}" is not getting anywhere; trying elsewhere for now...`);
+        continue;
+      }
       deps.markCapped(capName, outcome.reason ?? 'usage cap', outcome.resetAt);
 
       // A limit about ONE MODEL leaves the account working on every other model,
@@ -238,15 +251,6 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
       if (scopedTo && !modelCapped.has(pair)) {
         modelCapped.add(pair);
         deps.notify(`"${capName}" is out of ${scopedTo}; staying here on another model...`);
-        continue;
-      }
-
-      if (outcome.unproven) {
-        // Nothing was measured, so this is a nudge rather than a verdict: set
-        // aside only until the hold lifts, then eligible again like any other.
-        const until = outcome.resetAt ?? Date.now() + 2 * 60_000;
-        heldUntil.set(capName, until);
-        deps.notify(`"${capName}" is not getting anywhere; trying elsewhere for now...`);
         continue;
       }
 
