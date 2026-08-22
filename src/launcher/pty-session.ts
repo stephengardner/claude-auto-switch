@@ -57,6 +57,12 @@ export interface PtySessionOptions {
    * defaults in blocked-watch.
    */
   blockedWatch?: BlockedWatchOptions;
+  /**
+   * How long a REFUTED match backs off before another probe. Injected in tests
+   * so the case where a wall recurs AFTER the backoff has expired can be
+   * reached in seconds; production uses 20s.
+   */
+  refuteBackoffMs?: number;
 }
 
 function cleanEnv(extra: Record<string, string>): Record<string, string> {
@@ -92,6 +98,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      * can veto.
      */
     const blockedWatch = createBlockedWatch(options.blockedWatch);
+    const refuteBackoffMs = options.refuteBackoffMs ?? 20_000;
     /**
      * How long an UNPROVEN limit holds a pairing out of rotation.
      *
@@ -235,20 +242,26 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         .verifyCap(snapshot)
         .then((confirmed) => {
           verifying = false;
-          blockedWatch.changed(); // whatever happens now, the situation moved on
           if (confirmed) {
+            // ONLY on a confirmed cap. Clearing it on every probe result, as
+            // this first did, hands the veto straight back to the guard this
+            // watch exists to be independent of: a refuted probe backs off for
+            // 20s, so any wall recurring more slowly than that gets probed,
+            // refuted, and the count reset, for ever. It would have shipped
+            // doing nothing at all in the case it was written for.
+            blockedWatch.changed();
             if (!capped && !switching) {
               capped = { reason: hit.reason, resetAt: hit.resetAt };
               if (!exited) setTimeout(safeKill, 150);
             }
           } else {
-            suppressUntil = Date.now() + 20_000;
+            suppressUntil = Date.now() + refuteBackoffMs;
           }
           return confirmed;
         })
         .catch(() => {
           verifying = false;
-          suppressUntil = Date.now() + 20_000;
+          suppressUntil = Date.now() + refuteBackoffMs;
           return false;
         });
     });

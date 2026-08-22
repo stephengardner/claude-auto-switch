@@ -73,6 +73,33 @@ describe('a session that keeps hitting a wall nobody can explain', () => {
     });
     expect(outcome.kind).not.toBe('capped');
   }, 30_000);
+  it('accumulates across refuted probes, at production pacing', async () => {
+    // The case that matters, and the one a fast test hides. Real walls arrive
+    // minutes apart, so EVERY episode gets probed and refuted before the next
+    // one lands. Resetting on a refuted probe therefore clears the count every
+    // single time and the pattern is never reached. The first version of this
+    // change did exactly that, and the 150ms test above still passed because
+    // episodes piled up faster than probes could resolve.
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-blocked-paced-'));
+    mkdirSync(dir, { recursive: true });
+    process.env.FAKE_CLAUDE_CAP_EVERY_MS = '400';
+    process.env.FAKE_CLAUDE_IDLE_MS = '30000';
+    let refuted = 0;
+    const outcome = await runPtySession({
+      claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+      args: [],
+      configDir: dir,
+      // Resolves immediately, so each refusal lands BETWEEN episodes.
+      verifyCap: () => { refuted += 1; return Promise.resolve(false); },
+      blockedWatch: { after: 3, spreadMs: 900, minGapMs: 100 },
+      // Shorter than the gap between walls, so every episode really is probed
+      // and refuted BEFORE the next one lands. With the 20s production backoff
+      // the probes are suppressed instead, which hides the bug entirely.
+      refuteBackoffMs: 150,
+    });
+    expect(outcome.kind).toBe('capped');
+    expect(refuted).toBeGreaterThanOrEqual(1); // probes did run, and were not believed
+  }, 30_000);
   it('still ends as a normal cap when the probe DOES confirm one', async () => {
     // The ordinary path has to keep working: a confirmed limit is a real cap,
     // not an unproven hold, and it carries whatever the probe reported.
