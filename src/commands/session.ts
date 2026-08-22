@@ -39,7 +39,6 @@ import { createTerminalWriter } from '../ui/terminal-writer.js';
 import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-store.js';
 import { startUsageRefresher } from '../usage/usage-refresher.js';
 import { planRotation, spentKey } from '../usage/rotation-plan.js';
-import { createRefusalWatch } from '../usage/refusal-watch.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
 import { planConversation, relaunchArgs, freshStartArgs } from '../launcher/conversation.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
@@ -328,9 +327,6 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
   // Which model was out, when the limit was about one model rather than the
   // whole account. Recorded with the limit so it never blocks other models.
-  // Counts refusals ccx could not verify, so a limit it cannot explain can
-  // never leave the session refusing forever. See usage/refusal-watch.
-  const unverifiedLimits = createRefusalWatch();
   /** The probe's own words for the last refusal, so the log can repeat them. */
   let refusalReason: string | null = null;
   let limitedModel: string | undefined;
@@ -441,59 +437,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         ...(chosenModel ? { ccxChose: chosenModel } : {}),
       };
 
-      // The one refusal that can be wrong about a limit that is really
-      // happening. Everything else refused here is a case where the API
-      // positively reported room; this is the case where it could not account
-      // for a limit at all. Left to itself it repeats forever, which is the
-      // operator sitting blocked while the log fills with reasons not to act.
-      // Only ever escalates with a model to scope it to. Without one the
-      // outcome is an account-wide cap, which takes the whole account out of
-      // rotation on evidence nobody could prove: strictly worse than the
-      // refusal it was meant to correct. The model is known in practice (the
-      // status line reports it within seconds), and an escalation needs
-      // minutes of refusals to trigger, so this costs nothing real.
+      // Recorded for the log only. Whether the session is STUCK is answered
+      // upstream by blocked-watch, which counts walls at detection and cannot
+      // be vetoed by any guard here; escalating from this side as well meant two
+      // mechanisms for one invariant, and the harsher of the two fired on the
+      // same evidence. See src/launcher/blocked-watch.ts.
       refusalReason = decision.detail ?? null;
-      if (!decision.limited && decision.unverified) {
-        // Keyed by the MODEL and nothing else.
-        //
-        // The detail used to be in this key, and that inverted the whole
-        // safeguard: the counter resets when the key changes, so every variation
-        // in WORDING started the count again. A session refused for one reason,
-        // then another, then the first again, never reached the threshold. The
-        // net that exists to stop infinite refusal therefore got weaker the more
-        // ways ccx failed to explain the limit, which is exactly backwards.
-        //
-        // Measured: six refusals over five minutes, alternating between "Fable
-        // is spent but this session is running opus" and probe verdicts, with no
-        // escalation, while a scheduled task retried every ten minutes and got
-        // nowhere. What matters is that the session is BLOCKED and on which
-        // model, never which sentence explained it best. A `/model` change is
-        // still a genuinely different situation, so the model stays in the key.
-        if (running && unverifiedLimits.refused(running, Date.now())) {
-          verdict = 'limited';
-          // Scoped to the model actually running, and with no reset time,
-          // because none was ever proven. That keeps the run out of this
-          // account/model pairing without writing a dated cap nobody measured.
-          limitedModel = running;
-          limitedResetAt = undefined;
-          logEvent(
-            'the limit keeps coming back and no window explains it, so rotating anyway ' +
-              'rather than leaving the session stuck',
-            { kind: 'cap-verify', data: { ...refusalData, escalated: true } },
-          );
-        }
-      } else {
-        // Any CONCLUSIVE answer clears the pattern: a limit ccx could account
-        // for, and equally the API positively reporting room.
-        //
-        // Only the first of those used to reset. An unverified refusal, then a
-        // clean "you have room", then two more refusals would escalate from the
-        // timestamp before the all-clear, so a session was benched on a spread
-        // the evidence never had. Widening the key to the model made that worse,
-        // not better: timestamps now survive across more situations, so a stale
-        // first one lingers where it used to be discarded with the wording.
-        unverifiedLimits.reset();
-      }
       if (decision.limited && identity.mismatch) {
         if (identity.actual) {
           capOwner = identity.actual.name;
@@ -1035,7 +984,6 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // A new child on a new account. Whatever refusals were adding up belonged
       // to the last one, and carrying them over would escalate here on evidence
       // gathered somewhere else.
-      unverifiedLimits.reset();
       // Read BEFORE the renewal: it rotates the token, so afterwards there is
       // no shared value left to identify who was sharing it.
       const sharing = snapshotSharing(account, accounts, carryTargets(account, accounts));
@@ -1165,8 +1113,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         // The account under this session just changed without the child
         // restarting, so refusals counted against the old one say nothing
         // about the new one.
-        unverifiedLimits.reset();
-        syncEditorPointerIfEnabled(context);
+          syncEditorPointerIfEnabled(context);
         notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
         notifyAccountSwitch(target.name, 'switched in place');
         return null;
