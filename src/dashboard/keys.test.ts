@@ -80,6 +80,11 @@ describe('quitting with Escape', () => {
     expect(dispatchKey('\x1b', 27, 0, 3).action).toBe('quit');
   });
 
+  it('quits on a bare Escape even when byte0 is not supplied', () => {
+    // byte0 is optional, so matching on it alone left this shape not quitting.
+    expect(dispatchKey('', undefined, 0, 3).action).toBe('quit');
+  });
+
   it('does NOT quit on an arrow key, which also starts with Escape', () => {
     // The whole reason this needs a length check: an arrow is `\x1b[A`, so
     // reading byte0 alone would close the dashboard every time you moved.

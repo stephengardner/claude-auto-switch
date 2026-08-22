@@ -234,7 +234,16 @@ describe('a restore that does not take', () => {
     expect(count('exit')).toBe(1);
     term.restore();
     expect(stdin.isRaw).toBe(true);
-    expect(count('exit')).toBe(1); // still armed for another go at exit
+    // Both kinds of hook stay armed: the signal handlers are released in the
+    // same breath as the exit one, so checking only exit would miss half of it.
+    expect(count('exit')).toBe(1);
+    expect(count('SIGINT')).toBe(1);
+
+    // And when the stream recovers, the next attempt completes and stands down.
+    stdin.isRaw = false;
+    term.restore();
+    expect(count('exit')).toBe(0);
+    expect(count('SIGINT')).toBe(0);
   });
 
   it('releases the hooks once the terminal really is back', () => {

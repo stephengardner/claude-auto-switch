@@ -70,6 +70,13 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
    */
   const rawIsOff = (): boolean => (stdin as { isRaw?: boolean }).isRaw !== true;
 
+  /**
+   * Tracked apart from `restored`, because a restore that could not clear raw
+   * mode leaves the exit and signal hooks armed and they call this again. The
+   * dashboard's epilogue leaves the alternate screen, and sending that twice
+   * pops a screen the second time that was never entered.
+   */
+  let epilogueWritten = false;
   let restored = false;
   const restore = (): void => {
     if (restored) return;
@@ -94,7 +101,8 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
     } catch {
       /* already closed */
     }
-    if (options.epilogue) {
+    if (options.epilogue && !epilogueWritten) {
+      epilogueWritten = true;
       try {
         stdout.write(options.epilogue);
       } catch {
