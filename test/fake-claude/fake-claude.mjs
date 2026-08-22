@@ -118,3 +118,12 @@ if (idleMs > 0) {
 } else {
   process.exit(0);
 }
+
+
+// Ordinary output with no limit in it. Used to prove a single cap message does
+// not keep re-matching from the rolling buffer as later output arrives.
+const chatterEvery = Number(process.env.FAKE_CLAUDE_CHATTER_EVERY_MS) || 0;
+if (chatterEvery > 0) {
+  const c = setInterval(() => { process.stdout.write("working on it" + String.fromCharCode(10)); }, chatterEvery);
+  if (c.unref) c.unref();
+}

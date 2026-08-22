@@ -208,6 +208,12 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       if (options.ignoreLimits) return;
       const hit = matchesCapText(window);
       if (!hit) return;
+      // Cleared HERE, before anything can return early. One message is one
+      // episode, and leaving it in the rolling buffer means the next unrelated
+      // output re-matches the same text: three checks of a single wall would
+      // then look like three walls and raise a hold nobody hit.
+      const snapshot = window;
+      window = '';
 
       // Counted BEFORE the suppression below, and that ordering is the whole
       // point. A hit arriving inside the refute backoff, or while a probe was
@@ -216,7 +222,6 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // avoid re-probing. So the session could be walled off indefinitely while
       // every guard agreed there was nothing to act on.
       if (blockedWatch.sawLimitText(Date.now()) && !capped && !switching) {
-        window = '';
         capped = {
           reason: hit.reason ?? 'the same limit keeps coming back and nothing explains it',
           resetAt: Date.now() + UNPROVEN_HOLD_MS,
@@ -226,8 +231,6 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       }
 
       if (verifying || Date.now() < suppressUntil) return;
-      const snapshot = window;
-      window = '';
       if (!options.verifyCap) {
         capped = { reason: hit.reason, resetAt: hit.resetAt };
         setTimeout(safeKill, 150);

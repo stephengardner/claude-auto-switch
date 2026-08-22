@@ -19,6 +19,8 @@ const fakeClaude = fileURLToPath(new URL('../fake-claude/fake-claude.mjs', impor
 describe('a session that keeps hitting a wall nobody can explain', () => {
   afterEach(() => {
     delete process.env.FAKE_CLAUDE_CAP_EVERY_MS;
+    delete process.env.FAKE_CLAUDE_EMIT_CAP;
+    delete process.env.FAKE_CLAUDE_CHATTER_EVERY_MS;
     delete process.env.FAKE_CLAUDE_IDLE_MS;
   });
 
@@ -122,6 +124,25 @@ describe('a session that keeps hitting a wall nobody can explain', () => {
     // The confirmed cap carries no reset time (the text names none), so the
     // two-minute hold must be gone rather than reported as the window.
     expect(outcome.resetAt).toBeUndefined();
+  }, 30_000);
+  it('does not turn ONE wall into three by re-reading it from the buffer', async () => {
+    // The rolling buffer holds recent output. If a matched message is left in
+    // it, every later scrap of unrelated output re-matches the same text, and
+    // three reads of one wall look exactly like three walls. That would raise
+    // a hold on a session that hit a limit once and carried on.
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-blocked-echo-'));
+    mkdirSync(dir, { recursive: true });
+    process.env.FAKE_CLAUDE_EMIT_CAP = '1';        // exactly one wall
+    process.env.FAKE_CLAUDE_CHATTER_EVERY_MS = '120'; // then ordinary output
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    const outcome = await runPtySession({
+      claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+      args: [],
+      configDir: dir,
+      verifyCap: () => Promise.resolve(false),
+      blockedWatch: { after: 3, spreadMs: 300, minGapMs: 100 },
+    });
+    expect(outcome.kind).not.toBe('capped');
   }, 30_000);
   it('still ends as a normal cap when the probe DOES confirm one', async () => {
     // The ordinary path has to keep working: a confirmed limit is a real cap,
