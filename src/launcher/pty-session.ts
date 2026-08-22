@@ -250,7 +250,13 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
             // refuted, and the count reset, for ever. It would have shipped
             // doing nothing at all in the case it was written for.
             blockedWatch.changed();
-            if (!capped && !switching) {
+            // Overwrites whatever is there, and that matters when the thing
+            // there is the unproven two-minute hold this watch sets. A probe
+            // still in flight when the hold lands would otherwise have its
+            // CONFIRMED reason and reset time thrown away, and the pairing
+            // would come back into rotation minutes before the real limit
+            // expires, straight into the same wall.
+            if (!switching) {
               capped = { reason: hit.reason, resetAt: hit.resetAt };
               if (!exited) setTimeout(safeKill, 150);
             }

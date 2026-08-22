@@ -100,6 +100,29 @@ describe('a session that keeps hitting a wall nobody can explain', () => {
     expect(outcome.kind).toBe('capped');
     expect(refuted).toBeGreaterThanOrEqual(1); // probes did run, and were not believed
   }, 30_000);
+  it('lets a late confirmation replace the unproven hold', async () => {
+    // The race: blocked-watch sets the two-minute hold while a probe is still
+    // in flight, and that probe then CONFIRMS the limit. Keeping the hold
+    // would return the pairing to rotation minutes before the real window
+    // expires, straight back into the same wall.
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-blocked-race-'));
+    mkdirSync(dir, { recursive: true });
+    process.env.FAKE_CLAUDE_CAP_EVERY_MS = '150';
+    process.env.FAKE_CLAUDE_IDLE_MS = '30000';
+    const outcome = await runPtySession({
+      claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+      args: [],
+      configDir: dir,
+      // Slow enough that the hold lands first, then confirms.
+      verifyCap: () => new Promise((r) => setTimeout(() => r(true), 900)),
+      blockedWatch: { after: 2, spreadMs: 200, minGapMs: 100 },
+      refuteBackoffMs: 150,
+    });
+    expect(outcome.kind).toBe('capped');
+    // The confirmed cap carries no reset time (the text names none), so the
+    // two-minute hold must be gone rather than reported as the window.
+    expect(outcome.resetAt).toBeUndefined();
+  }, 30_000);
   it('still ends as a normal cap when the probe DOES confirm one', async () => {
     // The ordinary path has to keep working: a confirmed limit is a real cap,
     // not an unproven hold, and it carries whatever the probe reported.
