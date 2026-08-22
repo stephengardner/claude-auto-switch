@@ -65,7 +65,18 @@ async function handleCap(
     markCapped(loadLedger(context.ctx), {
       account: chosen.name,
       now: Date.now(),
-      resetAt: ('resetAt' in decision ? decision.resetAt : undefined) ?? classification.resetAt ?? null,
+      // The VERIFIED window only. The classification's reset time is parsed out
+      // of the rendered text, and text that has just been refuted as a verdict
+      // is no better as a duration: a replayed message announcing a reset days
+      // away would bench the account for days on a limit whose real window
+      // nobody reported.
+      //
+      // The configured backoff stays, though, because the alternative is worse
+      // than it looks: markCapped turns a null reset into a null capUntil, and
+      // isActive treats null as active forever, so a verified limit that came
+      // with no window would bench the account PERMANENTLY. A bounded guess
+      // beats an unbounded one.
+      resetAt: ('resetAt' in decision ? decision.resetAt : undefined) ?? null,
       backoffMinutes: context.config.rotation.defaultBackoffMinutes,
       reason: classification.reason ?? 'usage cap',
       // A model-scoped limit leaves the account working on everything else.

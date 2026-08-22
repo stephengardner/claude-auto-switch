@@ -81,6 +81,30 @@ describe('editorLaunch (against fake-claude)', () => {
 
 
 describe('limit-looking text in an editor session', () => {
+  it('ignores a reset time that only the rendered text claims', async () => {
+    // The verdict was verified; the DURATION in that text was not. A replayed
+    // message announcing a reset days away would otherwise bench the account
+    // for days on a limit whose real window nobody reported.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-editor-reset-'));
+    const context = makeContext(home, 'limited');
+    const dirA = path.join(home, 'profiles', 'A');
+    const dirB = path.join(home, 'profiles', 'B');
+    await addCommand(context, 'A', { dir: dirA, login: false });
+    await addCommand(context, 'B', { dir: dirB, login: false });
+    seed(dirA, { capped: true });
+    seed(dirB, { capped: false });
+    useCommand(context, 'A');
+
+    await editorLaunch(context, ['chat']);
+
+    const cap = loadLedger(context.ctx).caps.find((c) => c.account === 'A');
+    expect(cap).toBeDefined();
+    // Bounded by the configured backoff, never by anything the text said, and
+    // never null, which would mean capped for ever.
+    expect(cap!.capUntil).not.toBeNull();
+    const hours = (cap!.capUntil! - Date.now()) / 3_600_000;
+    expect(hours).toBeLessThanOrEqual(5.1);
+  });
   it('does not bench the account when the API says it has room', async () => {
     // This path wrote the cap straight from the classification, so ANY
     // limit-looking text in an editor session, a replayed cap message or a
