@@ -5,8 +5,6 @@ import {
   cappedNames,
   clearExpired,
   clearAccount,
-  modelCappedNames,
-  allLimitedNames,
   modelOnlyLimit,
   activeModelCaps,
 } from './ledger.js';
@@ -81,7 +79,7 @@ describe('what rotation can learn from limits recorded earlier', () => {
     expect(limit).not.toBeNull();
     expect(limit?.model).toBe('Fable');
     expect(limit?.resetsAt).toBe(later);
-    expect(modelCappedNames(ledger, now, 'FABLE')).toEqual(new Set(['a', 'b']));
+    expect(activeModelCaps(ledger, now).map((c) => c.account).sort()).toEqual(['a', 'b']);
   });
 
   it('keeps one record PER MODEL on an account', () => {
@@ -136,17 +134,15 @@ describe('limits scoped to one model', () => {
     expect(isCapped(ledger, 'work', now)).toBe(false);
     expect(cappedNames(ledger, now).has('work')).toBe(false);
     // It is still recorded, for display and for steering rotation.
-    expect(modelCappedNames(ledger, now).has('work')).toBe(true);
-    expect(modelCappedNames(ledger, now, 'Fable').has('work')).toBe(true);
-    expect(modelCappedNames(ledger, now, 'Opus').has('work')).toBe(false);
-    expect(allLimitedNames(ledger, now).has('work')).toBe(true);
+    expect(activeModelCaps(ledger, now)).toEqual([{ account: 'work', model: 'Fable' }]);
   });
 
   it('an account-wide limit still makes the account unusable', () => {
     const ledger = markCapped({ caps: [] }, { account: 'work', now, resetAt: later });
     expect(isCapped(ledger, 'work', now)).toBe(true);
     expect(cappedNames(ledger, now).has('work')).toBe(true);
-    expect(modelCappedNames(ledger, now).has('work')).toBe(false);
+    // Account-wide, so it carries no model.
+    expect(activeModelCaps(ledger, now)).toEqual([]);
   });
 
   it('modelOnlyLimit reports the model and soonest reset when every limit is that model', () => {
@@ -170,6 +166,6 @@ describe('limits scoped to one model', () => {
   it('an expired model limit stops counting', () => {
     const ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: now - 1, model: 'Fable' });
     expect(modelOnlyLimit(ledger, now)).toBeNull();
-    expect(modelCappedNames(ledger, now).size).toBe(0);
+    expect(activeModelCaps(ledger, now)).toEqual([]);
   });
 });
