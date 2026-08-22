@@ -2,7 +2,8 @@ import { listAccounts } from '../accounts/registry.js';
 import { getActive } from '../state/active.js';
 import { probeAll } from '../health/prober.js';
 import { select } from '../selector/selector.js';
-import { launchWatched } from '../launcher/launcher.js';
+import { launchWatched, launch } from '../launcher/launcher.js';
+import { claudeSubcommandIn } from '../launcher/subcommand.js';
 import { autoRotateHeadless } from '../launcher/rotating-run.js';
 import { loadLedger, saveLedger, cappedNames, markCapped } from '../ledger/ledger.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -47,6 +48,21 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
   if (accounts.length === 0) {
     context.out('no accounts registered (run: ccx add <name>)');
     return 1;
+  }
+
+  // A SUBCOMMAND is not a session. `claude update`, `claude mcp list` and the
+  // rest manage the installation and take their own options, and the session
+  // path adds `--session-id` for resuming a conversation, which they reject
+  // outright ("error: unknown option '--session-id'"). With the transparent
+  // shim installed every one of them comes through here, so installing ccx
+  // quietly broke them. They run straight through on the active account's
+  // config, with nothing added and no session machinery.
+  const subcommand = claudeSubcommandIn(passthroughArgs);
+  if (subcommand) {
+    const active = getActive(context.ctx);
+    const on = accounts.find((a) => a.name === active) ?? accounts[0]!;
+    const { exitCode } = await launch(passthroughArgs, on, { claude: getClaude(context) });
+    return exitCode;
   }
 
   // Interactive sessions with stored tokens get transparent hot-swap: the token

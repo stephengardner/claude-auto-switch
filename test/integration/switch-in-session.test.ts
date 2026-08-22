@@ -754,3 +754,53 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(launches[0]?.args ?? []).not.toContain('--model');
   });
 });
+describe('claude subcommands through the shim', () => {
+  afterEach(() => {
+    delete process.env.FAKE_CLAUDE_IDLE_MS;
+    delete process.env.FAKE_CLAUDE_RUNS_LOG;
+  });
+
+  it('passes them straight through, without the session flags that break them', async () => {
+    // With the transparent shim installed, `claude mcp list` becomes
+    // `ccx run -- mcp list`. Routing that into the session path added
+    // --session-id (so a swap can resume the conversation) and the subcommand
+    // rejected it outright:
+    //
+    //     error: unknown option '--session-id'
+    //
+    // Installing ccx therefore broke `claude update`, `claude mcp`, and the
+    // rest, which is the opposite of transparent.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-subcmd-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'only');
+    setActive('only', context.ctx);
+
+    expect(await runCommand(context, ['mcp', 'list'])).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.args).toEqual(['mcp', 'list']);
+  });
+
+  it('still gives an ordinary session the full hot-swap treatment', async () => {
+    // The guard against over-matching: a session must NOT fall into the
+    // passthrough, or it silently loses account rotation.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-subcmd-session-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'only');
+    setActive('only', context.ctx);
+
+    await runCommand(context, ['update the readme please']);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches.length).toBeGreaterThanOrEqual(1);
+    // The session path is the one that adds a session id.
+    expect(launches[0]?.args).toContain('--session-id');
+  });
+});
