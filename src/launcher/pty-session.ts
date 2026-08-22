@@ -5,6 +5,7 @@ import { matchesCapText } from './cap-detect.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { normalizeExitCode } from './exit-code.js';
+import { createBlockedWatch, type BlockedWatchOptions } from './blocked-watch.js';
 import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
 import { wantsExistingConversation } from './conversation.js';
@@ -50,6 +51,12 @@ export interface PtySessionOptions {
    * never toggles global terminal state mid-teardown.
    */
   input?: TerminalInput;
+  /**
+   * Thresholds for deciding the session is blocked. Injected in tests so the
+   * pattern can be reached in seconds instead of minutes; production uses the
+   * defaults in blocked-watch.
+   */
+  blockedWatch?: BlockedWatchOptions;
 }
 
 function cleanEnv(extra: Record<string, string>): Record<string, string> {
@@ -78,6 +85,21 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
 
     const startedAt = Date.now();
     let capped: { reason?: string; resetAt?: number } | null = null;
+    /**
+     * Is the SESSION getting anywhere, asked without reference to any probe.
+     * See blocked-watch: every other guard here resolves uncertainty to "do not
+     * act", so something has to be able to say "still stuck" that none of them
+     * can veto.
+     */
+    const blockedWatch = createBlockedWatch(options.blockedWatch);
+    /**
+     * How long an UNPROVEN limit holds a pairing out of rotation.
+     *
+     * Nothing was measured, so there is no window to report. Long enough to
+     * move off this account and model, short enough that being wrong costs a
+     * couple of minutes rather than the hours a confirmed cap buys.
+     */
+    const UNPROVEN_HOLD_MS = 2 * 60_000;
     let noConversation = false;
     let window = '';
     let captured = '';
@@ -177,9 +199,26 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // account is confirmed limited. Refuted matches back off briefly so a
       // replay cannot spam probes.
       if (options.ignoreLimits) return;
-      if (verifying || Date.now() < suppressUntil) return;
       const hit = matchesCapText(window);
       if (!hit) return;
+
+      // Counted BEFORE the suppression below, and that ordering is the whole
+      // point. A hit arriving inside the refute backoff, or while a probe was
+      // in flight, used to return above this line and never be seen at all: the
+      // one signal that says "this session is STILL stuck" was thrown away to
+      // avoid re-probing. So the session could be walled off indefinitely while
+      // every guard agreed there was nothing to act on.
+      if (blockedWatch.sawLimitText(Date.now()) && !capped && !switching) {
+        window = '';
+        capped = {
+          reason: hit.reason ?? 'the same limit keeps coming back and nothing explains it',
+          resetAt: Date.now() + UNPROVEN_HOLD_MS,
+        };
+        if (!exited) setTimeout(safeKill, 150);
+        return;
+      }
+
+      if (verifying || Date.now() < suppressUntil) return;
       const snapshot = window;
       window = '';
       if (!options.verifyCap) {
@@ -196,6 +235,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         .verifyCap(snapshot)
         .then((confirmed) => {
           verifying = false;
+          blockedWatch.changed(); // whatever happens now, the situation moved on
           if (confirmed) {
             if (!capped && !switching) {
               capped = { reason: hit.reason, resetAt: hit.resetAt };
