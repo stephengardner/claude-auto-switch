@@ -167,6 +167,34 @@ describe('a session that keeps hitting a wall nobody can explain', () => {
     });
     expect(outcome.kind).toBe('capped');
   }, 30_000);
+  it('rechecks the held match when the ACTIVE probe comes back refuted', async () => {
+    // A slow probe is running on a replayed message. A genuine cap arrives
+    // while it is in flight, so it is held rather than probed. The slow probe
+    // then answers no, and finalizing on that answer alone throws the real one
+    // away: a refuted replay followed by a real limit resolved as a clean exit.
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-blocked-recheck-'));
+    mkdirSync(dir, { recursive: true });
+    process.env.FAKE_CLAUDE_CAP_EVERY_MS = '150';
+    // Exits WHILE the first probe is still in flight, which is the only way to
+    // reach the branch that awaits it.
+    process.env.FAKE_CLAUDE_IDLE_MS = '600';
+    let call = 0;
+    const outcome = await runPtySession({
+      claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+      args: [],
+      configDir: dir,
+      verifyCap: () => {
+        call += 1;
+        // First answer is slow AND refuted, so later walls are held while it runs.
+        if (call === 1) return new Promise((r) => setTimeout(() => r(false), 800));
+        return Promise.resolve(true);
+      },
+      refuteBackoffMs: 10_000,
+      blockedWatch: { after: 99 },
+    });
+    expect(outcome.kind).toBe('capped');
+    expect(call).toBeGreaterThanOrEqual(2); // the held match really was probed
+  }, 30_000);
   it('still ends as a normal cap when the probe DOES confirm one', async () => {
     // The ordinary path has to keep working: a confirmed limit is a real cap,
     // not an unproven hold, and it carries whatever the probe reported.

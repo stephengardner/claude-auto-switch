@@ -375,30 +375,45 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         // Only while it is genuinely still running. A settled promise here is
         // a refusal that already happened, and awaiting it again would finalize
         // without ever looking at a match that arrived afterwards.
+        /**
+         * The last chance to catch a real limit: the match that was held
+         * because something was in the way, else whatever is still in the
+         * buffer. Deliberately ignores the refute backoff, since the child is
+         * gone and there will be no other opportunity.
+         */
+        const verifyHeldThenFinalize = (): void => {
+          const live = matchesCapText(window);
+          const pending = unprobed ?? (live ? { text: window, hit: live } : null);
+          if (pending && options.verifyCap) {
+            void timeboxed(options.verifyCap(pending.text).catch(() => false)).then((confirmed) => {
+              if (confirmed && !capped) {
+                capped = { reason: pending.hit.reason, resetAt: pending.hit.resetAt };
+              }
+              finalize();
+            });
+            return;
+          }
+          if (pending && !options.verifyCap) {
+            capped = { reason: pending.hit.reason, resetAt: pending.hit.resetAt };
+          }
+          finalize();
+        };
+
         if (pendingVerify && verifying) {
           void timeboxed(pendingVerify).then((confirmed) => {
-            if (confirmed && !capped) capped = lastHit ?? {};
-            finalize();
+            if (confirmed) {
+              if (!capped) capped = lastHit ?? {};
+              return finalize();
+            }
+            // Refuted, which settles that match and NOTHING ELSE. A genuine cap
+            // can have arrived while this probe was running and been held
+            // rather than probed; finalizing here threw it away and resolved a
+            // real limit as a clean exit.
+            verifyHeldThenFinalize();
           });
           return;
         }
-        // The held match first, then whatever is still in the buffer.
-        const live = matchesCapText(window);
-        const pending = unprobed ?? (live ? { text: window, hit: live } : null);
-        if (pending && options.verifyCap) {
-          // Deliberately ignores the refute-backoff: a REAL cap can land inside
-          // the backoff right after a refuted replay, and the child is gone so
-          // one probe here is the only chance to catch it.
-          void timeboxed(options.verifyCap(pending.text).catch(() => false)).then((confirmed) => {
-            if (confirmed) capped = { reason: pending.hit.reason, resetAt: pending.hit.resetAt };
-            finalize();
-          });
-          return;
-        }
-        if (pending && !options.verifyCap) {
-          capped = { reason: pending.hit.reason, resetAt: pending.hit.resetAt };
-        }
-        finalize();
+        verifyHeldThenFinalize();
       }, 250);
     });
   });
