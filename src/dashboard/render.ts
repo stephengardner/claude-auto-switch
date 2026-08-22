@@ -441,7 +441,7 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     const hints = [
       'j/k move',
       'enter use',
-      'q quit',
+      'q/esc quit',
       'r rotate',
       'f now',
       'a add',

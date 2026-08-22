@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { claimRawTerminal } from './raw-terminal.js';
+import { claimRawTerminal, type RawTerminalOptions } from './raw-terminal.js';
 
 /**
  * Why this is worth testing at all: a process that exits with the terminal still
@@ -159,5 +159,94 @@ describe('claimRawTerminal', () => {
     const plain = { resume: () => {}, pause: () => {} } as unknown as NodeJS.ReadStream;
     const t = claimRawTerminal({ ...f.opts, stdin: plain });
     expect(() => t.restore()).not.toThrow();
+  });
+});
+
+describe('a restore that does not take', () => {
+  /**
+   * A stdin whose setRawMode silently fails to clear the flag. That is the
+   * transient case worth surviving: the terminal is still raw, and if the
+   * restore reports itself done anyway, the process-exit safety net returns
+   * early and the shell inherits a console mode it never set. On Windows that
+   * kills the shell, which is the intermittent "q closed my whole terminal".
+   */
+  function stubbornStdin(clearAfter: number) {
+    let attempts = 0;
+    const stdin = {
+      isRaw: false,
+      setRawMode(v: boolean) {
+        if (v) {
+          stdin.isRaw = true;
+          return;
+        }
+        attempts += 1;
+        if (attempts >= clearAfter) stdin.isRaw = false;
+      },
+      resume: () => {},
+      pause: () => {},
+    };
+    return { stdin, attempts: () => attempts };
+  }
+
+  function procSpy() {
+    const handlers = new Map<string, ((...a: unknown[]) => void)[]>();
+    const proc = {
+      on: (event: string, fn: (...a: unknown[]) => void) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), fn]);
+        return proc;
+      },
+      off: (event: string, fn: (...a: unknown[]) => void) => {
+        handlers.set(event, (handlers.get(event) ?? []).filter((f) => f !== fn));
+        return proc;
+      },
+    };
+    const count = (event: string): number => (handlers.get(event) ?? []).length;
+    const fire = (event: string): void => {
+      for (const fn of [...(handlers.get(event) ?? [])]) fn();
+    };
+    return { proc, count, fire };
+  }
+
+  it('retries, and clears raw mode on the second attempt', () => {
+    const { stdin, attempts } = stubbornStdin(2);
+    const { proc } = procSpy();
+    const term = claimRawTerminal({
+      stdin: stdin as unknown as NodeJS.ReadStream & { setRawMode?: (v: boolean) => void },
+      stdout: { write: () => true },
+      proc: proc as unknown as RawTerminalOptions['proc'],
+    });
+    expect(stdin.isRaw).toBe(true);
+    term.restore();
+    expect(attempts()).toBe(2);
+    expect(stdin.isRaw).toBe(false);
+  });
+
+  it('keeps the exit hook armed while the terminal is still raw', () => {
+    // Never clears, so restore cannot honestly report success. Releasing the
+    // exit hook here is what disarmed the last line of defence.
+    const { stdin } = stubbornStdin(Number.MAX_SAFE_INTEGER);
+    const { proc, count } = procSpy();
+    const term = claimRawTerminal({
+      stdin: stdin as unknown as NodeJS.ReadStream & { setRawMode?: (v: boolean) => void },
+      stdout: { write: () => true },
+      proc: proc as unknown as RawTerminalOptions['proc'],
+    });
+    expect(count('exit')).toBe(1);
+    term.restore();
+    expect(stdin.isRaw).toBe(true);
+    expect(count('exit')).toBe(1); // still armed for another go at exit
+  });
+
+  it('releases the hooks once the terminal really is back', () => {
+    const { stdin } = stubbornStdin(1);
+    const { proc, count } = procSpy();
+    const term = claimRawTerminal({
+      stdin: stdin as unknown as NodeJS.ReadStream & { setRawMode?: (v: boolean) => void },
+      stdout: { write: () => true },
+      proc: proc as unknown as RawTerminalOptions['proc'],
+    });
+    term.restore();
+    expect(stdin.isRaw).toBe(false);
+    expect(count('exit')).toBe(0);
   });
 });

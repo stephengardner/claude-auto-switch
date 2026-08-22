@@ -74,3 +74,22 @@ describe('confirmKey', () => {
     }
   });
 });
+
+describe('quitting with Escape', () => {
+  it('quits on a bare Escape', () => {
+    expect(dispatchKey('\x1b', 27, 0, 3).action).toBe('quit');
+  });
+
+  it('does NOT quit on an arrow key, which also starts with Escape', () => {
+    // The whole reason this needs a length check: an arrow is `\x1b[A`, so
+    // reading byte0 alone would close the dashboard every time you moved.
+    expect(dispatchKey('\x1b[A', 27, 1, 3)).toEqual({ selected: 0, action: 'move' });
+    expect(dispatchKey('\x1b[B', 27, 0, 3)).toEqual({ selected: 1, action: 'move' });
+  });
+
+  it('still quits on q, Ctrl-C and Ctrl-D', () => {
+    expect(dispatchKey('q', 113, 0, 3).action).toBe('quit');
+    expect(dispatchKey('\x03', 3, 0, 3).action).toBe('quit');
+    expect(dispatchKey('\x04', 4, 0, 3).action).toBe('quit');
+  });
+});

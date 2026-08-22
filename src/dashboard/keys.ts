@@ -33,7 +33,11 @@ export function dispatchKey(
   selected: number,
   count: number,
 ): KeyOutcome {
+  // Esc quits too. A chunk that IS a bare Escape is the key itself; one that
+  // merely STARTS with it is an arrow or function key (`[A`), which must
+  // keep moving the selection rather than closing the dashboard.
   if (key === 'q' || byte0 === 3 || byte0 === 4) return { selected, action: 'quit' };
+  if (byte0 === 27 && key.length === 1) return { selected, action: 'quit' };
   if (key === 'j' || key === '\x1b[B') return { selected: clamp(selected + 1, count), action: 'move' };
   if (key === 'k' || key === '\x1b[A') return { selected: clamp(selected - 1, count), action: 'move' };
   // Enter (also u / p) activates the highlighted account: it becomes the one

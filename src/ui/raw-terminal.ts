@@ -62,15 +62,33 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
   const proc = options.proc ?? process;
   const onEnd = options.onEnd;
 
+  /**
+   * Is the terminal actually out of raw mode?
+   *
+   * Asked rather than assumed. A stream with no raw mode to begin with reports
+   * nothing here, and that counts as off: there is nothing to hand back.
+   */
+  const rawIsOff = (): boolean => (stdin as { isRaw?: boolean }).isRaw !== true;
+
   let restored = false;
   const restore = (): void => {
     if (restored) return;
-    restored = true;
+
     try {
       stdin.setRawMode?.(false);
     } catch {
-      /* not raw-capable; nothing to undo */
+      /* retried just below; this is the failure that matters */
     }
+    if (!rawIsOff()) {
+      // One retry. The failure worth surviving here is transient, and giving up
+      // hands the shell a console mode it never set.
+      try {
+        stdin.setRawMode?.(false);
+      } catch {
+        /* nothing further to try; the guard below keeps the exit hook armed */
+      }
+    }
+
     try {
       stdin.pause();
     } catch {
@@ -83,6 +101,16 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
         /* the terminal is already gone */
       }
     }
+
+    // Marked done, and the process hooks released, ONLY once the terminal is
+    // really back. Setting the flag first meant a failed attempt disarmed the
+    // safety net: the exit hook returned early, the process ended with raw mode
+    // still on, and the shell it handed back to died. On Windows that takes the
+    // window with it, which is the intermittent "q closed my whole terminal".
+    // Staying un-restored costs nothing (restoring twice is harmless) and keeps
+    // the exit and signal hooks armed for another attempt.
+    if (!rawIsOff()) return;
+    restored = true;
     proc.off('exit', restore);
     for (const signal of SIGNALS) proc.off(signal, onSignal);
   };
