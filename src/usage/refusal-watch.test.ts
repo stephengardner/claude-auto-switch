@@ -124,3 +124,30 @@ describe('what the caller must key on', () => {
     expect(watch.count()).toBe(1);
   });
 });
+
+describe('evidence that an all-clear should have thrown away', () => {
+  const MINUTE = 60_000;
+
+  it('does not escalate from a timestamp taken before the API reported room', () => {
+    // An unverified refusal, then a conclusive "you have room", then two more
+    // refusals. Counting the first one still would reach the spread on evidence
+    // the all-clear already answered, and bench the account for it.
+    const watch = createRefusalWatch();
+    expect(watch.refused('fable', 0)).toBe(false);
+    watch.reset(); // the API positively reported room at minute 3
+    expect(watch.refused('fable', 4 * MINUTE)).toBe(false);
+    expect(watch.refused('fable', 5 * MINUTE)).toBe(false);
+    // Three refusals in total, but only two since the all-clear, and those two
+    // are one minute apart rather than five.
+    expect(watch.count()).toBe(2);
+  });
+
+  it('escalates once the refusals AFTER the all-clear earn it on their own', () => {
+    const watch = createRefusalWatch();
+    watch.refused('fable', 0);
+    watch.reset();
+    expect(watch.refused('fable', 10 * MINUTE)).toBe(false);
+    expect(watch.refused('fable', 11 * MINUTE)).toBe(false);
+    expect(watch.refused('fable', 13 * MINUTE)).toBe(true);
+  });
+});

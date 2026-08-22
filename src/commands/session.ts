@@ -453,7 +453,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       // status line reports it within seconds), and an escalation needs
       // minutes of refusals to trigger, so this costs nothing real.
       refusalReason = decision.detail ?? null;
-      if (!decision.limited && decision.unverified && running) {
+      if (!decision.limited && decision.unverified) {
         // Keyed by the MODEL and nothing else.
         //
         // The detail used to be in this key, and that inverted the whole
@@ -469,7 +469,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         // nowhere. What matters is that the session is BLOCKED and on which
         // model, never which sentence explained it best. A `/model` change is
         // still a genuinely different situation, so the model stays in the key.
-        if (unverifiedLimits.refused(running, Date.now())) {
+        if (running && unverifiedLimits.refused(running, Date.now())) {
           verdict = 'limited';
           // Scoped to the model actually running, and with no reset time,
           // because none was ever proven. That keeps the run out of this
@@ -482,9 +482,16 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
             { kind: 'cap-verify', data: { ...refusalData, escalated: true } },
           );
         }
-      } else if (decision.limited) {
-        // A limit ccx COULD account for. Whatever pattern was building was
-        // about something else.
+      } else {
+        // Any CONCLUSIVE answer clears the pattern: a limit ccx could account
+        // for, and equally the API positively reporting room.
+        //
+        // Only the first of those used to reset. An unverified refusal, then a
+        // clean "you have room", then two more refusals would escalate from the
+        // timestamp before the all-clear, so a session was benched on a spread
+        // the evidence never had. Widening the key to the model made that worse,
+        // not better: timestamps now survive across more situations, so a stale
+        // first one lingers where it used to be discarded with the wording.
         unverifiedLimits.reset();
       }
       if (decision.limited && identity.mismatch) {
