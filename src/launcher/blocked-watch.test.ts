@@ -64,3 +64,51 @@ describe('deciding a session is blocked', () => {
     expect(watch.sawLimitText(6 * MINUTE)).toBe(true);
   });
 });
+
+describe('against timings actually observed in production', () => {
+  const SECOND = 1_000;
+
+  /**
+   * These are not invented numbers. They are the gaps between limit-refusal
+   * events in a real ccx event log, where the median gap between walls was
+   * about two minutes and a quarter of them were under 41 seconds.
+   *
+   * The thresholds were chosen before that log was examined, so this is the
+   * check that they answer real cadence rather than the fake's.
+   */
+  it('fires within about three minutes at the cadence a stuck session really has', () => {
+    // Taken from a stuck stretch: walls at roughly 0s, 71s, 99s, 165s.
+    const watch = createBlockedWatch();
+    const walls = [0, 71, 99, 165].map((s) => s * SECOND);
+    // Every wall asserted, so the exact boundary is pinned. Stopping at the
+    // first true would have passed whether it fired on the first wall or the
+    // third, which cannot protect the thresholds this test is named for.
+    expect(watch.sawLimitText(walls[0]!)).toBe(false); // 0s, first wall
+    expect(watch.sawLimitText(walls[1]!)).toBe(false); // 71s, count not met
+    expect(watch.sawLimitText(walls[2]!)).toBe(false); // 99s, count met, span not
+    expect(watch.sawLimitText(walls[3]!)).toBe(true); // 165s, both met
+  });
+
+  it('does not fire on someone who hits a wall twice an hour', () => {
+    // The far tail of the same log: gaps of half an hour. Two walls that far
+    // apart is an operator who went away and came back, not one sitting there
+    // blocked, and moving their session on that evidence would be acting on
+    // idleness. The count is what tells those apart, which is why raising the
+    // spread instead would not do.
+    const watch = createBlockedWatch();
+    expect(watch.sawLimitText(0)).toBe(false);
+    expect(watch.sawLimitText(30 * 60 * SECOND)).toBe(false);
+    expect(watch.count()).toBe(2);
+  });
+
+  it('is not fooled by the burst a resumed conversation makes', () => {
+    // The other end of the same distribution: the minimum observed gap was
+    // 25 seconds, but a replay renders its old message several times within a
+    // second or two of starting.
+    const watch = createBlockedWatch();
+    let fired = false;
+    for (let ms = 0; ms <= 3 * SECOND; ms += 100) if (watch.sawLimitText(ms)) fired = true;
+    expect(fired).toBe(false);
+    expect(watch.count()).toBe(1);
+  });
+});
