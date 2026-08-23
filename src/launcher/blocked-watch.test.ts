@@ -80,9 +80,13 @@ describe('against timings actually observed in production', () => {
     // Taken from a stuck stretch: walls at roughly 0s, 71s, 99s, 165s.
     const watch = createBlockedWatch();
     const walls = [0, 71, 99, 165].map((s) => s * SECOND);
-    const firedAt = walls.find((at) => watch.sawLimitText(at));
-    expect(firedAt).toBeDefined();
-    expect(firedAt! / SECOND).toBeLessThanOrEqual(180);
+    // Every wall asserted, so the exact boundary is pinned. Stopping at the
+    // first true would have passed whether it fired on the first wall or the
+    // third, which cannot protect the thresholds this test is named for.
+    expect(watch.sawLimitText(walls[0]!)).toBe(false); // 0s, first wall
+    expect(watch.sawLimitText(walls[1]!)).toBe(false); // 71s, count not met
+    expect(watch.sawLimitText(walls[2]!)).toBe(false); // 99s, count met, span not
+    expect(watch.sawLimitText(walls[3]!)).toBe(true); // 165s, both met
   });
 
   it('does not fire on someone who hits a wall twice an hour', () => {
