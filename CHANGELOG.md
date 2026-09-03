@@ -4,6 +4,38 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- **Quitting the dashboard, or signing in from it, no longer crashes the
+  terminal on Windows.** Pressing `q` sometimes took the whole terminal window
+  with it, and starting a sign-in from the dashboard did the same, most visibly
+  inside an editor's integrated terminal (Cursor, VS Code). It was intermittent
+  because it was a race, which is why the same key was fatal in one window and
+  harmless in another.
+
+  Two things were racing the pseudo-terminal (ConPTY) being torn down, and both
+  are fixed:
+
+  - **Leaving the alternate screen.** The dashboard drew its live view on the
+    alternate screen buffer, and leaving that buffer (`?1049l`) as the process
+    exits, or as it hands the screen to a sign-in, races the console host being
+    torn down and crashes it, taking the parent shell with it ("No process is on
+    the other end of the pipe"). On Windows the dashboard now stays on the main
+    screen. It already repainted in place every frame, so the live view is
+    unchanged; the only thing given up is restoring your previous scrollback when
+    it exits. Every other platform keeps the alternate screen. Measured across
+    many trials, the sign-in flow crashed the shell about half the time with the
+    alternate screen and not once without it.
+
+  - **The order of handing the terminal back.** Dropping raw mode while the
+    keyboard is still being read makes the console layer restart the read in line
+    mode and then cancel it the expensive way, juggling the screen buffer.
+    Stopping the read *first*, while still raw, cancels it cheaply. This ordering
+    is now used both in the dashboard and in the `ccx run` teardown, which
+    carried the same hazard.
+
 ## [1.47.0]
 
 ### Added

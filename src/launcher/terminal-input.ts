@@ -149,12 +149,20 @@ export function openTerminalInput(
       // Drops anything held mid-sequence, which is right at shutdown, and stops
       // its flush timer so nothing is left able to fire after the run has ended.
       buffer.drain();
+      // Pause BEFORE dropping raw mode, never after. On Windows, clearing raw
+      // mode while stdin is still being read makes libuv restart the read in
+      // line mode and then cancel it by injecting a carriage return and
+      // saving/restoring the console screen buffer; landing that next to a
+      // child leaving the alternate screen races ConPTY's teardown and can kill
+      // the parent shell. Pausing while still raw cancels the read the cheap
+      // way and leaves nothing for the swap to collide with. Same fix, and same
+      // reasoning, as ui/raw-terminal.ts.
+      stdin.pause();
       try {
         if (stdin.isTTY) stdin.setRawMode?.(false);
       } catch {
         /* ignore */
       }
-      stdin.pause();
       // Release a piped stdin so it cannot keep the process alive after the
       // last session ends.
       stdin.unref?.();

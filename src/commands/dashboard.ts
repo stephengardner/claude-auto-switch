@@ -55,6 +55,48 @@ const EXIT_ALT = '\x1b[?1049l';
 const HOME = '\x1b[H';
 const CLEAR_LINE_END = '\x1b[K';
 const CLEAR_BELOW = '\x1b[J';
+const CLEAR_SCREEN = '\x1b[2J';
+
+/**
+ * The screen-entry and screen-exit sequences for a platform.
+ *
+ * The alternate screen buffer is a nicety: it restores whatever was on the
+ * terminal before the dashboard when the dashboard exits. But LEAVING it
+ * (`?1049l`) is a buffer swap, and on Windows that swap, landing at the moment
+ * the process exits or hands the screen to a sign-in, races the pseudo-terminal
+ * (ConPTY) being torn down and can crash the console host, which takes the
+ * parent shell with it. That is the reported "pressing q closed my whole
+ * terminal" and "starting a sign-in from the dashboard crashed the terminal",
+ * and it was measured: the sign-in flow crashed the shell about half the time
+ * with the alternate screen and not once without it.
+ *
+ * So on Windows the dashboard stays on the MAIN screen. It already repaints in
+ * place from the top of the screen every frame, so nothing about the live view
+ * changes; the only thing given up is the on-exit scrollback restore, a fair
+ * price for not crashing the terminal. Every other platform keeps the alternate
+ * screen and its restore.
+ *
+ * Pure and exported so both branches are testable without spoofing the host OS.
+ *   - enter: what to write when taking the screen. The alternate screen
+ *     elsewhere; a one-time clear-and-home on Windows, so the main-screen
+ *     dashboard starts on a clean frame instead of over whatever was there.
+ *   - epilogue: what the raw-terminal restore writes on the way out. The cursor
+ *     is always shown again; the alternate screen is left ONLY where one was
+ *     entered. On Windows there is deliberately no `?1049l`.
+ */
+export function screenSequences(platform: NodeJS.Platform): {
+  usesAltScreen: boolean;
+  enter: string;
+  epilogue: string;
+} {
+  const usesAltScreen = platform !== 'win32';
+  return {
+    usesAltScreen,
+    enter: usesAltScreen ? ENTER_ALT : CLEAR_SCREEN + HOME,
+    epilogue: SHOW_CURSOR + (usesAltScreen ? EXIT_ALT : ''),
+  };
+}
+const { enter: ENTER_SCREEN, epilogue: SCREEN_EPILOGUE } = screenSequences(process.platform);
 
 /** Live account dashboard. `--once` prints a single frame (script/CI friendly). */
 export async function dashboardCommand(
@@ -458,14 +500,14 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
   // (including a crash or Ctrl-C) hands the terminal back in one piece.
   const claimScreen = (): { restore: () => void } => {
     const handle = claimRawTerminal({
-      epilogue: SHOW_CURSOR + EXIT_ALT,
+      epilogue: SCREEN_EPILOGUE,
       // A signal winds the loop down through its own exit path instead of
       // cutting the program off mid-frame, so the screen is always handed back
       // the same way whether you press q or the terminal sends a signal.
       onEnd: () => stop(),
     });
     stdin.on('data', onKey);
-    out.write(ENTER_ALT + HIDE_CURSOR);
+    out.write(ENTER_SCREEN + HIDE_CURSOR);
     return handle;
   };
   let terminal = claimScreen();

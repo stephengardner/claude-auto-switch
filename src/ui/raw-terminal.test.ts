@@ -60,6 +60,38 @@ describe('claimRawTerminal', () => {
     expect(f.written).toEqual(['<restored>']);
   });
 
+  it('stops reading BEFORE dropping raw mode, and leaves the alternate screen last', () => {
+    // The order is the fix, not an incidental. On Windows, clearing raw mode
+    // while stdin is still being read restarts the read in line mode; pausing
+    // then cancels it by injecting a carriage return and juggling the console
+    // screen buffer, and doing that next to the epilogue's alternate-screen swap
+    // raced ConPTY's teardown and killed the parent shell. Pausing while still
+    // raw avoids it. This pins the sequence so the ordering cannot silently
+    // regress: pause, THEN raw off, THEN the alternate-screen epilogue.
+    const order: string[] = [];
+    const stdin = {
+      isRaw: false,
+      setRawMode: (v: boolean) => {
+        stdin.isRaw = v;
+        order.push(v ? 'raw-on' : 'raw-off');
+      },
+      resume: () => order.push('resume'),
+      pause: () => order.push('pause'),
+    } as unknown as NodeJS.ReadStream & { setRawMode?: (v: boolean) => void; isRaw: boolean };
+    const proc = {
+      on: () => proc,
+      off: () => proc,
+    } as unknown as RawTerminalOptions['proc'];
+    const t = claimRawTerminal({
+      stdin,
+      stdout: { write: (s: string) => void order.push(`write:${s}`) },
+      proc,
+      epilogue: '<epilogue>',
+    });
+    t.restore();
+    expect(order).toEqual(['raw-on', 'resume', 'pause', 'raw-off', 'write:<epilogue>']);
+  });
+
   it('gives it back on process exit, which is the path a crash takes', () => {
     // The dashboard's keypress handler runs on its own stack, so an exception
     // there ends the process without unwinding the loop's finally. This is the
