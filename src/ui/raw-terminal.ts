@@ -81,6 +81,31 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
   const restore = (): void => {
     if (restored) return;
 
+    // Stop reading BEFORE dropping raw mode, not after. This ordering is load-
+    // bearing on Windows and was measured: with it, the shell survived every
+    // trial; with the two swapped, it died intermittently, which is the
+    // reported "q closed my whole terminal" and "signing in from another window
+    // crashed the terminal".
+    //
+    // Why the order matters. Clearing raw mode while stdin is still being read
+    // makes libuv stop the raw read and immediately start a fresh LINE-mode one;
+    // pausing then cancels THAT read the expensive way, by injecting a carriage
+    // return into the console input and saving and restoring the screen buffer
+    // (GetConsoleScreenBufferInfo / SetConsoleCursorPosition). When that lands
+    // together with the epilogue leaving the alternate screen (`?1049l`, a
+    // buffer swap), it races ConPTY tearing the child's console down, and the
+    // parent shell dies querying a console buffer that is momentarily gone
+    // ("No process is on the other end of the pipe", a pwsh FailFast). Removing
+    // EITHER half stops the crash; pausing while still raw removes the first
+    // half, because a raw read is cancelled with a cheap focus event and no
+    // screen-buffer juggling, and dropping raw mode on an already-paused stream
+    // starts no new read for the epilogue to collide with.
+    try {
+      stdin.pause();
+    } catch {
+      /* already closed */
+    }
+
     try {
       stdin.setRawMode?.(false);
     } catch {
@@ -96,11 +121,6 @@ export function claimRawTerminal(options: RawTerminalOptions = {}): RawTerminal 
       }
     }
 
-    try {
-      stdin.pause();
-    } catch {
-      /* already closed */
-    }
     if (options.epilogue && !epilogueWritten) {
       epilogueWritten = true;
       try {
