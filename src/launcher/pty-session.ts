@@ -247,7 +247,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // the truth within ~100ms. A dead child cannot be relieved in place (there
       // is nothing left to run on the new account), and a manual switch already
       // taking over owns the outcome, so neither may be relieved.
-      const relieve = !switching && childIsAlive();
+      const alive = childIsAlive();
+      const relieve = !switching && alive;
       // onCapConfirmed decides for itself whether to record, from what it actually
       // did (relieved, or a switch is taking over -> it records; otherwise the
       // cap.confirm below yields the `capped` outcome and the swap loop records).
@@ -267,7 +268,12 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // loop relaunches on the next account.
       if (!switching) {
         cap.confirm(pending);
-        if (!exited) setTimeout(safeKill, 150);
+        // Kill ONLY a child that is genuinely still alive. When it is already gone
+        // (its exit event just lags, which is why we asked the OS above and not
+        // `exited`), safeKill would run taskkill on a dead pid and fall through to
+        // node-pty's own kill, re-entering its async Windows teardown and racing
+        // the next spawn. The lagging exit event will resolve the confirmed cap.
+        if (alive && !exited) setTimeout(safeKill, 150);
       }
     };
 
