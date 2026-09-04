@@ -1216,16 +1216,24 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
        * limit is in play, when there is no healthy account, or when the only move
        * would need a model change.
        */
-      const onCapConfirmed = (hit: { reason?: string; resetAt?: number }): 'relieved' | 'restart' => {
-        // A model-scoped limit leaves the account usable on other models; the
-        // planner handles that (it may change model or rotate), and swapping the
-        // whole account here would move off an account that still had room.
-        if (limitedModel !== undefined) return 'restart';
+      const onCapConfirmed = (
+        hit: { reason?: string; resetAt?: number },
+        opts: { relieve: boolean },
+      ): 'relieved' | 'restart' => {
         const capName = capOwner ?? current?.name ?? account.name;
-        // Record the cap FIRST, so the relief pick (and every other session)
-        // excludes this account, and the limit is on the ledger whichever path
-        // runs next.
+        // Record the cap FIRST, and ALWAYS, whatever happens next: whether this
+        // session is relieved in place, relaunched, or handed to a manual switch
+        // that started during the relief grace, the limit belongs on the ledger so
+        // rotation and every other session avoid this account before its reset.
+        // Recording only on the relief path lost a confirmed cap when a `--now`
+        // switch preempted it. `limitedModel`/`limitedResetAt` (set by the verify)
+        // scope it to a model when the limit was model-only.
         recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt);
+        // Relief is suppressed when the caller says so (a manual switch is taking
+        // over, or the child is already gone) or for a model-scoped limit, which
+        // leaves the account usable on other models: swapping the whole account
+        // there would move off one that still had room, so the planner handles it.
+        if (!opts.relieve || limitedModel !== undefined) return 'restart';
         const next = reliefAccount(capName);
         if (!next) return 'restart';
         try {

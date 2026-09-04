@@ -64,8 +64,17 @@ export interface PtySessionOptions {
    * Claude stays on screen after a usage limit, so the account underneath it can
    * be swapped and the very next message succeeds on the new one. When absent
    * (or when it returns 'restart'), the historical end-and-relaunch path runs.
+   *
+   * It ALWAYS records the confirmed cap to the ledger, so the limit is never lost
+   * even if a manual switch preempts the relief. `relieve` says whether it may
+   * also move the account in place; `false` means record only, because the caller
+   * has decided relief is not appropriate (a manual switch is taking over, or the
+   * child is already gone).
    */
-  onCapConfirmed?: (hit: { reason?: string; resetAt?: number }) => 'relieved' | 'restart';
+  onCapConfirmed?: (
+    hit: { reason?: string; resetAt?: number },
+    opts: { relieve: boolean },
+  ) => 'relieved' | 'restart';
   /**
    * Thresholds for deciding the session is blocked. Injected in tests so the
    * pattern can be reached in seconds instead of minutes; production uses the
@@ -230,14 +239,19 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     const attemptCapRelief = (): void => {
       const pending = pendingCapRelief;
       pendingCapRelief = null;
-      if (!pending || switching || cap.isSet()) return;
+      if (!pending || cap.isSet()) return;
       // Liveness is asked of the OS, not of the `exited` flag: node-pty's exit
       // EVENT lags the process by up to a second on Windows (measured), so the
       // flag can still read alive well after the child is gone. `kill(0)` reports
       // the truth within ~100ms. A dead child cannot be relieved in place (there
-      // is nothing left to run on the new account), so it takes the restart path.
-      const childAlive = childIsAlive();
-      const relieved = childAlive && options.onCapConfirmed?.(pending) === 'relieved';
+      // is nothing left to run on the new account), and a manual switch already
+      // taking over owns the outcome, so neither may be relieved.
+      const relieve = !switching && childIsAlive();
+      // onCapConfirmed ALWAYS records the confirmed cap; `relieve` gates only the
+      // in-place move. This is what keeps the limit on the ledger even when a
+      // `--now` switch lands in the grace window (its outcome would otherwise
+      // resolve as a plain switch, recording nothing).
+      const relieved = options.onCapConfirmed?.(pending, { relieve }) === 'relieved';
       if (relieved) {
         // Swapped under the running child. Clear the watch so the banner still on
         // screen (and any replay) does not immediately re-trigger, and drop the
@@ -247,9 +261,13 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         unprobed = null;
         return;
       }
-      // No in-place move: confirm and end so the loop relaunches on the next one.
-      cap.confirm(pending);
-      if (!exited) setTimeout(safeKill, 150);
+      // Not relieved. A manual switch owns the teardown and relaunch, so leave it
+      // be (the cap is already recorded). Otherwise confirm and end so the swap
+      // loop relaunches on the next account.
+      if (!switching) {
+        cap.confirm(pending);
+        if (!exited) setTimeout(safeKill, 150);
+      }
     };
 
     // The operator can pick a different account mid-session (dashboard Enter /
@@ -486,10 +504,13 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         // when the child exited (some limit flavors make Claude exit itself). The
         // verdict is in hand, so trust it rather than re-probing: re-probing here
         // would spend a second verification and, when the API answer has moved on,
-        // wrongly read the exit as clean. Confirming hands it to the swap loop,
-        // which relaunches on the next account, resuming the conversation.
-        if (pendingCapRelief && !switching) {
-          cap.confirm(pendingCapRelief);
+        // wrongly read the exit as clean. Record it always (relieve:false: the
+        // child is gone, nothing to swap under), so the limit is on the ledger
+        // even if a manual switch owns the outcome; and unless a switch does own
+        // it, confirm so the swap loop relaunches on the next account, resuming.
+        if (pendingCapRelief) {
+          options.onCapConfirmed?.(pendingCapRelief, { relieve: false });
+          if (!switching) cap.confirm(pendingCapRelief);
           pendingCapRelief = null;
         }
         // A capped outcome waits for a probe that is still in flight. The

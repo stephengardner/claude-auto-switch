@@ -318,6 +318,45 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(caps.map((c) => c.account)).toEqual(['A']);
   });
 
+  it('records the confirmed cap even when a manual switch arrives with it', async () => {
+    // A `--now` switch can land in the relief grace. However that race resolves
+    // (relief wins, or the switch preempts it), the confirmed cap on A must still
+    // reach the ledger, or A re-enters rotation before its reset. Here the switch
+    // request is written at the exact moment A's cap is confirmed.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-cap-switch-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    process.env.FAKE_CLAUDE_EMIT_CAP = '1';
+
+    let calls = 0;
+    // `context` is captured by the verifier, which only runs later (when a cap is
+    // confirmed), so it is initialised by the time the closure reads it.
+    const context: CliContext = makeContext(home, () => {
+      calls += 1;
+      if (calls === 1) {
+        // A manual restart-switch to B lands exactly as A's cap is confirmed.
+        writeSwitchRequest('B', Date.now(), 'restart', context.ctx);
+        return Promise.resolve('limited' as Verdict);
+      }
+      return Promise.resolve('allowed' as Verdict); // B is fine
+    });
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    const exit = await runCommand(context, []);
+    expect(exit).toBe(0);
+
+    // Whichever path won, A's cap is on the ledger (never silently dropped), and
+    // the session ended up on B either way.
+    const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
+      caps: Array<{ account: string }>;
+    }).caps;
+    expect(caps.map((c) => c.account)).toContain('A');
+    expect(readRuns(runsLog).filter((r) => r.type === 'reread').pop()?.marker).toBe('B');
+  });
+
   it('a VERIFIED cap with no other healthy account does NOT relieve to a phantom', async () => {
     // Relief needs somewhere to go. With only the capped account signed in, there
     // is no in-place move: it must fall back to the normal path, never seamlessly
