@@ -6,6 +6,29 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- **Running out on an account no longer restarts your session.** When an account
+  hits its usage limit mid-session, ccx now moves that session to a healthy
+  account IN PLACE: it swaps the account underneath the running Claude, and your
+  next message goes to the new one, with no restart. Before, ccx ended the session
+  and relaunched it with `--continue`, which tore down whatever was running,
+  including sub-agents. Now the conversation, the screen, and any work in flight
+  are kept.
+
+  This works because real Claude stays on screen after a usage limit rather than
+  exiting, so the credential under it can be swapped and the very next request
+  picks up the new account. That credential-reread was verified against the real
+  Claude binary, and the ccx flow around it is integration-tested against a real
+  pseudo-terminal. ccx waits a moment to be sure
+  the session is genuinely still alive before swapping: in the cases where Claude
+  exits on the limit itself, it falls back to the previous relaunch-and-resume, so
+  nothing is lost either way. The in-place move needs a healthy account that
+  serves the same model; when the only option would need a different model (which
+  requires a relaunch to apply), or there is no other account, it falls back to
+  the old path. A model-only limit still stays on the account and changes model as
+  before.
+
 ### Added
 
 - **Switch one session's account without touching the others.** With several
