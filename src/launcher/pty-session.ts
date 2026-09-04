@@ -269,11 +269,17 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       if (!switching) {
         cap.confirm(pending);
         // Kill ONLY a child that is genuinely still alive. When it is already gone
-        // (its exit event just lags, which is why we asked the OS above and not
-        // `exited`), safeKill would run taskkill on a dead pid and fall through to
-        // node-pty's own kill, re-entering its async Windows teardown and racing
-        // the next spawn. The lagging exit event will resolve the confirmed cap.
-        if (alive && !exited) setTimeout(safeKill, 150);
+        // (its exit event just lags, which is why we ask the OS and not `exited`),
+        // safeKill would run taskkill on a dead pid and fall through to node-pty's
+        // own kill, re-entering its async Windows teardown and racing the next
+        // spawn. The lagging exit event will resolve the confirmed cap. Liveness is
+        // re-checked INSIDE the timer, not reused from `alive` above, because the
+        // child can exit during the 150ms wait.
+        if (alive && !exited) {
+          setTimeout(() => {
+            if (childIsAlive() && !exited) safeKill();
+          }, 150);
+        }
       }
     };
 
@@ -414,6 +420,16 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
               }
               cap.confirm({ reason: hit.reason, resetAt: hit.resetAt });
               if (!exited) setTimeout(safeKill, 150);
+            } else if (options.onCapConfirmed) {
+              // A manual switch became active WHILE this verification was in
+              // flight, so it owns the outcome (which will resolve as a plain
+              // switch, recording nothing). The confirmed cap must still reach the
+              // ledger, or the account re-enters rotation before its reset. Record
+              // it here, the same way a switch preempting the relief grace does.
+              options.onCapConfirmed({ reason: hit.reason, resetAt: hit.resetAt }, {
+                relieve: false,
+                switching: true,
+              });
             }
           } else {
             suppressUntil = Date.now() + refuteBackoffMs;
