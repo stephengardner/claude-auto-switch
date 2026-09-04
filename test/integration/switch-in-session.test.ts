@@ -167,6 +167,7 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     delete process.env.FAKE_CLAUDE_IDLE_MS;
     delete process.env.FAKE_CLAUDE_RUNS_LOG;
     delete process.env.FAKE_CLAUDE_EMIT_CAP;
+    delete process.env.FAKE_CLAUDE_CAP_EVERY_MS;
     delete process.env.FAKE_CLAUDE_NO_CONVERSATION;
   });
 
@@ -270,6 +271,47 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
     expect(events).toContain('cap relief');
     // A's real cap is still recorded, so other sessions avoid it.
+    const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
+      caps: Array<{ account: string }>;
+    }).caps;
+    expect(caps.map((c) => c.account)).toEqual(['A']);
+  });
+
+  it('handles ONE cap episode once when the banner repeats during the grace', async () => {
+    // The banner hammers every 100ms across the relief grace. A cap episode must
+    // be verified and acted on ONCE: without the guard, a banner arriving after
+    // the first verdict but before the swap completes starts a SECOND
+    // verification, which resolves with the session already moved to B and caps
+    // B (the healthy relief target), rotating off it. The API confirms the first
+    // cap (A) and reports room afterwards, which is the real shape: A is out, B is
+    // fine. The guard must keep it to a single A -> B relief, with B never capped.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-caprace-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '2000';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    process.env.FAKE_CLAUDE_EMIT_CAP = '1';
+    process.env.FAKE_CLAUDE_CAP_EVERY_MS = '100'; // hammer the banner during the grace
+
+    let calls = 0;
+    const context = makeContext(home, () => {
+      calls += 1;
+      return Promise.resolve(calls === 1 ? 'limited' : 'allowed');
+    });
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    const exit = await runCommand(context, []);
+    expect(exit).toBe(0);
+
+    const runs = readRuns(runsLog);
+    expect(runs.filter((r) => r.type === 'launch')).toHaveLength(1); // one relief, in place
+    expect(runs.filter((r) => r.type === 'reread').pop()?.marker).toBe('B');
+    // The repeating banner did not spin up a verification per line: the episode
+    // was verified about once, not dozens of times.
+    expect(calls).toBeLessThanOrEqual(3);
+    // Only A is capped. B, the healthy account we relieved onto, must NOT be
+    // recorded as capped by a second verification that raced the swap.
     const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
       caps: Array<{ account: string }>;
     }).caps;

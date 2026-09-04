@@ -18,7 +18,9 @@ semantic versioning.
 
   This works because real Claude stays on screen after a usage limit rather than
   exiting, so the credential under it can be swapped and the very next request
-  picks up the new account (verified end to end). ccx waits a moment to be sure
+  picks up the new account. That credential-reread was verified against the real
+  Claude binary, and the ccx flow around it is integration-tested against a real
+  pseudo-terminal. ccx waits a moment to be sure
   the session is genuinely still alive before swapping: in the cases where Claude
   exits on the limit itself, it falls back to the previous relaunch-and-resume, so
   nothing is lost either way. The in-place move needs a healthy account that

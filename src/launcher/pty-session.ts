@@ -286,7 +286,14 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // input relay uses that to refuse reports this child cannot have wanted.
       input.observeChildOutput(data);
       if (options.debugLog) captured += data;
-      if (cap.isSet() || switching) return;
+      // `pendingCapRelief` is part of this guard so a cap episode is handled
+      // ONCE. Without it, more banner output during the relief grace could start
+      // a SECOND verification; if that resolved after the swap, it would call
+      // onCapConfirmed again with the account already moved to the healthy relief
+      // target, record THAT account as capped, and rotate off it. A confirmed cap
+      // being decided suppresses new matches until attemptCapRelief clears it,
+      // the same way an already-set cap or a pending switch does.
+      if (cap.isSet() || switching || pendingCapRelief) return;
       totalOutput += data.length;
       window = (window + data).slice(-4000);
       // A resume with nothing to resume: signal a fresh relaunch is needed.

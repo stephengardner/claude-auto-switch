@@ -882,17 +882,24 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       .sort((a, b) => a.priority - b.priority);
     if (healthy.length === 0) return null;
     const running = runningModel();
-    // No model preference (or no known running model): the best healthy account
-    // by priority is a valid in-place destination.
-    if (!context.config.rotation.preferSameModel || !running) return healthy[0] ?? null;
-    // With a model preference, only accept a destination that keeps the SAME
-    // model. planRotation reports a model change, and that is the one case a
-    // seamless swap cannot cover, so it is handed back to the restart path.
+    // No KNOWN running model: Claude is on its own default and ccx cannot read
+    // which. The best it can require is account-wide room, which excluding the
+    // account-wide-capped already guarantees, so the top healthy account by
+    // priority is a valid in-place destination. (This is the same honest limit
+    // planRotation itself hits with a null model.)
+    if (!running) return healthy[0] ?? null;
+    // A KNOWN running model: relief cannot change it (a model change needs a
+    // relaunch to pass `--model`), so the destination MUST have room on THAT
+    // model, regardless of the preferSameModel setting. model-first here means
+    // planRotation tries the running model on every account before any other, so
+    // it returns changedModel:false whenever ANY healthy account still has that
+    // model; a changedModel or exhausted result means no same-model home, which
+    // is exactly when the restart path (which can change model) should take over.
     const plan = planRotation({
       candidates: planCandidates(healthy, now),
       modelInUse: running,
       preference: context.config.rotation.modelPreference,
-      strategy: context.config.rotation.modelStrategy,
+      strategy: 'model-first',
       spentThisRun,
     });
     if (plan.kind !== 'run' || plan.changedModel) return null;
