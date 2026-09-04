@@ -53,6 +53,20 @@ export interface PtySessionOptions {
    */
   input?: TerminalInput;
   /**
+   * Given a CONFIRMED account limit while the child is still alive, try to move
+   * the session to a healthy account IN PLACE (swap the credential under the live
+   * process) instead of ending it. Returns 'relieved' when it did (the child
+   * keeps running on the new account, and its next request goes there), or
+   * 'restart' when no in-place move is possible and the session should end so the
+   * swap loop can relaunch on the next account, resuming the conversation.
+   *
+   * This is what stops an account cap from clobbering a running session: real
+   * Claude stays on screen after a usage limit, so the account underneath it can
+   * be swapped and the very next message succeeds on the new one. When absent
+   * (or when it returns 'restart'), the historical end-and-relaunch path runs.
+   */
+  onCapConfirmed?: (hit: { reason?: string; resetAt?: number }) => 'relieved' | 'restart';
+  /**
    * Thresholds for deciding the session is blocked. Injected in tests so the
    * pattern can be reached in seconds instead of minutes; production uses the
    * defaults in blocked-watch.
@@ -113,6 +127,13 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      */
     let unprobed: { text: string; hit: { reason?: string; resetAt?: number } } | null = null;
     /**
+     * A confirmed account limit waiting for the grace period to decide seamless
+     * relief vs restart (see the deferral where this is set). Cleared by
+     * attemptCapRelief, which either swaps the account under the live child or
+     * falls through to the confirm-and-kill restart path.
+     */
+    let pendingCapRelief: { reason?: string; resetAt?: number } | null = null;
+    /**
      * How long an UNPROVEN limit holds a pairing out of rotation.
      *
      * Nothing was measured, so there is no window to report. Long enough to
@@ -120,6 +141,16 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      * couple of minutes rather than the hours a confirmed cap buys.
      */
     const UNPROVEN_HOLD_MS = 2 * 60_000;
+    /**
+     * How long a confirmed cap waits before it is relieved in place.
+     *
+     * Set longer than the exit handler's own settle (250ms) so that when Claude
+     * exits ITSELF on the limit, the exit path confirms the cap and hands it to
+     * the restart rotation FIRST; only a child still alive after this grace is
+     * swapped in place. The banner is already on screen and the operator has to
+     * read it and type again, so this delay is invisible.
+     */
+    const RELIEF_GRACE_MS = 400;
     let noConversation = false;
     let window = '';
     let captured = '';
@@ -138,6 +169,27 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     // "this was a resume" and the code that undoes a resume cannot disagree.
     const watchNoConversation = wantsExistingConversation(options.args);
     let totalOutput = 0;
+
+    /**
+     * Is the child process genuinely still running?
+     *
+     * Asked of the OS (`kill(0)`), because node-pty's exit event is not prompt on
+     * Windows: it can arrive up to a second after the process is already gone, so
+     * the `exited` flag is not a reliable "is it alive right now" for a decision
+     * that must not swap an account under a dead child. Falls back to the flag
+     * when there is no pid to check.
+     */
+    const childIsAlive = (): boolean => {
+      const pid = child.pid;
+      if (!pid) return !exited;
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (err) {
+        // EPERM means it exists but is owned by someone else, which still counts.
+        return (err as NodeJS.ErrnoException).code === 'EPERM';
+      }
+    };
 
     let weKilled = false;
     /**
@@ -163,6 +215,41 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       } catch {
         /* already gone */
       }
+    };
+
+    /**
+     * Decide a deferred cap: swap the account under the LIVE child (seamless), or
+     * fall back to confirm-and-kill so the swap loop relaunches.
+     *
+     * Runs after RELIEF_GRACE_MS. If the child has since exited, switched, or the
+     * cap was already confirmed by the exit path, there is nothing to do here and
+     * the restart rotation owns it. Otherwise the child is genuinely still alive
+     * (the stay-on-screen limit flavor), so onCapConfirmed swaps its account in
+     * place and the next request goes to the new one, no restart.
+     */
+    const attemptCapRelief = (): void => {
+      const pending = pendingCapRelief;
+      pendingCapRelief = null;
+      if (!pending || switching || cap.isSet()) return;
+      // Liveness is asked of the OS, not of the `exited` flag: node-pty's exit
+      // EVENT lags the process by up to a second on Windows (measured), so the
+      // flag can still read alive well after the child is gone. `kill(0)` reports
+      // the truth within ~100ms. A dead child cannot be relieved in place (there
+      // is nothing left to run on the new account), so it takes the restart path.
+      const childAlive = childIsAlive();
+      const relieved = childAlive && options.onCapConfirmed?.(pending) === 'relieved';
+      if (relieved) {
+        // Swapped under the running child. Clear the watch so the banner still on
+        // screen (and any replay) does not immediately re-trigger, and drop the
+        // held match now that it has been acted on.
+        window = '';
+        suppressUntil = Date.now() + refuteBackoffMs;
+        unprobed = null;
+        return;
+      }
+      // No in-place move: confirm and end so the loop relaunches on the next one.
+      cap.confirm(pending);
+      if (!exited) setTimeout(safeKill, 150);
     };
 
     // The operator can pick a different account mid-session (dashboard Enter /
@@ -277,6 +364,22 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
             // would come back into rotation minutes before the real limit
             // expires, straight into the same wall.
             if (!switching) {
+              // Try to move the session to a healthy account IN PLACE rather than
+              // ending it. But NOT here, inline: some limit flavors make Claude
+              // exit ITSELF, and that exit races this verdict, so acting now would
+              // swap the account under a child that is already gone and end the
+              // session on it without ever running. Defer to a short grace: if the
+              // child exits in that window this stays the restart path (the exit
+              // handler confirms the cap and the loop relaunches, resuming the
+              // conversation), and only a child still alive afterwards gets the
+              // seamless swap. `unprobed` keeps the match recoverable so the exit
+              // handler can still confirm it if the child dies first.
+              if (options.onCapConfirmed && !exited) {
+                pendingCapRelief = { reason: hit.reason, resetAt: hit.resetAt };
+                unprobed = { text: snapshot, hit };
+                setTimeout(attemptCapRelief, RELIEF_GRACE_MS);
+                return confirmed;
+              }
               cap.confirm({ reason: hit.reason, resetAt: hit.resetAt });
               if (!exited) setTimeout(safeKill, 150);
             }
@@ -372,6 +475,16 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         // last redraw re-enabled the very modes the reset had just turned off.
         // That is how the fix shipped and the garbage survived it.
         resetChildTerminalModes();
+        // A cap was already CONFIRMED and was only waiting for the relief grace
+        // when the child exited (some limit flavors make Claude exit itself). The
+        // verdict is in hand, so trust it rather than re-probing: re-probing here
+        // would spend a second verification and, when the API answer has moved on,
+        // wrongly read the exit as clean. Confirming hands it to the swap loop,
+        // which relaunches on the next account, resuming the conversation.
+        if (pendingCapRelief && !switching) {
+          cap.confirm(pendingCapRelief);
+          pendingCapRelief = null;
+        }
         // A capped outcome waits for a probe that is still in flight. The
         // fallback hold schedules a kill 150ms later, so without this the exit
         // handler finalizes first and a probe resolving afterwards can never

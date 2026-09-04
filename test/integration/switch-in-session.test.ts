@@ -234,15 +234,19 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(caps.map((c) => c.account)).toEqual(['A']);
   });
 
-  it('a VERIFIED cap rotates once and continues on the next account', async () => {
+  it('a VERIFIED cap on a still-alive session swaps the account IN PLACE, no relaunch', async () => {
+    // The default behaviour now: real Claude stays on screen after a usage limit,
+    // so ccx swaps the account underneath the live child and the next request goes
+    // to the new one, with no restart and no lost sub-agents. (When Claude EXITS
+    // itself on the limit instead, the test above covers the relaunch path.)
     const home = mkdtempSync(path.join(tmpdir(), 'cas-realcap-'));
     const runsLog = path.join(home, 'runs.jsonl');
-    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500'; // stays alive: the stay-on-screen flavor
     process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
-    process.env.FAKE_CLAUDE_EMIT_CAP = '1'; // every launch renders the cap text
+    process.env.FAKE_CLAUDE_EMIT_CAP = '1';
 
-    // First probe confirms a REAL cap (on A); after rotating, the replayed text
-    // on B is refuted. This is exactly the real-world sequence.
+    // The one probe confirms the REAL cap on A; relief then moves the live session
+    // to B in place.
     let calls = 0;
     const context = makeContext(home, () => {
       calls += 1;
@@ -255,17 +259,56 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     const exit = await runCommand(context, []);
     expect(exit).toBe(0);
 
-    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
-    expect(launches).toHaveLength(2); // one rotation, then stable
-    expect(launches[0]?.marker).toBe('A');
-    expect(launches[1]?.marker).toBe('B');
-    // Same conversation, identified rather than guessed at.
-    expect(conversationOf(launches[1]?.args)).toBe(conversationOf(launches[0]?.args));
-    expect(launches[1]?.args).toContain('--resume');
+    const runs = readRuns(runsLog);
+    const launches = runs.filter((r) => r.type === 'launch');
+    expect(launches).toHaveLength(1); // NO relaunch: the same child throughout
+    expect(launches[0]?.marker).toBe('A'); // it started on A
+    // The credential was swapped to B underneath the running process, so the
+    // simulated ~30s re-read at the end sees B.
+    expect(runs.filter((r) => r.type === 'reread').pop()?.marker).toBe('B');
+    // The event stream records the in-place relief.
+    const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
+    expect(events).toContain('cap relief');
+    // A's real cap is still recorded, so other sessions avoid it.
     const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
       caps: Array<{ account: string }>;
     }).caps;
-    expect(caps.map((c) => c.account)).toEqual(['A']); // only the real cap recorded
+    expect(caps.map((c) => c.account)).toEqual(['A']);
+  });
+
+  it('a VERIFIED cap with no other healthy account does NOT relieve to a phantom', async () => {
+    // Relief needs somewhere to go. With only the capped account signed in, there
+    // is no in-place move: it must fall back to the normal path, never seamlessly
+    // swap to an account that does not exist. (The normal path then starts that
+    // account anyway under the "never refuse to start" rule; the point here is
+    // that relief did not fire.)
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-realcap-noalt-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    process.env.FAKE_CLAUDE_EMIT_CAP = '1';
+
+    // First probe confirms the real cap on A; a later start runs anyway (allowed).
+    let calls = 0;
+    const context = makeContext(home, () => {
+      calls += 1;
+      return Promise.resolve(calls === 1 ? 'limited' : 'allowed');
+    });
+    await loginAccount(context, home, 'A'); // the ONLY account
+    setActive('A', context.ctx);
+
+    const exit = await runCommand(context, []);
+    expect(exit).toBe(0); // never refuses to start: ends by running A anyway
+
+    // No seamless relief fired, and nothing was rerouted to a nonexistent account.
+    const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
+    expect(events).not.toContain('cap relief');
+    const runs = readRuns(runsLog);
+    for (const r of runs) expect(r.marker).toBe('A'); // only ever A, never a phantom
+    const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
+      caps: Array<{ account: string }>;
+    }).caps;
+    expect(caps.map((c) => c.account)).toEqual(['A']);
   });
 
   it('seamless (default): swaps the credential file in place, no relaunch', async () => {
