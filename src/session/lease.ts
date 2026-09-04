@@ -33,6 +33,12 @@ export interface SessionLease {
   pid: number;
   /** The config folder the session is actually reading its login from. */
   configDir: string;
+  /**
+   * The working directory the session was launched in. Absent on leases written
+   * before this existed. Used so `ccx sessions` can name a session by its
+   * project and `ccx use --here` can target the session running in this folder.
+   */
+  cwd?: string;
   /** Last time the session said it was still going. */
   at: number;
 }
@@ -41,6 +47,17 @@ export interface LeaseOptions {
   now?: () => number;
   /** Injected in tests; defaults to a real liveness check on the pid. */
   isAlive?: (pid: number) => boolean;
+  /** Injected in tests; defaults to `process.cwd()`. */
+  cwd?: string;
+}
+
+/** The working directory, or undefined if it cannot be read (deleted, permissions). */
+function safeCwd(): string | undefined {
+  try {
+    return process.cwd();
+  } catch {
+    return undefined;
+  }
 }
 
 function leasesDir(c: PathCtx): string {
@@ -81,7 +98,8 @@ export function takeLease(
   options: LeaseOptions = {},
 ): void {
   const now = options.now ?? (() => Date.now());
-  const lease: SessionLease = { account, pid: process.pid, configDir, at: now() };
+  const cwd = options.cwd ?? safeCwd();
+  const lease: SessionLease = { account, pid: process.pid, configDir, at: now(), ...(cwd ? { cwd } : {}) };
   try {
     mkdirSync(leasesDir(c), { recursive: true });
     writeFileSync(leasePath(account, c), JSON.stringify(lease), 'utf8');

@@ -30,6 +30,26 @@ describe('switch-request file', () => {
     // A missing/garbage location must not crash a live session's poll.
     expect(() => readSwitchRequest({ env: { CLAUDE_AUTO_SWITCH_HOME: 'C:/nope/does/not/exist' } })).not.toThrow();
   });
+
+  it('keeps a per-session request separate from the broadcast one', () => {
+    const c = ctx();
+    // A targeted request for one pid does not appear as the broadcast request,
+    // and a session reading its own pid does not see another pid's request.
+    writeSwitchRequest('phx', 1, 'seamless', c, 4242);
+    expect(readSwitchRequest(c)).toBeNull(); // broadcast is still empty
+    expect(readSwitchRequest(c, 4242)).toEqual({ account: 'phx', at: 1, mode: 'seamless' });
+    expect(readSwitchRequest(c, 9999)).toBeNull(); // a different session sees nothing
+
+    // The broadcast request and a per-session one coexist without colliding.
+    writeSwitchRequest('main', 2, 'restart', c);
+    expect(readSwitchRequest(c)?.account).toBe('main');
+    expect(readSwitchRequest(c, 4242)?.account).toBe('phx');
+
+    // Clearing one leaves the other in place.
+    clearSwitchRequest(c, 4242);
+    expect(readSwitchRequest(c, 4242)).toBeNull();
+    expect(readSwitchRequest(c)?.account).toBe('main');
+  });
 });
 
 describe('decideSwitch (pure lifecycle)', () => {

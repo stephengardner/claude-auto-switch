@@ -1083,13 +1083,19 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         pullRenewedLogin(current);
       };
       const switchWatch = (): string | null => {
-        const request = readSwitchRequest(context.ctx);
+        // This session's OWN request (written by `ccx use --session <pid>` or
+        // `--here`) wins over the broadcast one, so a targeted switch moves
+        // exactly this session and leaves the others alone. Falls back to the
+        // broadcast request when there is no per-session one.
+        const mineReq = readSwitchRequest(context.ctx, process.pid);
+        const request = mineReq ?? readSwitchRequest(context.ctx);
+        const targeted = mineReq !== null;
         const onNow = current?.name ?? account.name;
         const decision = decideSwitch(request, onNow, (name) => {
           const t = accounts.find((a) => a.name === name);
           return !!t && hasLogin(t.dir);
         });
-        if (decision.consume) clearSwitchRequest(context.ctx);
+        if (decision.consume) clearSwitchRequest(context.ctx, targeted ? process.pid : undefined);
         if (!decision.switchTo) return null;
         const target = accounts.find((a) => a.name === decision.switchTo);
         if (!target) return null;

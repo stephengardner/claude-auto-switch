@@ -25,6 +25,7 @@ import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { homeCommand } from './commands/home.js';
+import { sessionsCommand } from './commands/sessions.js';
 import { setupCommand } from './commands/setup.js';
 import { editorCommand } from './commands/editor.js';
 import { CasError } from './util/errors.js';
@@ -112,8 +113,17 @@ program
   .command('use <name>')
   .description('switch the active account (a running session moves to it seamlessly)')
   .option('--now', 'switch instantly by restarting the session (--continue) instead of the seamless in-place swap')
-  .action((name: string, opts: { now?: boolean }) => {
+  .option('--here', 'move only the session running in this folder, not every session')
+  .option('--session <pid>', 'move only the session with this pid (see: ccx sessions)')
+  .action((name: string, opts: { now?: boolean; here?: boolean; session?: string }) => {
     process.exitCode = useCommand(context(), name, opts);
+  });
+
+program
+  .command('sessions')
+  .description('list the ccx sessions running now (pid, account, folder) so you can switch one')
+  .action(() => {
+    process.exitCode = sessionsCommand(context());
   });
 
 program

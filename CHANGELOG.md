@@ -6,6 +6,19 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **Switch one session's account without touching the others.** With several
+  `claude` sessions open, `ccx use <account> --here` moves only the session
+  running in the current folder, and `ccx use <account> --session <pid>` moves one
+  by pid. `ccx sessions` lists what is running now (pid, account, folder) so you
+  know what to name. The move is the same seamless in-place swap `ccx use` already
+  does: the running session picks up the new account within about thirty seconds,
+  with no restart and nothing lost, so one session can be on one account while
+  another is on a different one. Plain `ccx use <account>`, with no target, still
+  broadcasts to whichever session is running and sets the account new sessions
+  start on.
+
 ### Fixed
 
 - **Quitting the dashboard, or signing in from it, no longer crashes the
