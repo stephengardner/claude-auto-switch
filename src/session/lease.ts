@@ -180,6 +180,11 @@ export function liveLeases(c: PathCtx = {}, options: LeaseOptions = {}): Session
       }
       continue;
     }
+    // `cwd` is optional and only ever a display/matching hint, but a corrupt lease
+    // could carry a non-string here; a consumer that does string work on it (the
+    // sessions table) would throw. Drop it to absent rather than reject the whole
+    // lease: the account is valid and still worth protecting.
+    if (lease.cwd !== undefined && typeof lease.cwd !== 'string') delete lease.cwd;
     live.push(lease);
   }
   // Oldest first, so a consumer that folds these into a per-account map keeps

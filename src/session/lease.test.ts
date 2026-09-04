@@ -65,6 +65,23 @@ describe('session leases', () => {
     expect(liveLeases(c, { now: () => 9_100, isAlive: () => true })).toEqual([]);
   });
 
+  it('keeps a valid lease but drops a non-string cwd', () => {
+    // cwd is only a display/matching hint. A corrupt value must not reach a
+    // consumer that does string work on it (the sessions table), but the lease
+    // itself is valid and still protects its account.
+    const c = home();
+    mkdirSync(path.dirname(leasePath('work', c)), { recursive: true });
+    writeFileSync(
+      leasePath('work', c, 424242),
+      JSON.stringify({ account: 'work', pid: process.pid, configDir: '/s', at: 9_000, cwd: 42 }),
+      'utf8',
+    );
+    const live = liveLeases(c, { now: () => 9_100, isAlive: () => true });
+    expect(live).toHaveLength(1);
+    expect(live[0]?.account).toBe('work');
+    expect(live[0]?.cwd).toBeUndefined();
+  });
+
   it('stays live while the session keeps saying so', () => {
     const c = home();
     let clock = 1_000;
