@@ -877,7 +877,17 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           a.enabled &&
           a.name !== capName &&
           !capped.has(a.name) &&
-          hasWorkingLogin(a.dir, context.ctx),
+          hasWorkingLogin(a.dir, context.ctx) &&
+          // Only an account whose login can be swapped in place RIGHT NOW is an
+          // in-place destination. `hasWorkingLogin` says the login is not
+          // rejected, but not whether it is due for renewal; a renewal-due login
+          // installed under the live child would land the session on a token
+          // about to expire. The same gate switchWatch uses: a renewal-due target
+          // is left to the restart path, which renews before handing over.
+          swapMode({
+            hasLogin: () => hasLogin(a.dir),
+            renewalDue: () => renewalIsDue(a.dir),
+          }) !== 'restart',
       )
       .sort((a, b) => a.priority - b.priority);
     if (healthy.length === 0) return null;
@@ -1218,17 +1228,19 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
        */
       const onCapConfirmed = (
         hit: { reason?: string; resetAt?: number },
-        opts: { relieve: boolean },
+        opts: { relieve: boolean; record: boolean },
       ): 'relieved' | 'restart' => {
         const capName = capOwner ?? current?.name ?? account.name;
-        // Record the cap FIRST, and ALWAYS, whatever happens next: whether this
-        // session is relieved in place, relaunched, or handed to a manual switch
-        // that started during the relief grace, the limit belongs on the ledger so
-        // rotation and every other session avoid this account before its reset.
-        // Recording only on the relief path lost a confirmed cap when a `--now`
-        // switch preempted it. `limitedModel`/`limitedResetAt` (set by the verify)
-        // scope it to a model when the limit was model-only.
-        recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt);
+        // ONE path records each cap. `record` is set by the caller for the cases
+        // that produce NO `capped` outcome (an in-place relief, or a manual switch
+        // that preempted relief): there, this is the only chance to put the limit
+        // on the ledger. When the caller will instead confirm the cap and let it
+        // resolve as `capped`, the swap loop's markCapped records it, so recording
+        // here too would fire recordCap twice (a duplicate cap event, and worse, a
+        // second call can cap the believed account after the first cleared the
+        // unregistered-identity guard). limitedModel/limitedResetAt scope it to a
+        // model when the limit was model-only.
+        if (opts.record) recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt);
         // Relief is suppressed when the caller says so (a manual switch is taking
         // over, or the child is already gone) or for a model-scoped limit, which
         // leaves the account usable on other models: swapping the whole account

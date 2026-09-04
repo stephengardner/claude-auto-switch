@@ -65,15 +65,15 @@ export interface PtySessionOptions {
    * be swapped and the very next message succeeds on the new one. When absent
    * (or when it returns 'restart'), the historical end-and-relaunch path runs.
    *
-   * It ALWAYS records the confirmed cap to the ledger, so the limit is never lost
-   * even if a manual switch preempts the relief. `relieve` says whether it may
-   * also move the account in place; `false` means record only, because the caller
-   * has decided relief is not appropriate (a manual switch is taking over, or the
-   * child is already gone).
+   * `relieve` says whether it may move the account in place. `record` says whether
+   * IT should write the cap to the ledger: true for the paths that produce no
+   * `capped` outcome (an in-place relief, or a manual switch that preempted it),
+   * false when the caller will confirm the cap and let the swap loop's markCapped
+   * record it, so the ledger is written exactly once.
    */
   onCapConfirmed?: (
     hit: { reason?: string; resetAt?: number },
-    opts: { relieve: boolean },
+    opts: { relieve: boolean; record: boolean },
   ) => 'relieved' | 'restart';
   /**
    * Thresholds for deciding the session is blocked. Injected in tests so the
@@ -247,11 +247,13 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // is nothing left to run on the new account), and a manual switch already
       // taking over owns the outcome, so neither may be relieved.
       const relieve = !switching && childIsAlive();
-      // onCapConfirmed ALWAYS records the confirmed cap; `relieve` gates only the
-      // in-place move. This is what keeps the limit on the ledger even when a
-      // `--now` switch lands in the grace window (its outcome would otherwise
-      // resolve as a plain switch, recording nothing).
-      const relieved = options.onCapConfirmed?.(pending, { relieve }) === 'relieved';
+      // Who records the cap: onCapConfirmed does, EXCEPT on the restart path that
+      // is about to confirm the cap below (a dead child with no switch), where the
+      // resulting `capped` outcome records it via the swap loop. So record here
+      // whenever we relieve or a switch is taking over (both produce no `capped`
+      // outcome), keeping the ledger write to exactly one path.
+      const record = relieve || switching !== null;
+      const relieved = options.onCapConfirmed?.(pending, { relieve, record }) === 'relieved';
       if (relieved) {
         // Swapped under the running child. Clear the watch so the banner still on
         // screen (and any replay) does not immediately re-trigger, and drop the
@@ -509,7 +511,11 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         // even if a manual switch owns the outcome; and unless a switch does own
         // it, confirm so the swap loop relaunches on the next account, resuming.
         if (pendingCapRelief) {
-          options.onCapConfirmed?.(pendingCapRelief, { relieve: false });
+          // The child is gone, so no relief. Record here ONLY when a manual switch
+          // owns the outcome (no `capped` outcome will follow); otherwise the
+          // cap.confirm below produces the `capped` outcome and the swap loop
+          // records it, so recording here too would double-write.
+          options.onCapConfirmed?.(pendingCapRelief, { relieve: false, record: switching !== null });
           if (!switching) cap.confirm(pendingCapRelief);
           pendingCapRelief = null;
         }
