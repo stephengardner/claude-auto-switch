@@ -162,7 +162,13 @@ export function liveLeases(c: PathCtx = {}, options: LeaseOptions = {}): Session
       continue; // unreadable: treat as absent rather than as protection
     }
     const fresh = typeof lease.at === 'number' && now() - lease.at < LEASE_STALE_MS;
-    if (!lease.account || !fresh || !isAlive(lease.pid)) {
+    // `account` must be a non-empty STRING, not merely truthy: a hand-edited or
+    // corrupt lease with a number here would satisfy a truthiness check and then
+    // reach a consumer that does string work on it (padding a table column), which
+    // throws. A malformed lease is treated as no protection, same as an unreadable
+    // one, and cleaned up if its process is gone.
+    const validAccount = typeof lease.account === 'string' && lease.account.length > 0;
+    if (!validAccount || !fresh || !isAlive(lease.pid)) {
       // Its own process is the only thing that could refresh it, and that is
       // gone, so the file is litter. Removing it keeps the folder from growing.
       if (!fresh || !isAlive(lease.pid)) {

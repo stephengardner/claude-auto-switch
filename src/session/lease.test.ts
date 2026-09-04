@@ -51,6 +51,20 @@ describe('session leases', () => {
     expect(existsSync(leasePath('work', c))).toBe(false);
   });
 
+  it('ignores a fresh, live lease whose account is not a string', () => {
+    // A hand-edited or corrupt lease with a non-string account would satisfy a
+    // truthiness check and then reach a consumer that does string work on it
+    // (padding a table column), which throws. It is treated as no protection.
+    const c = home();
+    mkdirSync(path.dirname(leasePath('x', c)), { recursive: true });
+    writeFileSync(
+      leasePath('x', c, 424242),
+      JSON.stringify({ account: 12345, pid: process.pid, configDir: '/s', at: 9_000 }),
+      'utf8',
+    );
+    expect(liveLeases(c, { now: () => 9_100, isAlive: () => true })).toEqual([]);
+  });
+
   it('stays live while the session keeps saying so', () => {
     const c = home();
     let clock = 1_000;

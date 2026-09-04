@@ -236,8 +236,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // Bring in the user's real settings (hooks, permissions), session keys winning.
   mergeUserSettings(sessionDir, context.ctx);
   // Drop any stale switch request so a fresh session starts on the active account
-  // and only a NEW mid-session pick triggers an in-place swap.
+  // and only a NEW mid-session pick triggers an in-place swap. Both the broadcast
+  // request AND this pid's own per-session request: pids are reused, and a
+  // targeted request left behind by a previous session that shared this pid would
+  // otherwise be read as ours and swap this brand-new session on startup. The
+  // request carries no generation, so clearing it here is what bounds its age.
   clearSwitchRequest(context.ctx);
+  clearSwitchRequest(context.ctx, process.pid);
   const err = context.err ?? ((m: string) => process.stderr.write(`${m}\n`));
   const home = configHome(context.ctx);
   // Record events to the shared log so an open `ccx dashboard` shows swaps live.
@@ -330,6 +335,15 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   /** The probe's own words for the last refusal, so the log can repeat them. */
   let refusalReason: string | null = null;
   let limitedModel: string | undefined;
+  /**
+   * The next session start comes from a TARGETED restart switch, so it must not
+   * write the global active account or move the editor pointer. Set when a
+   * targeted `--now` (or a target needing a login refresh) returns to the swap
+   * loop to relaunch, and consumed by the one runSession that follows. A
+   * broadcast switch and an ordinary cap-rotation leave this false, so they keep
+   * updating the global surfaces as before.
+   */
+  let nextStartTargeted = false;
   /**
    * The confirmed limit's own reset time. The PTY outcome only carries what
    * the screen text offered, which is usually nothing; the probe's answer is
@@ -1057,8 +1071,15 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
       if (readinessNote) err(readinessNote);
       activate(account);
       // Track the account we are actually on so the editor pointer follows it.
-      setActive(account.name, context.ctx);
-      syncEditorPointerIfEnabled(context);
+      // Skipped for a session started by a TARGETED restart switch: that move was
+      // aimed at this one session and must leave the global active account and the
+      // editor pointer where they were. Consumed once, so the next ordinary start
+      // updates them again.
+      if (!nextStartTargeted) {
+        setActive(account.name, context.ctx);
+        syncEditorPointerIfEnabled(context);
+      }
+      nextStartTargeted = false;
       const token = readToken(account.dir);
       const env: Record<string, string> = token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
       // Watch for an operator-requested switch to a DIFFERENT, usable account.
@@ -1099,7 +1120,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         if (!decision.switchTo) return null;
         const target = accounts.find((a) => a.name === decision.switchTo);
         if (!target) return null;
-        if (request?.mode === 'restart') return target.name; // end child, resume this conversation
+        if (request?.mode === 'restart') {
+          if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
+          return target.name; // end child, resume this conversation
+        }
         // Seamless only when the target's login is usable right now. This swap is
         // synchronous, so there is no chance to renew anything first, and swapping
         // in an expired login lands the running session on a dead token. When it
@@ -1112,14 +1136,19 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           }) === 'restart'
         ) {
           notice(`"${target.name}" needs its login refreshed first; continuing it there`);
+          if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
           return target.name;
         }
         activate(target);
-        setActive(target.name, context.ctx);
-        // The account under this session just changed without the child
-        // restarting, so refusals counted against the old one say nothing
-        // about the new one.
+        // A TARGETED switch (`ccx use --here/--session`) moves only this session:
+        // it must not touch the global active account or the editor pointer, which
+        // belong to the default session. A broadcast switch is the old behaviour
+        // and still sets both. `activate` above swaps the login under THIS session
+        // either way; only the global surfaces are gated.
+        if (!targeted) {
+          setActive(target.name, context.ctx);
           syncEditorPointerIfEnabled(context);
+        }
         notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
         notifyAccountSwitch(target.name, 'switched in place');
         return null;
@@ -1228,6 +1257,10 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // No more sessions will run: stop watching usage and restore the terminal.
   proactive.stop();
   usageWatch.stop();
+  // Drop this session's own per-session switch request so it cannot outlive the
+  // run and be read by a later session that reuses this pid. Startup clears it
+  // too; this just keeps the folder from collecting files between runs.
+  clearSwitchRequest(context.ctx, process.pid);
   terminalInput.close();
   // The last write of the run: put the child's terminal modes back once more
   // (a flush that landed after the per-session reset can have switched them

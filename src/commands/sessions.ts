@@ -35,10 +35,15 @@ export function sessionsCommand(context: CliContext): number {
     return 0;
   }
 
+  // Lease files live on disk and are read back as data, so a value could carry a
+  // terminal escape sequence. Strip control characters before drawing them into a
+  // table on the operator's terminal (CWE-150). The JSON path above prints the raw
+  // values, which is right for a machine reader and cannot move a cursor.
+  const safe = (s: string): string => s.replace(/[\x00-\x1f\x7f-\x9f]/g, '');
   const rows = leases.map((l) => ({
     pid: String(l.pid),
-    account: l.account,
-    where: l.cwd ?? '-',
+    account: safe(l.account),
+    where: safe(l.cwd ?? '-'),
   }));
   const wPid = Math.max(3, ...rows.map((r) => r.pid.length));
   const wAcct = Math.max(7, ...rows.map((r) => r.account.length));
