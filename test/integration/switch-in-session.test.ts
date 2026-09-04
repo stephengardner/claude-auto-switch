@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node-pty';
 import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
-import { setActive } from '../../src/state/active.js';
+import { setActive, getActive } from '../../src/state/active.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
 import { loadConfig } from '../../src/config/config.js';
 import { liveLeases } from '../../src/session/lease.js';
@@ -299,6 +299,38 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     // (the simulated ~30s re-read at run's end sees B), with no restart.
     const lastReread = runs.filter((r) => r.type === 'reread').pop();
     expect(lastReread?.marker).toBe('B');
+  });
+
+  it('a TARGETED seamless switch moves this session but leaves the global active account alone', async () => {
+    // `ccx use B --session <pid>` / `--here` writes a per-session request. The
+    // session swaps its own credential to B in place, but must NOT change the
+    // global active account (which belongs to the default session) or the editor
+    // pointer. This is the property that lets one session sit on B while another
+    // stays on A.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-targeted-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    const running = runCommand(context, []);
+    await firstLaunch(runsLog);
+    // Targeted at THIS run's session (its pid is this process's pid, which is also
+    // the name of its session directory).
+    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, process.pid);
+    expect(await running).toBe(0);
+
+    const runs = readRuns(runsLog);
+    expect(runs.filter((r) => r.type === 'launch')).toHaveLength(1); // no relaunch
+    // The credential swapped to B underneath the running process...
+    expect(runs.filter((r) => r.type === 'reread').pop()?.marker).toBe('B');
+    // ...but the GLOBAL active account is still A: the targeted switch did not
+    // touch it. A broadcast switch, by contrast, would have set it to B.
+    expect(getActive(context.ctx)).toBe('A');
   });
 
   it('announces the account in use while it runs, and stops when it ends', async () => {

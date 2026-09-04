@@ -27,34 +27,59 @@ export type SwitchRequest = z.infer<typeof SwitchRequestSchema>;
 export type SwitchMode = 'seamless' | 'restart';
 
 const FILENAME = 'switch-request.json';
+const PER_SESSION_DIR = 'switch-requests';
 
-function switchRequestPath(c: PathCtx = {}): string {
-  return path.join(configHome(c), FILENAME);
+/**
+ * Where a switch request lives.
+ *
+ * With no `pid` this is the ONE broadcast request that any running session will
+ * honour: the historical behaviour of `ccx use`, kept so a switch with no
+ * particular session in mind still reaches whichever session is running.
+ *
+ * With a `pid` it is that session's OWN request, under `switch-requests/<pid>`.
+ * A session reads its own file FIRST, so `ccx use <account> --session <pid>` (or
+ * `--here`) moves exactly one session while the others carry on untouched. The
+ * pid is the ccx run's process id, which is also the name of its session
+ * directory, so the two always agree on which session is which.
+ */
+function switchRequestPath(c: PathCtx = {}, pid?: number): string {
+  return pid === undefined
+    ? path.join(configHome(c), FILENAME)
+    : path.join(configHome(c), PER_SESSION_DIR, `${pid}.json`);
 }
 
-/** Ask a running session to switch to `account` (seamless by default). */
+/**
+ * Ask a running session to switch to `account` (seamless by default). With a
+ * `targetPid`, only the session with that pid honours it; without one, any
+ * running session will.
+ */
 export function writeSwitchRequest(
   account: string,
   at: number,
   mode: SwitchMode = 'seamless',
   c: PathCtx = {},
+  targetPid?: number,
 ): void {
-  writeJsonFile(switchRequestPath(c), { account, at, mode });
+  writeJsonFile(switchRequestPath(c, targetPid), { account, at, mode });
 }
 
-/** The pending request, or null. A malformed file is ignored (never crashes a live session). */
-export function readSwitchRequest(c: PathCtx = {}): SwitchRequest | null {
+/**
+ * The pending request for this session, or null. Pass the session's own `pid` to
+ * read its per-session request; omit it for the broadcast one. A malformed file
+ * is ignored (never crashes a live session).
+ */
+export function readSwitchRequest(c: PathCtx = {}, pid?: number): SwitchRequest | null {
   try {
-    return readJsonFile(switchRequestPath(c), SwitchRequestSchema) ?? null;
+    return readJsonFile(switchRequestPath(c, pid), SwitchRequestSchema) ?? null;
   } catch {
     return null;
   }
 }
 
-/** Remove the pending request (best effort). */
-export function clearSwitchRequest(c: PathCtx = {}): void {
+/** Remove the pending request (best effort). Pass `pid` to clear a per-session one. */
+export function clearSwitchRequest(c: PathCtx = {}, pid?: number): void {
   try {
-    rmSync(switchRequestPath(c), { force: true });
+    rmSync(switchRequestPath(c, pid), { force: true });
   } catch {
     /* best effort */
   }

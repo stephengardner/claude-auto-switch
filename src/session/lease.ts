@@ -33,6 +33,12 @@ export interface SessionLease {
   pid: number;
   /** The config folder the session is actually reading its login from. */
   configDir: string;
+  /**
+   * The working directory the session was launched in. Absent on leases written
+   * before this existed. Used so `ccx sessions` can name a session by its
+   * project and `ccx use --here` can target the session running in this folder.
+   */
+  cwd?: string;
   /** Last time the session said it was still going. */
   at: number;
 }
@@ -41,6 +47,17 @@ export interface LeaseOptions {
   now?: () => number;
   /** Injected in tests; defaults to a real liveness check on the pid. */
   isAlive?: (pid: number) => boolean;
+  /** Injected in tests; defaults to `process.cwd()`. */
+  cwd?: string;
+}
+
+/** The working directory, or undefined if it cannot be read (deleted, permissions). */
+function safeCwd(): string | undefined {
+  try {
+    return process.cwd();
+  } catch {
+    return undefined;
+  }
 }
 
 function leasesDir(c: PathCtx): string {
@@ -81,7 +98,8 @@ export function takeLease(
   options: LeaseOptions = {},
 ): void {
   const now = options.now ?? (() => Date.now());
-  const lease: SessionLease = { account, pid: process.pid, configDir, at: now() };
+  const cwd = options.cwd ?? safeCwd();
+  const lease: SessionLease = { account, pid: process.pid, configDir, at: now(), ...(cwd ? { cwd } : {}) };
   try {
     mkdirSync(leasesDir(c), { recursive: true });
     writeFileSync(leasePath(account, c), JSON.stringify(lease), 'utf8');
@@ -144,7 +162,13 @@ export function liveLeases(c: PathCtx = {}, options: LeaseOptions = {}): Session
       continue; // unreadable: treat as absent rather than as protection
     }
     const fresh = typeof lease.at === 'number' && now() - lease.at < LEASE_STALE_MS;
-    if (!lease.account || !fresh || !isAlive(lease.pid)) {
+    // `account` must be a non-empty STRING, not merely truthy: a hand-edited or
+    // corrupt lease with a number here would satisfy a truthiness check and then
+    // reach a consumer that does string work on it (padding a table column), which
+    // throws. A malformed lease is treated as no protection, same as an unreadable
+    // one, and cleaned up if its process is gone.
+    const validAccount = typeof lease.account === 'string' && lease.account.length > 0;
+    if (!validAccount || !fresh || !isAlive(lease.pid)) {
       // Its own process is the only thing that could refresh it, and that is
       // gone, so the file is litter. Removing it keeps the folder from growing.
       if (!fresh || !isAlive(lease.pid)) {
@@ -156,6 +180,11 @@ export function liveLeases(c: PathCtx = {}, options: LeaseOptions = {}): Session
       }
       continue;
     }
+    // `cwd` is optional and only ever a display/matching hint, but a corrupt lease
+    // could carry a non-string here; a consumer that does string work on it (the
+    // sessions table) would throw. Drop it to absent rather than reject the whole
+    // lease: the account is valid and still worth protecting.
+    if (lease.cwd !== undefined && typeof lease.cwd !== 'string') delete lease.cwd;
     live.push(lease);
   }
   // Oldest first, so a consumer that folds these into a per-account map keeps
