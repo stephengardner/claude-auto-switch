@@ -835,6 +835,70 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     });
   };
 
+  /**
+   * Turn a set of accounts into planRotation candidates, reading each one's
+   * CURRENT usable capacity plus any limits the ledger has already confirmed.
+   * One definition, shared by the swap loop's account choice and the in-place
+   * cap relief below, so the two cannot disagree about what an account has left.
+   */
+  const planCandidates = (list: Account[], now: number) => {
+    const snapshot = readUsageSnapshot(context.ctx);
+    const knownSpent = activeModelCaps(loadLedger(context.ctx), now);
+    return list.map((a) => {
+      const capacity = usableCapacity(snapshot.accounts[a.name], now);
+      const spentByLedger = Object.fromEntries(
+        knownSpent.filter((c) => c.account === a.name).map((c) => [c.model, 1]),
+      );
+      return {
+        name: a.name,
+        models: { ...capacity.models, ...spentByLedger },
+        ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
+      };
+    });
+  };
+
+  /**
+   * The account to move THIS session to when its current account hits an
+   * account-wide limit, WITHOUT restarting.
+   *
+   * Only a candidate that serves the model the session is actually running, with
+   * NO model change, qualifies: a model change needs a relaunch to pass `--model`,
+   * which is the restart this is trying to avoid, so those fall back to the swap
+   * loop. Null means "no in-place move is possible; end and relaunch as before".
+   * The just-capped account is excluded both explicitly and through the ledger
+   * cap recorded a moment earlier.
+   */
+  const reliefAccount = (capName: string): Account | null => {
+    const now = Date.now();
+    const capped = cappedNames(loadLedger(context.ctx), now);
+    const healthy = accounts
+      .filter(
+        (a) =>
+          a.enabled &&
+          a.name !== capName &&
+          !capped.has(a.name) &&
+          hasWorkingLogin(a.dir, context.ctx),
+      )
+      .sort((a, b) => a.priority - b.priority);
+    if (healthy.length === 0) return null;
+    const running = runningModel();
+    // No model preference (or no known running model): the best healthy account
+    // by priority is a valid in-place destination.
+    if (!context.config.rotation.preferSameModel || !running) return healthy[0] ?? null;
+    // With a model preference, only accept a destination that keeps the SAME
+    // model. planRotation reports a model change, and that is the one case a
+    // seamless swap cannot cover, so it is handed back to the restart path.
+    const plan = planRotation({
+      candidates: planCandidates(healthy, now),
+      modelInUse: running,
+      preference: context.config.rotation.modelPreference,
+      strategy: context.config.rotation.modelStrategy,
+      spentThisRun,
+    });
+    if (plan.kind !== 'run' || plan.changedModel) return null;
+    return healthy.find((a) => a.name === plan.account) ?? null;
+  };
+
   // Claim the operator's keyboard once for the whole run; every session in the
   // swap loop borrows it, so terminal mode is never toggled mid-swap.
   const terminalInput = openTerminalInput(process.stdin, {
@@ -923,29 +987,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         return pick ? { name: pick.name, dir: pick.dir } : null;
       }
 
-      const snapshot = readUsageSnapshot(context.ctx);
       const now = Date.now();
-      // Limits confirmed earlier, by this run or another one. Stronger than a
-      // cached number, because a cap was proven against the account's own
-      // usage at the moment it was written, so it wins where they disagree.
-      const knownSpent = activeModelCaps(loadLedger(context.ctx), now);
+      // Candidates read as CURRENT capacity, not history (a cached number past
+      // its own reset says "spent" about a limit that has lifted), plus limits
+      // the ledger has confirmed. Same builder the in-place cap relief uses.
       const plan = planRotation({
-        candidates: ordered.map((a) => {
-          // Read as CURRENT capacity, not as history: a cached number past its
-          // own reset says "spent" about a limit that has already lifted, and
-          // acting on it moves the session off a model it could still use. An
-          // account-wide window that is genuinely closed makes every model
-          // unusable, so it belongs in the candidate too.
-          const capacity = usableCapacity(snapshot.accounts[a.name], now);
-          const spentByLedger = Object.fromEntries(
-            knownSpent.filter((c) => c.account === a.name).map((c) => [c.model, 1]),
-          );
-          return {
-            name: a.name,
-            models: { ...capacity.models, ...spentByLedger },
-            ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
-          };
-        }),
+        candidates: planCandidates(ordered, now),
         // The model in use, or the one a confirmed cap just told us was in
         // use. Without that second source the first rotation is blind: nothing
         // pins a model, so ccx could not tell it was on Fable and rotated by
@@ -1153,6 +1200,46 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         notifyAccountSwitch(target.name, 'switched in place');
         return null;
       };
+      /**
+       * A confirmed account limit, handled WITHOUT ending the session when it
+       * can be. Real Claude stays on screen after a usage limit, so the account
+       * under the live child is swapped to a healthy one in place and the next
+       * request goes there, with no restart and no lost sub-agents. Falls back to
+       * 'restart' (end and relaunch, resuming the conversation) when a model-only
+       * limit is in play, when there is no healthy account, or when the only move
+       * would need a model change.
+       */
+      const onCapConfirmed = (hit: { reason?: string; resetAt?: number }): 'relieved' | 'restart' => {
+        // A model-scoped limit leaves the account usable on other models; the
+        // planner handles that (it may change model or rotate), and swapping the
+        // whole account here would move off an account that still had room.
+        if (limitedModel !== undefined) return 'restart';
+        const capName = capOwner ?? current?.name ?? account.name;
+        // Record the cap FIRST, so the relief pick (and every other session)
+        // excludes this account, and the limit is on the ledger whichever path
+        // runs next.
+        recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt);
+        const next = reliefAccount(capName);
+        if (!next) return 'restart';
+        try {
+          activate(next); // seamless swap under the live child; updates `current`
+        } catch {
+          // A swap that could not be applied must not strand the child on a
+          // half-changed account: relaunch cleanly instead.
+          return 'restart';
+        }
+        // Auto-rotation, not a targeted user switch: the global active account
+        // and the editor pointer SHOULD follow, same as the swap loop's own moves.
+        setActive(next.name, context.ctx);
+        syncEditorPointerIfEnabled(context);
+        notice(`"${capName}" hit its limit; moved this session to "${next.name}" in place (no restart)`);
+        notifyAccountSwitch(next.name, 'switched in place');
+        logEvent(`seamless cap relief: ${capName} -> ${next.name}`, {
+          kind: 'cap-relief',
+          data: { from: capName, to: next.name },
+        });
+        return 'relieved';
+      };
       const base = {
         claude,
         configDir: sessionDir,
@@ -1160,6 +1247,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         switchWatch,
         onTick,
         verifyCap,
+        onCapConfirmed,
         ...(context.blockedWatch ? { blockedWatch: context.blockedWatch } : {}),
         input: terminalInput,
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
