@@ -1228,42 +1228,54 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
        */
       const onCapConfirmed = (
         hit: { reason?: string; resetAt?: number },
-        opts: { relieve: boolean; record: boolean },
+        opts: { relieve: boolean; switching: boolean },
       ): 'relieved' | 'restart' => {
         const capName = capOwner ?? current?.name ?? account.name;
-        // ONE path records each cap. `record` is set by the caller for the cases
-        // that produce NO `capped` outcome (an in-place relief, or a manual switch
-        // that preempted relief): there, this is the only chance to put the limit
-        // on the ledger. When the caller will instead confirm the cap and let it
-        // resolve as `capped`, the swap loop's markCapped records it, so recording
-        // here too would fire recordCap twice (a duplicate cap event, and worse, a
-        // second call can cap the believed account after the first cleared the
-        // unregistered-identity guard). limitedModel/limitedResetAt scope it to a
-        // model when the limit was model-only.
-        if (opts.record) recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt);
-        // Relief is suppressed when the caller says so (a manual switch is taking
-        // over, or the child is already gone) or for a model-scoped limit, which
-        // leaves the account usable on other models: swapping the whole account
-        // there would move off one that still had room, so the planner handles it.
-        if (!opts.relieve || limitedModel !== undefined) return 'restart';
-        const next = reliefAccount(capName);
-        if (!next) return 'restart';
-        try {
-          activate(next); // seamless swap under the live child; updates `current`
-        } catch {
-          // A swap that could not be applied must not strand the child on a
-          // half-changed account: relaunch cleanly instead.
-          return 'restart';
+
+        // Decide (and perform) the in-place move FIRST, so recording can key off
+        // what actually happened rather than a caller's guess. Relief is possible
+        // only when the caller allows it, the limit is account-wide (a model-only
+        // limit leaves the account usable on other models, so the planner handles
+        // it), there is a same-model renewal-ready destination, and the swap
+        // applies cleanly.
+        let relievedTo: Account | null = null;
+        if (opts.relieve && limitedModel === undefined) {
+          const next = reliefAccount(capName);
+          if (next) {
+            try {
+              activate(next); // seamless swap under the live child; updates `current`
+              relievedTo = next;
+            } catch {
+              // A swap that could not be applied must not strand the child on a
+              // half-changed account: fall through to the restart path.
+              relievedTo = null;
+            }
+          }
         }
+
+        // ONE path records each cap. Record HERE only when there will be no
+        // `capped` outcome to record it: a completed in-place relief (the child
+        // keeps running), or a manual switch that preempted relief (the outcome
+        // resolves as a plain switch). Otherwise the caller confirms the cap and
+        // the swap loop's markCapped records it, so recording here too would fire
+        // recordCap twice (a duplicate event, and worse, a second call can cap the
+        // believed account after the first cleared the unregistered-identity
+        // guard). limitedModel/limitedResetAt scope it to a model when model-only.
+        if (relievedTo !== null || opts.switching) {
+          recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt);
+        }
+
+        if (relievedTo === null) return 'restart';
+
         // Auto-rotation, not a targeted user switch: the global active account
         // and the editor pointer SHOULD follow, same as the swap loop's own moves.
-        setActive(next.name, context.ctx);
+        setActive(relievedTo.name, context.ctx);
         syncEditorPointerIfEnabled(context);
-        notice(`"${capName}" hit its limit; moved this session to "${next.name}" in place (no restart)`);
-        notifyAccountSwitch(next.name, 'switched in place');
-        logEvent(`seamless cap relief: ${capName} -> ${next.name}`, {
+        notice(`"${capName}" hit its limit; moved this session to "${relievedTo.name}" in place (no restart)`);
+        notifyAccountSwitch(relievedTo.name, 'switched in place');
+        logEvent(`seamless cap relief: ${capName} -> ${relievedTo.name}`, {
           kind: 'cap-relief',
-          data: { from: capName, to: next.name },
+          data: { from: capName, to: relievedTo.name },
         });
         return 'relieved';
       };
