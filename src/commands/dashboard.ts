@@ -24,7 +24,9 @@ import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { describeNextUp } from '../dashboard/next-up.js';
-import { usableCapacity, type CapacityWindows } from '../usage/usable-capacity.js';
+import { usableCapacity, remainingRoom, type CapacityWindows } from '../usage/usable-capacity.js';
+import { orderComparator } from '../selector/selector.js';
+import { roomOfFromSnapshot } from '../usage/account-room.js';
 import { activeModelCaps } from '../ledger/ledger.js';
 import { spentKey } from '../usage/rotation-plan.js';
 import { normalizeModel } from '../usage/model-preference.js';
@@ -217,7 +219,9 @@ export async function dashboardCommand(
     const knownSpent = activeModelCaps(loadLedger(ctx.ctx), at);
     const candidates = accounts
       .filter((a) => a.enabled && loggedIn.has(a.name) && (capped.get(a.name) ?? 0) <= at)
-      .sort((x, y) => x.priority - y.priority || x.name.localeCompare(y.name))
+      // Ordered the same way rotation actually chooses, so the "next up" line
+      // predicts the real move: `most-room` reaches for the least-used account.
+      .sort(orderComparator(rotation.accountOrder, (name) => remainingRoom(usage.get(name), at)))
       .map((a) => {
         const capacity = usableCapacity(usage.get(a.name), at);
         // Both sides keyed the SAME way before they are merged. A cap can be
@@ -334,9 +338,12 @@ export async function dashboardCommand(
           .caps.filter((c) => c.capUntil && c.capUntil > now)
           .map((c) => c.account),
       );
+      // The SAME order the "next up" line predicts and rotation actually uses, so
+      // pressing rotate goes to the account the dashboard just said it would.
+      const roomOf = roomOfFromSnapshot(context.ctx, now);
       const next = rotatable
         .filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name) && a.name !== active)
-        .sort((x, y) => x.priority - y.priority)[0];
+        .sort(orderComparator(context.config.rotation.accountOrder, roomOf))[0];
       if (next) {
         setActive(next.name, context.ctx);
         syncEditorPointerIfEnabled(context);

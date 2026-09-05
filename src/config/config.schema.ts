@@ -58,6 +58,16 @@ export const ConfigSchema = z.object({
        * which is how ccx behaved before this existed.
        */
       preferSameModel: z.boolean().default(true),
+      /**
+       * Which account rotation reaches for first.
+       * - `most-room` (default): the least-used account, the one with the most
+       *   headroom left on its binding window (5-hour or weekly, whichever is
+       *   tighter). Spreads work across accounts and delays hitting any limit.
+       * - `priority`: the classic order, lowest `priority` number first.
+       * Either way a manually pinned account (`ccx use`) still wins, and priority
+       * is the tiebreak when two accounts are equally roomy.
+       */
+      accountOrder: z.enum(['priority', 'most-room']).default('most-room'),
     })
     .default({}),
   realClaudePath: z.string().nullable().default(null),
@@ -81,6 +91,7 @@ export interface PartialConfig {
     modelPreference?: string[];
     modelStrategy?: 'model-first' | 'account-first';
     preferSameModel?: boolean;
+    accountOrder?: 'priority' | 'most-room';
   };
   realClaudePath?: string | null;
 }

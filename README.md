@@ -200,11 +200,12 @@ want them.
 | `ccx doctor` | Check the whole setup, including who each profile really is |
 | `ccx use <name>` | Make an account active (`--now` to switch instantly) |
 | `ccx rotate` | Switch to the next healthy account now |
+| `ccx order [most-room\|priority]` | Which account to reach for first: least-used (default) or by priority |
 | `ccx proactive on` / `off` | Move to a roomier account before running out |
 | `ccx auto` | Do that check once now (`--once`, `--json`, for scripts) |
 | `ccx list` / `status [name]` | Account health (email, plan, signed in, capped until) |
 | `ccx enable` / `disable <name>` | Include or exclude an account from switching |
-| `ccx priority <name> <n>` | Set the order accounts are tried (lower first) |
+| `ccx priority <name> <n>` | Set an account's priority: the tiebreak by default, the full order under `ccx order priority` (lower first) |
 | `ccx login <name>` / `--all` | Sign a stale account back in |
 | `ccx remove <name>` | Remove an account (`--purge` also deletes its folder) |
 | `ccx setup` | Shows your next step, wherever you are in setup |

@@ -39,6 +39,8 @@ import { createTerminalWriter } from '../ui/terminal-writer.js';
 import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-store.js';
 import { startUsageRefresher } from '../usage/usage-refresher.js';
 import { planRotation, spentKey } from '../usage/rotation-plan.js';
+import { orderComparator } from '../selector/selector.js';
+import { roomOfFromSnapshot } from '../usage/account-room.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
 import { planConversation, relaunchArgs, freshStartArgs } from '../launcher/conversation.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
@@ -889,7 +891,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
             renewalDue: () => renewalIsDue(a.dir),
           }) !== 'restart',
       )
-      .sort((a, b) => a.priority - b.priority);
+      // Same account order as everywhere else: `most-room` relieves onto the
+      // least-used account, `priority` onto the classic first.
+      .sort(orderComparator(context.config.rotation.accountOrder, roomOfFromSnapshot(context.ctx, now)));
     if (healthy.length === 0) return null;
     const running = runningModel();
     // No KNOWN running model: Claude is on its own default and ccx cannot read
@@ -983,12 +987,17 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
     nextAccount: (excluding) => {
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
       const pinned = getActive(context.ctx);
+      // Ordered by the operator's policy: `most-room` reaches for the least-used
+      // account first (the one with the most headroom), `priority` keeps the
+      // classic order. Same comparator the `select`/`rotate`/dashboard paths use,
+      // so every surface agrees on which account is "next".
+      const roomOf = roomOfFromSnapshot(context.ctx);
       const eligible = accounts
         .filter(
           (a) => a.enabled && !excluding.has(a.name) && !capped.has(a.name) && hasLogin(a.dir),
         )
-        .sort((a, b) => a.priority - b.priority);
-      // Start on the pinned account if it is still eligible, else lowest priority.
+        .sort(orderComparator(context.config.rotation.accountOrder, roomOf));
+      // Start on the pinned account if it is still eligible, else the chosen order.
       const ordered = pinned
         ? [...eligible.filter((a) => a.name === pinned), ...eligible.filter((a) => a.name !== pinned)]
         : eligible;

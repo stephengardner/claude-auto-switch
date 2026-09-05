@@ -37,3 +37,4 @@ Thumbs.db
 
 # Git Bash crash dumps, which land in the repo root
 *.stackdump
+.npmrc
