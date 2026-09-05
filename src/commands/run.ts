@@ -94,6 +94,8 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
       confirmCap: (account, renderedText) => confirmCap(account.dir, renderedText),
       modelPreference: context.config.rotation.modelPreference,
       modelStrategy: context.config.rotation.modelStrategy,
+      order: context.config.rotation.accountOrder,
+      roomOf: roomOfFromSnapshot(context.ctx),
       defaultBackoffMinutes: context.config.rotation.defaultBackoffMinutes,
       ledger: loadLedger(context.ctx),
       out: context.out,

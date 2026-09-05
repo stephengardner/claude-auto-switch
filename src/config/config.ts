@@ -79,6 +79,27 @@ export function loadConfig(c: PathCtx = {}): Config {
   }
 }
 
+/**
+ * The config EXACTLY as it sits on disk: no environment overrides folded in, no
+ * defaults filled. Use this for a read-modify-write.
+ *
+ * `loadConfig` merges `CAS_*` environment overrides into what it returns, so
+ * writing that back would bake a temporary env override permanently into the
+ * file. Reading only the file means a command that flips one setting leaves the
+ * rest of the file, and anything set purely through the environment, untouched.
+ */
+export function loadConfigFile(c: PathCtx = {}): PartialConfig {
+  const file = configFilePath(c);
+  if (!existsSync(file)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (err) {
+    throw new ConfigError(`could not parse ${file}: ${(err as Error).message}`);
+  }
+  return isPlainObject(parsed) ? (parsed as PartialConfig) : {};
+}
+
 /** Persist config (partial allowed; missing keys fall back to defaults on load). */
 export function saveConfig(config: PartialConfig, c: PathCtx = {}): void {
   writeJsonFile(configFilePath(c), config);

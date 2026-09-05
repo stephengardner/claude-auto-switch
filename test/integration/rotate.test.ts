@@ -264,4 +264,25 @@ describe('autoRotateHeadless', () => {
     expect(invocations).toHaveLength(2);
     expect(invocations[1]!.join(' ')).toContain('--model opus');
   });
+
+  it('with most-room order, starts on the least-used account, not the lowest priority', async () => {
+    // A is priority 0 (the classic first) but heavily used; B has more room, so
+    // the most-room order reaches for B first. Headless rotation must honour the
+    // same `ccx order` setting as the interactive path.
+    const calls: string[] = [];
+    const run = async (_bin: string, _args: string[], opts?: RunOptions) => {
+      calls.push(opts?.env?.CLAUDE_CONFIG_DIR ?? '');
+      return { stdout: 'ok', stderr: '', exitCode: 0 };
+    };
+    const result = await autoRotateHeadless(['-p', 'hi'], {
+      ...base,
+      order: 'most-room' as const,
+      roomOf: (name: string) => (name === 'B' ? 0.9 : 0.1),
+      ledger: { caps: [] },
+      run,
+    });
+    expect(result.account).toBe('B');
+    expect(result.rotations).toBe(0);
+    expect(calls).toEqual(['/dir/B']); // launched B first, never A
+  });
 });

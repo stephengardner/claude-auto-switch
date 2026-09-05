@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { orderCommand } from './order-config.js';
@@ -46,5 +46,26 @@ describe('ccx order', () => {
     const { c, home } = makeContext();
     expect(orderCommand(c, 'sideways')).toBe(1);
     expect(loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: home } }).rotation.accountOrder).toBe('most-room');
+  });
+
+  it('does not bake a temporary environment override into the file', () => {
+    // A CAS_* override is effective for the process but must not be written to
+    // disk by a read-modify-write of one setting.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-order-env-'));
+    const env = { CLAUDE_AUTO_SWITCH_HOME: home, CAS_BROWSER_DEBUG_PORT: '9999' };
+    const ctx = { env };
+    const c: CliContext = { ctx, config: loadConfig(ctx), out: () => {}, json: false, quiet: false };
+    // The effective config reflects the override...
+    expect(c.config.browser.debugPort).toBe(9999);
+
+    expect(orderCommand(c, 'priority')).toBe(0);
+
+    // ...but the file holds only the change, not the env-derived port.
+    const raw = JSON.parse(readFileSync(path.join(home, 'config.json'), 'utf8')) as {
+      rotation?: { accountOrder?: string };
+      browser?: { debugPort?: number };
+    };
+    expect(raw.rotation?.accountOrder).toBe('priority');
+    expect(raw.browser?.debugPort).toBeUndefined();
   });
 });

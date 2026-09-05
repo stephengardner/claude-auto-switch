@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig } from '../config/config.js';
+import { loadConfigFile, saveConfig } from '../config/config.js';
 import type { AccountOrder } from '../selector/selector.js';
 import type { CliContext } from '../context.js';
 
@@ -34,8 +34,10 @@ export function orderCommand(context: CliContext, mode?: string): number {
   }
   const order = mode as AccountOrder;
 
-  // Re-read from disk so settings written by hand are preserved.
-  const onDisk = loadConfig(context.ctx);
+  // Read only the FILE (not the env-merged config) so flipping this setting
+  // preserves what is written by hand and never bakes a temporary CAS_* override
+  // into the file.
+  const onDisk = loadConfigFile(context.ctx);
   saveConfig({ ...onDisk, rotation: { ...onDisk.rotation, accountOrder: order } }, context.ctx);
   context.out(describe(order));
   return 0;

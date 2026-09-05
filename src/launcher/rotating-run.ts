@@ -1,5 +1,10 @@
 import type { ClaudeInvoker } from '../invoker.js';
-import { select, eligibleInOrder, type SelectableAccount } from '../selector/selector.js';
+import {
+  select,
+  eligibleInOrder,
+  type SelectableAccount,
+  type AccountOrder,
+} from '../selector/selector.js';
 import { planRotation, spentKey, type RotationStrategy } from '../usage/rotation-plan.js';
 import { modelInArgs } from '../usage/model-args.js';
 import { markCapped, cappedNames, clearAccount, activeModelCaps } from '../ledger/ledger.js';
@@ -39,6 +44,14 @@ export interface AutoRotateDeps<T extends RotatableAccount> {
    * lies about what it does.
    */
   modelStrategy?: RotationStrategy;
+  /**
+   * How accounts are ordered (default `priority`). The headless path must honour
+   * the same `ccx order` setting as the interactive one, or `most-room` would
+   * apply to a live session but not to a `-p` run.
+   */
+  order?: AccountOrder;
+  /** Remaining headroom per account (higher = less used), for the `most-room` order. */
+  roomOf?: (name: string) => number;
   /** Starting ledger; threaded through and returned updated for the caller to persist. */
   ledger: Ledger;
   run?: HeadlessRunner;
@@ -103,6 +116,8 @@ export async function autoRotateHeadless<T extends RotatableAccount>(
       loggedIn: deps.loggedIn,
       capped,
       ...(deps.pinned !== undefined ? { pinned: deps.pinned } : {}),
+      ...(deps.order !== undefined ? { order: deps.order } : {}),
+      ...(deps.roomOf !== undefined ? { roomOf: deps.roomOf } : {}),
     };
     const sel = select(selectInput);
     if (!sel.ok) {
