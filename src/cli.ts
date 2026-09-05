@@ -12,6 +12,7 @@ import { usageCommand } from './commands/usage.js';
 import { autoCommand, type AutoOptions } from './commands/auto.js';
 import { proactiveCommand } from './commands/proactive-config.js';
 import { modelsCommand } from './commands/models-config.js';
+import { orderCommand } from './commands/order-config.js';
 import { statuslineCommand } from './commands/statusline.js';
 import { historyCommand } from './commands/history.js';
 import { runCommand } from './commands/run.js';
@@ -179,6 +180,13 @@ program
       return;
     }
     process.exitCode = proactiveCommand(context(), verb, opts);
+  });
+
+program
+  .command('order [mode]')
+  .description('which account rotation reaches for first: most-room (least-used) or priority')
+  .action((mode?: string) => {
+    process.exitCode = orderCommand(context(), mode);
   });
 
 program

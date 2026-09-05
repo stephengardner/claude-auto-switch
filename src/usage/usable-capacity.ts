@@ -44,6 +44,38 @@ export type CapacityWindows = Pick<
 > &
   Partial<Pick<UsageEntry, 'models'>>;
 
+/** Utilization of a window that is OPEN, else 0 (a reset window is free), else
+ *  null when there is no number to read. */
+function openWindowUsed(
+  utilization: number | null | undefined,
+  resetsAt: number | null | undefined,
+  now: number,
+): number | null {
+  if (typeof utilization !== 'number') return null;
+  return windowIsOpen(resetsAt, now) ? utilization : 0;
+}
+
+/**
+ * How much headroom an account has left, as a fraction 0..1 (1 = untouched,
+ * 0 = spent), on its BINDING account-wide window: the tighter of the 5-hour and
+ * weekly limits. Higher means less used.
+ *
+ * This is the "how heavily has this account been used overall" metric the
+ * least-used ordering sorts by. It is deliberately account-wide, not per-model:
+ * which MODEL to run is the planner's job, while this answers which ACCOUNT has
+ * the most room to give. An account with no usage read yet counts as fully open
+ * (1), so a brand-new or just-reset account is treated as least-used, which is
+ * exactly what it is.
+ */
+export function remainingRoom(entry: CapacityWindows | undefined, now: number): number {
+  const used = [
+    openWindowUsed(entry?.fiveHour, entry?.fiveHourReset, now),
+    openWindowUsed(entry?.sevenDay, entry?.sevenDayReset, now),
+  ].filter((u): u is number => u !== null);
+  if (used.length === 0) return 1; // unmeasured: treat as least-used
+  return Math.max(0, Math.min(1, 1 - Math.max(...used)));
+}
+
 /** What an account can still be asked to do, according to `entry`, right now. */
 export function usableCapacity(entry: CapacityWindows | undefined, now: number): UsableCapacity {
   const models: Record<string, number | null> = {};

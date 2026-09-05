@@ -5,6 +5,14 @@ export interface SelectableAccount {
   enabled: boolean;
 }
 
+/**
+ * How eligible accounts are ordered.
+ * - `priority`: lowest `priority` number first (ties by name) - the classic order.
+ * - `most-room`: the account with the most remaining headroom first (the
+ *   least-used one), ties broken by priority then name. Needs `roomOf`.
+ */
+export type AccountOrder = 'priority' | 'most-room';
+
 export interface SelectInput<T extends SelectableAccount = SelectableAccount> {
   accounts: T[];
   /** Names currently logged in. */
@@ -13,6 +21,14 @@ export interface SelectInput<T extends SelectableAccount = SelectableAccount> {
   capped: Set<string>;
   /** A manually pinned account; used if it is still eligible. */
   pinned?: string;
+  /** Ordering policy for eligible accounts. Defaults to `priority`. */
+  order?: AccountOrder;
+  /**
+   * Remaining headroom 0..1 for an account (higher = less used), used by the
+   * `most-room` order. Omitted (or returning the same for all) falls back to
+   * priority ordering, so a caller with no usage data keeps the classic order.
+   */
+  roomOf?: (name: string) => number;
 }
 
 export type SelectResult<T extends SelectableAccount = SelectableAccount> =
@@ -42,20 +58,35 @@ export function select<T extends SelectableAccount>(input: SelectInput<T>): Sele
 export function eligibleInOrder<T extends SelectableAccount>(input: SelectInput<T>): T[] {
   const { accounts, loggedIn, capped, pinned } = input;
   const eligible = accounts.filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name));
-  const sorted = [...eligible].sort((a, b) => (isBetter(a, b) ? -1 : isBetter(b, a) ? 1 : 0));
+  const cmp = orderComparator<T>(input.order ?? 'priority', input.roomOf);
+  const sorted = [...eligible].sort(cmp);
   if (pinned === undefined) return sorted;
   const pinnedAccount = sorted.find((a) => a.name === pinned);
   // A pinned account leads when it is still eligible; the rest keep their order
-  // behind it, so rotation past the pin is still priority order.
+  // behind it, so rotation past the pin is still the chosen order.
   return pinnedAccount ? [pinnedAccount, ...sorted.filter((a) => a !== pinnedAccount)] : sorted;
 }
 
-/** Lower priority number wins; ties broken by name ascending. */
-function isBetter(candidate: SelectableAccount, current: SelectableAccount): boolean {
-  if (candidate.priority !== current.priority) {
-    return candidate.priority < current.priority;
-  }
-  return candidate.name.localeCompare(current.name) < 0;
+/**
+ * Sort order for eligible accounts.
+ *
+ * `most-room` puts the account with the most remaining headroom first (the
+ * least-used one); when two are equally roomy, or `roomOf` is not provided, it
+ * falls through to the classic priority-then-name tiebreak, so the order is
+ * always fully determined and a caller without usage data behaves as before.
+ */
+export function orderComparator<T extends SelectableAccount>(
+  order: AccountOrder,
+  roomOf: ((name: string) => number) | undefined,
+): (a: T, b: T) => number {
+  return (a, b) => {
+    if (order === 'most-room' && roomOf) {
+      const diff = roomOf(b.name) - roomOf(a.name); // more room first
+      if (diff !== 0) return diff;
+    }
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.name.localeCompare(b.name);
+  };
 }
 
 /** Explain why no account is eligible, most-specific reason first. */

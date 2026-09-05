@@ -5,6 +5,7 @@ import { select } from '../selector/selector.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { getClaude, type CliContext } from '../context.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
+import { roomOfFromSnapshot } from '../usage/account-room.js';
 
 /** Switch the active account to the next healthy one (skips the current active). */
 export async function rotateCommand(context: CliContext): Promise<number> {
@@ -15,7 +16,13 @@ export async function rotateCommand(context: CliContext): Promise<number> {
 
   const others = accounts.filter((a) => a.name !== active);
   const pool = others.length > 0 ? others : accounts;
-  const result = select({ accounts: pool, loggedIn, capped: new Set() });
+  const result = select({
+    accounts: pool,
+    loggedIn,
+    capped: new Set(),
+    order: context.config.rotation.accountOrder,
+    roomOf: roomOfFromSnapshot(context.ctx),
+  });
   if (!result.ok) {
     context.out(`cannot rotate: ${result.reason}`);
     return 1;

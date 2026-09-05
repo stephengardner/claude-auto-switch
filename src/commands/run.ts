@@ -6,6 +6,7 @@ import { launchWatched, launchPassthrough } from '../launcher/launcher.js';
 import { claudeSubcommandIn } from '../launcher/subcommand.js';
 import { autoRotateHeadless } from '../launcher/rotating-run.js';
 import { loadLedger, saveLedger, cappedNames, markCapped } from '../ledger/ledger.js';
+import { roomOfFromSnapshot } from '../usage/account-room.js';
 import { getClaude, type CliContext } from '../context.js';
 import { hasAnyUsableAccount, runInteractiveHotSwap } from './session.js';
 import { advanceActiveToHealthy } from '../state/active-sync.js';
@@ -107,7 +108,14 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
   }
 
   const capped = cappedNames(loadLedger(context.ctx), Date.now());
-  const result = select({ accounts, loggedIn, capped, pinned });
+  const result = select({
+    accounts,
+    loggedIn,
+    capped,
+    pinned,
+    order: context.config.rotation.accountOrder,
+    roomOf: roomOfFromSnapshot(context.ctx),
+  });
   if (!result.ok) {
     context.out(`cannot run: ${result.reason}`);
     return 1;

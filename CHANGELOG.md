@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- **Rotation reaches for the least-used account first.** ccx now defaults to a
+  `most-room` account order: when it needs an account, it picks the one with the
+  most headroom left on its binding window (the tighter of the 5-hour and weekly
+  limits), so work spreads across your accounts and you hit a limit later. This
+  applies everywhere ccx chooses an account: starting a session, rotating on a
+  cap, `ccx rotate`, and the dashboard's "next up" line. A pinned account
+  (`ccx use`) still wins, and account priority is the tiebreak when two accounts
+  are equally roomy.
+
+  Set it with `ccx order`. Use `ccx order most-room` (the default) or
+  `ccx order priority` for the classic lowest-priority-first order; `ccx order`
+  with no argument shows the current mode.
+
 ## [1.48.0]
 
 ### Changed

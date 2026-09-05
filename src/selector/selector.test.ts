@@ -75,3 +75,54 @@ describe('select', () => {
     expect(!r.ok && r.reason).toContain('capped');
   });
 });
+
+describe('most-room order (least-used account first)', () => {
+  const room = (map: Record<string, number>) => (name: string) => map[name] ?? 1;
+
+  it('picks the account with the most remaining headroom, not the lowest priority', () => {
+    // `a` is priority 0 (would win the classic order) but is 90% used; `b` has
+    // more room, so most-room reaches for `b`.
+    const r = select({
+      accounts: [acct('a', 0), acct('b', 5)],
+      loggedIn: new Set(['a', 'b']),
+      capped: new Set(),
+      order: 'most-room',
+      roomOf: room({ a: 0.1, b: 0.8 }),
+    });
+    expect(r.ok && r.account.name).toBe('b');
+  });
+
+  it('breaks a room tie by priority, then name', () => {
+    const r = select({
+      accounts: [acct('a', 2), acct('b', 1), acct('c', 1)],
+      loggedIn: new Set(['a', 'b', 'c']),
+      capped: new Set(),
+      order: 'most-room',
+      roomOf: room({ a: 0.5, b: 0.5, c: 0.5 }), // all equal room
+    });
+    // equal room -> priority 1 beats 2; b and c tie on priority -> name: b.
+    expect(r.ok && r.account.name).toBe('b');
+  });
+
+  it('a pinned account still leads in most-room order', () => {
+    const r = select({
+      accounts: [acct('a', 0), acct('b', 1)],
+      loggedIn: new Set(['a', 'b']),
+      capped: new Set(),
+      pinned: 'a',
+      order: 'most-room',
+      roomOf: room({ a: 0.0, b: 0.9 }), // b is roomier, but a is pinned
+    });
+    expect(r.ok && r.account.name).toBe('a');
+  });
+
+  it('falls back to priority when no roomOf is given', () => {
+    const r = select({
+      accounts: [acct('a', 1), acct('b', 0)],
+      loggedIn: new Set(['a', 'b']),
+      capped: new Set(),
+      order: 'most-room', // but no roomOf
+    });
+    expect(r.ok && r.account.name).toBe('b'); // classic priority order
+  });
+});
