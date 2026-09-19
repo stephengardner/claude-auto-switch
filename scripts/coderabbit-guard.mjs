@@ -113,9 +113,14 @@ function reviewBodies(owner, name, pr) {
   const reviewerReviews = reviews
     .filter((r) => isReviewer(r.user?.login))
     .map((r) => ({ id: r.id, body: r.body ?? '', at: Date.parse(r.submitted_at ?? '') || 0 }));
-  const latestAt = reviewerReviews.reduce((latest, r) => Math.max(latest, r.at), 0);
-  if (latestAt === 0) return reviewerReviews.filter((r) => r.body.length > 0);
-  return reviewerReviews.filter((r) => r.at === latestAt);
+  const latest = reviewerReviews.reduce(
+    (current, review) =>
+      !current || review.at > current.at || (review.at === current.at && review.id > current.id)
+        ? review
+        : current,
+    null,
+  );
+  return latest ? [latest] : [];
 }
 
 /**

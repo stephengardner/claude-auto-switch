@@ -17,7 +17,7 @@ ${headerPrefix}_⚠️ Potential issue_ | _🟠 ${severity}_\n${details}` : '';
     ? [
         {
           id: 1, user: { login: 'coderabbitai[bot]' }, commit_id: 'old',
-          body: finding, submitted_at: '2026-09-18T00:00:00Z',
+          body: finding, submitted_at: '2026-09-19T00:00:00Z',
         },
         {
           id: 2, user: { login: 'coderabbitai[bot]' }, commit_id: 'head',
@@ -129,6 +129,6 @@ it.each(['body', 'summary'])('does not hide a blocking %s finding after an inval
   })).toBe(1);
 });
 
-it('ignores older review-body findings after a later clean review covers the head', async () => {
+it('ignores older review-body findings after a later clean review covers the head, even in the same second', async () => {
   expect(await runGuard({ severity: 'Major', source: 'body', supersededBody: true })).toBe(0);
 });
