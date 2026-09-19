@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import path from 'node:path';
-import { copySecretFile } from '../util/secret-file.js';
+import { CREDENTIALS_FILE, readCredential, copyCredential, removeCredential } from './credential-storage.js';
+export { CREDENTIALS_FILE } from './credential-storage.js';
 
 /**
  * Credential storage with a safety net.
@@ -13,7 +14,6 @@ import { copySecretFile } from '../util/secret-file.js';
  * on one login, and what stops a killed refresh from destroying a good account.
  */
 
-export const CREDENTIALS_FILE = '.credentials.json';
 const PREVIOUS_FILE = '.credentials.prev.json';
 
 /**
@@ -27,7 +27,7 @@ const PREVIOUS_FILE = '.credentials.prev.json';
  */
 export function credentialFingerprint(dir: string): string | null {
   try {
-    const parsed = JSON.parse(readFileSync(credentialPath(dir), 'utf8')) as {
+    const parsed = JSON.parse(readCredential(credentialPath(dir))) as {
       claudeAiOauth?: { refreshToken?: string; accessToken?: string };
     };
     const material = parsed.claudeAiOauth?.refreshToken ?? parsed.claudeAiOauth?.accessToken;
@@ -49,7 +49,7 @@ export function credentialFingerprint(dir: string): string | null {
  */
 export function credentialFileFingerprint(dir: string): string | null {
   try {
-    return sha256Fingerprint(readFileSync(credentialPath(dir), 'utf8'));
+    return sha256Fingerprint(readCredential(credentialPath(dir)));
   } catch {
     return null;
   }
@@ -77,7 +77,7 @@ export function previousCredentialPath(dir: string): string {
  */
 export function isUsableCredential(file: string): boolean {
   try {
-    const text = readFileSync(file, 'utf8');
+    const text = readCredential(file);
     if (text.trim().length === 0) return false;
     const parsed = JSON.parse(text) as Record<string, unknown>;
     if (typeof parsed !== 'object' || parsed === null) return false;
@@ -166,14 +166,14 @@ export function identityKey(configDir: string): string | null {
 export function installCredential(dir: string, sourceFile: string): boolean {
   if (!isUsableCredential(sourceFile)) return false;
   const target = credentialPath(dir);
-  if (existsSync(target) && isUsableCredential(target)) {
+  if (isUsableCredential(target)) {
     try {
-      copySecretFile(target, previousCredentialPath(dir));
+      copyCredential(target, previousCredentialPath(dir));
     } catch {
       /* the backup is a cushion, not a precondition */
     }
   }
-  copySecretFile(sourceFile, target);
+  copyCredential(sourceFile, target);
   return true;
 }
 
@@ -184,15 +184,11 @@ export function installCredential(dir: string, sourceFile: string): boolean {
 export function rollbackCredential(dir: string): boolean {
   const prev = previousCredentialPath(dir);
   if (!isUsableCredential(prev)) return false;
-  copySecretFile(prev, credentialPath(dir));
+  copyCredential(prev, credentialPath(dir));
   return true;
 }
 
 /** Remove a config dir's live credential (used to scrub a shared session dir). */
 export function clearCredential(dir: string): void {
-  try {
-    rmSync(credentialPath(dir), { force: true });
-  } catch {
-    /* best effort */
-  }
+  removeCredential(credentialPath(dir));
 }

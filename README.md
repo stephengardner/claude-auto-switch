@@ -284,11 +284,13 @@ Node.js 20 or newer. Installing compiles one small native piece
 ([`node-pty`](https://github.com/microsoft/node-pty)), so you need your OS's
 usual build tools (a C/C++ toolchain).
 
-Windows and Linux switch accounts by swapping the account's login file behind the
-scenes. macOS keeps logins in the Keychain, which a separate folder cannot
-isolate, so on macOS each account uses a long-lived token (created once per
-account with `ccx token <name>`); normal coding is unaffected. `ccx doctor` tells
-you which applies to your machine.
+Windows and Linux store account logins in credential files. On macOS, ccx also
+reads each profile's separate Claude Code Keychain entry, so `ccx add` and
+`ccx login` work with normal browser sign-in. Account checks, usage probes, and
+renewals use the same credential store. Existing Keychain entries stay in
+Keychain; session copies and rollback snapshots use owner-only files. Renaming
+a Keychain-backed account keeps its folder path because the Keychain entry is
+bound to that path. The existing `ccx token <name>` flow remains available.
 
 ## Your credentials stay yours
 
@@ -298,8 +300,10 @@ login when it goes stale, and asking which account a login belongs to. That last
 one is what stops a login being copied into the wrong account, and it is asked
 only when a stored login changes. Nothing else leaves your machine.
 
-Each account's login is the same one Claude Code already saves, kept in its own
-folder under `~/.claude-auto-switch/`, written owner-only, and never committed.
+Each account's login is the same one Claude Code already saves. File-backed
+logins are kept in per-account folders under `~/.claude-auto-switch/`, written
+owner-only; macOS Keychain-backed logins use separate Claude Code Keychain
+entries for each account. Credentials remain yours and are never committed.
 Logins are created through your normal browser, so ccx never sees your password.
 See [SECURITY.md](SECURITY.md) for the full picture.
 

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readCredential } from '../accounts/credential-storage.js';
 
 /**
  * Read an account's real subscription usage, and verify whether it is actually
@@ -58,7 +58,7 @@ export interface LimitProbeResult {
 /** Read the OAuth access token from a credentials file, or null. */
 export function readOauthToken(credentialsFile: string): string | null {
   try {
-    const parsed = JSON.parse(readFileSync(credentialsFile, 'utf8')) as {
+    const parsed = JSON.parse(readCredential(credentialsFile)) as {
       claudeAiOauth?: { accessToken?: string };
     };
     return parsed.claudeAiOauth?.accessToken ?? null;

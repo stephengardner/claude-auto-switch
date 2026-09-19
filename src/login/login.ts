@@ -73,12 +73,11 @@ export async function loginAccount(
     '--claudeai',
     ...(account.email ? ['--email', account.email] : []),
   ]);
-  const proc = deps.startAuthLogin(deps.claude, args, { CLAUDE_CONFIG_DIR: account.dir });
-
   // What the account holds BEFORE, so afterwards we can tell whether a new login
   // was actually written rather than guessing from how the browser step went.
   const fingerprint = deps.fingerprint ?? credentialFingerprint;
   const before = fingerprint(account.dir);
+  const proc = deps.startAuthLogin(deps.claude, args, { CLAUDE_CONFIG_DIR: account.dir });
 
   const url = await proc.urlHint();
   const outcome = await deps.browser.authorize({ url, email: account.email, debugPort: deps.debugPort });

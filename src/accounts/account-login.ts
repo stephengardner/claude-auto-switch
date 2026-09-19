@@ -6,10 +6,8 @@ import type { PathCtx } from '../config/paths.js';
 /**
  * Does this account have something to authenticate with?
  *
- * Two ways in: a usable credentials file, or a stored OAuth token. The second is
- * how macOS accounts work, because credentials live in the Keychain there rather
- * than in a file, so checking only the file would call every macOS account
- * signed out.
+ * Two ways in: a usable Claude credential (Keychain on macOS, a file elsewhere),
+ * or a separately stored long-lived OAuth token from `ccx token`.
  *
  * A signed-out profile keeps a COMPLETE credential file whose token strings are
  * empty, so the file existing is not a login. Picking one starts a session that

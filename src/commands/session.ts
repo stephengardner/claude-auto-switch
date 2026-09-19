@@ -1,4 +1,6 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { hasCredential, removeCredential } from '../accounts/credential-storage.js';
+import { thrownReason } from '../util/thrown-reason.js';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { listAccounts } from '../accounts/registry.js';
@@ -516,7 +518,12 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
    */
   const saveBack = (account: Account, confirmedOwner?: string | null): SaveOutcome => {
     // Nothing there to copy. A later tick may find one.
-    if (!existsSync(sessionCreds)) return 'retry';
+    try {
+      if (!hasCredential(sessionCreds)) return 'retry';
+    } catch (error) {
+      logEvent(`could not read the session login to save it back: ${thrownReason(error)}`);
+      return 'retry';
+    }
     // Never propagate a corrupt credential: a killed or partial OAuth refresh
     // can leave the session credential empty or malformed, and overwriting a
     // good login with that is the worst outcome (installCredential re-checks).
@@ -738,11 +745,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
 
   /** Remove the live credential from the shared session dir so it never lingers. */
   const scrubSessionCreds = (): void => {
-    try {
-      rmSync(sessionCreds, { force: true });
-    } catch {
-      /* best effort */
-    }
+    removeCredential(sessionCreds);
   };
 
   /**
@@ -775,7 +778,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
             // CLEAR the session, never leave the previous account's login in place:
             // the session would keep running as that account while ccx believed it
             // had moved, and its limit would then be blamed on the wrong account.
-            if (!existsSync(src) || !installCredential(sessionDir, src)) {
+            if (!installCredential(sessionDir, src)) {
               scrubSessionCreds();
             }
             // Stamp the account's identity (oauthAccount/userID) so the interactive

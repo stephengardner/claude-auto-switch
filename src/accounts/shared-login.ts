@@ -5,7 +5,7 @@ import {
   credentialPath,
 } from './credential-vault.js';
 import { withCredentialLock } from '../claude/locks.js';
-import { copySecretFile } from '../util/secret-file.js';
+import { copyCredential } from './credential-storage.js';
 import { rmSync } from 'node:fs';
 
 /**
@@ -202,7 +202,7 @@ export function propagateRenewal(input: PropagateInput, deps: PropagateDeps = {}
   try {
     lock(renewedDir, () => {
       if (credentialFingerprint(renewedDir) !== renewed) return;
-      copySecretFile(credentialPath(renewedDir), snapshot);
+      copyCredential(credentialPath(renewedDir), snapshot);
       ready = true;
     });
   } catch {

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readCredential } from './credential-storage.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import { credentialPath } from './credential-vault.js';
 
@@ -50,7 +50,7 @@ interface Tokens {
 
 function tokensOf(dir: string): Tokens {
   try {
-    const parsed = JSON.parse(readFileSync(credentialPath(dir), 'utf8')) as {
+    const parsed = JSON.parse(readCredential(credentialPath(dir))) as {
       claudeAiOauth?: { accessToken?: string; refreshToken?: string };
     };
     const oauth = parsed.claudeAiOauth ?? {};

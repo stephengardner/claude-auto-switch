@@ -1,6 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { auditSessionAccount } from './doctor-session-account.js';
 
+it('reports a credential access failure instead of claiming no session is running', () => {
+  const result = auditSessionAccount({
+    sessionDir: '/session',
+    activeAccount: 'work',
+    accounts: [],
+    exists: () => { throw new Error('Could not read the profile login from macOS Keychain'); },
+  });
+  expect(result.ok).toBe(false);
+  expect(result.detail).toContain('Could not read the profile login from macOS Keychain');
+  expect(result.detail).not.toContain('no session is running');
+});
+
 /**
  * Fingerprints are injected rather than built from real credential files: the
  * rule under test is "whose login is in the session directory", and writing

@@ -1,7 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { readCredential } from '../accounts/credential-storage.js';
 import path from 'node:path';
 import { acquireLockDir, CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
-import { writeSecretFile, copySecretFile } from '../util/secret-file.js';
+import { writeCredential, copyCredential } from '../accounts/credential-storage.js';
 import { credentialPath, previousCredentialPath, isUsableCredential } from '../accounts/credential-vault.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import { alreadyRefused, refusalReason, rememberRefused } from './dead-login-memo.js';
@@ -70,7 +70,7 @@ export interface RefreshOptions {
 export function renewalIsDue(accountDir: string, now: () => number = () => Date.now()): boolean {
   let oauth: OauthBlock | undefined;
   try {
-    oauth = (JSON.parse(readFileSync(credentialPath(accountDir), 'utf8')) as Record<string, unknown>)
+    oauth = (JSON.parse(readCredential(credentialPath(accountDir))) as Record<string, unknown>)
       .claudeAiOauth as OauthBlock | undefined;
   } catch {
     return false; // nothing readable to renew
@@ -97,7 +97,7 @@ export function expiredLongerThan(
   let oauth: OauthBlock | undefined;
   try {
     oauth = (
-      JSON.parse(readFileSync(credentialPath(accountDir), 'utf8')) as Record<string, unknown>
+      JSON.parse(readCredential(credentialPath(accountDir))) as Record<string, unknown>
     ).claudeAiOauth as OauthBlock | undefined;
   } catch {
     return false;
@@ -119,7 +119,7 @@ export async function refreshCredentialIfExpired(
   let raw: Record<string, unknown>;
   let fileText: string;
   try {
-    fileText = readFileSync(file, 'utf8');
+    fileText = readCredential(file);
     raw = JSON.parse(fileText) as Record<string, unknown>;
   } catch {
     return { status: 'unavailable', detail: 'no readable credential' };
@@ -234,7 +234,7 @@ export async function refreshCredentialIfExpired(
   // so losing this write would lose the account: it happens immediately.
   if (isUsableCredential(file)) {
     try {
-      copySecretFile(file, previousCredentialPath(accountDir));
+      copyCredential(file, previousCredentialPath(accountDir));
     } catch {
       /* the cushion is best effort */
     }
@@ -248,7 +248,7 @@ export async function refreshCredentialIfExpired(
       ...(payload.expires_in ? { expiresAt: now() + payload.expires_in * 1000 } : {}),
     },
   };
-  writeSecretFile(file, JSON.stringify(updated));
+  writeCredential(file, JSON.stringify(updated));
   // A credential that just renewed is demonstrably alive, so make sure no note
   // says otherwise. It should never be there, and that is the point: this
   // guarantees a stale note can never hold down a login that works.

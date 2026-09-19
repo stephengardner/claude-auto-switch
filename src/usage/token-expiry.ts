@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readCredential } from '../accounts/credential-storage.js';
 
 /**
  * When the access token in a credential file expires, as epoch ms, or 0 when
@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
  */
 export function readExpiresAt(credentialsFile: string): number {
   try {
-    const parsed = JSON.parse(readFileSync(credentialsFile, 'utf8')) as {
+    const parsed = JSON.parse(readCredential(credentialsFile)) as {
       claudeAiOauth?: { expiresAt?: unknown };
     };
     const at = parsed.claudeAiOauth?.expiresAt;

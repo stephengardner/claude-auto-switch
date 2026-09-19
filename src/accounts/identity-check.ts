@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readCredential } from './credential-storage.js';
 import { createHash } from 'node:crypto';
 import { credentialPath, sessionIdentityEmail } from './credential-vault.js';
 
@@ -45,7 +45,7 @@ export async function fetchTokenOwner(
 
 function accessTokenOf(dir: string): string | null {
   try {
-    const parsed = JSON.parse(readFileSync(credentialPath(dir), 'utf8')) as {
+    const parsed = JSON.parse(readCredential(credentialPath(dir))) as {
       claudeAiOauth?: { accessToken?: string };
     };
     const token = parsed.claudeAiOauth?.accessToken;

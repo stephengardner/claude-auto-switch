@@ -9,7 +9,7 @@ import {
 } from './credential-vault.js';
 import { readExpiresAt } from '../usage/token-expiry.js';
 import { acquireLockDir, CREDENTIALS_LOCK_DIR, withCredentialLockIfFree } from '../claude/locks.js';
-import { copySecretFile } from '../util/secret-file.js';
+import { copyCredential } from './credential-storage.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { liveLeases } from '../session/lease.js';
 import type { PathCtx } from '../config/paths.js';
@@ -130,7 +130,7 @@ function withSourceSnapshot<T>(sourceDir: string, fn: (snapshot: string) => T): 
   if (!lock.held) return { ok: false, reason: 'busy' };
   const snapshot = `${credentialPath(sourceDir)}.snapshot.${process.pid}`;
   try {
-    copySecretFile(credentialPath(sourceDir), snapshot);
+    copyCredential(credentialPath(sourceDir), snapshot);
   } catch {
     lock.release();
     return { ok: false, reason: 'unreadable' };

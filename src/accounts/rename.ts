@@ -1,3 +1,4 @@
+import { readKeychainCredential } from './keychain.js';
 import { existsSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { loadRegistry, saveRegistry } from './registry.js';
@@ -74,9 +75,15 @@ export function renameAccount(
     folderNote = `a folder called "${target}" already exists, so the old one kept its name`;
   } else {
     try {
-      renameSync(account.dir, destination);
-      folderMoved = true;
+      if (readKeychainCredential(account.dir) !== null) {
+        folderNote = 'its Keychain login is tied to its folder path, so it kept the old name';
+      } else {
+        renameSync(account.dir, destination);
+        folderMoved = true;
+      }
     } catch (err) {
+      // An unreadable Keychain is not evidence that moving the folder is safe.
+      // Keep the path while allowing the account's name and metadata to change.
       folderNote = `its folder could not be moved (${(err as Error).message}), so it kept the old name`;
     }
   }
