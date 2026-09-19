@@ -101,13 +101,21 @@ function reviewThreads(owner, name, pr) {
   return data?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
 }
 
-/** Review bodies, where "outside diff range" findings live. */
+/**
+ * Review bodies, where "outside diff range" findings live.
+ *
+ * Only the newest reviewer review can block through its body. Older review-body
+ * findings cannot be resolved individually, so once CodeRabbit has reviewed a
+ * later head they have to be treated as superseded by that later pass.
+ */
 function reviewBodies(owner, name, pr) {
   const reviews = ghJson(['api', `repos/${owner}/${name}/pulls/${pr}/reviews`, '--paginate']) ?? [];
-  return reviews
+  const reviewerReviews = reviews
     .filter((r) => isReviewer(r.user?.login))
-    .map((r) => ({ id: r.id, body: r.body ?? '', at: Date.parse(r.submitted_at ?? '') || 0 }))
-    .filter((r) => r.body.length > 0);
+    .map((r) => ({ id: r.id, body: r.body ?? '', at: Date.parse(r.submitted_at ?? '') || 0 }));
+  const latestAt = reviewerReviews.reduce((latest, r) => Math.max(latest, r.at), 0);
+  if (latestAt === 0) return reviewerReviews.filter((r) => r.body.length > 0);
+  return reviewerReviews.filter((r) => r.at === latestAt);
 }
 
 /**

@@ -9,14 +9,25 @@ afterEach(() => {
 });
 
 /** Execute the real guard against synthetic GitHub responses and capture its exit code. */
-async function runGuard({ state = 'success', covered = false, severity = '', source = 'inline', resolved = false, paused = false, details = 'Finding details.', headerPrefix = '' } = {}) {
+async function runGuard({ state = 'success', covered = false, severity = '', source = 'inline', resolved = false, paused = false, supersededBody = false, details = 'Finding details.', headerPrefix = '' } = {}) {
   vi.resetModules();
   const finding = severity ? `
 ${headerPrefix}_⚠️ Potential issue_ | _🟠 ${severity}_\n${details}` : '';
-  const reviews = covered || source === 'body' ? [{
-    id: 1, user: { login: 'coderabbitai[bot]' }, commit_id: covered ? 'head' : 'old',
-    body: source === 'body' ? finding : 'Review complete.', submitted_at: '2026-09-19T00:00:00Z',
-  }] : [];
+  const reviews = supersededBody
+    ? [
+        {
+          id: 1, user: { login: 'coderabbitai[bot]' }, commit_id: 'old',
+          body: finding, submitted_at: '2026-09-18T00:00:00Z',
+        },
+        {
+          id: 2, user: { login: 'coderabbitai[bot]' }, commit_id: 'head',
+          body: '', submitted_at: '2026-09-19T00:00:00Z',
+        },
+      ]
+    : covered || source === 'body' ? [{
+        id: 1, user: { login: 'coderabbitai[bot]' }, commit_id: covered ? 'head' : 'old',
+        body: source === 'body' ? finding : 'Review complete.', submitted_at: '2026-09-19T00:00:00Z',
+      }] : [];
   const threads = source === 'inline' && finding ? [{
     isResolved: resolved, comments: { nodes: [{ author: { login: 'coderabbitai' }, body: finding, path: 'file.ts', line: 1 }] },
   }] : [];
@@ -24,7 +35,18 @@ ${headerPrefix}_⚠️ Potential issue_ | _🟠 ${severity}_\n${details}` : '';
     if (args[0] === 'repo') return JSON.stringify({ owner: { login: 'owner' }, name: 'repo' });
     if (args[1] === 'graphql') return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: threads } } } } });
     const path = args[1]!;
-    if (path.endsWith('/comments')) return JSON.stringify(source === 'summary' ? [{ user: { login: 'coderabbitai[bot]' }, body: finding, created_at: '2026-09-19T00:00:00Z' }] : paused ? [{ user: { login: 'coderabbitai[bot]' }, body: 'Review paused by CodeRabbit' }] : []);
+    if (path.endsWith('/comments')) return JSON.stringify(
+      supersededBody
+        ? [{
+            user: { login: 'coderabbitai[bot]' },
+            body: '> [!IMPORTANT]\n> ## Review skipped\n>\n> No new commits to review since the last review.',
+            created_at: '2026-09-19T00:00:00Z',
+            updated_at: '2026-09-19T00:02:00Z',
+          }]
+        : source === 'summary' ? [{ user: { login: 'coderabbitai[bot]' }, body: finding, created_at: '2026-09-19T00:00:00Z' }]
+        : paused ? [{ user: { login: 'coderabbitai[bot]' }, body: 'Review paused by CodeRabbit' }]
+        : [],
+    );
     if (path.endsWith('/reviews')) return JSON.stringify(reviews);
     if (path.endsWith('/pulls/87')) return JSON.stringify({ head: { sha: 'head' }, base: { ref: 'main' } });
     if (path.endsWith('/status')) return JSON.stringify({ statuses: state === 'absent' ? [] : [{ context: 'CodeRabbit', state }] });
@@ -105,4 +127,8 @@ it.each(['body', 'summary'])('does not hide a blocking %s finding after an inval
   expect(await runGuard({
     source, covered: true, severity: 'Minor', details: '```markdown`\n_🔴 Critical_',
   })).toBe(1);
+});
+
+it('ignores older review-body findings after a later clean review covers the head', async () => {
+  expect(await runGuard({ severity: 'Major', source: 'body', supersededBody: true })).toBe(0);
 });
