@@ -7,6 +7,7 @@ import { listCommand } from './commands/list.js';
 import { statusCommand } from './commands/status.js';
 import { addCommand } from './commands/add.js';
 import { useCommand } from './commands/use.js';
+import { resumePromptCommand } from './commands/resume-prompt.js';
 import { rotateCommand } from './commands/rotate.js';
 import { usageCommand } from './commands/usage.js';
 import { autoCommand, type AutoOptions } from './commands/auto.js';
@@ -118,6 +119,18 @@ program
   .option('--session <pid>', 'move only the session with this pid (see: ccx sessions)')
   .action((name: string, opts: { now?: boolean; here?: boolean; session?: string }) => {
     process.exitCode = useCommand(context(), name, opts);
+  });
+
+program
+  .command('resume-prompt [prompt...]')
+  .description(
+    'arm the prompt one session is resumed with after an account swap (so an unattended session carries on); --clear to disarm',
+  )
+  .option('--clear', 'disarm: resume without a prompt, as before')
+  .option('--here', 'the session running in this folder')
+  .option('--session <pid>', 'the session with this pid (see: ccx sessions)')
+  .action((prompt: string[] | undefined, opts: { clear?: boolean; here?: boolean; session?: string }) => {
+    process.exitCode = resumePromptCommand(context(), prompt ?? [], opts);
   });
 
 program

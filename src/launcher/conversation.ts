@@ -118,6 +118,38 @@ export function relaunchArgs(args: string[], id: string | null): string[] {
   return id ? [...bare, '--resume', id] : [...bare, '--continue'];
 }
 
+export type ResumePromptPlacement =
+  | { applied: true; args: string[] }
+  | { applied: false; args: string[]; reason: string };
+
+/**
+ * Hand a relaunch the prompt its session armed for coming back.
+ *
+ * Claude takes one prompt: `claude [options] [prompt]`, and a resumed
+ * conversation given one submits it at once. That is what lets an unattended
+ * session carry on by itself after a swap instead of sitting idle.
+ *
+ * A run that was LAUNCHED with a prompt of its own already has its one prompt,
+ * and it rides every relaunch with the other arguments. A second would at best
+ * be ignored and at worst stop Claude starting, so the armed prompt stands aside
+ * and says why. An operand is read as a prompt only when it does not follow a
+ * flag, so a flag's value (`--model opus`, the id after `--resume`) is never
+ * mistaken for one.
+ */
+export function withResumePrompt(relaunch: string[], prompt: string): ResumePromptPlacement {
+  const ownPrompt = relaunch.some(
+    (arg, i) => isOperand(arg) && (i === 0 || !(relaunch[i - 1] as string).startsWith('-')),
+  );
+  if (ownPrompt) {
+    return {
+      applied: false,
+      args: relaunch,
+      reason: 'this run was launched with a prompt of its own, and Claude takes only one',
+    };
+  }
+  return { applied: true, args: [...relaunch, prompt] };
+}
+
 /**
  * Start a genuinely NEW conversation, and name it.
  *
