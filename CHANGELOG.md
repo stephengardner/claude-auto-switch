@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- **An unattended session carries on by itself after an account swap.** When ccx
+  swaps accounts by restarting Claude, the conversation resumes, but it resumes
+  idle at the prompt: fine with someone at the keyboard, a dead stop for a long
+  autonomous run, which then waits for a person to type "continue". A session can
+  now arm the prompt it wants when it comes back, `ccx resume-prompt "<text>"`, and
+  every relaunch after a swap resumes the same conversation WITH that prompt, so
+  the work picks itself back up. An armed session is relaunched on a limit rather
+  than switched in place, because the limit already ended the turn it interrupted
+  and only a relaunch can hand the session its prompt. The prompt belongs to one
+  running session (it lives in that session's own folder and ends with it), is
+  held to one line of printable text of at most 2,000 characters (refused, never
+  cut, when it breaks those rules), stands aside when the session was launched
+  with a prompt of its own (Claude takes only one), and is never given to a fresh
+  conversation started because there was nothing to resume. Run it from inside the
+  session, or name one with `--session <pid>` or `--here`; `--clear` disarms.
+  Nothing is armed by default, so nothing changes for anyone who does not ask.
+
 ## [1.49.0]
 
 ### Added

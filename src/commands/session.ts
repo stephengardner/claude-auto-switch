@@ -44,7 +44,8 @@ import { planRotation, spentKey } from '../usage/rotation-plan.js';
 import { orderComparator } from '../selector/selector.js';
 import { roomOfFromSnapshot } from '../usage/account-room.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
-import { planConversation, relaunchArgs, freshStartArgs } from '../launcher/conversation.js';
+import { planConversation, relaunchArgs, freshStartArgs, withResumePrompt } from '../launcher/conversation.js';
+import { readResumePrompt } from '../session/resume-prompt.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
@@ -1251,7 +1252,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         // it), there is a same-model renewal-ready destination, and the swap
         // applies cleanly.
         let relievedTo: Account | null = null;
-        if (opts.relieve && limitedModel === undefined) {
+        // A session that armed a resume prompt is RELAUNCHED rather than relieved
+        // in place. An in-place swap keeps the child alive, but the turn the limit
+        // interrupted has already ended, so the session sits idle at its prompt:
+        // exactly the stall an unattended session armed a prompt to avoid. Only a
+        // relaunch can hand the prompt over (see withResumePrompt).
+        const armedForRelaunch = readResumePrompt(sessionDir).armed;
+        if (opts.relieve && limitedModel === undefined && !armedForRelaunch) {
           const next = reliefAccount(capName);
           if (next) {
             try {
@@ -1277,7 +1284,15 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt);
         }
 
-        if (relievedTo === null) return 'restart';
+        if (relievedTo === null) {
+          if (opts.relieve && limitedModel === undefined && armedForRelaunch) {
+            logEvent('relaunching instead of relieving in place: this session armed a resume prompt', {
+              kind: 'resume-prompt',
+              data: { from: capName, relaunch: true },
+            });
+          }
+          return 'restart';
+        }
 
         // Auto-rotation, not a targeted user switch: the global active account
         // and the editor pointer SHOULD follow, same as the swap loop's own moves.
@@ -1324,7 +1339,31 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         // rotations in this run: once Fable is gone it does not come back
         // within a session, so re-checking it every time would only churn.
         const modelArgs = chosenModel ? withModel(launchArgs, chosenModel) : launchArgs;
-        const outcome = await runPtySession({ ...base, args: modelArgs });
+        // The prompt this session armed for coming back, read fresh at every
+        // relaunch so arming it mid-run counts. Added LAST, after the model, and
+        // to this resume only: `modelArgs` stays prompt-free because the fresh
+        // start below reuses it, and a brand-new conversation must not be handed
+        // an instruction written for the one that could not be resumed.
+        let runArgs = modelArgs;
+        if (isContinue) {
+          const armed = readResumePrompt(sessionDir);
+          if (armed.armed) {
+            const placed = withResumePrompt(modelArgs, armed.prompt);
+            runArgs = placed.args;
+            logEvent(
+              placed.applied
+                ? 'relaunched with the resume prompt this session armed'
+                : `resume prompt not used: ${placed.reason}`,
+              { kind: 'resume-prompt', data: { applied: placed.applied, chars: armed.prompt.length } },
+            );
+          } else if (armed.invalid) {
+            logEvent(`resume prompt ignored: ${armed.invalid}`, {
+              kind: 'resume-prompt',
+              data: { applied: false },
+            });
+          }
+        }
+        const outcome = await runPtySession({ ...base, args: runArgs });
         // If we tried to resume but the new account has no saved conversation,
         // start a fresh session on it instead of dead-ending.
         if (outcome.kind === 'no-conversation') {

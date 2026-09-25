@@ -7,6 +7,7 @@ import {
   conversationIdIn,
   withoutConversationFlags,
   looksLikeConversationId,
+  withResumePrompt,
 } from './conversation.js';
 
 const ID = '11111111-2222-4333-8444-555555555555';
@@ -188,5 +189,38 @@ describe('stripping conversation flags', () => {
     const args = ['--continue'];
     withoutConversationFlags(args);
     expect(args).toEqual(['--continue']);
+  });
+});
+
+describe('the prompt a session armed for its own relaunch', () => {
+  it('rides a resume by id as the one prompt argument', () => {
+    // `claude [options] [prompt]`: a resumed conversation that is also handed a
+    // prompt submits it at once, so an unattended session carries on by itself.
+    const relaunch = relaunchArgs(['--effort', 'max'], ID);
+    expect(withResumePrompt(relaunch, 'carry on')).toEqual({
+      applied: true,
+      args: ['--effort', 'max', '--resume', ID, 'carry on'],
+    });
+  });
+
+  it('rides a --continue relaunch the same way', () => {
+    expect(withResumePrompt(relaunchArgs(['-p'], null), 'carry on')).toEqual({
+      applied: true,
+      args: ['-p', '--continue', 'carry on'],
+    });
+  });
+
+  it('does not mistake a flag value for a prompt the operator typed', () => {
+    const relaunch = relaunchArgs(['--model', 'opus', '--permission-mode', 'acceptEdits'], ID);
+    expect(withResumePrompt(relaunch, 'carry on').applied).toBe(true);
+  });
+
+  it('stands aside when the run was launched with a prompt of its own', () => {
+    // Claude takes ONE prompt. Adding a second would at best be ignored and at
+    // worst refuse to start, so the armed prompt is skipped and the reason kept.
+    const placed = withResumePrompt(relaunchArgs(['fix the flaky test'], ID), 'carry on');
+    expect(placed.applied).toBe(false);
+    expect(placed.args).toEqual(['fix the flaky test', '--resume', ID]);
+    if (!placed.applied) expect(placed.reason).toMatch(/prompt of its own/);
   });
 });

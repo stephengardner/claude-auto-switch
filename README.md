@@ -181,6 +181,18 @@ Claude picks it up within about half a minute, with nothing restarted. When you
 want it immediately instead, `ccx use <name> --now` restarts the session on the
 new account and resumes the same conversation.
 
+A restarted session comes back idle at its prompt, which is fine when you are at
+the keyboard and a dead stop when nobody is: an unattended session, a long
+autonomous run, waits there until someone types. So a session can arm the prompt
+it wants when it comes back, `ccx resume-prompt "carry on where you stopped"`,
+and every relaunch after a swap submits it, resuming the same conversation with
+that prompt. An armed session is always relaunched rather than switched in place,
+because a limit ends the turn it interrupted and only a relaunch can hand the
+session its prompt. Run it from inside the session (it finds itself through the
+config folder Claude runs with), or name one with `--session <pid>` or `--here`;
+`--clear` disarms it. Nothing is armed by default, and a fresh conversation
+started because there was nothing to resume never gets it.
+
 ---
 
 ## Commands
@@ -199,6 +211,7 @@ want them.
 | `ccx dashboard` (alias `watch`) | Live view of every account, with keys to act |
 | `ccx doctor` | Check the whole setup, including who each profile really is |
 | `ccx use <name>` | Make an account active (`--now` to switch instantly) |
+| `ccx resume-prompt "<text>"` | Arm the prompt a session is resumed with after a swap (`--clear`, `--session <pid>`, `--here`) |
 | `ccx rotate` | Switch to the next healthy account now |
 | `ccx order [most-room\|priority]` | Which account to reach for first: least-used (default) or by priority |
 | `ccx proactive on` / `off` | Move to a roomier account before running out |
