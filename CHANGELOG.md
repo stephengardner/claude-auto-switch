@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.50.0]
+
+### Added
+
+- **Normal browser sign-in on macOS.** macOS keeps Claude Code logins in the
+  Keychain, so ccx used to need a long-lived token per account there
+  (`ccx token <name>`). ccx now reads and writes each profile's own Claude Code
+  Keychain entry, the same one Claude keeps for that profile's folder, so
+  `ccx add` and `ccx login` work with the usual browser sign-in on macOS too.
+  Account checks, usage probes and renewals read the same store Claude does,
+  with the Keychain entry taking precedence over a file just as it does in
+  Claude, and a finished session's Keychain entry is cleaned up along with its
+  folder. Session copies and rollback snapshots stay owner-only files, and
+  `ccx token` still works. Thanks to @mikeharty (#87).
+
+### Changed
+
+- **Renaming a Keychain-backed account keeps its folder.** Its Keychain entry is
+  tied to the folder's path, so moving the folder would strand the login. The
+  account's name changes and the folder keeps its old name, as already happens
+  when a folder cannot be moved.
+- **`ccx remove --purge` removes the account's login too**, both the Keychain
+  entry and the file, and only then forgets the account. If that cleanup fails,
+  the account stays registered so you can run `--purge` again, instead of being
+  forgotten with its login left behind. For a profile folder outside ccx's own
+  tree, the folder is still left in place, but the login inside it is removed.
+
 ## [1.49.0]
 
 ### Added
