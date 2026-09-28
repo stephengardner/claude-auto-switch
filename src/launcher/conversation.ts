@@ -123,6 +123,89 @@ export type ResumePromptPlacement =
   | { applied: false; args: string[]; reason: string };
 
 /**
+ * Claude's options that take a value, as `claude --help` lists them. Those
+ * shown as `<value>` or `[value]` take the next operand; those shown as
+ * `<values...>` take every operand up to the next flag.
+ *
+ * Every other option takes nothing, so an operand after it is the prompt:
+ * `--dangerously-skip-permissions "fix the flaky test"` has one. An option Claude
+ * adds later that does take a value is read the same way, which errs toward "this
+ * run has a prompt of its own", and the armed prompt then stands aside instead of
+ * becoming a second prompt.
+ */
+const ONE_VALUE_FLAGS = new Set([
+  '--agent',
+  '--agents',
+  '--append-system-prompt',
+  '--append-system-prompt-file',
+  '--autocompact',
+  '--cloud',
+  '-d',
+  '--debug',
+  '--debug-file',
+  '--effort',
+  '--environment',
+  '--fallback-model',
+  '--from-pr',
+  '--input-format',
+  '--json-schema',
+  '--max-budget-usd',
+  '--max-turns',
+  '--model',
+  '-n',
+  '--name',
+  '--output-format',
+  '--permission-mode',
+  '--permission-prompt-tool',
+  '--permission-prompts',
+  '--plugin-dir',
+  '--plugin-url',
+  '--prompt-suggestions',
+  '--remote-control',
+  '--remote-control-session-name-prefix',
+  '-r',
+  '--resume',
+  '--session-id',
+  '--setting-sources',
+  '--settings',
+  '--system-prompt',
+  '--system-prompt-file',
+  '--system-prompt-snapshot',
+  '--teleport',
+  '-w',
+  '--worktree',
+]);
+const MANY_VALUE_FLAGS = new Set([
+  '--add-dir',
+  '--allowedTools',
+  '--allowed-tools',
+  '--betas',
+  '--disallowedTools',
+  '--disallowed-tools',
+  '--file',
+  '--mcp-config',
+  '--tools',
+]);
+
+/** Whether `args` carry a prompt: an operand that is not some option's value. */
+export function hasOwnPrompt(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    // Everything after `--` is an operand, even text that starts with a dash.
+    if (arg === '--') return i + 1 < args.length;
+    if (isOperand(arg)) return true;
+    // `--model=opus` carries its value inside itself.
+    if (arg.includes('=')) continue;
+    if (ONE_VALUE_FLAGS.has(arg)) {
+      if (isOperand(args[i + 1])) i += 1;
+    } else if (MANY_VALUE_FLAGS.has(arg)) {
+      while (isOperand(args[i + 1])) i += 1;
+    }
+  }
+  return false;
+}
+
+/**
  * Hand a relaunch the prompt its session armed for coming back.
  *
  * Claude takes one prompt: `claude [options] [prompt]`, and a resumed
@@ -132,15 +215,13 @@ export type ResumePromptPlacement =
  * A run that was LAUNCHED with a prompt of its own already has its one prompt,
  * and it rides every relaunch with the other arguments. A second would at best
  * be ignored and at worst stop Claude starting, so the armed prompt stands aside
- * and says why. An operand is read as a prompt only when it does not follow a
- * flag, so a flag's value (`--model opus`, the id after `--resume`) is never
- * mistaken for one.
+ * and says why. An operand counts as that prompt unless it is the value of an
+ * option known to take one (see hasOwnPrompt), so `--model opus` and the id
+ * after `--resume` are never mistaken for a prompt, and the task after
+ * `--dangerously-skip-permissions` always is.
  */
 export function withResumePrompt(relaunch: string[], prompt: string): ResumePromptPlacement {
-  const ownPrompt = relaunch.some(
-    (arg, i) => isOperand(arg) && (i === 0 || !(relaunch[i - 1] as string).startsWith('-')),
-  );
-  if (ownPrompt) {
+  if (hasOwnPrompt(relaunch)) {
     return {
       applied: false,
       args: relaunch,

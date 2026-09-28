@@ -16,14 +16,16 @@ semantic versioning.
   every relaunch after a swap resumes the same conversation WITH that prompt, so
   the work picks itself back up. An armed session is relaunched on a limit rather
   than switched in place, because the limit already ended the turn it interrupted
-  and only a relaunch can hand the session its prompt. The prompt belongs to one
-  running session (it lives in that session's own folder and ends with it), is
-  held to one line of printable text of at most 2,000 characters (refused, never
-  cut, when it breaks those rules), stands aside when the session was launched
-  with a prompt of its own (Claude takes only one), and is never given to a fresh
-  conversation started because there was nothing to resume. Run it from inside the
-  session, or name one with `--session <pid>` or `--here`; `--clear` disarms.
-  Nothing is armed by default, so nothing changes for anyone who does not ask.
+  and only a relaunch can hand the session its prompt; one launched with a prompt
+  of its own, which the armed prompt stands aside for, is still switched in place.
+  The prompt belongs to one running session (it lives in that session's own
+  folder and ends with it), is held to one line of printable text of at most
+  2,000 characters (refused, never cut, when it breaks those rules), stands aside
+  when the session was launched with a prompt of its own (Claude takes only one),
+  and is never given to a fresh conversation started because there was nothing to
+  resume. Run it from inside the session, or name one with `--session <pid>` or
+  `--here`; `--clear` disarms. Nothing is armed by default, so nothing changes for
+  anyone who does not ask.
 
 ## [1.49.0]
 

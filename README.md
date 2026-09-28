@@ -186,12 +186,15 @@ the keyboard and a dead stop when nobody is: an unattended session, a long
 autonomous run, waits there until someone types. So a session can arm the prompt
 it wants when it comes back, `ccx resume-prompt "carry on where you stopped"`,
 and every relaunch after a swap submits it, resuming the same conversation with
-that prompt. An armed session is always relaunched rather than switched in place,
-because a limit ends the turn it interrupted and only a relaunch can hand the
-session its prompt. Run it from inside the session (it finds itself through the
-config folder Claude runs with), or name one with `--session <pid>` or `--here`;
-`--clear` disarms it. Nothing is armed by default, and a fresh conversation
-started because there was nothing to resume never gets it.
+that prompt. When an armed session hits a verified usage limit, it is relaunched
+rather than switched in place, because the limit ends the turn it interrupted and
+only a relaunch can hand the session its prompt. A switch made in place, such as
+a seamless `ccx use` or a proactive move, hands over no prompt: it does not
+interrupt the session, so there is nothing to pick back up. Run it from inside
+the session (it finds itself through the config folder Claude runs with), or
+name one with `--session <pid>` or `--here`; `--clear` disarms it. Nothing is
+armed by default, and a fresh conversation started because there was nothing to
+resume never gets it.
 
 ---
 

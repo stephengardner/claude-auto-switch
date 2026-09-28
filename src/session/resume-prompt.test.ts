@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -9,6 +9,7 @@ import {
   readResumePrompt,
   writeResumePrompt,
   clearResumePrompt,
+  resumePromptPath,
 } from './resume-prompt.js';
 
 const sessionDir = (): string => {
@@ -89,6 +90,20 @@ describe('arming, reading and disarming a session', () => {
     const read = readResumePrompt(dir);
     expect(read.armed).toBe(false);
     if (!read.armed) expect(read.invalid).toMatch(/flag/);
+  });
+
+  it('re-arms by replacing the file whole, never by truncating it in place', () => {
+    // A relaunch can read while a session re-arms. A truncate-then-write would
+    // let it see an empty file, which reads as unarmed.
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-resume-atomic-'));
+    writeResumePrompt(dir, 'first prompt');
+    writeResumePrompt(dir, 'second prompt');
+    expect(readResumePrompt(dir)).toEqual({ armed: true, prompt: 'second prompt' });
+    // Nothing left behind from the replace.
+    expect(readdirSync(dir)).toEqual([RESUME_PROMPT_FILE]);
+    if (process.platform !== 'win32') {
+      expect(statSync(resumePromptPath(dir)).mode & 0o777).toBe(0o600);
+    }
   });
 
   it('disarms, and disarming twice is not an error', () => {

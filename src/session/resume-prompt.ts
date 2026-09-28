@@ -1,5 +1,6 @@
-import { readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, rmSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { writeSecretFile } from '../util/secret-file.js';
 
 /**
  * A prompt a session arms for its OWN relaunch.
@@ -80,10 +81,10 @@ export function readResumePrompt(sessionDir: string): ResumePromptRead {
 export function writeResumePrompt(sessionDir: string, raw: string): ResumePromptCheck {
   const checked = checkResumePrompt(raw);
   if (!checked.ok) return checked;
-  writeFileSync(resumePromptPath(sessionDir), `${checked.prompt}\n`, {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
+  // Atomic and owner-only: a relaunch reading while the prompt is re-armed must
+  // see the old prompt or the new one, never a truncated file that reads as
+  // unarmed and sends the session back to sitting idle.
+  writeSecretFile(resumePromptPath(sessionDir), `${checked.prompt}\n`);
   return checked;
 }
 

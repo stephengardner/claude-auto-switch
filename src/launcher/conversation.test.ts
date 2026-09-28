@@ -8,6 +8,7 @@ import {
   withoutConversationFlags,
   looksLikeConversationId,
   withResumePrompt,
+  hasOwnPrompt,
 } from './conversation.js';
 
 const ID = '11111111-2222-4333-8444-555555555555';
@@ -222,5 +223,45 @@ describe('the prompt a session armed for its own relaunch', () => {
     expect(placed.applied).toBe(false);
     expect(placed.args).toEqual(['fix the flaky test', '--resume', ID]);
     if (!placed.applied) expect(placed.reason).toMatch(/prompt of its own/);
+  });
+
+  it('sees the prompt after a flag that takes no value', () => {
+    // The unattended runs this is for usually start this way. Reading the task
+    // as the flag's value would hand Claude two prompts.
+    for (const flag of [
+      '--dangerously-skip-permissions',
+      '--verbose',
+      '--ide',
+      '--strict-mcp-config',
+    ]) {
+      const relaunch = relaunchArgs([flag, 'fix the flaky test'], ID);
+      expect(withResumePrompt(relaunch, 'carry on').applied).toBe(false);
+    }
+  });
+
+  it('reads an optional value as the value, the way Claude does', () => {
+    expect(withResumePrompt(relaunchArgs(['--debug', 'api'], ID), 'carry on').applied).toBe(true);
+  });
+
+  it('gives a list-taking flag every value up to the next flag', () => {
+    const relaunch = relaunchArgs(['--add-dir', '../lib', '../docs', '--effort', 'max'], ID);
+    expect(withResumePrompt(relaunch, 'carry on').applied).toBe(true);
+  });
+
+  it('keeps a value written into the flag itself out of the question', () => {
+    expect(withResumePrompt(relaunchArgs(['--model=opus'], ID), 'carry on').applied).toBe(true);
+    expect(withResumePrompt(relaunchArgs(['--model=opus', 'fix it'], ID), 'carry on').applied).toBe(
+      false,
+    );
+  });
+
+  it('stands aside when an unknown flag is followed by text, since that may be the prompt', () => {
+    const relaunch = relaunchArgs(['--some-future-flag', 'something'], ID);
+    expect(withResumePrompt(relaunch, 'carry on').applied).toBe(false);
+  });
+
+  it('counts everything after -- as the prompt, dash or not', () => {
+    expect(hasOwnPrompt(['--', '-leading dash'])).toBe(true);
+    expect(hasOwnPrompt(['--effort', 'max', '--'])).toBe(false);
   });
 });

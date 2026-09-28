@@ -207,6 +207,39 @@ describe.skipIf(!PTY_AVAILABLE)('a resume prompt the session armed (against fake
     expect(caps.map((c) => c.account)).toEqual(['A']);
   });
 
+  it('stays in place on a cap when the run has a prompt of its own, since the armed one would not be used', async () => {
+    // Ending the child is only worth it when the relaunch delivers the armed
+    // prompt. A run launched with a task of its own keeps that one, so the armed
+    // prompt would stand aside: the session is relieved in place like an unarmed
+    // one. The task follows a flag that takes no value, the usual unattended shape.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-resume-own-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    process.env.FAKE_CLAUDE_EMIT_CAP = '1';
+
+    let calls = 0;
+    const context = makeContext(home, () => {
+      calls += 1;
+      return Promise.resolve(calls === 1 ? 'limited' : 'allowed');
+    });
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+    arm(context, PROMPT);
+
+    expect(
+      await runCommand(context, ['--dangerously-skip-permissions', 'fix the flaky test']),
+    ).toBe(0);
+
+    const runs = readRuns(runsLog);
+    expect(runs.filter((r) => r.type === 'launch')).toHaveLength(1);
+    expect(runs.filter((r) => r.type === 'reread').pop()?.marker).toBe('B');
+    const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
+    expect(events).toContain('cap relief');
+    expect(events).not.toContain('relaunching instead of relieving in place');
+  });
+
   it('changes nothing for a session that armed nothing', async () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-resume-none-'));
     const runsLog = path.join(home, 'runs.jsonl');

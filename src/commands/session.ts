@@ -1256,8 +1256,13 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         // in place. An in-place swap keeps the child alive, but the turn the limit
         // interrupted has already ended, so the session sits idle at its prompt:
         // exactly the stall an unattended session armed a prompt to avoid. Only a
-        // relaunch can hand the prompt over (see withResumePrompt).
-        const armedForRelaunch = readResumePrompt(sessionDir).armed;
+        // relaunch can hand the prompt over (see withResumePrompt), and only when
+        // the relaunch will really use it: a run launched with a prompt of its own
+        // keeps that one, and relaunching it anyway would end the child, sub-agents
+        // and all, for nothing. So this asks the same question the relaunch does.
+        const armed = readResumePrompt(sessionDir);
+        const armedForRelaunch =
+          armed.armed && withResumePrompt(relaunchArgs(args, conversationId()), armed.prompt).applied;
         if (opts.relieve && limitedModel === undefined && !armedForRelaunch) {
           const next = reliefAccount(capName);
           if (next) {
