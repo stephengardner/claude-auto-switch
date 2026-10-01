@@ -192,9 +192,15 @@ only a relaunch can hand the session its prompt. A switch made in place, such as
 a seamless `ccx use` or a proactive move, hands over no prompt: it does not
 interrupt the session, so there is nothing to pick back up. Run it from inside
 the session (it finds itself through the config folder Claude runs with), or
-name one with `--session <pid>` or `--here`; `--clear` disarms it. Nothing is
-armed by default, and a fresh conversation started because there was nothing to
-resume never gets it.
+name one with `--session <pid>` or `--here`; `--clear` disarms it. Or start a
+session already armed: `ccx run --resume-prompt "carry on where you stopped" --
+--resume <id>` picks that conversation up with the prompt at once, and keeps it
+for every swap after. Nothing is armed by default, and a fresh conversation
+started because there was nothing to resume never gets it.
+
+A swap resumes the conversation that is actually on screen, even after `/clear`
+or `/resume`, and even in a session started with `--continue` or the picker:
+ccx follows Claude's own record of which conversation each session is in.
 
 ---
 
@@ -228,7 +234,7 @@ want them.
 | `ccx history` | What ccx has done to your logins, and when |
 | `ccx cap <name>` | Mark an account limited by hand, or `--clear` one that is not |
 | `ccx daemon install` | Always-on rotation, including outside a terminal |
-| `ccx run -- <args>` | Run a one-off through ccx without installing the shim |
+| `ccx run -- <args>` | Run a one-off through ccx without installing the shim (`--resume-prompt "<text>"` to start armed) |
 
 ## Configuration
 

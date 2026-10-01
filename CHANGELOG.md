@@ -4,6 +4,62 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- **Start a session already armed.** `ccx run --resume-prompt "<text>" -- <args>`
+  arms the prompt the session resumes with after a swap from the moment it
+  starts, instead of from inside it with `ccx resume-prompt`. When the run itself
+  resumes a conversation (`--resume <id>` or `--continue`), the very first launch
+  picks it up with the prompt too, so a conversation handed over to ccx carries
+  on by itself straight away.
+
+### Fixed
+
+- **A swap comes back to the conversation that is actually on screen.** ccx
+  resumed the conversation it started the session in or, for a session started
+  with `--continue` or the `--resume` picker, "the most recent conversation in
+  this folder". After `/clear` or `/resume`, or with another session open on the
+  same project, a swap could land in a different conversation, and when that one
+  was open somewhere else, two processes wrote into it. ccx now follows Claude's
+  own record of which conversation each process is in, which Claude updates on
+  every switch, so a swap resumes exactly the one you were in.
+- **Forks stay forks.** A session started with `--resume <id> --fork-session` is
+  now named up front, and a swap resumes that copy. Before, every swap copied
+  the conversation again, and a swap that did not know the copy's id copied the
+  original again, dropping everything done since. A swap that lands before the
+  copy's first message, when nothing of it is saved yet, now copies it again
+  rather than starting an empty conversation.
+- **`--resume=<id>` works through ccx.** That spelling, the one Claude Desktop
+  uses, was read as a fresh start, and ccx added a `--session-id` that Claude
+  refuses to combine with a resume.
+- **A swap before the first message no longer ends the session.** A conversation
+  is not written to disk until its first message, so resuming it before then
+  finds nothing. Claude says so in words ccx did not recognise, and the session
+  ended; it now starts fresh on the new account.
+- **ccx's status line is back in ccx sessions.** Settings a session changes are
+  carried into the next one, and a session from before `ccx on` wrapped your
+  status line carried the old line as if it were a change, overriding ccx's own
+  line in every later session. While ccx's status line is installed, the one in
+  `~/.claude/settings.json` now always wins; without it, a status line set inside
+  a session is carried as before.
+- **A new session no longer inherits a dead one's leftovers.** Session folders
+  are named by process id, and Windows reuses those. A session that found a
+  folder left behind by a dead process with its id took it over as found,
+  including the conversation that process was in and the prompt it had armed.
+- **No more abandoned temp files.** On Windows a write is refused for a moment
+  while another ccx process has the file open. The write gave up at once and
+  left its temp file behind, hundreds of them in a busy ccx folder, two of which
+  were account switches that never happened. Writes now retry briefly and clean
+  up when they still fail, and old leftovers are removed when a session starts.
+- **`ccx proactive` and `ccx models` write only what you change.** They wrote
+  the whole effective config back, which put any temporary `CAS_*` environment
+  override, and every default, into `config.json` for good, so a better default
+  in a later version never reached you. A file that already holds the defaults
+  keeps working as before; delete a line from it to go back to following the
+  default.
+
 ## [1.51.0]
 
 ### Added

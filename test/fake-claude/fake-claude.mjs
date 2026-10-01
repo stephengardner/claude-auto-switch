@@ -80,12 +80,30 @@ if (runsLog) {
 }
 process.stdout.write(`fake-claude ran: ${args.join(' ')}\n`);
 
+// Arbitrary output at start, standing in for a replayed conversation.
+if (process.env.FAKE_CLAUDE_SAY) process.stdout.write(`${process.env.FAKE_CLAUDE_SAY}\n`);
+
 // The real CLI's answer to resuming a conversation that was never written (a
 // swap before the first message): a message on stderr and exit 1, at once.
 const resumeAt = args.indexOf('--resume');
-if (process.env.FAKE_CLAUDE_NOTHING_TO_RESUME && resumeAt >= 0 && args[resumeAt + 1]) {
-  process.stderr.write(`No conversation found with session ID: ${args[resumeAt + 1]}\n`);
+const resumed = resumeAt >= 0 ? args[resumeAt + 1] : undefined;
+if (process.env.FAKE_CLAUDE_NOTHING_TO_RESUME && resumed) {
+  process.stderr.write(`No conversation found with session ID: ${resumed}\n`);
   process.exit(1);
+}
+
+// A fork is only saved with its first message. With this set, every fork this
+// fake starts is remembered as unsaved, and resuming one by its own id finds
+// nothing, as with the real CLI when a swap lands before that message.
+if (process.env.FAKE_CLAUDE_UNSAVED_FORKS) {
+  const unsaved = path.join(configDir, 'unsaved-forks.txt');
+  const sessionAt = args.indexOf('--session-id');
+  if (args.includes('--fork-session') && sessionAt >= 0) {
+    appendFileSync(unsaved, `${args[sessionAt + 1]}\n`, 'utf8');
+  } else if (resumed && existsSync(unsaved) && readFileSync(unsaved, 'utf8').split('\n').includes(resumed)) {
+    process.stderr.write(`No conversation found with session ID: ${resumed}\n`);
+    process.exit(1);
+  }
 }
 
 // The real CLI's own record of which conversation this process is in, at

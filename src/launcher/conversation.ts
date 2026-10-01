@@ -62,8 +62,25 @@ export function wantsExistingConversation(args: string[]): boolean {
 }
 
 /** Whether `args` resume into a copy rather than the conversation itself. */
-function forksConversation(args: string[]): boolean {
+export function forksConversation(args: string[]): boolean {
   return args.some((a) => splitOption(a).flag === FORK_FLAG);
+}
+
+/**
+ * Whether a launch with `args` picks an existing conversation back up by
+ * itself: `--continue`, or a resume that names one.
+ *
+ * A bare `--resume` opens the picker instead, and a prompt added after it would
+ * be read as the picker's search term, so that does not count.
+ */
+export function startsByResuming(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const { flag, inline } = splitOption(args[i] as string);
+    if (CONTINUE_FLAGS.has(flag)) return true;
+    if (!RESUME_FLAGS.has(flag)) continue;
+    if (inline !== undefined ? inline !== '' : isOperand(args[i + 1])) return true;
+  }
+  return false;
 }
 
 /**

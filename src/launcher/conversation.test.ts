@@ -9,6 +9,7 @@ import {
   looksLikeConversationId,
   withResumePrompt,
   hasOwnPrompt,
+  startsByResuming,
 } from './conversation.js';
 
 const ID = '11111111-2222-4333-8444-555555555555';
@@ -355,5 +356,25 @@ describe('a fork', () => {
       args: ['--fork-session', '--session-id', FORK],
       id: FORK,
     });
+  });
+});
+
+describe('whether a launch picks a conversation back up by itself', () => {
+  it('does for --continue and for a resume that names one', () => {
+    for (const args of [['--continue'], ['-c'], ['--resume', ID], ['-r', ID], [`--resume=${ID}`]]) {
+      expect(startsByResuming(args)).toBe(true);
+    }
+    expect(startsByResuming(['--resume', ID, '--fork-session', '--session-id', OTHER])).toBe(true);
+  });
+
+  it('does not for the picker, whose search term a prompt would become', () => {
+    expect(startsByResuming(['--resume'])).toBe(false);
+    expect(startsByResuming(['--resume', '--model', 'opus'])).toBe(false);
+    expect(startsByResuming(['--resume='])).toBe(false);
+  });
+
+  it('does not for a new conversation, even one ccx named', () => {
+    expect(startsByResuming([])).toBe(false);
+    expect(startsByResuming(['--session-id', ID])).toBe(false);
   });
 });

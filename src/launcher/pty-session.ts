@@ -9,7 +9,7 @@ import { createBlockedWatch, type BlockedWatchOptions } from './blocked-watch.js
 import { createCapOutcome } from './cap-outcome.js';
 import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
-import { wantsExistingConversation } from './conversation.js';
+import { wantsExistingConversation, conversationIdIn } from './conversation.js';
 import { readLiveConversation } from '../session/live-conversation.js';
 
 export interface PtySessionOptions {
@@ -186,6 +186,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     // Shared with the retry that strips these flags, so the check that decides
     // "this was a resume" and the code that undoes a resume cannot disagree.
     const watchNoConversation = wantsExistingConversation(options.args);
+    /** The conversation this launch resumes by id, the one "not found" would name. */
+    const resumedId = conversationIdIn(options.args);
     let totalOutput = 0;
 
     /**
@@ -359,8 +361,11 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         // `--continue` with nothing in the folder, or `--resume <id>` for a
         // conversation that was never written: a swap before the first message
         // has nothing on disk yet. Both exit at once, and treating the second
-        // as an ordinary exit ended the operator's session on a swap.
-        /No conversation found (?:to continue|with session ID)/i.test(window)
+        // as an ordinary exit ended the operator's session on a swap. The
+        // second is matched with the id this launch asked for, so a replayed
+        // conversation that merely mentions the message cannot end it.
+        (/No conversation found to continue/i.test(window) ||
+          (resumedId !== null && window.includes(`No conversation found with session ID: ${resumedId}`)))
       ) {
         noConversation = true;
         setTimeout(() => safeKill(), 100);

@@ -264,10 +264,14 @@ program
 program
   .command('run')
   .description('run claude on the active/healthiest account (pass args after --)')
+  .option(
+    '--resume-prompt <text>',
+    'start armed with the prompt this session resumes with after a swap (and at start, when it resumes a conversation)',
+  )
   .allowUnknownOption()
   .argument('[args...]')
-  .action(async (args: string[]) => {
-    process.exitCode = await runCommand(context(), args);
+  .action(async (args: string[], opts: { resumePrompt?: string }) => {
+    process.exitCode = await runCommand(context(), args, opts);
   });
 
 program

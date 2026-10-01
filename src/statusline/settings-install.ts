@@ -4,6 +4,7 @@ import path from 'node:path';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { configHome } from '../config/paths.js';
 import type { PathCtx } from '../config/paths.js';
+import { CCX_COMMAND, isOurs } from './ours.js';
 
 /**
  * Wiring ccx into Claude's own status line, automatically.
@@ -21,7 +22,7 @@ import type { PathCtx } from '../config/paths.js';
  * line at all.
  */
 
-export const CCX_COMMAND = 'ccx statusline';
+export { CCX_COMMAND, isOurs };
 
 /** A statusLine value in Claude's settings, in the shape Claude expects. */
 export interface StatusLineValue {
@@ -37,20 +38,6 @@ export type InstallPlan =
   | { kind: 'wrapped'; settings: Record<string, unknown>; displaced: unknown }
   /** Already ours. No write needed. */
   | { kind: 'already' };
-
-/**
- * Anchored on purpose. A command like `echo ccx statusline` is the user's, and
- * a substring search would claim it: `ccx on` would replace it and `ccx off`
- * would delete it.
- */
-const OURS = /^ccx statusline(?:\s|$)/;
-
-/** True when this value is a status line ccx installed (wrapped or not). */
-export function isOurs(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null) return false;
-  const command = (value as { command?: unknown }).command;
-  return typeof command === 'string' && OURS.test(command.trim());
-}
 
 /** Shell-quote a command so wrapping someone's line survives spaces and quotes. */
 export function quoteForWrap(command: string): string {

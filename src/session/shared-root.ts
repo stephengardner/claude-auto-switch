@@ -13,6 +13,7 @@ import {
 import path from 'node:path';
 import { homeDir, type PathCtx } from '../config/paths.js';
 import { setTarget, isLink } from '../daemon/junction.js';
+import { isOurs } from '../statusline/ours.js';
 
 /**
  * Claude keeps transcripts, /resume history, and per-project memories under
@@ -104,24 +105,27 @@ function mergeTree(src: string, dest: string): void {
 }
 
 /**
- * Settings ccx manages in the user's REAL settings file, where the real value
- * always wins over anything a session carried.
+ * Whether the user's REAL value for `key` wins over one a session carried.
  *
- * `statusLine` is the one: `ccx on` wraps the user's own line in
+ * Only ccx's own status line does. `ccx on` wraps the user's line in
  * `ccx statusline`, and that wrapper is how ccx hears which conversation and
  * which model a session is on. A session that started before the wrap still
  * held the old line, carried it out as "a change it made", and from then on it
- * overrode the real setting in every ccx session, silently taking ccx's own
- * status line away from all of them.
+ * overrode the real setting in every ccx session, silently taking ccx's status
+ * line away from all of them. With no ccx line in the real file there is
+ * nothing of ccx's to protect, so a line set inside a session is kept as before.
  */
-export const USER_OWNED_SETTINGS: readonly string[] = ['statusLine'];
+export function realSettingWins(key: string, user: Record<string, unknown>): boolean {
+  return key === 'statusLine' && isOurs(user.statusLine);
+}
 
 /**
  * Merge the user's REAL ~/.claude/settings.json (hooks, permissions, statusline)
  * into the session settings, with the session's own keys (e.g. the model pin)
- * winning on conflict, except the ones ccx manages in the real file. Without
- * this, ccx sessions silently ran WITHOUT the user's hooks and permission
- * rules. Idempotent; runs each session start so settings edits are picked up.
+ * winning on conflict, except ccx's own status line (see realSettingWins).
+ * Without this, ccx sessions silently ran WITHOUT the user's hooks and
+ * permission rules. Idempotent; runs each session start so settings edits are
+ * picked up.
  */
 export function mergeUserSettings(sessionDir: string, c: PathCtx = {}): void {
   let userFile: string;
@@ -135,8 +139,8 @@ export function mergeUserSettings(sessionDir: string, c: PathCtx = {}): void {
   if (!user) return; // no real settings to inherit
   const session = readJson(sessionFile) ?? {};
   const merged = { ...user, ...session };
-  for (const key of USER_OWNED_SETTINGS) {
-    if (key in user) merged[key] = user[key];
+  for (const key of Object.keys(session)) {
+    if (realSettingWins(key, user)) merged[key] = user[key];
   }
   try {
     writeFileSync(sessionFile, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');

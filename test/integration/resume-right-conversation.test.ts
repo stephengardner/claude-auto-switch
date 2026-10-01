@@ -185,6 +185,8 @@ describe.skipIf(!PTY_AVAILABLE)(
         'FAKE_CLAUDE_SWITCH_AFTER_MS',
         'FAKE_CLAUDE_LANDS_ON',
         'FAKE_CLAUDE_NOTHING_TO_RESUME',
+        'FAKE_CLAUDE_SAY',
+        'FAKE_CLAUDE_UNSAVED_FORKS',
       ]) {
         delete process.env[key];
       }
@@ -300,6 +302,173 @@ describe.skipIf(!PTY_AVAILABLE)(
         expect(valueAfter(fresh, '--session-id')).not.toBeNull();
         expect(valueAfter(fresh, '--session-id')).not.toBe(started);
         expect(launches[2]?.marker).toBe('B');
+      },
+    );
+
+    it(
+      'is not fooled by a replay that merely mentions another conversation not being found',
+      { timeout: 60_000 },
+      async () => {
+        // The message is matched with the id the relaunch asked for. A replayed
+        // conversation that talks about the message, as ccx's own development
+        // conversations do, used to end the resume and start an empty one.
+        process.env.FAKE_CLAUDE_SAY =
+          'No conversation found with session ID: 99999999-8888-4777-8666-555555555555';
+        const { exit, launches } = await swapOnceLearned(['--session-id', STARTED], STARTED);
+        expect(exit).toBe(0);
+        expect(launches).toHaveLength(2); // no fresh start after the resume
+        expect(valueAfter(launches[1]?.args, '--resume')).toBe(STARTED);
+      },
+    );
+
+    it(
+      'keeps what Claude said over a status line that writes an older id late',
+      { timeout: 60_000 },
+      async () => {
+        // ccx's status line writes the same report file. One still running with
+        // the payload from before a /clear can finish after the switch and put
+        // the old id back; Claude's own record has to win over it.
+        const home = mkdtempSync(path.join(tmpdir(), 'cas-right-conv-late-'));
+        const runsLog = path.join(home, 'runs.jsonl');
+        process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+        process.env.FAKE_CLAUDE_IDLE_MS = '4000';
+        process.env.FAKE_CLAUDE_SESSION_RECORD = '1';
+        process.env.FAKE_CLAUDE_SWITCH_TO = CLEARED;
+        process.env.FAKE_CLAUDE_SWITCH_AFTER_MS = '300';
+        const context = makeContext(home);
+        await loginAccount(context, home, 'A');
+        await loginAccount(context, home, 'B');
+        setActive('A', context.ctx);
+
+        const run = runCommand(context, ['--session-id', STARTED]);
+        await waitFor(
+          'the first launch',
+          () => readLaunches(runsLog),
+          (l) => l.length > 0,
+        );
+        await waitFor(
+          'ccx to learn the cleared conversation',
+          () => recorded(context),
+          (id) => id === CLEARED,
+        );
+        // The late status line write.
+        writeFileSync(
+          path.join(sessionDirFor(process.pid, context.ctx), 'claude-report.json'),
+          JSON.stringify({ id: STARTED }),
+          'utf8',
+        );
+        writeSwitchRequest('B', Date.now(), 'restart', context.ctx);
+        expect(await run).toBe(0);
+        expect(valueAfter(readLaunches(runsLog)[1]?.args, '--resume')).toBe(CLEARED);
+      },
+    );
+
+    it(
+      'does not inherit a dead session that had the same pid: its conversation or its prompt',
+      { timeout: 60_000 },
+      async () => {
+        // Session folders are named by pid and pids are reused. What a dead
+        // process left in this one used to be taken over as found.
+        const home = mkdtempSync(path.join(tmpdir(), 'cas-right-conv-leftover-'));
+        const runsLog = path.join(home, 'runs.jsonl');
+        process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+        process.env.FAKE_CLAUDE_IDLE_MS = '4000';
+        const context = makeContext(home);
+        await loginAccount(context, home, 'A');
+        await loginAccount(context, home, 'B');
+        setActive('A', context.ctx);
+        const leftover = sessionDirFor(process.pid, context.ctx);
+        mkdirSync(leftover, { recursive: true });
+        writeFileSync(
+          path.join(leftover, 'claude-report.json'),
+          JSON.stringify({ id: LANDED }),
+          'utf8',
+        );
+        writeFileSync(path.join(leftover, 'resume-prompt.txt'), 'somebody else is task', 'utf8');
+
+        const run = runCommand(context, []);
+        const [first] = await waitFor(
+          'the first launch',
+          () => readLaunches(runsLog),
+          (l) => l.length > 0,
+        );
+        writeSwitchRequest('B', Date.now(), 'restart', context.ctx);
+        expect(await run).toBe(0);
+
+        const relaunch = readLaunches(runsLog)[1]?.args ?? [];
+        expect(valueAfter(relaunch, '--resume')).toBe(valueAfter(first?.args, '--session-id'));
+        expect(relaunch).not.toContain(LANDED);
+        expect(relaunch).not.toContain('somebody else is task');
+      },
+    );
+
+    it(
+      'copies a fork again when a swap lands before the copy was ever saved',
+      { timeout: 60_000 },
+      async () => {
+        // A fork is only saved with its first message. Resuming it before then
+        // finds nothing, and starting fresh would throw away the conversation
+        // it was copied from.
+        const home = mkdtempSync(path.join(tmpdir(), 'cas-right-conv-refork-'));
+        const runsLog = path.join(home, 'runs.jsonl');
+        process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+        process.env.FAKE_CLAUDE_IDLE_MS = '3000';
+        process.env.FAKE_CLAUDE_SESSION_RECORD = '1';
+        process.env.FAKE_CLAUDE_UNSAVED_FORKS = '1';
+        const context = makeContext(home);
+        await loginAccount(context, home, 'A');
+        await loginAccount(context, home, 'B');
+        setActive('A', context.ctx);
+
+        const run = runCommand(context, ['--resume', SOURCE, '--fork-session']);
+        const [first] = await waitFor(
+          'the first launch',
+          () => readLaunches(runsLog),
+          (l) => l.length > 0,
+        );
+        const fork = valueAfter(first?.args, '--session-id');
+        await waitFor(
+          'ccx to learn the fork',
+          () => recorded(context),
+          (id) => id === fork,
+        );
+        writeSwitchRequest('B', Date.now(), 'restart', context.ctx);
+        expect(await run).toBe(0);
+
+        const launches = readLaunches(runsLog);
+        expect(launches).toHaveLength(3);
+        expect(valueAfter(launches[1]?.args, '--resume')).toBe(fork); // found nothing
+        const again = launches[2]?.args;
+        expect(valueAfter(again, '--resume')).toBe(SOURCE);
+        expect(again).toContain('--fork-session');
+        expect(valueAfter(again, '--session-id')).toBe(fork);
+        expect(launches[2]?.marker).toBe('B');
+      },
+    );
+
+    it(
+      'a run started armed and resuming a conversation picks it up with the prompt at once',
+      { timeout: 60_000 },
+      async () => {
+        const home = mkdtempSync(path.join(tmpdir(), 'cas-right-conv-armed-'));
+        const runsLog = path.join(home, 'runs.jsonl');
+        process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+        process.env.FAKE_CLAUDE_IDLE_MS = '300';
+        const context = makeContext(home);
+        await loginAccount(context, home, 'A');
+        setActive('A', context.ctx);
+
+        const prompt = 'Carry on where you stopped.';
+        expect(await runCommand(context, ['--resume', SOURCE], { resumePrompt: prompt })).toBe(0);
+        expect(await runCommand(context, ['--resume'], { resumePrompt: prompt })).toBe(0);
+        expect(await runCommand(context, [], { resumePrompt: prompt })).toBe(0);
+
+        const [resumed, picker, fresh] = readLaunches(runsLog).map((l) => l.args ?? []);
+        expect(resumed).toEqual(['--resume', SOURCE, prompt]);
+        // The picker would read a prompt after it as its search term, and a new
+        // conversation has nothing to carry on with.
+        expect(picker).toEqual(['--resume']);
+        expect(fresh).not.toContain(prompt);
       },
     );
   },
