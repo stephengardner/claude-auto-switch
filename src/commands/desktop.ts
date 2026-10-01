@@ -164,7 +164,7 @@ function saveDesktop(context: CliContext, change: Partial<CliContext['config']['
   saveConfig({ ...onDisk, desktop: { ...onDisk.desktop, ...change } }, context.ctx);
 }
 
-function setHandoff(context: CliContext, value: string | undefined): number {
+export function setHandoff(context: CliContext, value: string | undefined): number {
   const when = value as HandoffWhen;
   if (!['off', 'limit', 'credits'].includes(when)) {
     context.out('usage: ccx desktop handoff off|limit|credits');
@@ -184,7 +184,7 @@ function setHandoff(context: CliContext, value: string | undefined): number {
   return 0;
 }
 
-function setMode(context: CliContext, value: string | undefined): number {
+export function setMode(context: CliContext, value: string | undefined): number {
   if (value !== 'fork' && value !== 'same') {
     context.out('usage: ccx desktop mode fork|same');
     return 1;
@@ -198,7 +198,7 @@ function setMode(context: CliContext, value: string | undefined): number {
   return 0;
 }
 
-function setPrompt(context: CliContext, words: string[]): number {
+export function setPrompt(context: CliContext, words: string[]): number {
   const checked = checkResumePrompt(words.join(' '));
   if (!checked.ok) {
     context.out(`not set: ${checked.reason}`);
@@ -236,11 +236,11 @@ function report(context: CliContext, result: HandoffResult, conv: { name: string
   );
 }
 
-async function move(
+export async function moveConversation(
   context: CliContext,
   which: string | undefined,
   opts: DesktopOptions,
-  deps: DesktopDeps,
+  deps: DesktopDeps = {},
 ): Promise<number> {
   const conversations = (deps.conversations ?? (() => liveDesktopConversations(context.ctx)))();
   if (conversations.length === 0) {
@@ -473,7 +473,7 @@ export async function desktopCommand(
     case 'prompt':
       return setPrompt(context, rest);
     case 'move':
-      return move(context, rest[0], opts, deps);
+      return moveConversation(context, rest[0], opts, deps);
     case 'wait':
       return waitForDesktop(context, rest[0], opts, deps);
     default:

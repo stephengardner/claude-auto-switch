@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { ensureSharedProjects, mergeUserSettings } from './shared-root.js';
+import { ensureSharedProjects, ensureSharedUserConfig, mergeUserSettings } from './shared-root.js';
 import type { PathCtx } from '../config/paths.js';
 
 function setup(): { home: string; sessionDir: string; c: PathCtx } {
@@ -114,5 +114,39 @@ describe('mergeUserSettings', () => {
     const { sessionDir, c } = setup();
     mergeUserSettings(sessionDir, c);
     expect(existsSync(path.join(sessionDir, 'settings.json'))).toBe(false);
+  });
+});
+
+describe('ensureSharedUserConfig', () => {
+  it('gives a session the user own skills and keybindings, which it used to run without', () => {
+    const { home, sessionDir, c } = setup();
+    const skills = path.join(home, '.claude', 'skills', 'mine');
+    mkdirSync(skills, { recursive: true });
+    writeFileSync(path.join(skills, 'SKILL.md'), '---\nname: mine\n---\n', 'utf8');
+    writeFileSync(path.join(home, '.claude', 'keybindings.json'), '{"bindings":[]}', 'utf8');
+
+    ensureSharedUserConfig(sessionDir, c);
+    expect(lstatSync(path.join(sessionDir, 'skills')).isSymbolicLink()).toBe(true);
+    expect(readFileSync(path.join(sessionDir, 'skills', 'mine', 'SKILL.md'), 'utf8')).toContain('name: mine');
+    expect(readFileSync(path.join(sessionDir, 'keybindings.json'), 'utf8')).toBe('{"bindings":[]}');
+  });
+
+  it('keeps a skill a session already had, merged into the shared folder', () => {
+    const { home, sessionDir, c } = setup();
+    // Claude makes skills/synced in its own config folder.
+    mkdirSync(path.join(sessionDir, 'skills', 'synced'), { recursive: true });
+    writeFileSync(path.join(sessionDir, 'skills', 'synced', 'a.md'), 'synced', 'utf8');
+
+    ensureSharedUserConfig(sessionDir, c);
+    expect(readFileSync(path.join(home, '.claude', 'skills', 'synced', 'a.md'), 'utf8')).toBe('synced');
+  });
+
+  it('never replaces a file the session already has', () => {
+    const { home, sessionDir, c } = setup();
+    writeFileSync(path.join(sessionDir, 'CLAUDE.md'), 'session copy', 'utf8');
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    writeFileSync(path.join(home, '.claude', 'CLAUDE.md'), 'user memory', 'utf8');
+    ensureSharedUserConfig(sessionDir, c);
+    expect(readFileSync(path.join(sessionDir, 'CLAUDE.md'), 'utf8')).toBe('session copy');
   });
 });

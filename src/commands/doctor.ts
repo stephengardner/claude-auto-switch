@@ -7,7 +7,7 @@ import { configHome, profilesDir } from '../config/paths.js';
 import { detectEditors } from '../editor/settings.js';
 import { readEditorEnvVar } from '../editor/install.js';
 import { editorTargetAccount } from '../editor/junction.js';
-import { isShimInstalled, shimHasFallback } from '../shell/install-shim.js';
+import { isShimInstalled, shimHasFallback, shimIsCurrent } from '../shell/install-shim.js';
 import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-path.js';
 import { isLink, readTarget } from '../daemon/junction.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
@@ -164,6 +164,15 @@ export function auditShim(context: CliContext, deps: DoctorDeps = {}): DoctorChe
       name: 'terminal-shim',
       ok: false,
       detail: 'an old shim is installed; removing ccx would break `claude`',
+      fix: ['ccx on'],
+    };
+  }
+  const shell = (context.ctx.platform ?? process.platform) === 'win32' ? 'powershell' : 'posix';
+  if (!shimIsCurrent(profile, shell)) {
+    return {
+      name: 'terminal-shim',
+      ok: false,
+      detail: 'the shim is from an older ccx (in PowerShell, `claude --version` and `claude --help` reached ccx)',
       fix: ['ccx on'],
     };
   }

@@ -47,6 +47,11 @@ export interface DashboardSnapshot {
    * consequence of it.
    */
   nextUp?: string;
+  /**
+   * Claude Desktop, when it is in use here: which account it spends and its
+   * open conversations (`line`), and the keys that act on it (`keys`).
+   */
+  desktop?: { line: string; keys: string };
 }
 
 export interface RenderOptions {
@@ -389,6 +394,16 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // happens next before it happens.
   if (snapshot.nextUp) {
     lines.push(paint(fit(`  next → ${snapshot.nextUp}`, maxLine), codes.cyan, color));
+  }
+
+  // Claude Desktop runs on its own account, which ccx cannot switch, so it gets
+  // a line of its own: what it is spending, and the keys that move its
+  // conversations somewhere ccx can.
+  if (snapshot.desktop) {
+    lines.push(paint(fit(`  ${snapshot.desktop.line}`, maxLine), codes.magenta, color));
+    if (options.interactive) {
+      lines.push(paint(fit(`    ${snapshot.desktop.keys}`, maxLine), codes.dim, color));
+    }
   }
 
   // Everything about the highlighted account, including when each window returns.

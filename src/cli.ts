@@ -26,6 +26,7 @@ import { enableCommand, disableCommand, priorityCommand } from './commands/accou
 import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
 import { desktopCommand, desktopHookCommand, type DesktopOptions } from './commands/desktop.js';
+import { swapCommand } from './commands/swap.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { homeCommand } from './commands/home.js';
 import { sessionsCommand } from './commands/sessions.js';
@@ -343,6 +344,16 @@ program
   .option('--timeout <minutes>', 'wait: how long to wait for Desktop (default 60)')
   .action(async (action: string | undefined, args: string[] | undefined, opts: DesktopOptions) => {
     process.exitCode = await desktopCommand(context(), action, args ?? [], opts);
+  });
+
+program
+  .command('swap [name]')
+  .description(
+    'every account and how much room it has; swap the session you are in to <name> (also /ccx inside Claude; --json for the board as data)',
+  )
+  .action(async (name: string | undefined) => {
+    const ctx = context();
+    process.exitCode = await swapCommand(ctx, name, { json: ctx.json });
   });
 
 // Run by Claude Desktop's sessions, through the hooks `ccx desktop handoff` installs.

@@ -40,7 +40,7 @@ import {
   notifyTerminal,
   setTerminalOwnedElsewhere,
 } from '../launcher/notify.js';
-import { ensureSharedProjects, mergeUserSettings } from '../session/shared-root.js';
+import { ensureSharedProjects, ensureSharedUserConfig, mergeUserSettings } from '../session/shared-root.js';
 import { confirmSessionCap } from '../usage/confirm-cap.js';
 import { resolveSessionIdentity, maskEmail } from '../session/session-identity.js';
 import { createTerminalWriter } from '../ui/terminal-writer.js';
@@ -303,6 +303,9 @@ export async function runInteractiveHotSwap(
   // and project memories are complete and identical in ccx sessions and plain
   // `claude` alike. Self-heals each start; skips safely if files are busy.
   ensureSharedProjects(sessionDir, context.ctx);
+  // And the rest of what makes it the user's Claude: their skills (ccx's own
+  // `/ccx` among them), agents, commands, output styles, memory, keybindings.
+  ensureSharedUserConfig(sessionDir, context.ctx);
   // The model pin lives in these settings, and this directory is new every
   // session now, so carry forward what the last one ended with before falling
   // back to an account's defaults.

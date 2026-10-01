@@ -39,13 +39,21 @@ export function defaultClaudeRoot(c: PathCtx = {}): string {
  * Returns true when the link is in place.
  */
 export function ensureSharedProjects(sessionDir: string, c: PathCtx = {}): boolean {
+  return ensureSharedDir(sessionDir, 'projects', c);
+}
+
+/**
+ * The same, for any folder of ~/.claude: `<sessionDir>/<name>` becomes a link to
+ * `~/.claude/<name>`, by the same self-healing, never lossy steps.
+ */
+export function ensureSharedDir(sessionDir: string, name: string, c: PathCtx = {}): boolean {
   let target: string;
   try {
-    target = path.join(defaultClaudeRoot(c), 'projects');
+    target = path.join(defaultClaudeRoot(c), name);
   } catch {
     return false; // no resolvable home: nothing to share
   }
-  const link = path.join(sessionDir, 'projects');
+  const link = path.join(sessionDir, name);
   try {
     mkdirSync(target, { recursive: true });
     if (isLink(link)) return true;
@@ -53,15 +61,56 @@ export function ensureSharedProjects(sessionDir: string, c: PathCtx = {}): boole
       setTarget(link, target, { platform: c.platform });
       return true;
     }
-    // A real directory with prior ccx-side sessions: move it aside first (fails
+    // A real directory with prior ccx-side content: move it aside first (fails
     // EBUSY/EPERM if a live session holds files open -- then we just skip).
     const backup = `${link}.pre-share`;
     renameSync(link, uniquePath(backup));
     setTarget(link, target, { platform: c.platform });
-    mergeTree(latestBackup(sessionDir), target);
+    mergeTree(latestBackup(sessionDir, name), target);
     return true;
   } catch {
     return isLink(link); // busy or blocked: report the current state
+  }
+}
+
+/**
+ * What else of ~/.claude a session has to see to be the user's own Claude.
+ *
+ * Only `projects` was shared, so a ccx session ran without the user's personal
+ * skills, agents, slash commands and output styles, and without their user
+ * memory and keybindings: all of it lives in the config folder, and a ccx
+ * session runs on a folder of its own so its login can be swapped. Plain
+ * `claude` and Claude Desktop see all of it; a ccx session now does too.
+ */
+const SHARED_DIRS = ['skills', 'agents', 'commands', 'output-styles'];
+/**
+ * Files are hard links where the volume allows, so an edit made inside a
+ * session (`/memory`) lands in the user's own file. A copy otherwise, which a
+ * session still reads correctly, it just keeps its edits to itself.
+ */
+const SHARED_FILES = ['CLAUDE.md', 'keybindings.json'];
+
+export function ensureSharedUserConfig(sessionDir: string, c: PathCtx = {}): void {
+  for (const name of SHARED_DIRS) ensureSharedDir(sessionDir, name, c);
+  let root: string;
+  try {
+    root = defaultClaudeRoot(c);
+  } catch {
+    return;
+  }
+  for (const name of SHARED_FILES) {
+    const from = path.join(root, name);
+    const to = path.join(sessionDir, name);
+    try {
+      if (!existsSync(from) || existsSync(to)) continue;
+      try {
+        linkSync(from, to);
+      } catch {
+        copyFileSync(from, to);
+      }
+    } catch {
+      /* best effort: a session without it still runs */
+    }
   }
 }
 
@@ -72,8 +121,8 @@ function uniquePath(base: string): string {
   return `${base}-${i}`;
 }
 
-function latestBackup(sessionDir: string): string {
-  const names = readdirSync(sessionDir).filter((n) => n.startsWith('projects.pre-share'));
+function latestBackup(sessionDir: string, name = 'projects'): string {
+  const names = readdirSync(sessionDir).filter((n) => n.startsWith(`${name}.pre-share`));
   names.sort();
   const last = names[names.length - 1];
   return last ? path.join(sessionDir, last) : '';

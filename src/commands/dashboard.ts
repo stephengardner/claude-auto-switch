@@ -9,6 +9,9 @@ import { renderDashboard, type DashboardAccount } from '../dashboard/render.js';
 import { toSnapshot } from '../dashboard/snapshot.js';
 import { dispatchKey, confirmKey } from '../dashboard/keys.js';
 import { openPrompt, promptKey, rejectPrompt, type PromptState } from '../dashboard/prompt.js';
+import { loadConfig } from '../config/config.js';
+import { desktopSummary } from '../desktop/summary.js';
+import { setHandoff, setMode, setPrompt, moveConversation } from './desktop.js';
 import path from 'node:path';
 import { configHome, profilesDir } from '../config/paths.js';
 import { addAccount, getAccount } from '../accounts/registry.js';
@@ -193,7 +196,20 @@ export async function dashboardCommand(
       now,
       refreshMs,
       ...nextMove(context, accts, usage, cappedUntil, loggedIn, now),
+      desktop: desktopSummary(context, (name) => usage.get(name), now),
     });
+  };
+
+  /**
+   * Run one of `ccx desktop`'s own commands and hand back what it said, as one
+   * line for the footer. The same code the CLI runs, so the two cannot differ;
+   * the config is reloaded after, so the Desktop line shows the new setting.
+   */
+  const desktopSays = async (run: (ctx: CliContext) => number | Promise<number>): Promise<{ ok: boolean; text: string }> => {
+    const said: string[] = [];
+    const code = await run({ ...context, out: (m: string) => said.push(m) });
+    context.config.desktop = loadConfig(context.ctx).desktop;
+    return { ok: code === 0, text: said.filter((l) => l.trim() !== '').join(' ') };
   };
 
   /**
@@ -293,6 +309,27 @@ export async function dashboardCommand(
       updateAccount(a.name, { enabled: !a.enabled }, context.ctx);
       pushEvent(`${a.enabled ? 'disabled' : 'enabled'} ${a.name}`);
     },
+    onDesktop: async (action) => {
+      const { handoff, mode } = context.config.desktop;
+      if (action === 'handoff') {
+        const next = handoff === 'off' ? 'limit' : handoff === 'limit' ? 'credits' : 'off';
+        return (await desktopSays((ctx) => setHandoff(ctx, next))).text;
+      }
+      return (await desktopSays((ctx) => setMode(ctx, mode === 'fork' ? 'same' : 'fork'))).text;
+    },
+    desktopPrompt: () => context.config.desktop.prompt,
+    onDesktopText: async (kind, text) => {
+      if (kind === 'desktop-prompt') {
+        const said = await desktopSays((ctx) => setPrompt(ctx, [text]));
+        if (!said.ok) throw new Error(said.text);
+        return said.text;
+      }
+      // From here the window waits for Desktop by itself, so a busy one is fine.
+      const said = await desktopSays((ctx) => moveConversation(ctx, text, { wait: true }));
+      if (!said.ok) throw new Error(said.text);
+      pushEvent(said.text);
+      return said.text;
+    },
     onName: (kind, text, target) => {
       if (kind === 'add') {
         assertProfileName(text);
@@ -369,6 +406,15 @@ interface LoopDeps {
    * and keep the box open so it can be corrected without retyping everything.
    */
   onName: (kind: 'add' | 'rename', text: string, selected: DashboardAccount | undefined) => string;
+  /** Cycle a Claude Desktop setting; returns what changed, in words. */
+  onDesktop: (action: 'handoff' | 'mode') => Promise<string>;
+  /** The text a moved Desktop conversation carries on with now, to edit. */
+  desktopPrompt: () => string;
+  /**
+   * Apply what was typed for Desktop: the carry-on text, or which conversation
+   * to move. Rejects to keep the box open with the reason, like onName.
+   */
+  onDesktopText: (kind: 'desktop-prompt' | 'desktop-move', text: string) => Promise<string>;
   /**
    * Sign an account in again, as itself or as a different account. Async and
    * INTERACTIVE: it hands the screen to a browser sign-in, so the dashboard steps
@@ -440,6 +486,23 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     if (next.status !== 'submit') return next;
     const typed = next.text.trim();
     if (typed.length === 0) return null; // confirming an empty box just closes it
+    if (next.kind === 'desktop-prompt' || next.kind === 'desktop-move') {
+      // Async: answered when it is done, and reopened with the reason if refused.
+      const kind = next.kind;
+      ui.notice = kind === 'desktop-move' ? `moving "${typed}"...` : 'saving...';
+      void deps.onDesktopText(kind, typed).then(
+        (said) => {
+          ui.notice = said;
+          if (wake) wake();
+        },
+        (err: unknown) => {
+          ui.notice = null;
+          ui.prompt = rejectPrompt(next, (err as Error).message);
+          if (wake) wake();
+        },
+      );
+      return null;
+    }
     try {
       ui.notice = deps.onName(next.kind, typed, target ?? undefined);
       return null;
@@ -495,6 +558,24 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         // Captured with the label, so the box acts on the account it names.
         ui.prompt = openPrompt('rename', `new name for "${target.name}":`, '');
         ui.promptTarget = target;
+      } else if (r.action === 'desktop-handoff' || r.action === 'desktop-mode') {
+        void deps.onDesktop(r.action === 'desktop-handoff' ? 'handoff' : 'mode').then(
+          (said) => {
+            ui.notice = said;
+            if (wake) wake();
+          },
+          (err: unknown) => {
+            ui.notice = (err as Error).message;
+            if (wake) wake();
+          },
+        );
+        return;
+      } else if (r.action === 'desktop-prompt') {
+        ui.prompt = openPrompt('desktop-prompt', 'carry on with:', deps.desktopPrompt());
+        ui.promptTarget = null;
+      } else if (r.action === 'desktop-move') {
+        ui.prompt = openPrompt('desktop-move', 'move which Desktop conversation (number, or part of its name):');
+        ui.promptTarget = null;
       } else if (r.action === 'none') return;
       ui.notice = null;
     } catch (err) {

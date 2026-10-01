@@ -4,6 +4,7 @@ import { detectEditors } from '../editor/settings.js';
 import { enableEditor, disableEditor } from './editor.js';
 import { installStatusline, removeStatusline } from '../statusline/settings-install.js';
 import { thrownReason } from '../util/thrown-reason.js';
+import { installSkill, removeSkill, type SkillOutcome } from '../skill/install-skill.js';
 import type { CliContext } from '../context.js';
 
 export interface ShimOptions {
@@ -52,6 +53,7 @@ export function onCommand(context: CliContext, options: ShimOptions = {}): numbe
   if (options.statusline !== false) {
     context.out(statuslineMessage(installStatusline(context.ctx)));
   }
+  context.out(skillMessage(installSkill(context.ctx)));
 
   let editorFailed = false;
   if (options.editor !== false) {
@@ -95,6 +97,21 @@ function statuslineMessage(result: ReturnType<typeof installStatusline>): string
   }
 }
 
+function skillMessage(outcome: SkillOutcome): string {
+  switch (outcome) {
+    case 'installed':
+      return 'claude: /ccx added, to see every account and swap from inside Claude';
+    case 'updated':
+      return 'claude: /ccx brought up to date';
+    case 'already':
+      return 'claude: /ccx already set up';
+    case 'user-owned':
+      return 'claude: left ~/.claude/skills/ccx alone, it is no longer ccx’s copy';
+    default:
+      return 'claude: could not add /ccx; ccx swap does the same from a terminal';
+  }
+}
+
 /**
  * Every outcome gets a line, including the ones where nothing moved. Silence
  * after `ccx off` reads as success, and a status line that is still there is
@@ -124,6 +141,16 @@ export function offCommand(context: CliContext, options: ShimOptions = {}): numb
   if (options.statusline !== false) {
     context.out(removalMessage(removeStatusline(context.ctx)));
   }
+  const skill = removeSkill(context.ctx);
+  context.out(
+    skill === 'removed'
+      ? 'claude: /ccx removed'
+      : skill === 'user-owned'
+        ? 'claude: left ~/.claude/skills/ccx alone, it is no longer ccx’s copy'
+        : skill === 'not-present'
+          ? 'claude: no /ccx to remove'
+          : 'claude: could not remove ~/.claude/skills/ccx; delete it by hand',
+  );
 
   if (options.editor !== false) {
     for (const editor of detectEditors(context.ctx)) {
