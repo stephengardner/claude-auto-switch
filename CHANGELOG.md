@@ -4,6 +4,56 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- **Claude Desktop conversations can move to a terminal that switches
+  accounts.** Desktop runs every conversation on the account the Desktop app is
+  signed into and hands it that login itself, so nothing outside Desktop can
+  switch it. `ccx desktop` says which of your accounts Desktop is spending and
+  how much of it is left, and lists what is open there; `ccx desktop move <n>`
+  carries a conversation on in a terminal window through ccx, with its history,
+  on the same model, effort and permission mode it had in Desktop, and with a
+  prompt so it picks itself up. A conversation Desktop is still working on is
+  only picked up once Desktop stops (`--wait`), so two programs never write into
+  one conversation. It continues as a copy by default, leaving Desktop's
+  original as it was (`ccx desktop mode fork|same`).
+- **Or by itself.** `ccx desktop handoff limit` moves a conversation when a
+  Desktop turn ends on a usage limit; `handoff credits` also holds back a
+  message sent in Desktop once its account is past its plan, so it continues in
+  a terminal on an account with room, with that message, instead of spending
+  usage credits. Both work through Claude Code hooks in `~/.claude/settings.json`,
+  which ccx adds and removes; every other session skips them with a shell test,
+  before ccx even starts.
+- **`/ccx` and `ccx swap`: every account at a glance, and a swap from inside
+  Claude.** `ccx on` adds a `/ccx` skill. It shows each account's 5-hour, weekly
+  and model usage as bars, what is spent and when it comes back, and the account
+  with the most room, then asks which to move to, with a card per account. In a
+  ccx session the swap happens in place; in Claude Desktop the conversation
+  continues in a terminal on the account you pick. `ccx swap` is the same from a
+  terminal, and `ccx swap --json` the board as data.
+- **The dashboard shows Claude Desktop**: which account it spends and what is
+  open there, with keys to change when conversations move (`d`), copy or same
+  (`m`), the carry-on text (`t`), and to move one (`D`).
+- `ccx run --account <name>` starts on that account; `--start-prompt <text>`
+  sends a first message before the armed prompt takes over.
+
+### Fixed
+
+- **ccx sessions see your own skills, agents, commands, output styles, user
+  memory and keybindings.** A ccx session runs on a config folder of its own so
+  its login can be swapped, and only `projects` was shared with `~/.claude`, so
+  everything else there was missing from every ccx session. Folders are now
+  linked like `projects`, and files hard-linked where the drive allows.
+- **`claude --version` and `claude --help` in PowerShell reached ccx.** The shim
+  ran `ccx run -- @args`, and PowerShell swallows a bare `--` when it hands
+  arguments to another PowerShell command, which npm's `ccx.ps1` is, so ccx read
+  Claude's flags as its own. Run `ccx on` once to update the shim; `ccx doctor`
+  says when it is out of date. Questions about Claude itself now also skip
+  starting a session.
+- Tests no longer write into the Claude session they are run from.
+
 ## [1.52.0]
 
 ### Added
@@ -191,7 +241,7 @@ semantic versioning.
   - **The order of handing the terminal back.** Dropping raw mode while the
     keyboard is still being read makes the console layer restart the read in line
     mode and then cancel it the expensive way, juggling the screen buffer.
-    Stopping the read *first*, while still raw, cancels it cheaply. This ordering
+    Stopping the read _first_, while still raw, cancels it cheaply. This ordering
     is now used both in the dashboard and in the `ccx run` teardown, which
     carried the same hazard.
 
@@ -254,7 +304,7 @@ semantic versioning.
 ### Added
 
 - **Logs say which ccx wrote them.** Every entry records the version, `ccx
-  history` marks the point where the build changed rather than repeating one
+history` marks the point where the build changed rather than repeating one
   number down the page, and the dashboard title shows the running version. A
   report of "it did this" can now be tied to the code that did it.
 
@@ -791,12 +841,12 @@ semantic versioning.
 
   It is now named in its own words. "Sign in again" is wrong for an account that
   has never worked, so the two are kept apart: `refused needs signing in again.
-  fresh is not signed in yet. Run: ccx login refused`.
+fresh is not signed in yet. Run: ccx login refused`.
 
   Scope worth being exact about: this is the mixed case, where something has a
   login so the swap loop runs and then runs out. When NO account has a login the
   loop is never entered, and that path already said `cannot run: no enabled
-  account is logged in (run: ccx login --all)`, which was already right.
+account is logged in (run: ccx login --all)`, which was already right.
 
   The choice between these endings is now one pure function with the three
   states named, rather than conditionals at the call site. Telling someone to
@@ -1161,8 +1211,6 @@ semantic versioning.
   start of a sequence, so anything held is released shortly after if nothing
   follows, and Escape still works.
 
-
-
 ## [1.28.0]
 
 ### Fixed
@@ -1299,7 +1347,7 @@ semantic versioning.
   week were completely free, or read `6%` while a model window was spent.
 - **A detail line for the highlighted account**, spelling out each window and
   when it comes back: `work: 5h 6% (back in 1h35m)   week 57% (back in 3d)
-  Fable 100% (back in 2d)`.
+Fable 100% (back in 2d)`.
 - Long waits now read in days rather than dozens of hours: `back in 3d`, not
   `back in 72h0m`.
 
@@ -1497,7 +1545,7 @@ hashes.
   `--once`, `--json`, `--dry-run`, `--model`, `--threshold`, and stable exit
   codes (0 switched, 2 nothing to do, 3 off, 1 error).
 - **`ccx doctor` now verifies who each profile is actually logged in as.** Local
-  files report the account a profile *claims*; only the API can say whose login
+  files report the account a profile _claims_; only the API can say whose login
   a stored token really is. This catches profiles holding the wrong account, or
   two profiles sharing one login, and names the exact `ccx login` fix.
 - **Stale accounts renew themselves.** An account you are not using goes stale
@@ -1700,7 +1748,7 @@ hashes.
 ### Added
 
 - **Force-now (instant) switch** for when you want it immediately: `ccx use <name>
-  --now`, or press `f` on a row in the live dashboard. This keeps the old instant
+--now`, or press `f` on a row in the live dashboard. This keeps the old instant
   behavior (restart + `--continue`), trading the TUI reload for zero latency.
 
 ## [1.9.0]

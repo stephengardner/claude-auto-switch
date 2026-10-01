@@ -14,7 +14,11 @@ import type { CliContext } from '../context.js';
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
 
-function account(name: string, usage: StateAccount['usage'], status: Partial<StateAccount['status']> = {}): StateAccount {
+function account(
+  name: string,
+  usage: StateAccount['usage'],
+  status: Partial<StateAccount['status']> = {},
+): StateAccount {
   return {
     name,
     email: `${name}@example.com`,
@@ -35,13 +39,26 @@ const state: StatePayload = {
   nextUp: null,
   events: [],
   accounts: [
-    account('mid', { fiveHour: 0.5, sevenDay: 0.3, fiveHourReset: NOW + HOUR, sevenDayReset: NOW + 96 * HOUR }),
-    account('roomy', { fiveHour: 0.1, sevenDay: 0.2, models: [{ name: 'Fable', utilization: 0.05, resetsAt: NOW + 96 * HOUR }] }),
-    account('spent', { fiveHour: 0, sevenDay: 1, sevenDayReset: NOW + 30 * HOUR }, {
-      state: 'blocked',
-      label: 'week',
-      until: NOW + 30 * HOUR,
+    account('mid', {
+      fiveHour: 0.5,
+      sevenDay: 0.3,
+      fiveHourReset: NOW + HOUR,
+      sevenDayReset: NOW + 96 * HOUR,
     }),
+    account('roomy', {
+      fiveHour: 0.1,
+      sevenDay: 0.2,
+      models: [{ name: 'Fable', utilization: 0.05, resetsAt: NOW + 96 * HOUR }],
+    }),
+    account(
+      'spent',
+      { fiveHour: 0, sevenDay: 1, sevenDayReset: NOW + 30 * HOUR },
+      {
+        state: 'blocked',
+        label: 'week',
+        until: NOW + 30 * HOUR,
+      },
+    ),
     { ...account('off', { fiveHour: 0, sevenDay: 0 }), enabled: false },
   ],
 };
@@ -89,7 +106,11 @@ describe('the swap board', () => {
 });
 
 describe('ccx swap <name>', () => {
-  function setup(env: Record<string, string> = {}): { context: CliContext; said: string[]; home: string } {
+  function setup(env: Record<string, string> = {}): {
+    context: CliContext;
+    said: string[];
+    home: string;
+  } {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-swap-'));
     const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home, ...env } };
     for (const name of ['mid', 'roomy', 'spent']) {
@@ -114,29 +135,57 @@ describe('ccx swap <name>', () => {
     const dir = sessionDirFor(4242, outside.context.ctx);
     // The same home, seen from inside the session: Claude runs on its folder.
     const s = {
-      context: { ...outside.context, ctx: { env: { ...outside.context.ctx.env, CLAUDE_CONFIG_DIR: dir } } },
+      context: {
+        ...outside.context,
+        ctx: { env: { ...outside.context.ctx.env, CLAUDE_CONFIG_DIR: dir } },
+      },
     };
     expect(whereAmI(s.context, () => []).kind).toBe('ccx');
-    expect(await swapCommand(s.context, 'roomy', {}, { state: () => Promise.resolve(state), conversations: () => [] })).toBe(0);
+    expect(
+      await swapCommand(
+        s.context,
+        'roomy',
+        {},
+        { state: () => Promise.resolve(state), conversations: () => [] },
+      ),
+    ).toBe(0);
     // Aimed at this session only: others are not moved.
-    expect(readSwitchRequest(outside.context.ctx, 4242)).toMatchObject({ account: 'roomy', mode: 'seamless' });
+    expect(readSwitchRequest(outside.context.ctx, 4242)).toMatchObject({
+      account: 'roomy',
+      mode: 'seamless',
+    });
     expect(readSwitchRequest(outside.context.ctx)).toBeNull();
   });
 
   it('in Claude Desktop, carries the conversation on in a terminal on that account', async () => {
     const s = setup({ CLAUDE_CODE_ENTRYPOINT: 'claude-desktop', CLAUDE_PID: '777' });
     const handed: Array<{ account?: string; waitFor?: number }> = [];
-    const code = await swapCommand(s.context, 'roomy', {}, {
-      state: () => Promise.resolve(state),
-      conversations: () => [
-        { pid: 777, sessionId: '9106faa2-0b73-4126-9a9f-581cc123867f', cwd: 'C:\\w', name: 'Schema', status: 'busy', statusSince: null },
-      ],
-      flagsOf: () => ({ model: null, effort: null, permissionMode: null }),
-      handOff: (_t, settings, _c, _d, waitFor) => {
-        handed.push({ ...(settings.account ? { account: settings.account } : {}), ...(waitFor !== undefined ? { waitFor } : {}) });
-        return { ok: true, via: 'Windows Terminal', script: 'x', command: [] };
+    const code = await swapCommand(
+      s.context,
+      'roomy',
+      {},
+      {
+        state: () => Promise.resolve(state),
+        conversations: () => [
+          {
+            pid: 777,
+            sessionId: '9106faa2-0b73-4126-9a9f-581cc123867f',
+            cwd: 'C:\\w',
+            name: 'Schema',
+            status: 'busy',
+            statusSince: null,
+          },
+        ],
+        flagsOf: () => ({ model: null, effort: null, permissionMode: null }),
+        handOff: (_t, settings, _c, _d, waitFor) => {
+          handed.push({
+            ...(settings.account ? { account: settings.account } : {}),
+            ...(waitFor !== undefined ? { waitFor } : {}),
+          });
+          return { ok: true, via: 'Windows Terminal', script: 'x', command: [] };
+        },
       },
-    });
+    );
     expect(code).toBe(0);
     // The reply running /ccx is still being written, so the window waits for it.
     expect(handed).toEqual([{ account: 'roomy', waitFor: 777 }]);
@@ -145,20 +194,44 @@ describe('ccx swap <name>', () => {
 
   it('outside any session, sets the account new sessions start on', async () => {
     const s = setup();
-    expect(await swapCommand(s.context, 'roomy', {}, { state: () => Promise.resolve(state), conversations: () => [] })).toBe(0);
+    expect(
+      await swapCommand(
+        s.context,
+        'roomy',
+        {},
+        { state: () => Promise.resolve(state), conversations: () => [] },
+      ),
+    ).toBe(0);
     expect(getActive(s.context.ctx)).toBe('roomy');
   });
 
   it('refuses an account that cannot take the session, and names one that can', async () => {
     const s = setup();
-    expect(await swapCommand(s.context, 'spent', {}, { state: () => Promise.resolve(state), conversations: () => [] })).toBe(1);
+    expect(
+      await swapCommand(
+        s.context,
+        'spent',
+        {},
+        { state: () => Promise.resolve(state), conversations: () => [] },
+      ),
+    ).toBe(1);
     expect(s.said.join(' ')).toMatch(/spent cannot take it: week spent.*roomy has the most room/);
   });
 
   it('as JSON, gives the skill everything it lays out, already drawn', async () => {
     const s = setup();
-    await swapCommand(s.context, undefined, { json: true }, { state: () => Promise.resolve(state), conversations: () => [] });
-    const out = JSON.parse(s.said.join('\n')) as { here: Here; recommended: string; board: string; accounts: Array<{ card: string }> };
+    await swapCommand(
+      s.context,
+      undefined,
+      { json: true },
+      { state: () => Promise.resolve(state), conversations: () => [] },
+    );
+    const out = JSON.parse(s.said.join('\n')) as {
+      here: Here;
+      recommended: string;
+      board: string;
+      accounts: Array<{ card: string }>;
+    };
     expect(out.here.kind).toBe('none');
     expect(out.recommended).toBe('roomy');
     expect(out.board).toContain('ccx swap: not inside a session');

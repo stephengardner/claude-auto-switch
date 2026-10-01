@@ -14,7 +14,9 @@ describe('the /ccx skill', () => {
   it('lands in ~/.claude/skills/ccx, where Claude, Desktop and every ccx session read it', () => {
     const ctx = home();
     expect(installSkill(ctx)).toBe('installed');
-    expect(skillPath(ctx)).toBe(path.join(ctx.env!.HOME as string, '.claude', 'skills', 'ccx', 'SKILL.md'));
+    expect(skillPath(ctx)).toBe(
+      path.join(ctx.env!.HOME as string, '.claude', 'skills', 'ccx', 'SKILL.md'),
+    );
     expect(readFileSync(skillPath(ctx), 'utf8')).toBe(SKILL_TEXT);
     expect(installSkill(ctx)).toBe('already');
   });

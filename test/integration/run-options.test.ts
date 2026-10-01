@@ -86,35 +86,43 @@ function canSpawnPty(): boolean {
   }
 }
 const PTY_AVAILABLE = canSpawnPty();
-if (!PTY_AVAILABLE) console.warn(`[skipped] run-options tests: no pseudo-terminal here (${ptyProblem}).`);
+if (!PTY_AVAILABLE)
+  console.warn(`[skipped] run-options tests: no pseudo-terminal here (${ptyProblem}).`);
 
-describe.skipIf(!PTY_AVAILABLE)('starting a run the way a handover does (against fake-claude)', () => {
-  afterEach(() => {
-    delete process.env.FAKE_CLAUDE_RUNS_LOG;
-    delete process.env.FAKE_CLAUDE_IDLE_MS;
-  });
+describe.skipIf(!PTY_AVAILABLE)(
+  'starting a run the way a handover does (against fake-claude)',
+  () => {
+    afterEach(() => {
+      delete process.env.FAKE_CLAUDE_RUNS_LOG;
+      delete process.env.FAKE_CLAUDE_IDLE_MS;
+    });
 
-  it('sends the held message first, not the armed prompt', { timeout: 60_000 }, async () => {
-    const { context, runsLog } = await setup();
-    expect(
-      await runCommand(context, ['--resume', SOURCE], {
-        resumePrompt: 'Carry on where you stopped.',
-        startPrompt: 'now fix the failing tests',
-      }),
-    ).toBe(0);
-    expect(launches(runsLog)[0]?.args).toEqual(['--resume', SOURCE, 'now fix the failing tests']);
-  });
+    it('sends the held message first, not the armed prompt', { timeout: 60_000 }, async () => {
+      const { context, runsLog } = await setup();
+      expect(
+        await runCommand(context, ['--resume', SOURCE], {
+          resumePrompt: 'Carry on where you stopped.',
+          startPrompt: 'now fix the failing tests',
+        }),
+      ).toBe(0);
+      expect(launches(runsLog)[0]?.args).toEqual(['--resume', SOURCE, 'now fix the failing tests']);
+    });
 
-  it('starts on the account it was given, not the active one', { timeout: 60_000 }, async () => {
-    const { context, runsLog } = await setup();
-    expect(await runCommand(context, [], { account: 'B' })).toBe(0);
-    expect(launches(runsLog)[0]?.marker).toBe('B');
-  });
+    it('starts on the account it was given, not the active one', { timeout: 60_000 }, async () => {
+      const { context, runsLog } = await setup();
+      expect(await runCommand(context, [], { account: 'B' })).toBe(0);
+      expect(launches(runsLog)[0]?.marker).toBe('B');
+    });
 
-  it('refuses an account that does not exist before starting anything', { timeout: 60_000 }, async () => {
-    const { context, runsLog, said } = await setup();
-    expect(await runCommand(context, [], { account: 'nobody' })).toBe(1);
-    expect(launches(runsLog)).toHaveLength(0);
-    expect(said.join(' ')).toMatch(/no enabled account named "nobody"/);
-  });
-});
+    it(
+      'refuses an account that does not exist before starting anything',
+      { timeout: 60_000 },
+      async () => {
+        const { context, runsLog, said } = await setup();
+        expect(await runCommand(context, [], { account: 'nobody' })).toBe(1);
+        expect(launches(runsLog)).toHaveLength(0);
+        expect(said.join(' ')).toMatch(/no enabled account named "nobody"/);
+      },
+    );
+  },
+);

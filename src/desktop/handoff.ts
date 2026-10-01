@@ -1,4 +1,13 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import {
+  closeSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configHome, type PathCtx } from '../config/paths.js';
@@ -80,7 +89,11 @@ export function parseFlags(commandLine: string): ProcessFlags {
     const match = new RegExp(`--${flag}(?:=|\\s+)"?([^\\s"]+)`).exec(commandLine);
     return match ? (match[1] as string) : null;
   };
-  return { model: value('model'), effort: value('effort'), permissionMode: value('permission-mode') };
+  return {
+    model: value('model'),
+    effort: value('effort'),
+    permissionMode: value('permission-mode'),
+  };
 }
 
 /**
@@ -88,7 +101,10 @@ export function parseFlags(commandLine: string): ProcessFlags {
  * effort and the permission mode on the command line of each session, so that
  * is where they are read from. Null fields when it cannot be read.
  */
-export function readProcessFlags(pid: number, platform: NodeJS.Platform = process.platform): ProcessFlags {
+export function readProcessFlags(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): ProcessFlags {
   const none: ProcessFlags = { model: null, effort: null, permissionMode: null };
   if (!Number.isInteger(pid) || pid <= 0) return none;
   try {
@@ -133,12 +149,16 @@ function readState(c: PathCtx): Record<string, number> {
 }
 
 /** When this conversation was last handed over, if recently. */
-export function handedOffRecently(sessionId: string, c: PathCtx = {}, now = Date.now()): number | null {
+export function handedOffRecently(
+  sessionId: string,
+  c: PathCtx = {},
+  now = Date.now(),
+): number | null {
   const at = readState(c)[sessionId];
   return at !== undefined && now - at < HANDOFF_QUIET_MS ? at : null;
 }
 
-function recordHandoff(sessionId: string, c: PathCtx, now: number): void {
+export function recordHandoff(sessionId: string, c: PathCtx, now: number): void {
   // Only recent ones are worth keeping; the file never grows without bound.
   const kept = Object.fromEntries(
     Object.entries(readState(c)).filter(([, at]) => now - at < HANDOFF_QUIET_MS),
@@ -147,6 +167,42 @@ function recordHandoff(sessionId: string, c: PathCtx, now: number): void {
     writeJsonFile(statePath(c), { handoffs: { ...kept, [sessionId]: now } });
   } catch {
     /* the handover happened; failing to remember it only risks a second window */
+  }
+}
+
+/**
+ * Forget the handover recorded at `at`, which did not happen after all, so the
+ * conversation is not held back for a terminal that never opened. A record
+ * made since then is left alone.
+ */
+export function forgetHandoff(sessionId: string, at: number, c: PathCtx = {}): void {
+  const state = readState(c);
+  if (state[sessionId] !== at) return;
+  delete state[sessionId];
+  try {
+    writeJsonFile(statePath(c), { handoffs: state });
+  } catch {
+    /* it lapses by itself after HANDOFF_QUIET_MS */
+  }
+}
+
+/** Launchers and jobs older than this have done their work, or never will. */
+const HANDOFF_FILES_KEEP_MS = 24 * 60 * 60_000;
+
+function sweepHandoffFiles(dir: string, now: number): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return; // no folder yet
+  }
+  for (const name of names) {
+    const file = path.join(dir, name);
+    try {
+      if (now - statSync(file).mtimeMs > HANDOFF_FILES_KEEP_MS) rmSync(file, { force: true });
+    } catch {
+      /* in use, or gone already */
+    }
   }
 }
 
@@ -166,8 +222,7 @@ export function thisCcx(): { node: string; cli: string } {
 }
 
 export type HandoffResult =
-  | { ok: true; via: string; script: string; command: string[] }
-  | { ok: false; reason: string };
+  { ok: true; via: string; script: string; command: string[] } | { ok: false; reason: string };
 
 /**
  * Hand `target` over to a new terminal window running ccx.
@@ -187,13 +242,18 @@ export function handOff(
   const ccx = deps.ccx ?? thisCcx();
   const command = [ccx.node, ccx.cli, ...continuationArgs(target, settings)];
   const title = `ccx: ${target.name || target.sessionId.slice(0, 8)}`;
+  const scriptDir = path.join(configHome(c), 'handoffs');
+  // File ages are real time, whatever clock the caller keeps.
+  sweepHandoffFiles(scriptDir, Date.now());
   const result: TerminalResult = openTerminal(
     {
       cwd: target.cwd,
       title,
       command,
-      ...(waitFor !== undefined ? { gate: [ccx.node, ccx.cli, 'desktop', 'wait', String(waitFor)] } : {}),
-      scriptDir: path.join(configHome(c), 'handoffs'),
+      ...(waitFor !== undefined
+        ? { gate: [ccx.node, ccx.cli, 'desktop', 'wait', String(waitFor)] }
+        : {}),
+      scriptDir,
       scriptName: target.sessionId,
     },
     deps,
@@ -201,4 +261,126 @@ export function handOff(
   if (!result.ok) return result;
   recordHandoff(target.sessionId, c, now);
   return { ok: true, via: result.via, script: result.script, command };
+}
+
+/* ------------------------------------------------------------------ */
+/* Handing over from inside a hook.                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A handover worked out in a hook and carried out after it, by a process of
+ * its own.
+ *
+ * A hook holds Claude up until it returns, and Claude can end it early: a
+ * Claude that is exiting takes its hooks with it (measured: the one-shot CLI
+ * exits straight after a failed turn and the hook's work died half done).
+ * Reading a process's command line takes PowerShell a second or two on
+ * Windows. So the hook only decides, writes the job down and starts a detached
+ * ccx to do the rest, and is gone in the time it takes to start one.
+ */
+export interface HandoffJob {
+  target: HandoffTarget;
+  settings: HandoffSettings;
+  /** Fill model, effort and permission mode from this process's command line. */
+  flagsFrom?: number;
+  /** The Desktop process to wait for before picking the conversation up. */
+  waitFor?: number;
+  /** When the hook recorded the handover; set by scheduleHandoff. */
+  scheduledAt?: number;
+}
+
+function jobPath(sessionId: string, c: PathCtx): string {
+  return path.join(configHome(c), 'handoffs', `${sessionId}.job.json`);
+}
+
+/** Start a detached ccx on `job`. False when it could not even be written down. */
+export function scheduleHandoff(
+  job: HandoffJob,
+  c: PathCtx = {},
+  start: (file: string) => void = (file) => {
+    const ccx = thisCcx();
+    const child = spawn(ccx.node, [ccx.cli, 'desktop-continue', file], {
+      detached: true,
+      stdio: 'ignore',
+      // A node process with no window of its own; it opens the terminal itself.
+      windowsHide: true,
+    });
+    child.on('error', () => {});
+    child.unref();
+  },
+  now = Date.now(),
+): boolean {
+  const file = jobPath(job.target.sessionId, c);
+  try {
+    writeJsonFile(file, { ...job, scheduledAt: now });
+  } catch {
+    return false;
+  }
+  // Marked now, not when the window opens: a second failed turn arriving while
+  // the first is still being handed over must not open a second window.
+  recordHandoff(job.target.sessionId, c, now);
+  start(file);
+  return true;
+}
+
+/** Carry out a job `scheduleHandoff` wrote, then remove it. */
+export function runHandoffJob(
+  file: string,
+  c: PathCtx = {},
+  deps: HandoffDeps & { flagsOf?: (pid: number) => ProcessFlags; handOff?: typeof handOff } = {},
+): HandoffResult {
+  let job: HandoffJob;
+  try {
+    job = JSON.parse(readFileSync(file, 'utf8')) as HandoffJob;
+  } catch {
+    return { ok: false, reason: `could not read ${file}` };
+  } finally {
+    try {
+      rmSync(file, { force: true });
+    } catch {
+      /* a leftover job file is swept with the handoffs folder's other files */
+    }
+  }
+  const target = { ...job.target };
+  if (job.flagsFrom !== undefined && (!target.model || !target.effort || !target.permissionMode)) {
+    const flags = (deps.flagsOf ?? readProcessFlags)(job.flagsFrom);
+    target.model = target.model || flags.model;
+    target.effort = target.effort || flags.effort;
+    target.permissionMode = target.permissionMode || flags.permissionMode;
+  }
+  const result = (deps.handOff ?? handOff)(target, job.settings, c, deps, job.waitFor);
+  if (!result.ok && job.scheduledAt !== undefined) {
+    forgetHandoff(target.sessionId, job.scheduledAt, c);
+  }
+  return result;
+}
+
+/**
+ * The model a conversation last answered with, from the end of its transcript.
+ * Fast where reading the process is slow; null for a conversation that has not
+ * answered yet.
+ */
+export function lastModelIn(transcriptPath: string): string | null {
+  try {
+    const size = statSync(transcriptPath).size;
+    const length = Math.min(size, 256 * 1024);
+    const fd = openSync(transcriptPath, 'r');
+    try {
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, size - length);
+      const lines = buffer.toString('utf8').split('\n').reverse();
+      for (const line of lines) {
+        if (!line.includes('"type":"assistant"')) continue;
+        // A subagent's turn, kept inline by older Claude versions, is not the conversation's model.
+        if (line.includes('"isSidechain":true')) continue;
+        const match = /"model":"([^"]+)"/.exec(line);
+        if (match && match[1] !== '<synthetic>') return match[1] as string;
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    /* no transcript yet */
+  }
+  return null;
 }

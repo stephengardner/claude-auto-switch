@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { liveDesktopConversations, pickConversation, type DesktopConversation } from './desktop-sessions.js';
+import {
+  liveDesktopConversations,
+  pickConversation,
+  type DesktopConversation,
+} from './desktop-sessions.js';
 import type { PathCtx } from '../config/paths.js';
 
 const A = '11111111-2222-4333-8444-555555555555';
@@ -14,11 +18,16 @@ function home(records: Record<string, unknown>[]): PathCtx {
   const dir = mkdtempSync(path.join(tmpdir(), 'cas-desk-sess-'));
   const sessions = path.join(dir, '.claude', 'sessions');
   mkdirSync(sessions, { recursive: true });
-  for (const r of records) writeFileSync(path.join(sessions, `${String(r.pid)}.json`), JSON.stringify(r), 'utf8');
+  for (const r of records)
+    writeFileSync(path.join(sessions, `${String(r.pid)}.json`), JSON.stringify(r), 'utf8');
   return { env: { HOME: dir, USERPROFILE: dir } };
 }
 
-const desktop = (pid: number, sessionId: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+const desktop = (
+  pid: number,
+  sessionId: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> => ({
   pid,
   sessionId,
   cwd: `C:\\work\\${pid}`,
@@ -35,7 +44,14 @@ describe("Claude Desktop's open conversations", () => {
     ]);
     const found = liveDesktopConversations(ctx, () => true);
     expect(found).toEqual([
-      { pid: 100, sessionId: A, cwd: 'C:\\work\\100', name: 'Schema review', status: 'idle', statusSince: 5 },
+      {
+        pid: 100,
+        sessionId: A,
+        cwd: 'C:\\work\\100',
+        name: 'Schema review',
+        status: 'idle',
+        statusSince: 5,
+      },
     ]);
   });
 
@@ -67,9 +83,30 @@ describe("Claude Desktop's open conversations", () => {
 
 describe('picking one', () => {
   const list: DesktopConversation[] = [
-    { pid: 1, sessionId: A, cwd: 'x', name: 'Database schema review', status: 'busy', statusSince: null },
-    { pid: 2, sessionId: B, cwd: 'y', name: 'react-ifying the builder', status: 'idle', statusSince: null },
-    { pid: 3, sessionId: C, cwd: 'z', name: 'Database schema review (fork)', status: 'idle', statusSince: null },
+    {
+      pid: 1,
+      sessionId: A,
+      cwd: 'x',
+      name: 'Database schema review',
+      status: 'busy',
+      statusSince: null,
+    },
+    {
+      pid: 2,
+      sessionId: B,
+      cwd: 'y',
+      name: 'react-ifying the builder',
+      status: 'idle',
+      statusSince: null,
+    },
+    {
+      pid: 3,
+      sessionId: C,
+      cwd: 'z',
+      name: 'Database schema review (fork)',
+      status: 'idle',
+      statusSince: null,
+    },
   ];
 
   it('by its number in the list, its id, or a piece of its title', () => {

@@ -15,7 +15,9 @@ import type { PathCtx } from '../config/paths.js';
 
 /** The user's own hook, which must survive everything ccx does. */
 const THEIRS = {
-  PreToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'node no-emdashes.js' }] }],
+  PreToolUse: [
+    { matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'node no-emdashes.js' }] },
+  ],
 };
 
 describe('the Desktop hooks in the user settings', () => {
@@ -30,7 +32,9 @@ describe('the Desktop hooks in the user settings', () => {
 
   it('every hook lets anything that is not Claude Desktop skip ccx, without hiding its exit code', () => {
     for (const command of [LIMIT_HOOK, PROMPT_HOOK]) {
-      expect(command.startsWith('[ "$CLAUDE_CODE_ENTRYPOINT" != claude-desktop ] || ccx desktop-hook')).toBe(true);
+      expect(
+        command.startsWith('[ "$CLAUDE_CODE_ENTRYPOINT" != claude-desktop ] || ccx desktop-hook'),
+      ).toBe(true);
     }
   });
 
@@ -49,7 +53,12 @@ describe('the Desktop hooks in the user settings', () => {
     const settings = {
       hooks: {
         Stop: [{ hooks: [] }],
-        StopFailure: [{ matcher: 'rate_limit|billing_error', hooks: [{ type: 'command', command: LIMIT_HOOK }] }],
+        StopFailure: [
+          {
+            matcher: 'rate_limit|billing_error',
+            hooks: [{ type: 'command', command: LIMIT_HOOK }],
+          },
+        ],
       },
     };
     expect(withoutDesktopHooks(settings)).toEqual({ hooks: { Stop: [{ hooks: [] }] } });
@@ -72,12 +81,17 @@ describe('writing them', () => {
   }
 
   it('installs and removes them in the real settings file, keeping everything else', () => {
-    const { ctx, file } = home(JSON.stringify({ hooks: THEIRS, permissions: { allow: ['Bash(ls:*)'] } }));
+    const { ctx, file } = home(
+      JSON.stringify({ hooks: THEIRS, permissions: { allow: ['Bash(ls:*)'] } }),
+    );
     expect(installDesktopHooks('credits', ctx)).toMatchObject({ ok: true, changed: true });
     expect(readInstalledHandoff(ctx)).toBe('credits');
     expect(installDesktopHooks('credits', ctx)).toMatchObject({ ok: true, changed: false });
     expect(installDesktopHooks('off', ctx)).toMatchObject({ ok: true, changed: true });
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ hooks: THEIRS, permissions: { allow: ['Bash(ls:*)'] } });
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
+      hooks: THEIRS,
+      permissions: { allow: ['Bash(ls:*)'] },
+    });
   });
 
   it('refuses to rewrite a settings file that does not parse, which holds the user hooks', () => {

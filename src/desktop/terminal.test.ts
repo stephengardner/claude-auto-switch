@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   HOST_ONLY_ENV,
   openTerminal,
+  pasteable,
   posixLauncher,
   psQuote,
   scrubHostEnv,
@@ -13,7 +14,16 @@ import {
 const job = (extra: Partial<TerminalJob> = {}): TerminalJob => ({
   cwd: "C:\\Users\\me\\it's here",
   title: 'ccx: Schema review',
-  command: ['C:\\node.exe', 'C:\\ccx\\cli.js', 'run', '--resume-prompt', "Don't stop; carry on.", '--', '--resume', 'id'],
+  command: [
+    'C:\\node.exe',
+    'C:\\ccx\\cli.js',
+    'run',
+    '--resume-prompt',
+    "Don't stop; carry on.",
+    '--',
+    '--resume',
+    'id',
+  ],
   scriptDir: 'C:\\ccx\\handoffs',
   scriptName: 'id',
   ...extra,
@@ -43,15 +53,38 @@ describe('the launcher scripts', () => {
     expect(shQuote("it's")).toBe(`'it'\\''s'`);
   });
 
+  it('show a command someone can paste: quoted only where needed, and a bare -- kept in PowerShell', () => {
+    const words = [
+      'run',
+      '--resume-prompt',
+      "Don't stop.",
+      '--',
+      '--resume',
+      'id',
+      '--model',
+      'claude-opus-5-5',
+    ];
+    expect(pasteable(words, 'win32')).toBe(
+      "run --resume-prompt 'Don''t stop.' '--' --resume id --model claude-opus-5-5",
+    );
+    expect(pasteable(words, 'linux')).toBe(
+      `run --resume-prompt 'Don'\\''t stop.' -- --resume id --model claude-opus-5-5`,
+    );
+  });
+
   it('PowerShell: clears the host variables, goes to the folder, and runs the command as given', () => {
     const script = windowsLauncher(job());
     expect(script).toContain("'CLAUDECODE'");
     expect(script).toContain("Set-Location -LiteralPath 'C:\\Users\\me\\it''s here'");
-    expect(script).toContain("& 'C:\\node.exe' 'C:\\ccx\\cli.js' 'run' '--resume-prompt' 'Don''t stop; carry on.' '--' '--resume' 'id'");
+    expect(script).toContain(
+      "& 'C:\\node.exe' 'C:\\ccx\\cli.js' 'run' '--resume-prompt' 'Don''t stop; carry on.' '--' '--resume' 'id'",
+    );
   });
 
   it('PowerShell: waits on the gate and goes no further when it fails', () => {
-    const script = windowsLauncher(job({ gate: ['C:\\node.exe', 'C:\\ccx\\cli.js', 'desktop', 'wait', '42'] }));
+    const script = windowsLauncher(
+      job({ gate: ['C:\\node.exe', 'C:\\ccx\\cli.js', 'desktop', 'wait', '42'] }),
+    );
     const lines = script.split('\r\n');
     const gate = lines.findIndex((l) => l.includes("'desktop' 'wait' '42'"));
     expect(lines[gate + 1]).toBe('if ($LASTEXITCODE -ne 0) { return }');
@@ -76,7 +109,8 @@ describe('opening the window', () => {
       written,
       deps: {
         env: { PATH: 'p', CLAUDECODE: '1' },
-        start: (program: string, args: string[], env: Record<string, string>) => started.push({ program, args, env }),
+        start: (program: string, args: string[], env: Record<string, string>) =>
+          started.push({ program, args, env }),
         exists: (p: string) => available.includes(p),
         writeScript: (file: string) => written.push(file),
       },
@@ -97,19 +131,28 @@ describe('opening the window', () => {
 
   it('Windows: otherwise in a PowerShell window of its own', () => {
     const r = recorder([]);
-    expect(openTerminal(job(), { ...r.deps, platform: 'win32' })).toMatchObject({ ok: true, via: 'Windows PowerShell' });
+    expect(openTerminal(job(), { ...r.deps, platform: 'win32' })).toMatchObject({
+      ok: true,
+      via: 'Windows PowerShell',
+    });
     expect(r.started[0]?.program).toBe('powershell.exe');
   });
 
   it('macOS: in Terminal', () => {
     const r = recorder([]);
-    expect(openTerminal(job(), { ...r.deps, platform: 'darwin' })).toMatchObject({ ok: true, via: 'Terminal' });
+    expect(openTerminal(job(), { ...r.deps, platform: 'darwin' })).toMatchObject({
+      ok: true,
+      via: 'Terminal',
+    });
     expect(r.started[0]?.program).toBe('osascript');
   });
 
   it('Linux: the first terminal program there is, or says how to run it by hand', () => {
     const r = recorder(['konsole', 'xterm']);
-    expect(openTerminal(job(), { ...r.deps, platform: 'linux' })).toMatchObject({ ok: true, via: 'konsole' });
+    expect(openTerminal(job(), { ...r.deps, platform: 'linux' })).toMatchObject({
+      ok: true,
+      via: 'konsole',
+    });
     const none = recorder([]);
     const result = openTerminal(job(), { ...none.deps, platform: 'linux' });
     expect(result.ok).toBe(false);

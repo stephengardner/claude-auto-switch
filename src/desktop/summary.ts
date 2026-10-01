@@ -34,12 +34,17 @@ export function desktopSummary(
   if (open.length === 0 && !account && !existsSync(desktopConfigPath(context.ctx))) return null;
 
   const spent = account
-    ? spentShort(usageConstraints(usageOf(account), context.config.rotation.modelPreference[0] ?? null, now), now)
+    ? spentShort(
+        usageConstraints(usageOf(account), context.config.rotation.modelPreference[0] ?? null, now),
+        now,
+      )
     : null;
   const busy = open.filter((c) => c.status === 'busy').length;
   // "past its plan", not "spending credits": whether credits are turned on for
   // that account is not something ccx can see.
-  const who = account ? `on ${account}${spent ? `, ${spent} (past its plan)` : ''}` : 'on an account ccx does not have';
+  const who = account
+    ? `on ${account}${spent ? `, ${spent} (past its plan)` : ''}`
+    : 'on an account ccx does not have';
   const what = open.length === 0 ? 'nothing open' : `${busy} busy, ${open.length - busy} idle`;
   const { handoff, mode, prompt } = context.config.desktop;
   return {

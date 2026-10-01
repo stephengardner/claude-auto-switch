@@ -11,9 +11,18 @@ import { writeSwitchRequest } from '../state/switch-request.js';
 import { setActive } from '../state/active.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { listAccounts } from '../accounts/registry.js';
-import { liveDesktopConversations, type DesktopConversation } from '../desktop/desktop-sessions.js';
+import {
+  called,
+  liveDesktopConversations,
+  type DesktopConversation,
+} from '../desktop/desktop-sessions.js';
 import { desktopAccount } from '../desktop/desktop-app.js';
-import { handOff, readProcessFlags, type HandoffDeps, type ProcessFlags } from '../desktop/handoff.js';
+import {
+  handOff,
+  readProcessFlags,
+  type HandoffDeps,
+  type ProcessFlags,
+} from '../desktop/handoff.js';
 import { appendEvent } from '../events/log.js';
 import { configHome } from '../config/paths.js';
 import type { CliContext } from '../context.js';
@@ -49,7 +58,10 @@ export interface SwapDeps extends HandoffDeps {
 /** The state `ccx state` prints, taken from the same code path. */
 async function readState(context: CliContext): Promise<StatePayload> {
   let text = '';
-  await dashboardCommand({ ...context, out: (line: string) => (text += `${line}\n`) }, { json: true });
+  await dashboardCommand(
+    { ...context, out: (line: string) => (text += `${line}\n`) },
+    { json: true },
+  );
   return JSON.parse(text) as StatePayload;
 }
 
@@ -99,8 +111,15 @@ interface Row {
   status: string;
 }
 
-function windowOf(used: number | null | undefined, resetsAt: number | null | undefined, now: number): Window {
-  return { used: effectiveUtilization(used ?? null, resetsAt ?? null, now), resetsAt: resetsAt ?? null };
+function windowOf(
+  used: number | null | undefined,
+  resetsAt: number | null | undefined,
+  now: number,
+): Window {
+  return {
+    used: effectiveUtilization(used ?? null, resetsAt ?? null, now),
+    resetsAt: resetsAt ?? null,
+  };
 }
 
 function modelWindowOf(a: StateAccount, model: string | null, now: number): Window | null {
@@ -115,7 +134,11 @@ function statusWords(a: StateAccount, here: boolean, now: number): string {
   if (!a.loggedIn || a.status.state === 'logged-out') return `signed out (ccx login ${a.name})`;
   if (a.status.state === 'blocked') {
     const what =
-      a.status.label === '5h' ? '5-hour limit' : a.status.label === 'week' ? 'week' : `${a.status.label ?? 'limit'}`;
+      a.status.label === '5h'
+        ? '5-hour limit'
+        : a.status.label === 'week'
+          ? 'week'
+          : `${a.status.label ?? 'limit'}`;
     const back = a.status.until ? humanWait(a.status.until, now) : '';
     return back ? `${what} spent, back in ${back}` : `${what} spent`;
   }
@@ -165,14 +188,17 @@ function gauge(w: Window, color: boolean, size = 10): string {
 function hereWords(here: Here): string {
   if (here.kind === 'ccx') return `this ccx session is on ${here.account ?? 'an unknown account'}`;
   if (here.kind === 'desktop') {
-    const what = here.conversation ? `"${here.conversation}" in Claude Desktop` : 'this Claude Desktop conversation';
+    const what = here.conversation
+      ? `"${here.conversation}" in Claude Desktop`
+      : 'this Claude Desktop conversation';
     return `${what} is on ${here.account ?? 'an account ccx does not have'}`;
   }
   return 'not inside a session';
 }
 
 export function swapEffect(here: Here): string {
-  if (here.kind === 'ccx') return 'This session moves to it in place, within about 30 seconds; nothing restarts.';
+  if (here.kind === 'ccx')
+    return 'This session moves to it in place, within about 30 seconds; nothing restarts.';
   if (here.kind === 'desktop') {
     return 'Desktop cannot switch accounts, so this conversation continues in a terminal window on it, with all its history, once this reply ends.';
   }
@@ -189,9 +215,17 @@ export function renderBoard(rows: Row[], state: StatePayload, here: Here, color:
     `     ${'ACCOUNT'.padEnd(nameW)}   ${col('5-HOUR')}   ${col('WEEK')}   ${state.preferredModel ? col(modelName) : ''}`.trimEnd(),
   ];
   for (const r of rows) {
-    const mark = r.recommended ? paint('  ★ ', codes.brightYellow, color) : r.here ? paint('  ▶ ', codes.cyan, color) : '    ';
+    const mark = r.recommended
+      ? paint('  ★ ', codes.brightYellow, color)
+      : r.here
+        ? paint('  ▶ ', codes.cyan, color)
+        : '    ';
     const name = paint(r.account.name.padEnd(nameW), r.eligible ? codes.bold : codes.dim, color);
-    const status = paint(r.status, r.eligible ? (r.here ? codes.cyan : codes.green) : codes.dim, color);
+    const status = paint(
+      r.status,
+      r.eligible ? (r.here ? codes.cyan : codes.green) : codes.dim,
+      color,
+    );
     lines.push(
       `${mark} ${name}   ${gauge(r.fiveHour, color)}   ${gauge(r.week, color)}   ${r.model ? `${gauge(r.model, color)}   ` : ''}${status}`,
     );
@@ -284,7 +318,9 @@ export async function swapCommand(
   }
   if (!row.eligible) {
     const best = rows.find((r) => r.recommended);
-    context.out(`${name} cannot take it: ${row.status}.${best ? ` ${best.account.name} has the most room.` : ''}`);
+    context.out(
+      `${name} cannot take it: ${row.status}.${best ? ` ${best.account.name} has the most room.` : ''}`,
+    );
     return 1;
   }
 
@@ -292,12 +328,15 @@ export async function swapCommand(
   if (here.kind === 'ccx' && here.pid !== undefined) {
     writeSwitchRequest(name, Date.now(), 'seamless', context.ctx, here.pid);
     appendEvent(home, `swap: session ${here.pid} asked to move to ${name}`, Date.now());
-    context.out(`This session moves to ${name} in place, within about 30 seconds. Nothing restarts.`);
+    context.out(
+      `This session moves to ${name} in place, within about 30 seconds. Nothing restarts.`,
+    );
     return 0;
   }
 
   if (here.kind === 'desktop') {
-    const conv = here.pid !== undefined ? conversations().find((c) => c.pid === here.pid) : undefined;
+    const conv =
+      here.pid !== undefined ? conversations().find((c) => c.pid === here.pid) : undefined;
     if (!conv) {
       context.out('Could not find this Desktop conversation to move. Try: ccx desktop move');
       return 1;
@@ -322,18 +361,25 @@ export async function swapCommand(
       context.out(`Could not open a terminal: ${result.reason}`);
       return 1;
     }
-    appendEvent(home, `swap: Desktop conversation "${conv.name}" continues on ${name} in a terminal`, Date.now(), {
-      kind: 'desktop-handoff',
-      data: { why: 'swap', to: name },
-    });
+    appendEvent(
+      home,
+      `swap: Desktop ${called(conv)} continues on ${name} in a terminal`,
+      Date.now(),
+      {
+        kind: 'desktop-handoff',
+        data: { why: 'swap', to: name },
+      },
+    );
     context.out(
-      `"${conv.name || 'This conversation'}" continues in a ${result.via} window on ${name} as soon as this reply ends. Carry on there, and send nothing more here.`,
+      `${conv.name ? `"${conv.name}"` : 'This conversation'} continues in a ${result.via} window on ${name} as soon as this reply ends. Carry on there, and send nothing more here.`,
     );
     return 0;
   }
 
   setActive(name, context.ctx);
   syncEditorPointerIfEnabled(context);
-  context.out(`New sessions start on ${name}. Running ones stay where they are (ccx use ${name} moves them too).`);
+  context.out(
+    `New sessions start on ${name}. Running ones stay where they are (ccx use ${name} moves them too).`,
+  );
   return 0;
 }

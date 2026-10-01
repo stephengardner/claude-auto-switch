@@ -7,7 +7,7 @@ import { addAccount } from '../accounts/registry.js';
 import { loadConfig, saveConfig } from '../config/config.js';
 import { readInstalledHandoff } from '../desktop/hooks.js';
 import type { DesktopConversation } from '../desktop/desktop-sessions.js';
-import type { HandoffSettings, HandoffTarget } from '../desktop/handoff.js';
+import { scheduleHandoff, type HandoffSettings, type HandoffTarget } from '../desktop/handoff.js';
 import type { CliContext } from '../context.js';
 
 const STEPHEN = '1b0125dc-730c-4d80-90da-af791d8f2b05';
@@ -25,17 +25,22 @@ interface Setup {
  * A home with ccx accounts, Claude Desktop signed in as `stephen`, and the
  * environment a hook sees inside a Desktop session.
  */
-function setup(options: {
-  handoff?: 'off' | 'limit' | 'credits';
-  entrypoint?: string;
-  payload?: Record<string, unknown>;
-  spent?: boolean;
-  conversations?: DesktopConversation[];
-} = {}): Setup {
+function setup(
+  options: {
+    handoff?: 'off' | 'limit' | 'credits';
+    entrypoint?: string;
+    payload?: Record<string, unknown>;
+    spent?: boolean;
+    conversations?: DesktopConversation[];
+  } = {},
+): Setup {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-desk-cmd-'));
   const appData = path.join(home, 'AppData');
   mkdirSync(path.join(appData, 'Claude'), { recursive: true });
-  writeFileSync(path.join(appData, 'Claude', 'config.json'), JSON.stringify({ lastKnownAccountUuid: STEPHEN }));
+  writeFileSync(
+    path.join(appData, 'Claude', 'config.json'),
+    JSON.stringify({ lastKnownAccountUuid: STEPHEN }),
+  );
   const env: Record<string, string> = {
     CLAUDE_AUTO_SWITCH_HOME: home,
     HOME: home,
@@ -45,10 +50,16 @@ function setup(options: {
     ...(options.entrypoint !== undefined ? { CLAUDE_CODE_ENTRYPOINT: options.entrypoint } : {}),
   };
   const ctx = { platform: 'win32' as const, env };
-  for (const [name, uuid] of [['stephen', STEPHEN], ['osa', 'other']] as const) {
+  for (const [name, uuid] of [
+    ['stephen', STEPHEN],
+    ['osa', 'other'],
+  ] as const) {
     const dir = path.join(home, 'profiles', name);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: uuid } }));
+    writeFileSync(
+      path.join(dir, '.claude.json'),
+      JSON.stringify({ oauthAccount: { accountUuid: uuid } }),
+    );
     addAccount({ name, dir }, ctx);
   }
   if (options.handoff) saveConfig({ desktop: { handoff: options.handoff } }, ctx);
@@ -69,9 +80,20 @@ function setup(options: {
     stdin: () => Promise.resolve(JSON.stringify(options.payload ?? {})),
     conversations: () =>
       options.conversations ?? [
-        { pid: 777, sessionId: CONV, cwd: 'C:\\work', name: 'Schema review', status: 'idle', statusSince: null },
+        {
+          pid: 777,
+          sessionId: CONV,
+          cwd: 'C:\\work',
+          name: 'Schema review',
+          status: 'idle',
+          statusSince: null,
+        },
       ],
-    flagsOf: () => ({ model: 'claude-opus-5-5', effort: 'max', permissionMode: 'bypassPermissions' }),
+    flagsOf: () => ({
+      model: 'claude-opus-5-5',
+      effort: 'max',
+      permissionMode: 'bypassPermissions',
+    }),
     usageOf: () =>
       Promise.resolve({
         fiveHour: 0.1,
@@ -84,11 +106,40 @@ function setup(options: {
       handed.push({ target, settings, ...(waitFor !== undefined ? { waitFor } : {}) });
       return { ok: true, via: 'Windows Terminal', script: 'x.ps1', command: [] };
     },
+    // What a hook hands to the detached ccx.
+    schedule: (job) => {
+      handed.push({
+        target: job.target,
+        settings: job.settings,
+        ...(job.waitFor !== undefined ? { waitFor: job.waitFor } : {}),
+      });
+      return true;
+    },
   };
   return { context, said, told, handed, deps };
 }
 
-const LIMIT = { session_id: CONV, cwd: 'C:\\work', error: 'rate_limit', effort: { level: 'max' } };
+/** A transcript whose last answer came from Opus, the way Claude writes one. */
+const TRANSCRIPT = path.join(
+  mkdtempSync(path.join(tmpdir(), 'cas-desk-tr-')),
+  'conversation.jsonl',
+);
+writeFileSync(
+  TRANSCRIPT,
+  [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }),
+    JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-5-5', content: [] } }),
+    JSON.stringify({ type: 'system', subtype: 'turn_duration' }),
+  ].join('\n') + '\n',
+);
+
+const LIMIT = {
+  session_id: CONV,
+  cwd: 'C:\\work',
+  transcript_path: TRANSCRIPT,
+  error: 'rate_limit',
+  effort: { level: 'max' },
+};
 
 describe('the hook Claude Desktop runs at a usage limit', () => {
   it('carries the conversation on in a terminal, waiting for Desktop to let go of it', async () => {
@@ -96,7 +147,13 @@ describe('the hook Claude Desktop runs at a usage limit', () => {
     expect(await desktopHookCommand(s.context, 'limit', s.deps)).toBe(0);
     expect(s.handed).toHaveLength(1);
     expect(s.handed[0]).toMatchObject({
-      target: { sessionId: CONV, cwd: 'C:\\work', name: 'Schema review', model: 'claude-opus-5-5', effort: 'max' },
+      target: {
+        sessionId: CONV,
+        cwd: 'C:\\work',
+        name: 'Schema review',
+        model: 'claude-opus-5-5',
+        effort: 'max',
+      },
       settings: { mode: 'fork', prompt: 'Carry on where you stopped.' },
       waitFor: 777,
     });
@@ -104,25 +161,24 @@ describe('the hook Claude Desktop runs at a usage limit', () => {
 
   it('hands a conversation over once, however many times its turns fail', async () => {
     const s = setup({ handoff: 'limit', entrypoint: 'claude-desktop', payload: LIMIT });
-    s.deps.handOff = undefined; // the real one, into a terminal that is never opened
-    const opened: string[] = [];
-    Object.assign(s.deps, {
-      platform: 'win32',
-      ccx: { node: 'node', cli: 'cli.js' },
-      exists: () => true,
-      start: (program: string) => opened.push(program),
-      writeScript: () => {},
-    });
+    // The real scheduler, with the detached ccx it would start recorded instead.
+    const started: string[] = [];
+    s.deps.schedule = (job, c) => scheduleHandoff(job, c, (file) => started.push(file));
     await desktopHookCommand(s.context, 'limit', s.deps);
     await desktopHookCommand(s.context, 'limit', s.deps);
-    expect(opened).toHaveLength(1);
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatch(new RegExp(`${CONV}\\.job\\.json$`));
   });
 
   it('does nothing outside Desktop, when switched off, or for any other error', async () => {
     for (const s of [
       setup({ handoff: 'limit', entrypoint: 'cli', payload: LIMIT }),
       setup({ handoff: 'off', entrypoint: 'claude-desktop', payload: LIMIT }),
-      setup({ handoff: 'limit', entrypoint: 'claude-desktop', payload: { ...LIMIT, error: 'overloaded' } }),
+      setup({
+        handoff: 'limit',
+        entrypoint: 'claude-desktop',
+        payload: { ...LIMIT, error: 'overloaded' },
+      }),
       setup({ handoff: 'limit', entrypoint: 'claude-desktop', payload: { error: 'rate_limit' } }),
     ]) {
       expect(await desktopHookCommand(s.context, 'limit', s.deps)).toBe(0);
@@ -138,10 +194,20 @@ describe('the hook Claude Desktop runs at a usage limit', () => {
 });
 
 describe('the hook Claude Desktop runs before sending a message', () => {
-  const MESSAGE = { session_id: CONV, cwd: 'C:\\work', prompt: 'now fix the failing tests', permission_mode: 'auto' };
+  const MESSAGE = {
+    session_id: CONV,
+    cwd: 'C:\\work',
+    prompt: 'now fix the failing tests',
+    permission_mode: 'auto',
+  };
 
   it('holds the message when Desktop is past its plan, and carries it on in a terminal instead', async () => {
-    const s = setup({ handoff: 'credits', entrypoint: 'claude-desktop', payload: MESSAGE, spent: true });
+    const s = setup({
+      handoff: 'credits',
+      entrypoint: 'claude-desktop',
+      payload: MESSAGE,
+      spent: true,
+    });
     expect(await desktopHookCommand(s.context, 'prompt', s.deps)).toBe(2);
     expect(s.handed[0]?.settings).toMatchObject({ startPrompt: 'now fix the failing tests' });
     expect(s.handed[0]?.target.permissionMode).toBe('auto');
@@ -149,19 +215,34 @@ describe('the hook Claude Desktop runs before sending a message', () => {
   });
 
   it('lets the message through while the plan still has room', async () => {
-    const s = setup({ handoff: 'credits', entrypoint: 'claude-desktop', payload: MESSAGE, spent: false });
+    const s = setup({
+      handoff: 'credits',
+      entrypoint: 'claude-desktop',
+      payload: MESSAGE,
+      spent: false,
+    });
     expect(await desktopHookCommand(s.context, 'prompt', s.deps)).toBe(0);
     expect(s.handed).toHaveLength(0);
   });
 
   it('only on "credits": at "limit" a message always goes through', async () => {
-    const s = setup({ handoff: 'limit', entrypoint: 'claude-desktop', payload: MESSAGE, spent: true });
+    const s = setup({
+      handoff: 'limit',
+      entrypoint: 'claude-desktop',
+      payload: MESSAGE,
+      spent: true,
+    });
     expect(await desktopHookCommand(s.context, 'prompt', s.deps)).toBe(0);
   });
 
-  it('lets the message through rather than strand it when no terminal can be opened', async () => {
-    const s = setup({ handoff: 'credits', entrypoint: 'claude-desktop', payload: MESSAGE, spent: true });
-    s.deps.handOff = () => ({ ok: false, reason: 'no terminal' });
+  it('lets the message through rather than strand it when it cannot be handed over', async () => {
+    const s = setup({
+      handoff: 'credits',
+      entrypoint: 'claude-desktop',
+      payload: MESSAGE,
+      spent: true,
+    });
+    s.deps.schedule = () => false;
     expect(await desktopHookCommand(s.context, 'prompt', s.deps)).toBe(0);
   });
 });

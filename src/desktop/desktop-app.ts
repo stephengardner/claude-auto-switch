@@ -19,18 +19,28 @@ export function desktopConfigPath(c: PathCtx = {}): string {
   const env = c.env ?? process.env;
   const platform = c.platform ?? process.platform;
   if (platform === 'win32') {
-    return path.join(env.APPDATA ?? path.join(homeDir(c), 'AppData', 'Roaming'), 'Claude', 'config.json');
+    return path.join(
+      env.APPDATA ?? path.join(homeDir(c), 'AppData', 'Roaming'),
+      'Claude',
+      'config.json',
+    );
   }
   if (platform === 'darwin') {
     return path.join(homeDir(c), 'Library', 'Application Support', 'Claude', 'config.json');
   }
-  return path.join(env.XDG_CONFIG_HOME ?? path.join(homeDir(c), '.config'), 'Claude', 'config.json');
+  return path.join(
+    env.XDG_CONFIG_HOME ?? path.join(homeDir(c), '.config'),
+    'Claude',
+    'config.json',
+  );
 }
 
 function readObject(file: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown;
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }

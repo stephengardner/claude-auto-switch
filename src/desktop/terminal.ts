@@ -90,6 +90,21 @@ export function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * `words` as a line someone can paste into their shell: quoted only where it
+ * has to be. PowerShell swallows a bare `--` on its way to `ccx.ps1`, so there
+ * it is quoted too.
+ */
+export function pasteable(words: string[], platform: NodeJS.Platform = process.platform): string {
+  const plain = /^[\w@%+=:,./\\-]+$/;
+  return words
+    .map((w) => {
+      if (platform === 'win32') return plain.test(w) && w !== '--' ? w : psQuote(w);
+      return plain.test(w) ? w : shQuote(w);
+    })
+    .join(' ');
+}
+
 /** A PowerShell call of `command`, each part a literal. */
 function psCall(command: string[]): string {
   const [program, ...args] = command;
@@ -138,10 +153,16 @@ export interface TerminalDeps {
   writeScript?: (file: string, content: string, executable: boolean) => void;
 }
 
-export type TerminalResult = { ok: true; via: string; script: string } | { ok: false; reason: string };
+export type TerminalResult =
+  { ok: true; via: string; script: string } | { ok: false; reason: string };
 
 function startDetached(program: string, args: string[], env: Record<string, string>): void {
-  const child = nodeSpawn(program, args, { detached: true, stdio: 'ignore', env, windowsHide: false });
+  const child = nodeSpawn(program, args, {
+    detached: true,
+    stdio: 'ignore',
+    env,
+    windowsHide: false,
+  });
   child.on('error', () => {
     /* reported by the caller's existence check; a late failure has nobody to tell */
   });
@@ -178,7 +199,11 @@ export function openTerminal(job: TerminalJob, deps: TerminalDeps = {}): Termina
     const shellArgs = ['-NoLogo', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', script];
     if (exists('wt.exe')) {
       // Windows Terminal reads `;` as "and another tab", so none in the title.
-      start('wt.exe', ['-w', 'new', '--title', job.title.replace(/;/g, ','), shell, ...shellArgs], env);
+      start(
+        'wt.exe',
+        ['-w', 'new', '--title', job.title.replace(/;/g, ','), shell, ...shellArgs],
+        env,
+      );
       return { ok: true, via: 'Windows Terminal', script };
     }
     // A console program started detached gets a console window of its own.
@@ -193,7 +218,12 @@ export function openTerminal(job: TerminalJob, deps: TerminalDeps = {}): Termina
     const inner = `/bin/sh ${shQuote(script)}`.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     start(
       'osascript',
-      ['-e', 'tell application "Terminal" to activate', '-e', `tell application "Terminal" to do script "${inner}"`],
+      [
+        '-e',
+        'tell application "Terminal" to activate',
+        '-e',
+        `tell application "Terminal" to do script "${inner}"`,
+      ],
       env,
     );
     return { ok: true, via: 'Terminal', script };

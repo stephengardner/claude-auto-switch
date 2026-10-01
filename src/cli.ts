@@ -25,7 +25,12 @@ import { loginCommand } from './commands/login.js';
 import { enableCommand, disableCommand, priorityCommand } from './commands/account-config.js';
 import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
-import { desktopCommand, desktopHookCommand, type DesktopOptions } from './commands/desktop.js';
+import {
+  desktopCommand,
+  desktopContinueCommand,
+  desktopHookCommand,
+  type DesktopOptions,
+} from './commands/desktop.js';
 import { swapCommand } from './commands/swap.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { homeCommand } from './commands/home.js';
@@ -361,6 +366,13 @@ program
   .command('desktop-hook <event>', { hidden: true })
   .action(async (event: string) => {
     process.exitCode = await desktopHookCommand(context(), event);
+  });
+
+// Started detached by that hook, to do the slow half after it has returned.
+program
+  .command('desktop-continue <job>', { hidden: true })
+  .action((job: string) => {
+    process.exitCode = desktopContinueCommand(context(), job);
   });
 
 async function main(): Promise<void> {

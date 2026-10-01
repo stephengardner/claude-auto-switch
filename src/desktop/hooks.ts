@@ -64,7 +64,11 @@ export function withoutDesktopHooks(settings: Settings): Settings {
       .filter((group, i) => {
         const before = groups[i] as Group;
         const after = group as Group;
-        return !(Array.isArray(before?.hooks) && before.hooks.length > 0 && after.hooks?.length === 0);
+        return !(
+          Array.isArray(before?.hooks) &&
+          before.hooks.length > 0 &&
+          after.hooks?.length === 0
+        );
       });
     if (left.length > 0) kept[event] = left;
   }
@@ -79,7 +83,10 @@ export function planDesktopHooks(settings: Settings, when: HandoffWhen): Setting
   const base = withoutDesktopHooks(settings);
   if (when === 'off') return base;
   const hooks: Record<string, unknown> = {
-    ...((typeof base.hooks === 'object' && base.hooks !== null ? base.hooks : {}) as Record<string, unknown>),
+    ...((typeof base.hooks === 'object' && base.hooks !== null ? base.hooks : {}) as Record<
+      string,
+      unknown
+    >),
   };
   const add = (event: string, group: Group): void => {
     const existing = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
@@ -119,8 +126,7 @@ export function installedHandoff(settings: Settings): HandoffWhen {
 }
 
 export type HookWriteResult =
-  | { ok: true; changed: boolean; file: string }
-  | { ok: false; reason: string; file: string };
+  { ok: true; changed: boolean; file: string } | { ok: false; reason: string; file: string };
 
 /** Make the user's Claude settings hold exactly the hooks `when` calls for. */
 export function installDesktopHooks(when: HandoffWhen, c: PathCtx = {}): HookWriteResult {
@@ -133,9 +139,11 @@ export function installDesktopHooks(when: HandoffWhen, c: PathCtx = {}): HookWri
   const read = readSettings(file);
   // A file that does not parse is never rewritten: it holds the user's hooks
   // and permissions, and "fixing" it here would destroy them.
-  if (!read.ok) return { ok: false, reason: `${file} is not valid JSON; fix it and try again`, file };
+  if (!read.ok)
+    return { ok: false, reason: `${file} is not valid JSON; fix it and try again`, file };
   const next = planDesktopHooks(read.settings, when);
-  if (JSON.stringify(next) === JSON.stringify(read.settings)) return { ok: true, changed: false, file };
+  if (JSON.stringify(next) === JSON.stringify(read.settings))
+    return { ok: true, changed: false, file };
   try {
     writeFileAtomic(file, `${JSON.stringify(next, null, 2)}\n`);
     return { ok: true, changed: true, file };

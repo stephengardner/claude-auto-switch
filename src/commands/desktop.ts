@@ -10,20 +10,31 @@ import { humanWait } from '../usage/report.js';
 import { checkResumePrompt } from '../session/resume-prompt.js';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { processIsAlive } from '../session/session-dir.js';
-import { liveDesktopConversations, pickConversation, type DesktopConversation } from '../desktop/desktop-sessions.js';
+import {
+  called,
+  liveDesktopConversations,
+  pickConversation,
+  type DesktopConversation,
+} from '../desktop/desktop-sessions.js';
 import { desktopAccount } from '../desktop/desktop-app.js';
 import {
   continuationArgs,
   handOff,
   handedOffRecently,
+  lastModelIn,
   readProcessFlags,
+  runHandoffJob,
+  scheduleHandoff,
   type HandoffDeps,
+  type HandoffJob,
   type HandoffResult,
   type HandoffSettings,
   type HandoffTarget,
   type ProcessFlags,
 } from '../desktop/handoff.js';
+import type { PathCtx } from '../config/paths.js';
 import { installDesktopHooks, readInstalledHandoff, type HandoffWhen } from '../desktop/hooks.js';
+import { pasteable } from '../desktop/terminal.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -39,8 +50,14 @@ export interface DesktopDeps extends HandoffDeps {
   conversations?: () => DesktopConversation[];
   flagsOf?: (pid: number) => ProcessFlags;
   handOff?: typeof handOff;
+  /** Where a hook leaves the handover to a detached ccx. Injected in tests. */
+  schedule?: (job: HandoffJob, c: PathCtx) => boolean;
   /** Usage for one account, refreshed when stale. Injected in tests. */
-  usageOf?: (account: { name: string; dir: string; email?: string }) => Promise<UsageEntry | undefined>;
+  usageOf?: (account: {
+    name: string;
+    dir: string;
+    email?: string;
+  }) => Promise<UsageEntry | undefined>;
   stdin?: () => Promise<string>;
   sleep?: (ms: number) => Promise<void>;
   isAlive?: (pid: number) => boolean;
@@ -70,7 +87,12 @@ function spentWords(constraints: Constraint[], now: number): string | null {
   if (constraints.length === 0) return null;
   return constraints
     .map((c) => {
-      const label = c.label === '5h' ? '5-hour limit' : c.label === 'week' ? 'weekly limit' : `${c.label} limit`;
+      const label =
+        c.label === '5h'
+          ? '5-hour limit'
+          : c.label === 'week'
+            ? 'weekly limit'
+            : `${c.label} limit`;
       const wait = c.until ? humanWait(c.until, now) : '';
       return wait ? `${label} spent for ${wait}` : `${label} spent`;
     })
@@ -147,7 +169,9 @@ async function status(context: CliContext, deps: DesktopDeps): Promise<number> {
   out('Open in Claude Desktop now:');
   conversations.forEach((c, i) => {
     const mark = c.status === 'busy' ? 'busy' : c.status === 'idle' ? 'idle' : c.status;
-    out(`  ${String(i + 1).padStart(2)}  ${mark.padEnd(5)} ${(c.name || '(untitled)').padEnd(40)} ${shortDir(c.cwd)}`);
+    out(
+      `  ${String(i + 1).padStart(2)}  ${mark.padEnd(5)} ${(c.name || '(untitled)').padEnd(40)} ${shortDir(c.cwd)}`,
+    );
   });
   out('');
   out('Move one:  ccx desktop move <number>   (press Stop on a busy one first, or add --wait)');
@@ -222,13 +246,18 @@ function settingsFor(context: CliContext, to?: string, startPrompt?: string): Ha
   };
 }
 
-function report(context: CliContext, result: HandoffResult, conv: { name: string }, settings: HandoffSettings): void {
+function report(
+  context: CliContext,
+  result: HandoffResult,
+  conv: { name: string; sessionId: string },
+  settings: HandoffSettings,
+): void {
   if (!result.ok) {
     context.out(`could not open a terminal: ${result.reason}`);
     return;
   }
   const where = settings.account ? `on ${settings.account}` : 'on the account with the most room';
-  context.out(`"${conv.name || 'the conversation'}" continues in a ${result.via} window, ${where}.`);
+  context.out(`${called(conv)} continues in a ${result.via} window, ${where}.`);
   context.out(
     settings.mode === 'fork'
       ? 'It carries on as a copy; Desktop keeps the original exactly as it was.'
@@ -247,10 +276,20 @@ export async function moveConversation(
     context.out('No conversations are open in Claude Desktop.');
     return 1;
   }
-  const conv = which ? pickConversation(conversations, which) : conversations.length === 1 ? conversations[0] : null;
+  const conv = which
+    ? pickConversation(conversations, which)
+    : conversations.length === 1
+      ? conversations[0]
+      : null;
   if (!conv) {
-    context.out(which ? `no single open conversation matches "${which}"; pick one by number:` : 'pick one by number:');
-    conversations.forEach((c, i) => context.out(`  ${i + 1}  ${c.status.padEnd(5)} ${c.name || '(untitled)'}`));
+    context.out(
+      which
+        ? `no single open conversation matches "${which}"; pick one by number:`
+        : 'pick one by number:',
+    );
+    conversations.forEach((c, i) =>
+      context.out(`  ${i + 1}  ${c.status.padEnd(5)} ${c.name || '(untitled)'}`),
+    );
     return 1;
   }
   if (opts.to && !listAccounts(context.ctx).some((a) => a.name === opts.to && a.enabled)) {
@@ -258,13 +297,17 @@ export async function moveConversation(
     return 1;
   }
   if (conv.status === 'busy' && !opts.wait) {
-    context.out(`"${conv.name}" is working in Desktop right now. Press Stop on it there, then run this again,`);
+    context.out(
+      `${called(conv)} is working in Desktop right now. Press Stop on it there, then run this again,`,
+    );
     context.out('or add --wait to open the terminal now and pick it up the moment it stops.');
     return 1;
   }
   const recent = handedOffRecently(conv.sessionId, context.ctx);
   if (recent !== null && !opts.again) {
-    context.out(`"${conv.name}" was moved to a terminal ${humanWait(Date.now() + (Date.now() - recent), Date.now())} ago; add --again to move it again.`);
+    context.out(
+      `${called(conv)} was moved to a terminal ${humanWait(Date.now() + (Date.now() - recent), Date.now())} ago; add --again to move it again.`,
+    );
     return 1;
   }
   const flags = (deps.flagsOf ?? readProcessFlags)(conv.pid);
@@ -279,16 +322,21 @@ export async function moveConversation(
   const settings = settingsFor(context, opts.to);
   if (opts.dryRun) {
     context.out(`would run in ${conv.cwd}:`);
-    context.out(`  ccx ${continuationArgs(target, settings).join(' ')}`);
+    context.out(`  ccx ${pasteable(continuationArgs(target, settings))}`);
     return 0;
   }
   const result = (deps.handOff ?? handOff)(target, settings, context.ctx, deps, conv.pid);
   report(context, result, conv, settings);
   if (result.ok) {
-    appendEvent(configHome(context.ctx), `desktop: moved "${conv.name}" to a terminal`, Date.now(), {
-      kind: 'desktop-handoff',
-      data: { why: 'by hand', mode: settings.mode, to: settings.account ?? null },
-    });
+    appendEvent(
+      configHome(context.ctx),
+      `desktop: moved ${called(conv)} to a terminal`,
+      Date.now(),
+      {
+        kind: 'desktop-handoff',
+        data: { why: 'by hand', mode: settings.mode, to: settings.account ?? null },
+      },
+    );
   }
   return result.ok ? 0 : 1;
 }
@@ -332,12 +380,16 @@ async function waitForDesktop(
     // Gone, or no longer busy: Desktop has let go of the conversation.
     if (!record || record.status !== 'busy') return 0;
     if (!told) {
-      context.out(`Waiting for Claude Desktop to finish its turn on "${record.name}" before carrying on here.`);
+      context.out(
+        `Waiting for Claude Desktop to finish its turn${record.name ? ` on "${record.name}"` : ''} before carrying on here.`,
+      );
       context.out('Press Stop on it in Desktop to hand it over now.');
       told = true;
     }
     if (Date.now() >= deadline) {
-      context.out('Desktop is still working on it, so it was not picked up here. Close this window.');
+      context.out(
+        'Desktop is still working on it, so it was not picked up here. Close this window.',
+      );
       return 1;
     }
     await sleep(2_000);
@@ -363,6 +415,7 @@ function readStdin(): Promise<string> {
 interface HookPayload {
   session_id?: unknown;
   cwd?: unknown;
+  transcript_path?: unknown;
   error?: unknown;
   prompt?: unknown;
   permission_mode?: unknown;
@@ -373,6 +426,11 @@ interface HookPayload {
  * Run by Claude Desktop's sessions through the hooks `ccx desktop handoff`
  * installs. Never gets in the way: anything unexpected lets the turn or the
  * message through untouched, and only a held message exits non-zero.
+ *
+ * Quick on purpose: Claude waits for it, and a Claude that is exiting takes it
+ * down mid-way. It decides from the payload alone and leaves the slow part,
+ * reading the process and opening the window, to a detached ccx (see
+ * scheduleHandoff).
  */
 export async function desktopHookCommand(
   context: CliContext,
@@ -395,34 +453,40 @@ export async function desktopHookCommand(
   if (!sessionId || !cwd) return 0;
 
   const pid = Number(env.CLAUDE_PID);
-  const conv = Number.isInteger(pid)
-    ? (deps.conversations ?? (() => liveDesktopConversations(context.ctx)))().find((c) => c.pid === pid)
+  const hasPid = Number.isInteger(pid) && pid > 0;
+  const conv = hasPid
+    ? (deps.conversations ?? (() => liveDesktopConversations(context.ctx)))().find(
+        (c) => c.pid === pid,
+      )
     : undefined;
-  const flags = Number.isInteger(pid) && pid > 0 ? (deps.flagsOf ?? readProcessFlags)(pid) : null;
+  const transcript = typeof payload.transcript_path === 'string' ? payload.transcript_path : '';
   const target: HandoffTarget = {
     sessionId,
     cwd,
     name: conv?.name ?? '',
-    model: flags?.model ?? null,
-    effort: typeof payload.effort?.level === 'string' ? payload.effort.level : (flags?.effort ?? null),
-    permissionMode:
-      typeof payload.permission_mode === 'string' ? payload.permission_mode : (flags?.permissionMode ?? null),
+    model: transcript ? lastModelIn(transcript) : null,
+    effort: typeof payload.effort?.level === 'string' ? payload.effort.level : null,
+    permissionMode: typeof payload.permission_mode === 'string' ? payload.permission_mode : null,
   };
   const home = configHome(context.ctx);
   const log = (msg: string, data: Record<string, unknown>): void =>
     appendEvent(home, msg, Date.now(), { kind: 'desktop-handoff', data });
+  const schedule = (settings: HandoffSettings): boolean =>
+    (deps.schedule ?? scheduleHandoff)(
+      { target, settings, ...(hasPid ? { flagsFrom: pid, waitFor: pid } : {}) },
+      context.ctx,
+    );
 
   if (event === 'limit') {
     const error = typeof payload.error === 'string' ? payload.error : '';
     if (error !== 'rate_limit' && error !== 'billing_error') return 0;
     if (handedOffRecently(sessionId, context.ctx) !== null) return 0;
-    const settings = settingsFor(context);
-    const result = (deps.handOff ?? handOff)(target, settings, context.ctx, deps, Number.isInteger(pid) ? pid : undefined);
+    const ok = schedule(settingsFor(context));
     log(
-      result.ok
-        ? `desktop: "${target.name}" hit a usage limit; continuing it in a terminal`
-        : `desktop: "${target.name}" hit a usage limit; could not open a terminal: ${result.reason}`,
-      { why: 'limit', error, ok: result.ok },
+      ok
+        ? `desktop: ${called(target)} hit a usage limit; continuing it in a terminal`
+        : `desktop: ${called(target)} hit a usage limit; could not hand it over`,
+      { why: 'limit', error, ok },
     );
     return 0;
   }
@@ -433,18 +497,26 @@ export async function desktopHookCommand(
   const tell = say(context);
   const spent = spentWords(account.spent, Date.now()) ?? 'past its plan';
   if (handedOffRecently(sessionId, context.ctx) !== null) {
-    tell(`ccx: ${account.name} is past its plan (${spent}), and this conversation is already continuing in a terminal. Carry on there.`);
+    tell(
+      `ccx: ${account.name} is past its plan (${spent}), and this conversation is already continuing in a terminal. Carry on there.`,
+    );
     return 2;
   }
   const message = typeof payload.prompt === 'string' ? payload.prompt : '';
-  const settings = settingsFor(context, undefined, message.trim() !== '' && message.length <= 100_000 ? message : undefined);
-  const result = (deps.handOff ?? handOff)(target, settings, context.ctx, deps, Number.isInteger(pid) ? pid : undefined);
-  if (!result.ok) {
+  const settings = settingsFor(
+    context,
+    undefined,
+    message.trim() !== '' && message.length <= 100_000 ? message : undefined,
+  );
+  if (!schedule(settings)) {
     // Holding the message with nowhere to send it would strand it; let it through.
-    log(`desktop: could not open a terminal for "${target.name}": ${result.reason}`, { why: 'credits', ok: false });
+    log(`desktop: could not hand ${called(target)} over; the message went to Desktop`, {
+      why: 'credits',
+      ok: false,
+    });
     return 0;
   }
-  log(`desktop: "${target.name}" is past ${account.name}'s plan; continuing it in a terminal`, {
+  log(`desktop: ${called(target)} is past ${account.name}'s plan; continuing it in a terminal`, {
     why: 'credits',
     ok: true,
   });
@@ -453,6 +525,28 @@ export async function desktopHookCommand(
       'It continues in a terminal window on an account with plan room, with your message. Carry on there.',
   );
   return 2;
+}
+
+/** The detached half of a hook's handover: read the process, open the window. */
+export function desktopContinueCommand(
+  context: CliContext,
+  file: string | undefined,
+  deps: DesktopDeps = {},
+): number {
+  if (!file) return 1;
+  const result = runHandoffJob(file, context.ctx, deps);
+  if (!result.ok) {
+    appendEvent(
+      configHome(context.ctx),
+      `desktop: could not open a terminal: ${result.reason}`,
+      Date.now(),
+      {
+        kind: 'desktop-handoff',
+        data: { ok: false },
+      },
+    );
+  }
+  return result.ok ? 0 : 1;
 }
 
 /** Dispatch `ccx desktop [status|handoff|mode|prompt|move|wait]`. */
@@ -477,7 +571,9 @@ export async function desktopCommand(
     case 'wait':
       return waitForDesktop(context, rest[0], opts, deps);
     default:
-      context.out('usage: ccx desktop [status|handoff off|limit|credits|mode fork|same|prompt "<text>"|move [n]]');
+      context.out(
+        'usage: ccx desktop [status|handoff off|limit|credits|mode fork|same|prompt "<text>"|move [n]]',
+      );
       return 1;
   }
 }

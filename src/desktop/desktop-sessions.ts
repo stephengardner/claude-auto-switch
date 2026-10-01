@@ -98,3 +98,8 @@ export function pickConversation(
   const byName = list.filter((c) => c.name.toLowerCase().includes(lower));
   return byName.length === 1 ? (byName[0] as DesktopConversation) : null;
 }
+
+/** How a message names a conversation: its title, or its id when it has none yet. */
+export function called(conv: { name: string; sessionId: string }): string {
+  return conv.name ? `"${conv.name}"` : `conversation ${conv.sessionId.slice(0, 8)}`;
+}

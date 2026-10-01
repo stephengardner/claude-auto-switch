@@ -17,7 +17,8 @@ import type { PathCtx } from '../config/paths.js';
  */
 
 /** The line that marks the file as ccx's. Removing it hands the file to the user. */
-export const SKILL_MARK = '<!-- installed by ccx (claude-auto-switch): `ccx on` keeps this current and `ccx off` removes it -->';
+export const SKILL_MARK =
+  '<!-- installed by ccx (claude-auto-switch): `ccx on` keeps this current and `ccx off` removes it -->';
 
 export const SKILL_TEXT = `---
 name: ccx
