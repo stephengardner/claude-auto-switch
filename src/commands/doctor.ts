@@ -168,7 +168,9 @@ export function auditShim(context: CliContext, deps: DoctorDeps = {}): DoctorChe
       fix: ['ccx on'],
     };
   }
-  const shell = (context.ctx.platform ?? process.platform) === 'win32' ? 'powershell' : 'posix';
+  // By the profile, not the platform: `ccx on --shell powershell` puts the
+  // PowerShell shim into a pwsh profile on macOS and Linux too.
+  const shell = /\.ps1$/i.test(profile) ? 'powershell' : 'posix';
   if (!shimIsCurrent(profile, shell)) {
     return {
       name: 'terminal-shim',

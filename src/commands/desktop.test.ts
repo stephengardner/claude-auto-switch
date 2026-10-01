@@ -115,6 +115,8 @@ function setup(
       handed.push({ target, settings, ...(waitFor !== undefined ? { waitFor } : {}) });
       return { ok: true, via: 'Windows Terminal', script: 'x.ps1', command: [] };
     },
+    // Whatever this machine has: a Linux runner has no terminal program.
+    canOpen: () => true,
     // What a hook hands to the detached ccx.
     schedule: (job) => {
       handed.push({

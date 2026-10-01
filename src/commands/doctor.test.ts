@@ -77,6 +77,16 @@ describe('auditShim', () => {
     expect(auditShim(context(), { resolveShimProfile: () => p }).ok).toBe(true);
   });
 
+  it('judges a shim by the shell its profile is for, on any platform', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cas-docshim-'));
+    const bashrc = path.join(dir, '.bashrc');
+    installShim(bashrc, 'posix');
+    expect(auditShim(context(), { resolveShimProfile: () => bashrc }).ok).toBe(true);
+    const ps1 = profileIn(dir);
+    installShim(ps1, 'powershell');
+    expect(auditShim(context(), { resolveShimProfile: () => ps1 }).ok).toBe(true);
+  });
+
   it('treats a missing shim as informational, not a failure', () => {
     const p = profileIn(mkdtempSync(path.join(tmpdir(), 'cas-docshim-')));
     const r = auditShim(context(), { resolveShimProfile: () => p });
