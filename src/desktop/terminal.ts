@@ -184,6 +184,25 @@ function writeLauncher(file: string, content: string, executable: boolean): void
   if (executable) chmodSync(file, 0o755);
 }
 
+/** The terminal programs tried on Linux, in order, with how each is told what to run. */
+const LINUX_TERMINALS = [
+  ['x-terminal-emulator', ['-e']],
+  ['gnome-terminal', ['--']],
+  ['konsole', ['-e']],
+  ['xterm', ['-e']],
+] as const;
+
+/**
+ * Whether a window can be opened here at all, without opening one. Windows and
+ * macOS always have one; a Linux machine may have no terminal program.
+ */
+export function canOpenTerminal(deps: Pick<TerminalDeps, 'platform' | 'exists'> = {}): boolean {
+  const platform = deps.platform ?? process.platform;
+  if (platform === 'win32' || platform === 'darwin') return true;
+  const exists = deps.exists ?? ((p: string) => onPath(p, platform));
+  return LINUX_TERMINALS.some(([program]) => exists(program));
+}
+
 /** Open a new terminal window running `job`. */
 export function openTerminal(job: TerminalJob, deps: TerminalDeps = {}): TerminalResult {
   const platform = deps.platform ?? process.platform;
@@ -198,12 +217,10 @@ export function openTerminal(job: TerminalJob, deps: TerminalDeps = {}): Termina
     const shell = exists('pwsh.exe') ? 'pwsh.exe' : 'powershell.exe';
     const shellArgs = ['-NoLogo', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', script];
     if (exists('wt.exe')) {
-      // Windows Terminal reads `;` as "and another tab", so none in the title.
-      start(
-        'wt.exe',
-        ['-w', 'new', '--title', job.title.replace(/;/g, ','), shell, ...shellArgs],
-        env,
-      );
+      // Windows Terminal reads `;` as "and another tab", and parses quotes its
+      // own way, so neither goes into the title.
+      const title = job.title.replace(/;/g, ',').replace(/"/g, "'");
+      start('wt.exe', ['-w', 'new', '--title', title, shell, ...shellArgs], env);
       return { ok: true, via: 'Windows Terminal', script };
     }
     // A console program started detached gets a console window of its own.
@@ -228,12 +245,7 @@ export function openTerminal(job: TerminalJob, deps: TerminalDeps = {}): Termina
     );
     return { ok: true, via: 'Terminal', script };
   }
-  for (const [program, prefix] of [
-    ['x-terminal-emulator', ['-e']],
-    ['gnome-terminal', ['--']],
-    ['konsole', ['-e']],
-    ['xterm', ['-e']],
-  ] as const) {
+  for (const [program, prefix] of LINUX_TERMINALS) {
     if (!exists(program)) continue;
     start(program, [...prefix, '/bin/sh', script], env);
     return { ok: true, via: program, script };

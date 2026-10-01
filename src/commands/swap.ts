@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { dashboardCommand } from './dashboard.js';
 import type { StateAccount, StatePayload } from '../dashboard/state-payload.js';
@@ -5,7 +6,7 @@ import { effectiveUtilization } from '../usage/window-open.js';
 import { normalizeModel } from '../usage/model-preference.js';
 import { bar, humanWait } from '../usage/report.js';
 import { codes, paint, shadeForUsed } from '../ui/style.js';
-import { isSessionDir, pidOfSessionDir } from '../session/session-dir.js';
+import { isSessionDir, pidOfSessionDir, processIsAlive } from '../session/session-dir.js';
 import { liveLeases } from '../session/lease.js';
 import { writeSwitchRequest } from '../state/switch-request.js';
 import { setActive } from '../state/active.js';
@@ -19,6 +20,7 @@ import {
 import { desktopAccount } from '../desktop/desktop-app.js';
 import {
   handOff,
+  handedOffRecently,
   readProcessFlags,
   type HandoffDeps,
   type ProcessFlags,
@@ -71,7 +73,11 @@ export function whereAmI(context: CliContext, conversations: () => DesktopConver
   const own = env.CLAUDE_CONFIG_DIR;
   if (own && isSessionDir(own, context.ctx)) {
     const pid = pidOfSessionDir(path.basename(path.resolve(own)));
-    if (pid !== null) {
+    // Variables outlive their session in anything started from inside it (an
+    // editor, a detached shell), so the session must still be there: its own
+    // folder, and a ccx process under its pid. A request written for a pid
+    // nobody holds would be read by whatever starts with that pid next.
+    if (pid !== null && existsSync(own) && processIsAlive(pid)) {
       const lease = liveLeases(context.ctx).find((l) => l.pid === pid);
       return { kind: 'ccx', account: lease?.account ?? null, pid };
     }
@@ -103,8 +109,12 @@ interface Row {
   fiveHour: Window;
   week: Window;
   model: Window | null;
-  /** Share of the tightest window that matters still left, 0..1. */
-  room: number;
+  /**
+   * Share of the tightest window that matters still left, 0..1, from the
+   * windows with numbers; null when none has any, which is not the same as
+   * all of it being free.
+   */
+  room: number | null;
   eligible: boolean;
   here: boolean;
   recommended: boolean;
@@ -151,7 +161,9 @@ export function rankAccounts(state: StatePayload, here: Here): Row[] {
     const fiveHour = windowOf(a.usage?.fiveHour, a.usage?.fiveHourReset, now);
     const week = windowOf(a.usage?.sevenDay, a.usage?.sevenDayReset, now);
     const model = modelWindowOf(a, state.preferredModel, now);
-    const left = [fiveHour, week, ...(model ? [model] : [])].map((w) => 1 - (w.used ?? 0));
+    const left = [fiveHour, week, ...(model ? [model] : [])]
+      .filter((w) => w.used !== null)
+      .map((w) => 1 - (w.used as number));
     const isHere = here.account === a.name;
     const eligible = a.enabled && a.loggedIn && a.status.state === 'ready';
     return {
@@ -159,7 +171,7 @@ export function rankAccounts(state: StatePayload, here: Here): Row[] {
       fiveHour,
       week,
       model,
-      room: eligible ? Math.max(0, Math.min(...left)) : 0,
+      room: !eligible ? 0 : left.length > 0 ? Math.max(0, Math.min(...left)) : null,
       eligible,
       here: isHere,
       recommended: false,
@@ -168,14 +180,18 @@ export function rankAccounts(state: StatePayload, here: Here): Row[] {
   });
   const order = (r: Row): number =>
     r.eligible ? 0 : r.account.status.state === 'blocked' ? 1 : r.account.enabled ? 2 : 3;
+  // An account whose usage could not be read goes after every account that
+  // shows room, and is never the one recommended: unknown is not plenty.
+  const known = (r: Row): number => (r.room === null ? 1 : 0);
   rows.sort(
     (a, b) =>
       order(a) - order(b) ||
-      b.room - a.room ||
+      known(a) - known(b) ||
+      (b.room ?? 0) - (a.room ?? 0) ||
       (a.account.status.until ?? 0) - (b.account.status.until ?? 0) ||
       a.account.name.localeCompare(b.account.name),
   );
-  const best = rows.find((r) => r.eligible && !r.here);
+  const best = rows.find((r) => r.eligible && !r.here && r.room !== null);
   if (best) best.recommended = true;
   return rows;
 }
@@ -291,7 +307,7 @@ export async function swapCommand(
               eligible: r.eligible,
               here: r.here,
               recommended: r.recommended,
-              room: Math.round(r.room * 100) / 100,
+              room: r.room === null ? null : Math.round(r.room * 100) / 100,
               status: r.status,
               card: card(r, state),
             })),
@@ -339,6 +355,14 @@ export async function swapCommand(
       here.pid !== undefined ? conversations().find((c) => c.pid === here.pid) : undefined;
     if (!conv) {
       context.out('Could not find this Desktop conversation to move. Try: ccx desktop move');
+      return 1;
+    }
+    // A second swap in the same reply would open a second window on the same
+    // conversation, and in "same" mode that is two writers to one transcript.
+    if (handedOffRecently(conv.sessionId, context.ctx) !== null) {
+      context.out(
+        'This conversation is already continuing in a terminal window. Carry on there, and send nothing more here.',
+      );
       return 1;
     }
     const flags = (deps.flagsOf ?? readProcessFlags)(conv.pid);

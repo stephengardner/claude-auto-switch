@@ -15,7 +15,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { isLink } from '../daemon/junction.js';
-import { defaultClaudeRoot, realSettingWins } from './shared-root.js';
+import { defaultClaudeRoot, realSettingWins, returnSharedUserFiles } from './shared-root.js';
 
 /**
  * A session directory per running session, instead of one shared by all of them.
@@ -224,8 +224,10 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
     const pid = pidOfSessionDir(name);
     if (pid === null || pid === options.keepPid || isAlive(pid)) continue;
     const dir = path.join(root, name);
-    // Before the delete, not after: the settings go with the directory.
+    // Before the delete, not after: the settings go with the directory, and so
+    // would an edit to the user's memory that only the session still holds.
     preserveSettings(dir, c);
+    returnSharedUserFiles(dir, c);
     if (removeSessionDir(dir)) removed.push(name);
   }
   return removed;
@@ -245,6 +247,7 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
 export function retireLeftoverSessionDir(dir: string, c: PathCtx = {}): boolean {
   if (!existsSync(dir)) return false;
   preserveSettings(dir, c);
+  returnSharedUserFiles(dir, c);
   return removeSessionDir(dir);
 }
 

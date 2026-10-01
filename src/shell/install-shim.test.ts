@@ -64,6 +64,8 @@ describe('shim installer', () => {
     expect(text).not.toContain('ccx run -- @args');
     expect(text).toContain('Set-Alias ll ls');
     expect(text.split('>>> claude-auto-switch shim >>>').length - 1).toBe(1);
+    // Backed up before the old block went, so an edit made inside it is kept.
+    expect(readFileSync(`${p}.cas-backup`, 'utf8')).toContain('ccx run -- @args');
   });
 
   it('falls back to the real claude when ccx is not on PATH', () => {

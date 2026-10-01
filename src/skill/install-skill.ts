@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
@@ -103,7 +103,13 @@ export function removeSkill(c: PathCtx = {}): SkillRemoval {
     const file = skillPath(c);
     if (!existsSync(file)) return 'not-present';
     if (!readFileSync(file, 'utf8').includes(SKILL_MARK)) return 'user-owned';
-    rmSync(path.dirname(file), { recursive: true, force: true });
+    rmSync(file, { force: true });
+    try {
+      // Only ccx's file was ccx's: anything the user put beside it stays, folder and all.
+      rmdirSync(path.dirname(file));
+    } catch {
+      /* not empty */
+    }
     return 'removed';
   } catch {
     return 'failed';

@@ -58,7 +58,12 @@ import {
   forksConversation,
   startsByResuming,
 } from '../launcher/conversation.js';
-import { readResumePrompt, writeResumePrompt, checkResumePrompt } from '../session/resume-prompt.js';
+import {
+  readResumePrompt,
+  writeResumePrompt,
+  checkResumePrompt,
+  checkStartPrompt,
+} from '../session/resume-prompt.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
@@ -236,17 +241,17 @@ export interface HotSwapOptions {
    */
   resumePrompt?: string;
   /**
-   * Submitted once, on the first launch, when the run resumes a conversation:
-   * a message held back from Claude Desktop goes here, while `resumePrompt`
-   * stays the one later swaps resume with. Any length, any number of lines.
+   * Submitted once, on the first launch: a message held back from Claude
+   * Desktop goes here, while `resumePrompt` stays the one later swaps resume
+   * with. Any number of lines, up to START_PROMPT_MAX_CHARS. Delivered even
+   * when the conversation it was meant for cannot be resumed, in the fresh
+   * one started instead, because it is somebody's message and not an
+   * instruction about that conversation.
    */
   startPrompt?: string;
   /** Start on this account rather than the active one (it must be usable). */
   account?: string;
 }
-
-/** The longest start prompt taken: far beyond any message, short of a runaway. */
-const START_PROMPT_MAX_CHARS = 100_000;
 
 export async function runInteractiveHotSwap(
   context: CliContext,
@@ -266,12 +271,15 @@ export async function runInteractiveHotSwap(
   }
   const say = context.err ?? ((m: string) => process.stderr.write(`${m}\n`));
   if (options.startPrompt !== undefined) {
-    const text = options.startPrompt;
-    if (text.trim() === '' || text.length > START_PROMPT_MAX_CHARS || text.includes('\0')) {
-      say('start prompt not used: it must be some text, under 100,000 characters');
+    const checked = checkStartPrompt(options.startPrompt);
+    if (!checked.ok) {
+      say(`start prompt not used: ${checked.reason}`);
       return 1;
     }
   }
+  // Delivered once: on the first launch, or in the fresh conversation started
+  // when that launch finds nothing to resume.
+  let pendingStart: string | null = options.startPrompt ?? null;
   const accounts = listAccounts(context.ctx);
   if (options.account !== undefined) {
     const chosen = accounts.find((a) => a.name === options.account);
@@ -279,7 +287,12 @@ export async function runInteractiveHotSwap(
       say(`no enabled account named "${options.account}" (see: ccx list)`);
       return 1;
     }
+    if (!hasLogin(chosen.dir)) {
+      say(`"${chosen.name}" is not signed in (ccx login ${chosen.name})`);
+      return 1;
+    }
   }
+  let accountChoiceSettled = false;
   const claude = getClaude(context);
   // A directory of this session's OWN, never one shared with other sessions.
   // Starting a session copies the chosen account's login into here, so while
@@ -1084,6 +1097,17 @@ export async function runInteractiveHotSwap(
           (a) => a.enabled && !excluding.has(a.name) && !capped.has(a.name) && hasLogin(a.dir),
         )
         .sort(orderComparator(context.config.rotation.accountOrder, roomOf));
+      // A run told to start on an account that cannot take it is not put
+      // somewhere else in silence. Said once, at the start; moving off it later
+      // is ordinary rotation and says so itself.
+      if (options.account !== undefined && !accountChoiceSettled) {
+        accountChoiceSettled = true;
+        if (!eligible.some((a) => a.name === options.account)) {
+          notice(
+            `"${options.account}" cannot take this run (${capped.has(options.account) ? 'it is out of usage' : 'it cannot be used right now'}); starting on the account with the most room instead`,
+          );
+        }
+      }
       // Start on the pinned account if it is still eligible, else the chosen order.
       const ordered = pinned
         ? [...eligible.filter((a) => a.name === pinned), ...eligible.filter((a) => a.name !== pinned)]
@@ -1461,12 +1485,12 @@ export async function runInteractiveHotSwap(
               data: { applied: false },
             });
           }
-        } else if ((options.startPrompt ?? startPrompt) !== null && startsByResuming(modelArgs)) {
-          // Started armed AND resuming a conversation: picking it up is exactly
-          // the moment the prompt is for, so the very first launch gets it. A
-          // start prompt of its own (a message held back from Desktop) goes
-          // first; the armed one is for the swaps after.
-          const first = (options.startPrompt ?? startPrompt) as string;
+        } else if (pendingStart !== null || (startPrompt !== null && startsByResuming(modelArgs))) {
+          // A start prompt of its own (a message held back from Desktop) goes
+          // on the first launch, whatever it starts. The armed one only when
+          // that launch picks a conversation up, which is exactly the moment it
+          // is for; after that it is for the swaps.
+          const first = pendingStart ?? (startPrompt as string);
           const placed = withResumePrompt(modelArgs, first);
           runArgs = placed.args;
           if (placed.applied) appliedPrompt = first;
@@ -1478,6 +1502,9 @@ export async function runInteractiveHotSwap(
           );
         }
         let outcome = await runPtySession({ ...base, args: runArgs });
+        // Taken by this launch, unless it found nothing to resume (below).
+        const carried = pendingStart;
+        pendingStart = null;
         // A fork swapped before its first message: the copy is only saved with
         // that message, so there is nothing under its name to resume yet. Copy
         // it again under the same name rather than starting empty, which would
@@ -1514,7 +1541,12 @@ export async function runInteractiveHotSwap(
           // swap arriving before the new session's first status line would
           // resume that dead id all over again.
           rememberReport(sessionDir, { id: fresh.id });
-          return await runPtySession({ ...base, args: fresh.args });
+          // The armed prompt was written for the conversation that is gone; a
+          // held message was not, and dropping it here would lose it outright.
+          return await runPtySession({
+            ...base,
+            args: carried !== null ? withResumePrompt(fresh.args, carried).args : fresh.args,
+          });
         }
         // A model-scoped limit is remembered against THIS ACCOUNT and handed
         // back to the swap loop, which asks the planner what to do next. It

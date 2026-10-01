@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -8,8 +15,10 @@ import {
   handedOffRecently,
   HANDOFF_QUIET_MS,
   lastModelIn,
+  launchSpec,
   parseFlags,
   permissionArgs,
+  readLaunchSpec,
   recordHandoff,
   runHandoffJob,
   scheduleHandoff,
@@ -71,6 +80,30 @@ describe('carrying a Desktop conversation on through ccx', () => {
     ]);
   });
 
+  it('keeps a held message out of every command line, quotes, lines, length and all', () => {
+    // Windows PowerShell 5.1 splits an argument with a double quote in it when
+    // it starts a program, so the message travels in the launch file instead.
+    const message = 'fix "the foo" test and "bar baz" too\n- then push';
+    const c = {
+      env: { CLAUDE_AUTO_SWITCH_HOME: mkdtempSync(path.join(tmpdir(), 'cas-handoff-q-')) },
+    };
+    const scripts: string[] = [];
+    const result = handOff(target, { mode: 'fork', prompt: 'Carry on.', startPrompt: message }, c, {
+      platform: 'win32',
+      ccx: { node: 'node', cli: 'cli.js' },
+      exists: () => false,
+      start: () => {},
+      writeScript: (_f, content) => scripts.push(content),
+    });
+    expect(result.ok).toBe(true);
+    expect(scripts[0]).not.toContain('the foo');
+    const launch = path.join(c.env.CLAUDE_AUTO_SWITCH_HOME, 'handoffs', `${ID}.launch.json`);
+    expect(JSON.parse(readFileSync(launch, 'utf8'))).toEqual(
+      launchSpec(target, { mode: 'fork', prompt: 'Carry on.', startPrompt: message }),
+    );
+    expect(readLaunchSpec(launch)?.startPrompt).toBe(message);
+  });
+
   it('reads model, effort and permission mode off the command line Desktop started it with', () => {
     // Taken from a live Desktop session, trimmed.
     const line =
@@ -119,7 +152,23 @@ describe('handing over', () => {
       path.join(c.env.CLAUDE_AUTO_SWITCH_HOME as string, 'handoffs', `${ID}.ps1`),
     );
     expect(scripts[0]?.content).toContain("'desktop' 'wait' '4242'");
-    expect(scripts[0]?.content).toContain("'--fork-session'");
+    // What to run is in a file beside it, not on the launcher's command line.
+    const launch = path.join(
+      c.env.CLAUDE_AUTO_SWITCH_HOME as string,
+      'handoffs',
+      `${ID}.launch.json`,
+    );
+    expect(scripts[0]?.content).toContain(`'desktop-run' '${launch}'`);
+    expect(readLaunchSpec(launch)?.claudeArgs).toEqual([
+      '--resume',
+      ID,
+      '--fork-session',
+      '--model',
+      'claude-opus-5-5',
+      '--effort',
+      'max',
+      '--dangerously-skip-permissions',
+    ]);
     expect(handedOffRecently(ID, c, 1_000 + 60_000)).toBe(1_000);
     expect(handedOffRecently(ID, c, 1_000 + HANDOFF_QUIET_MS + 1)).toBeNull();
   });

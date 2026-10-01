@@ -58,21 +58,71 @@ export function permissionArgs(mode: string | null | undefined): string[] {
   return ['--permission-mode', mode];
 }
 
-/** The `ccx run` arguments that carry the conversation on. */
+/**
+ * What carries the conversation on: `ccx run`'s options and Claude's own
+ * arguments. Written to a file that the launcher hands to ccx, rather than
+ * spelled out on the launcher's command line. Windows PowerShell 5.1 splits an
+ * argument with a double quote in it when it calls a program, and a whole
+ * command line is capped at 32,767 characters, and a held message can run into
+ * either one.
+ */
+export interface LaunchSpec {
+  account?: string;
+  resumePrompt: string;
+  startPrompt?: string;
+  claudeArgs: string[];
+}
+
+const LaunchSpecSchema = z.object({
+  account: z.string().min(1).optional(),
+  resumePrompt: z.string(),
+  startPrompt: z.string().optional(),
+  claudeArgs: z.array(z.string()),
+});
+
+export function launchSpec(target: HandoffTarget, settings: HandoffSettings): LaunchSpec {
+  return {
+    ...(settings.account ? { account: settings.account } : {}),
+    resumePrompt: settings.prompt,
+    ...(settings.startPrompt ? { startPrompt: settings.startPrompt } : {}),
+    claudeArgs: [
+      '--resume',
+      target.sessionId,
+      ...(settings.mode === 'fork' ? ['--fork-session'] : []),
+      ...(target.model ? ['--model', target.model] : []),
+      ...(target.effort ? ['--effort', target.effort] : []),
+      ...permissionArgs(target.permissionMode),
+    ],
+  };
+}
+
+/** A launch spec handOff wrote, or null when the file is missing or not one. */
+export function readLaunchSpec(file: string): LaunchSpec | null {
+  try {
+    const parsed = LaunchSpecSchema.safeParse(JSON.parse(readFileSync(file, 'utf8')));
+    if (!parsed.success) return null;
+    const { account, startPrompt, ...rest } = parsed.data;
+    return {
+      ...rest,
+      ...(account !== undefined ? { account } : {}),
+      ...(startPrompt !== undefined ? { startPrompt } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** The same as the `ccx run` command someone could type, shown by `--dry-run`. */
 export function continuationArgs(target: HandoffTarget, settings: HandoffSettings): string[] {
+  const spec = launchSpec(target, settings);
   return [
     'run',
-    ...(settings.account ? ['--account', settings.account] : []),
+    ...(spec.account ? ['--account', spec.account] : []),
     '--resume-prompt',
-    settings.prompt,
-    ...(settings.startPrompt ? ['--start-prompt', settings.startPrompt] : []),
+    spec.resumePrompt,
+    ...(spec.startPrompt ? ['--start-prompt', spec.startPrompt] : []),
     '--',
-    '--resume',
-    target.sessionId,
-    ...(settings.mode === 'fork' ? ['--fork-session'] : []),
-    ...(target.model ? ['--model', target.model] : []),
-    ...(target.effort ? ['--effort', target.effort] : []),
-    ...permissionArgs(target.permissionMode),
+    ...spec.claudeArgs,
   ];
 }
 
@@ -240,11 +290,17 @@ export function handOff(
 ): HandoffResult {
   const now = (deps.now ?? (() => Date.now()))();
   const ccx = deps.ccx ?? thisCcx();
-  const command = [ccx.node, ccx.cli, ...continuationArgs(target, settings)];
   const title = `ccx: ${target.name || target.sessionId.slice(0, 8)}`;
   const scriptDir = path.join(configHome(c), 'handoffs');
   // File ages are real time, whatever clock the caller keeps.
   sweepHandoffFiles(scriptDir, Date.now());
+  const launchFile = path.join(scriptDir, `${target.sessionId}.launch.json`);
+  try {
+    writeJsonFile(launchFile, launchSpec(target, settings));
+  } catch (error) {
+    return { ok: false, reason: `could not write ${launchFile}: ${(error as Error).message}` };
+  }
+  const command = [ccx.node, ccx.cli, 'desktop-run', launchFile];
   const result: TerminalResult = openTerminal(
     {
       cwd: target.cwd,

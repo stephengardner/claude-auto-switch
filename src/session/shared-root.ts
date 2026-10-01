@@ -85,10 +85,47 @@ export function ensureSharedDir(sessionDir: string, name: string, c: PathCtx = {
 const SHARED_DIRS = ['skills', 'agents', 'commands', 'output-styles'];
 /**
  * Files are hard links where the volume allows, so an edit made inside a
- * session (`/memory`) lands in the user's own file. A copy otherwise, which a
- * session still reads correctly, it just keeps its edits to itself.
+ * session (`/memory`) lands in the user's own file. A copy otherwise. Either
+ * way returnSharedUserFiles hands back what only the session ended up holding.
  */
 const SHARED_FILES = ['CLAUDE.md', 'keybindings.json'];
+
+/**
+ * Hand back what a session changed in the user's own files, before its folder
+ * is removed. A hard link shares an edit made in place, but an editor that
+ * saves by writing a new file and renaming it over the old one leaves the
+ * session holding the only copy, and so does a copy where links were refused,
+ * and a CLAUDE.md first written inside a session (a memory saved there) was
+ * never linked at all. A file that is newer than the user's and differs from
+ * it, or that the user has none of, goes back; one that is still the same
+ * file, or older, or identical, is left alone.
+ */
+export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): void {
+  let root: string;
+  try {
+    root = defaultClaudeRoot(c);
+  } catch {
+    return;
+  }
+  for (const name of SHARED_FILES) {
+    const from = path.join(sessionDir, name);
+    const to = path.join(root, name);
+    try {
+      if (!existsSync(from)) continue;
+      if (existsSync(to)) {
+        const mine = statSync(from, { bigint: true });
+        const theirs = statSync(to, { bigint: true });
+        if (mine.ino === theirs.ino && mine.dev === theirs.dev) continue; // still one file
+        if (mine.mtimeMs <= theirs.mtimeMs) continue;
+        if (readFileSync(from).equals(readFileSync(to))) continue;
+      }
+      mkdirSync(root, { recursive: true });
+      copyFileSync(from, to);
+    } catch {
+      /* best effort: the session's copy goes with its folder */
+    }
+  }
+}
 
 export function ensureSharedUserConfig(sessionDir: string, c: PathCtx = {}): void {
   for (const name of SHARED_DIRS) ensureSharedDir(sessionDir, name, c);

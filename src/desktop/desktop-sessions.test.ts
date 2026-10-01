@@ -39,7 +39,7 @@ const desktop = (
 describe("Claude Desktop's open conversations", () => {
   it('reads them from the records Claude keeps, Desktop ones only', () => {
     const ctx = home([
-      desktop(100, A, { name: 'Schema review', status: 'idle', statusUpdatedAt: 5 }),
+      desktop(100, A, { name: 'Schema review', status: 'idle', statusUpdatedAt: 5, startedAt: 2 }),
       { pid: 200, sessionId: B, cwd: 'C:\\x', entrypoint: 'cli' }, // a terminal session
     ]);
     const found = liveDesktopConversations(ctx, () => true);
@@ -51,6 +51,7 @@ describe("Claude Desktop's open conversations", () => {
         name: 'Schema review',
         status: 'idle',
         statusSince: 5,
+        startedAt: 2,
       },
     ]);
   });
@@ -66,13 +67,20 @@ describe("Claude Desktop's open conversations", () => {
     expect(liveDesktopConversations(ctx, (pid) => pid !== 100)).toEqual([]);
   });
 
-  it('puts the busy ones first, then the most recently active', () => {
-    const ctx = home([
-      desktop(1, A, { status: 'idle', statusUpdatedAt: 300 }),
-      desktop(2, B, { status: 'busy', statusUpdatedAt: 100 }),
-      desktop(3, C, { status: 'idle', statusUpdatedAt: 900 }),
+  it('lists the newest first, in an order a turn starting or stopping does not move', () => {
+    const records = [
+      desktop(1, A, { status: 'idle', statusUpdatedAt: 300, startedAt: 10 }),
+      desktop(2, B, { status: 'busy', statusUpdatedAt: 100, startedAt: 30 }),
+      desktop(3, C, { status: 'idle', statusUpdatedAt: 900, startedAt: 20 }),
+    ];
+    expect(liveDesktopConversations(home(records), () => true).map((c) => c.pid)).toEqual([
+      2, 3, 1,
     ]);
-    expect(liveDesktopConversations(ctx, () => true).map((c) => c.pid)).toEqual([2, 3, 1]);
+    // Conversation 1 starts a turn: "ccx desktop move 3" must still mean it.
+    const busier = records.map((r) =>
+      r.pid === 1 ? { ...r, status: 'busy', statusUpdatedAt: 999 } : r,
+    );
+    expect(liveDesktopConversations(home(busier), () => true).map((c) => c.pid)).toEqual([2, 3, 1]);
   });
 
   it('is empty when Claude has never run here', () => {
@@ -90,6 +98,7 @@ describe('picking one', () => {
       name: 'Database schema review',
       status: 'busy',
       statusSince: null,
+      startedAt: null,
     },
     {
       pid: 2,
@@ -98,6 +107,7 @@ describe('picking one', () => {
       name: 'react-ifying the builder',
       status: 'idle',
       statusSince: null,
+      startedAt: null,
     },
     {
       pid: 3,
@@ -106,6 +116,7 @@ describe('picking one', () => {
       name: 'Database schema review (fork)',
       status: 'idle',
       statusSince: null,
+      startedAt: null,
     },
   ];
 

@@ -68,14 +68,14 @@ export function shimIsCurrent(profilePath: string, shell: ShellKind): boolean {
  * replaced in place, so a fix to the shim reaches everyone who runs `ccx on`.
  */
 export function installShim(profilePath: string, shell: ShellKind): 'installed' | 'already-present' {
-  if (isShimInstalled(profilePath)) {
-    if (shimIsCurrent(profilePath, shell)) return 'already-present';
-    uninstallShim(profilePath); // outdated block: replace with the current one
-  }
+  if (isShimInstalled(profilePath) && shimIsCurrent(profilePath, shell)) return 'already-present';
+  // Backed up before anything changes, the outdated block included, so an edit
+  // somebody made inside it is still in the backup.
+  if (existsSync(profilePath)) copyFileSync(profilePath, `${profilePath}.cas-backup`);
+  if (isShimInstalled(profilePath)) uninstallShim(profilePath); // outdated: replaced below
 
   mkdirSync(path.dirname(profilePath), { recursive: true });
   const existing = existsSync(profilePath) ? readFileSync(profilePath, 'utf8') : '';
-  if (existsSync(profilePath)) copyFileSync(profilePath, `${profilePath}.cas-backup`);
 
   const block = shimBlock(shell);
   const next = existing.trim().length > 0 ? `${existing.trimEnd()}\n\n${block}\n` : `${block}\n`;

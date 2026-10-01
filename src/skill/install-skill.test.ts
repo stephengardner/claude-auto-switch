@@ -46,4 +46,15 @@ describe('the /ccx skill', () => {
     expect(existsSync(path.dirname(skillPath(ctx)))).toBe(false);
     expect(removeSkill(ctx)).toBe('not-present');
   });
+
+  it('takes away only its own file, never what the user put beside it', () => {
+    const ctx = home();
+    installSkill(ctx);
+    const theirs = path.join(path.dirname(skillPath(ctx)), 'references', 'notes.md');
+    mkdirSync(path.dirname(theirs), { recursive: true });
+    writeFileSync(theirs, 'mine');
+    expect(removeSkill(ctx)).toBe('removed');
+    expect(existsSync(skillPath(ctx))).toBe(false);
+    expect(readFileSync(theirs, 'utf8')).toBe('mine');
+  });
 });

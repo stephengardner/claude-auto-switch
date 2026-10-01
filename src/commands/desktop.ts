@@ -7,11 +7,14 @@ import { appendEvent } from '../events/log.js';
 import { usageConstraints, type Constraint } from '../dashboard/account-status.js';
 import { readUsageSnapshot, refreshUsage, type UsageEntry } from '../usage/usage-store.js';
 import { humanWait } from '../usage/report.js';
-import { checkResumePrompt } from '../session/resume-prompt.js';
+import { checkResumePrompt, checkStartPrompt } from '../session/resume-prompt.js';
 import { defaultClaudeRoot } from '../session/shared-root.js';
-import { processIsAlive } from '../session/session-dir.js';
+import { hasLogin } from '../accounts/account-login.js';
+import { cappedNames, loadLedger } from '../ledger/ledger.js';
+import { runCommand } from './run.js';
 import {
   called,
+  isClaudeProcess,
   liveDesktopConversations,
   pickConversation,
   type DesktopConversation,
@@ -22,6 +25,7 @@ import {
   handOff,
   handedOffRecently,
   lastModelIn,
+  readLaunchSpec,
   readProcessFlags,
   runHandoffJob,
   scheduleHandoff,
@@ -34,7 +38,7 @@ import {
 } from '../desktop/handoff.js';
 import type { PathCtx } from '../config/paths.js';
 import { installDesktopHooks, readInstalledHandoff, type HandoffWhen } from '../desktop/hooks.js';
-import { pasteable } from '../desktop/terminal.js';
+import { canOpenTerminal, pasteable } from '../desktop/terminal.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -52,6 +56,10 @@ export interface DesktopDeps extends HandoffDeps {
   handOff?: typeof handOff;
   /** Where a hook leaves the handover to a detached ccx. Injected in tests. */
   schedule?: (job: HandoffJob, c: PathCtx) => boolean;
+  /** Whether a terminal window can be opened here. Injected in tests. */
+  canOpen?: () => boolean;
+  /** What a launcher's `desktop-run` runs. Injected in tests. */
+  run?: typeof runCommand;
   /** Usage for one account, refreshed when stale. Injected in tests. */
   usageOf?: (account: {
     name: string;
@@ -188,6 +196,11 @@ function saveDesktop(context: CliContext, change: Partial<CliContext['config']['
   saveConfig({ ...onDisk, desktop: { ...onDisk.desktop, ...change } }, context.ctx);
 }
 
+/** The setting after `current`, for a key that steps through them: off, limit, credits. */
+export function nextHandoff(current: HandoffWhen): HandoffWhen {
+  return current === 'off' ? 'limit' : current === 'limit' ? 'credits' : 'off';
+}
+
 export function setHandoff(context: CliContext, value: string | undefined): number {
   const when = value as HandoffWhen;
   if (!['off', 'limit', 'credits'].includes(when)) {
@@ -246,6 +259,21 @@ function settingsFor(context: CliContext, to?: string, startPrompt?: string): Ha
   };
 }
 
+/**
+ * Why a conversation cannot be moved to `name`, or null when it can. Checked
+ * up front, because a run told to start on an account that cannot take it
+ * starts on another one, and the window would not say why.
+ */
+function accountRefusal(context: CliContext, name: string): string | null {
+  const account = listAccounts(context.ctx).find((a) => a.name === name);
+  if (!account || !account.enabled) return `no enabled account named "${name}" (see: ccx list)`;
+  if (!hasLogin(account.dir)) return `"${name}" is not signed in (ccx login ${name})`;
+  if (cappedNames(loadLedger(context.ctx), Date.now()).has(name)) {
+    return `"${name}" is out of usage right now; ccx swap shows which accounts have room`;
+  }
+  return null;
+}
+
 function report(
   context: CliContext,
   result: HandoffResult,
@@ -292,9 +320,12 @@ export async function moveConversation(
     );
     return 1;
   }
-  if (opts.to && !listAccounts(context.ctx).some((a) => a.name === opts.to && a.enabled)) {
-    context.out(`no enabled account named "${opts.to}" (see: ccx list)`);
-    return 1;
+  if (opts.to) {
+    const refusal = accountRefusal(context, opts.to);
+    if (refusal) {
+      context.out(refusal);
+      return 1;
+    }
   }
   if (conv.status === 'busy' && !opts.wait) {
     context.out(
@@ -370,7 +401,9 @@ async function waitForDesktop(
     context.out('usage: ccx desktop wait <pid>');
     return 1;
   }
-  const isAlive = deps.isAlive ?? processIsAlive;
+  // A Claude process, not merely a live pid: a record left "busy" by one that
+  // was killed, its pid since given to something else, would hold this for an hour.
+  const isAlive = deps.isAlive ?? isClaudeProcess;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const minutes = Number(opts.timeout ?? 60);
   const deadline = Date.now() + (Number.isFinite(minutes) && minutes > 0 ? minutes : 60) * 60_000;
@@ -503,11 +536,17 @@ export async function desktopHookCommand(
     return 2;
   }
   const message = typeof payload.prompt === 'string' ? payload.prompt : '';
-  const settings = settingsFor(
-    context,
-    undefined,
-    message.trim() !== '' && message.length <= 100_000 ? message : undefined,
-  );
+  // Held only when it can be carried over: a message too long for a command
+  // line, or a machine with no terminal to open, would be lost, not saved.
+  const carry = checkStartPrompt(message);
+  if (!carry.ok || !(deps.canOpen ?? canOpenTerminal)()) {
+    log(
+      `desktop: ${called(target)} is past ${account.name}'s plan, but the message went to Desktop: ${carry.ok ? 'there is no terminal program to open here' : `it could not be carried over (${carry.reason})`}`,
+      { why: 'credits', ok: false },
+    );
+    return 0;
+  }
+  const settings = settingsFor(context, undefined, message);
   if (!schedule(settings)) {
     // Holding the message with nowhere to send it would strand it; let it through.
     log(`desktop: could not hand ${called(target)} over; the message went to Desktop`, {
@@ -525,6 +564,27 @@ export async function desktopHookCommand(
       'It continues in a terminal window on an account with plan room, with your message. Carry on there.',
   );
   return 2;
+}
+
+/**
+ * `ccx desktop-run <file>`: what a handover's window runs. The file says what
+ * `ccx run` would be told; see LaunchSpec for why it is a file.
+ */
+export async function desktopRunCommand(
+  context: CliContext,
+  file: string | undefined,
+  deps: DesktopDeps = {},
+): Promise<number> {
+  const spec = file ? readLaunchSpec(file) : null;
+  if (!spec) {
+    context.out(`ccx: could not read what to run from ${file ?? '(nothing given)'}`);
+    return 1;
+  }
+  return (deps.run ?? runCommand)(context, spec.claudeArgs, {
+    resumePrompt: spec.resumePrompt,
+    ...(spec.startPrompt !== undefined ? { startPrompt: spec.startPrompt } : {}),
+    ...(spec.account !== undefined ? { account: spec.account } : {}),
+  });
 }
 
 /** The detached half of a hook's handover: read the process, open the window. */

@@ -311,7 +311,20 @@ export function withResumePrompt(relaunch: string[], prompt: string): ResumeProm
       reason: 'this run was launched with a prompt of its own, and Claude takes only one',
     };
   }
-  return { applied: true, args: [...relaunch, prompt] };
+  return { applied: true, args: [...relaunch, promptOperand(prompt)] };
+}
+
+/**
+ * A prompt as Claude's operand, read as nothing else.
+ *
+ * Claude reads an operand that starts with "-" as an option and refuses to
+ * start, and one that is a single word naming a subcommand ("mcp", "update")
+ * as that subcommand, even after "--" (measured against 2.1.284). A leading
+ * space defeats both, and the model never notices it. Anything else is passed
+ * exactly as written, so a prompt like "/compact" still runs as a command.
+ */
+export function promptOperand(prompt: string): string {
+  return /^-/.test(prompt) || /^[A-Za-z][\w-]*$/.test(prompt) ? ` ${prompt}` : prompt;
 }
 
 /**

@@ -28,7 +28,7 @@ import { daemonCommand } from './commands/daemon.js';
 import {
   desktopCommand,
   desktopContinueCommand,
-  desktopHookCommand,
+  desktopRunCommand,
   type DesktopOptions,
 } from './commands/desktop.js';
 import { swapCommand } from './commands/swap.js';
@@ -361,18 +361,20 @@ program
     process.exitCode = await swapCommand(ctx, name, { json: ctx.json });
   });
 
-// Run by Claude Desktop's sessions, through the hooks `ccx desktop handoff` installs.
-program
-  .command('desktop-hook <event>', { hidden: true })
-  .action(async (event: string) => {
-    process.exitCode = await desktopHookCommand(context(), event);
-  });
-
-// Started detached by that hook, to do the slow half after it has returned.
+// The hooks `ccx desktop handoff` installs run dist/desktop/hook-entry.js, not
+// this file, so the sessions that are not Desktop's never load ccx. These are
+// the two steps after it: started detached by the hook, to do the slow half
+// once it has returned, and then what the window that opens runs.
 program
   .command('desktop-continue <job>', { hidden: true })
   .action((job: string) => {
     process.exitCode = desktopContinueCommand(context(), job);
+  });
+
+program
+  .command('desktop-run <file>', { hidden: true })
+  .action(async (file: string) => {
+    process.exitCode = await desktopRunCommand(context(), file);
   });
 
 async function main(): Promise<void> {

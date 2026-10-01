@@ -29,6 +29,29 @@ export const RESUME_PROMPT_FILE = 'resume-prompt.txt';
 /** Long enough for a real instruction, short enough to stay a sane argument. */
 export const RESUME_PROMPT_MAX_CHARS = 2000;
 
+/**
+ * The longest start prompt taken. It becomes one argument on Claude's command
+ * line, Windows caps a whole command line at 32,767 characters, and a quote in
+ * the text takes two once it is escaped: 15,000 fits, with room for the rest.
+ */
+export const START_PROMPT_MAX_CHARS = 15_000;
+
+/**
+ * A start prompt is somebody's own message, so it is kept exactly as written,
+ * lines and all, or refused with the reason: never trimmed into something else.
+ */
+export function checkStartPrompt(text: string): { ok: true } | { ok: false; reason: string } {
+  if (text.trim() === '') return { ok: false, reason: 'it is empty' };
+  if (text.includes('\0')) return { ok: false, reason: 'it contains a NUL character' };
+  if (text.length > START_PROMPT_MAX_CHARS) {
+    return {
+      ok: false,
+      reason: `it is ${text.length} characters, more than the ${START_PROMPT_MAX_CHARS} one command line can carry`,
+    };
+  }
+  return { ok: true };
+}
+
 export type ResumePromptCheck = { ok: true; prompt: string } | { ok: false; reason: string };
 
 export type ResumePromptRead = { armed: true; prompt: string } | { armed: false; invalid?: string };

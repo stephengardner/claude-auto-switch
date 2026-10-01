@@ -1,10 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { desktopCommand, desktopHookCommand, type DesktopDeps } from './desktop.js';
+import {
+  desktopCommand,
+  desktopHookCommand,
+  desktopRunCommand,
+  nextHandoff,
+  type DesktopDeps,
+} from './desktop.js';
 import { addAccount } from '../accounts/registry.js';
 import { loadConfig, saveConfig } from '../config/config.js';
+import { loadLedger, markCapped, saveLedger } from '../ledger/ledger.js';
 import { readInstalledHandoff } from '../desktop/hooks.js';
 import type { DesktopConversation } from '../desktop/desktop-sessions.js';
 import { scheduleHandoff, type HandoffSettings, type HandoffTarget } from '../desktop/handoff.js';
@@ -60,6 +67,7 @@ function setup(
       path.join(dir, '.claude.json'),
       JSON.stringify({ oauthAccount: { accountUuid: uuid } }),
     );
+    writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ account: name }));
     addAccount({ name, dir }, ctx);
   }
   if (options.handoff) saveConfig({ desktop: { handoff: options.handoff } }, ctx);
@@ -87,6 +95,7 @@ function setup(
           name: 'Schema review',
           status: 'idle',
           statusSince: null,
+          startedAt: null,
         },
       ],
     flagsOf: () => ({
@@ -245,6 +254,29 @@ describe('the hook Claude Desktop runs before sending a message', () => {
     s.deps.schedule = () => false;
     expect(await desktopHookCommand(s.context, 'prompt', s.deps)).toBe(0);
   });
+
+  it('lets through a message too long to carry over, rather than hold it and lose it', async () => {
+    const s = setup({
+      handoff: 'credits',
+      entrypoint: 'claude-desktop',
+      payload: { ...MESSAGE, prompt: 'x'.repeat(15_001) },
+      spent: true,
+    });
+    expect(await desktopHookCommand(s.context, 'prompt', s.deps)).toBe(0);
+    expect(s.handed).toHaveLength(0);
+  });
+
+  it('lets the message through where no terminal can be opened to carry it on', async () => {
+    const s = setup({
+      handoff: 'credits',
+      entrypoint: 'claude-desktop',
+      payload: MESSAGE,
+      spent: true,
+    });
+    s.deps.canOpen = () => false;
+    expect(await desktopHookCommand(s.context, 'prompt', s.deps)).toBe(0);
+    expect(s.handed).toHaveLength(0);
+  });
 });
 
 describe('ccx desktop move', () => {
@@ -255,6 +287,7 @@ describe('ccx desktop move', () => {
     name: 'Schema review',
     status: 'busy',
     statusSince: null,
+    startedAt: null,
   };
 
   it('refuses a conversation Desktop is still working on, unless told to wait', async () => {
@@ -273,6 +306,25 @@ describe('ccx desktop move', () => {
     expect(s.handed[0]?.settings.account).toBe('osa');
   });
 
+  it('refuses an account that could not take it, instead of starting somewhere else unsaid', async () => {
+    const s = setup({ conversations: [{ ...busy, status: 'idle' }] });
+    const home = s.context.ctx.env?.HOME as string;
+    saveLedger(
+      markCapped(loadLedger(s.context.ctx), {
+        account: 'osa',
+        now: Date.now(),
+        backoffMinutes: 60,
+      }),
+      s.context.ctx,
+    );
+    expect(await desktopCommand(s.context, 'move', ['1'], { to: 'osa' }, s.deps)).toBe(1);
+    expect(s.said.join(' ')).toMatch(/"osa" is out of usage/);
+    rmSync(path.join(home, 'profiles', 'stephen', '.credentials.json'));
+    expect(await desktopCommand(s.context, 'move', ['1'], { to: 'stephen' }, s.deps)).toBe(1);
+    expect(s.said.join(' ')).toMatch(/"stephen" is not signed in/);
+    expect(s.handed).toHaveLength(0);
+  });
+
   it('shows what it would run, without running it', async () => {
     const s = setup({ conversations: [{ ...busy, status: 'idle' }] });
     expect(await desktopCommand(s.context, 'move', ['1'], { dryRun: true }, s.deps)).toBe(0);
@@ -281,7 +333,55 @@ describe('ccx desktop move', () => {
   });
 });
 
+describe('ccx desktop-run: what the window runs', () => {
+  it('reads what to run from the file, so no text passes through a command line', async () => {
+    const s = setup();
+    const file = path.join(mkdtempSync(path.join(tmpdir(), 'cas-desk-run-')), 'x.launch.json');
+    const message = 'fix "the foo" test; then\n- push';
+    writeFileSync(
+      file,
+      JSON.stringify({
+        account: 'osa',
+        resumePrompt: 'Carry on.',
+        startPrompt: message,
+        claudeArgs: ['--resume', CONV, '--fork-session'],
+      }),
+    );
+    const ran: Array<{ args: string[]; options: unknown }> = [];
+    s.deps.run = (_context, args, options) => {
+      ran.push({ args, options });
+      return Promise.resolve(0);
+    };
+    expect(await desktopRunCommand(s.context, file, s.deps)).toBe(0);
+    expect(ran[0]).toEqual({
+      args: ['--resume', CONV, '--fork-session'],
+      options: { resumePrompt: 'Carry on.', startPrompt: message, account: 'osa' },
+    });
+  });
+
+  it('refuses a file that is not a launch, and runs nothing', async () => {
+    const s = setup();
+    const file = path.join(mkdtempSync(path.join(tmpdir(), 'cas-desk-run-')), 'x.launch.json');
+    writeFileSync(file, JSON.stringify({ claudeArgs: 'not a list' }));
+    let ran = false;
+    s.deps.run = () => {
+      ran = true;
+      return Promise.resolve(0);
+    };
+    expect(await desktopRunCommand(s.context, file, s.deps)).toBe(1);
+    expect(ran).toBe(false);
+  });
+});
+
 describe('ccx desktop settings', () => {
+  it('the dashboard key steps off, limit, credits, and round again', () => {
+    expect([nextHandoff('off'), nextHandoff('limit'), nextHandoff('credits')]).toEqual([
+      'limit',
+      'credits',
+      'off',
+    ]);
+  });
+
   it('installs the hooks the choice needs, and keeps the choice', async () => {
     const s = setup();
     expect(await desktopCommand(s.context, 'handoff', ['credits'], {}, s.deps)).toBe(0);

@@ -24,8 +24,12 @@ semantic versioning.
   message sent in Desktop once its account is past its plan, so it continues in
   a terminal on an account with room, with that message, instead of spending
   usage credits. Both work through Claude Code hooks in `~/.claude/settings.json`,
-  which ccx adds and removes; every other session skips them with a shell test,
-  before ccx even starts.
+  which ccx adds and removes. They run node on a small ccx script directly, with
+  no shell, so they behave the same under Git Bash or PowerShell, and every
+  session that is not Desktop's is gone before ccx is loaded. A held message is
+  handed to the terminal in a file, never on a command line, so quotes and
+  length survive Windows PowerShell; one too long for Claude's own command line
+  (over 15,000 characters) goes to Desktop as usual instead of being held.
 - **`/ccx` and `ccx swap`: every account at a glance, and a swap from inside
   Claude.** `ccx on` adds a `/ccx` skill. It shows each account's 5-hour, weekly
   and model usage as bars, what is spent and when it comes back, and the account
@@ -36,8 +40,11 @@ semantic versioning.
 - **The dashboard shows Claude Desktop**: which account it spends and what is
   open there, with keys to change when conversations move (`d`), copy or same
   (`m`), the carry-on text (`t`), and to move one (`D`).
-- `ccx run --account <name>` starts on that account; `--start-prompt <text>`
-  sends a first message before the armed prompt takes over.
+- `ccx run --account <name>` starts on that account (a signed-out one is
+  refused, and one out of usage is said so before another is used);
+  `--start-prompt <text>` sends a first message, before the armed prompt takes
+  over, in a resumed conversation or a new one alike, and still in the new one
+  started when the conversation to resume is not there.
 
 ### Fixed
 
@@ -45,14 +52,24 @@ semantic versioning.
   memory and keybindings.** A ccx session runs on a config folder of its own so
   its login can be swapped, and only `projects` was shared with `~/.claude`, so
   everything else there was missing from every ccx session. Folders are now
-  linked like `projects`, and files hard-linked where the drive allows.
+  linked like `projects`, and files hard-linked where the drive allows. An edit
+  that only the session ended up holding (an editor that saves by replacing the
+  file, or a memory first written there) goes back to yours when the session's
+  folder is cleared.
+- **A prompt ccx hands Claude is always read as a prompt.** One that started
+  with `-` stopped Claude starting, and one that was a single word naming a
+  Claude subcommand (`mcp`, `update`) ran that subcommand instead; both are now
+  passed so Claude reads them as text.
 - **`claude --version` and `claude --help` in PowerShell reached ccx.** The shim
   ran `ccx run -- @args`, and PowerShell swallows a bare `--` when it hands
   arguments to another PowerShell command, which npm's `ccx.ps1` is, so ccx read
   Claude's flags as its own. Run `ccx on` once to update the shim; `ccx doctor`
   says when it is out of date. Questions about Claude itself now also skip
   starting a session.
-- Tests no longer write into the Claude session they are run from.
+- Tests no longer write into the Claude session they are run from, or into the
+  repository.
+- `ccx on` backs up your shell profile before it replaces an older shim, so an
+  edit made inside the old block is still in the backup.
 
 ## [1.52.0]
 

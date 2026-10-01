@@ -4,6 +4,7 @@ import { readSwitchRequest } from '../state/switch-request.js';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { card, rankAccounts, renderBoard, swapCommand, whereAmI, type Here } from './swap.js';
+import { recordHandoff } from '../desktop/handoff.js';
 import { addAccount } from '../accounts/registry.js';
 import { loadConfig } from '../config/config.js';
 import { sessionDirFor } from '../session/session-dir.js';
@@ -75,6 +76,22 @@ describe('the swap board', () => {
     expect(rows.find((r) => r.account.name === 'off')?.eligible).toBe(false);
   });
 
+  it('puts an account whose usage is unknown after those that show room, and never recommends it', () => {
+    const unknown = {
+      ...state,
+      accounts: [account('blank', { fiveHour: null, sevenDay: null }), ...state.accounts],
+    };
+    const rows = rankAccounts(unknown, here);
+    expect(rows.map((r) => r.account.name)).toEqual(['roomy', 'mid', 'blank', 'spent', 'off']);
+    expect(rows.find((r) => r.recommended)?.account.name).toBe('roomy');
+    expect(rows.find((r) => r.account.name === 'blank')?.room).toBeNull();
+    const onlyUnknown = {
+      ...state,
+      accounts: [account('blank', { fiveHour: null, sevenDay: null })],
+    };
+    expect(rankAccounts(onlyUnknown, here).some((r) => r.recommended)).toBe(false);
+  });
+
   it('never recommends the account the session is already on', () => {
     const alone = { ...state, accounts: [state.accounts[0]!] };
     expect(rankAccounts(alone, here).some((r) => r.recommended)).toBe(false);
@@ -132,7 +149,9 @@ describe('ccx swap <name>', () => {
 
   it('inside a ccx session, moves that session in place', async () => {
     const outside = setup();
-    const dir = sessionDirFor(4242, outside.context.ctx);
+    // A live session: its folder, and a process under its pid (this one).
+    const dir = sessionDirFor(process.pid, outside.context.ctx);
+    mkdirSync(dir, { recursive: true });
     // The same home, seen from inside the session: Claude runs on its folder.
     const s = {
       context: {
@@ -150,7 +169,7 @@ describe('ccx swap <name>', () => {
       ),
     ).toBe(0);
     // Aimed at this session only: others are not moved.
-    expect(readSwitchRequest(outside.context.ctx, 4242)).toMatchObject({
+    expect(readSwitchRequest(outside.context.ctx, process.pid)).toMatchObject({
       account: 'roomy',
       mode: 'seamless',
     });
@@ -174,6 +193,7 @@ describe('ccx swap <name>', () => {
             name: 'Schema',
             status: 'busy',
             statusSince: null,
+            startedAt: null,
           },
         ],
         flagsOf: () => ({ model: null, effort: null, permissionMode: null }),
@@ -190,6 +210,36 @@ describe('ccx swap <name>', () => {
     // The reply running /ccx is still being written, so the window waits for it.
     expect(handed).toEqual([{ account: 'roomy', waitFor: 777 }]);
     expect(s.said.join(' ')).toMatch(/continues in a Windows Terminal window on roomy/);
+  });
+
+  it('in Claude Desktop, opens one window per conversation however often it is asked', async () => {
+    const s = setup({ CLAUDE_CODE_ENTRYPOINT: 'claude-desktop', CLAUDE_PID: '777' });
+    let windows = 0;
+    const deps = {
+      state: () => Promise.resolve(state),
+      conversations: () => [
+        {
+          pid: 777,
+          sessionId: '9106faa2-0b73-4126-9a9f-581cc123867f',
+          cwd: 'w',
+          name: 'Schema',
+          status: 'busy',
+          statusSince: null,
+          startedAt: null,
+        },
+      ],
+      flagsOf: () => ({ model: null, effort: null, permissionMode: null }),
+      // The real record of the handover, as handOff keeps it, with no window.
+      handOff: (t: { sessionId: string }) => {
+        windows += 1;
+        recordHandoff(t.sessionId, s.context.ctx, Date.now());
+        return { ok: true as const, via: 'Windows Terminal', script: 'x', command: [] };
+      },
+    };
+    expect(await swapCommand(s.context, 'roomy', {}, deps)).toBe(0);
+    expect(await swapCommand(s.context, 'roomy', {}, deps)).toBe(1);
+    expect(windows).toBe(1);
+    expect(s.said.join(' ')).toMatch(/already continuing in a terminal window/);
   });
 
   it('outside any session, sets the account new sessions start on', async () => {
@@ -240,6 +290,20 @@ describe('ccx swap <name>', () => {
 });
 
 describe('where a swap is asked from', () => {
+  it('is nowhere when the session the variables name is gone', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-swap-gone-'));
+    const env = { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home };
+    // A shell started from inside a session that has since ended keeps its
+    // variables: a folder that is gone, or one whose process is.
+    const ended = sessionDirFor(process.pid, { env });
+    const dead = sessionDirFor(2_147_483_646, { env });
+    mkdirSync(dead, { recursive: true });
+    for (const dir of [ended, dead]) {
+      const context = { ctx: { env: { ...env, CLAUDE_CONFIG_DIR: dir } } } as unknown as CliContext;
+      expect(whereAmI(context, () => []).kind).toBe('none');
+    }
+  });
+
   it('is nowhere for a plain terminal', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-swap-here-'));
     writeFileSync(path.join(home, 'x'), '');

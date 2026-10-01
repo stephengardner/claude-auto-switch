@@ -62,7 +62,11 @@ if (scenario.capped) {
 }
 
 // Record the invocation so launcher tests can assert on args + config dir.
-writeJson(path.join(configDir, 'fake-last-run.json'), { args, configDir });
+// Only into a config dir a test gave it: falling back to the working directory
+// wrote this into the repository on every run that had none.
+if (process.env.CLAUDE_CONFIG_DIR) {
+  writeJson(path.join(configDir, 'fake-last-run.json'), { args, configDir });
+}
 
 // For hot-swap / in-place-switch tests: append each launch to a shared log,
 // tagged with which account credential is present in the config dir, so a test

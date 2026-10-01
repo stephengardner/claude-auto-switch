@@ -11,7 +11,7 @@ import { dispatchKey, confirmKey } from '../dashboard/keys.js';
 import { openPrompt, promptKey, rejectPrompt, type PromptState } from '../dashboard/prompt.js';
 import { loadConfig } from '../config/config.js';
 import { desktopSummary } from '../desktop/summary.js';
-import { setHandoff, setMode, setPrompt, moveConversation } from './desktop.js';
+import { nextHandoff, setHandoff, setMode, setPrompt, moveConversation } from './desktop.js';
 import path from 'node:path';
 import { configHome, profilesDir } from '../config/paths.js';
 import { addAccount, getAccount } from '../accounts/registry.js';
@@ -310,12 +310,27 @@ export async function dashboardCommand(
       pushEvent(`${a.enabled ? 'disabled' : 'enabled'} ${a.name}`);
     },
     onDesktop: async (action) => {
-      const { handoff, mode } = context.config.desktop;
+      const { mode } = context.config.desktop;
       if (action === 'handoff') {
-        const next = handoff === 'off' ? 'limit' : handoff === 'limit' ? 'credits' : 'off';
-        return (await desktopSays((ctx) => setHandoff(ctx, next))).text;
+        return (await desktopSays((ctx) => setHandoff(ctx, nextHandoff(context.config.desktop.handoff)))).text;
       }
       return (await desktopSays((ctx) => setMode(ctx, mode === 'fork' ? 'same' : 'fork'))).text;
+    },
+    desktopQuestion: (action) => {
+      const { handoff, mode } = context.config.desktop;
+      if (action === 'mode') {
+        return mode === 'fork'
+          ? 'Carry moved Desktop conversations on as the SAME conversation, not a copy? Desktop must then send nothing more to them.'
+          : 'Carry moved Desktop conversations on as a copy, leaving the original in Desktop as it was?';
+      }
+      const next = nextHandoff(handoff);
+      const what =
+        next === 'off'
+          ? 'Stop moving Desktop conversations by themselves'
+          : next === 'limit'
+            ? 'Move a Desktop conversation to a terminal when it hits a usage limit'
+            : 'Also hold back Desktop messages once its account is past its plan, and carry them on in a terminal';
+      return `${what}? This edits the hooks in ~/.claude/settings.json.`;
     },
     desktopPrompt: () => context.config.desktop.prompt,
     onDesktopText: async (kind, text) => {
@@ -408,6 +423,8 @@ interface LoopDeps {
   onName: (kind: 'add' | 'rename', text: string, selected: DashboardAccount | undefined) => string;
   /** Cycle a Claude Desktop setting; returns what changed, in words. */
   onDesktop: (action: 'handoff' | 'mode') => Promise<string>;
+  /** What cycling it would do, asked before it is done. */
+  desktopQuestion: (action: 'handoff' | 'mode') => string;
   /** The text a moved Desktop conversation carries on with now, to edit. */
   desktopPrompt: () => string;
   /**
@@ -465,10 +482,12 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
      */
     promptTarget: DashboardAccount | null;
     /**
-     * A yes/no question waiting for an answer. Signing in gives the screen away
-     * to a browser, and its key sits next to the movement keys, so it asks first.
+     * A yes/no question waiting for an answer, and what a yes does. Signing in
+     * gives the screen away to a browser, and a Desktop setting rewrites the
+     * user's own Claude settings, and each sits one key from the movement
+     * keys, so they ask first.
      */
-    confirm: { question: string; account: DashboardAccount } | null;
+    confirm: { question: string; yes: () => void } | null;
   } = { notice: null, prompt: null, promptTarget: null, pendingLogin: null, confirm: null };
 
   /**
@@ -521,12 +540,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       if (ui.confirm) {
         const asked = ui.confirm;
         ui.confirm = null;
-        if (confirmKey(text, d[0]) === 'yes') {
-          // Queued rather than run here: signing in is interactive and this
-          // handler cannot wait. The loop runs it with the terminal handed back.
-          ui.pendingLogin = asked.account;
-          ui.notice = `signing in "${asked.account.name}"...`;
-        }
+        if (confirmKey(text, d[0]) === 'yes') asked.yes();
         if (wake) wake();
         return;
       }
@@ -547,9 +561,17 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       else if (r.action === 'login' && target) {
         ui.confirm = {
           question: `Sign in "${target.name}" again? The dashboard steps aside while you do.`,
-          account: target,
+          yes: () => {
+            // Queued rather than run here: signing in is interactive and this
+            // handler cannot wait. The loop runs it with the terminal handed back.
+            ui.pendingLogin = target;
+            ui.notice = `signing in "${target.name}"...`;
+          },
         };
       }
+      // Desktop's keys are only offered while its line is on screen; otherwise
+      // they do nothing, rather than change settings nobody was shown.
+      else if (r.action.startsWith('desktop-') && !snap.desktop) return;
       else if (r.action === 'add') {
         ui.prompt = openPrompt('add', 'name for the new account:');
         ui.promptTarget = null;
@@ -559,17 +581,22 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         ui.prompt = openPrompt('rename', `new name for "${target.name}":`, '');
         ui.promptTarget = target;
       } else if (r.action === 'desktop-handoff' || r.action === 'desktop-mode') {
-        void deps.onDesktop(r.action === 'desktop-handoff' ? 'handoff' : 'mode').then(
-          (said) => {
-            ui.notice = said;
-            if (wake) wake();
+        const action = r.action === 'desktop-handoff' ? 'handoff' : 'mode';
+        ui.confirm = {
+          question: deps.desktopQuestion(action),
+          yes: () => {
+            void deps.onDesktop(action).then(
+              (said) => {
+                ui.notice = said;
+                if (wake) wake();
+              },
+              (err: unknown) => {
+                ui.notice = (err as Error).message;
+                if (wake) wake();
+              },
+            );
           },
-          (err: unknown) => {
-            ui.notice = (err as Error).message;
-            if (wake) wake();
-          },
-        );
-        return;
+        };
       } else if (r.action === 'desktop-prompt') {
         ui.prompt = openPrompt('desktop-prompt', 'carry on with:', deps.desktopPrompt());
         ui.promptTarget = null;

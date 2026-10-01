@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   HOST_ONLY_ENV,
+  canOpenTerminal,
   openTerminal,
   pasteable,
   posixLauncher,
@@ -119,11 +120,11 @@ describe('opening the window', () => {
 
   it('Windows: in Windows Terminal when there is one, with a clean environment', () => {
     const r = recorder(['wt.exe', 'pwsh.exe']);
-    const result = openTerminal(job({ title: 'ccx: a; b' }), { ...r.deps, platform: 'win32' });
+    const result = openTerminal(job({ title: 'ccx: a; "b"' }), { ...r.deps, platform: 'win32' });
     expect(result).toMatchObject({ ok: true, via: 'Windows Terminal' });
     expect(r.started[0]?.program).toBe('wt.exe');
-    // `;` would start a second tab in Windows Terminal.
-    expect(r.started[0]?.args).toContain('ccx: a, b');
+    // `;` would start a second tab in Windows Terminal, which parses quotes its own way.
+    expect(r.started[0]?.args).toContain("ccx: a, 'b'");
     expect(r.started[0]?.args).toContain('pwsh.exe');
     expect(r.started[0]?.env).toEqual({ PATH: 'p' });
     expect(r.written[0]).toMatch(/id\.ps1$/);
@@ -145,6 +146,13 @@ describe('opening the window', () => {
       via: 'Terminal',
     });
     expect(r.started[0]?.program).toBe('osascript');
+  });
+
+  it('knows whether a window can be opened at all, before anything is held for one', () => {
+    expect(canOpenTerminal({ platform: 'win32', exists: () => false })).toBe(true);
+    expect(canOpenTerminal({ platform: 'darwin', exists: () => false })).toBe(true);
+    expect(canOpenTerminal({ platform: 'linux', exists: (p) => p === 'xterm' })).toBe(true);
+    expect(canOpenTerminal({ platform: 'linux', exists: () => false })).toBe(false);
   });
 
   it('Linux: the first terminal program there is, or says how to run it by hand', () => {

@@ -84,7 +84,13 @@ ccx desktop handoff credits  # do it by itself (off | limit | credits)
 - `handoff credits` does that too, and also holds back a message sent in Desktop
   once its account is past its plan, so it never spends usage credits: the
   conversation continues in a terminal on an account with room, with your
-  message.
+  message. A message too long to carry over (more than 15,000 characters) goes
+  to Desktop as usual instead of being held.
+- Both are hooks in `~/.claude/settings.json` that run node with ccx's hook
+  script directly, with no shell, so they work the same whichever shell Claude
+  would use. Every Claude session runs them, and anything that is not Desktop
+  is gone before ccx is even loaded. `ccx doctor` checks they still point at
+  your ccx, and `ccx on` points them at it again after an update.
 - A moved conversation continues as a copy by default, so Desktop keeps the
   original exactly as it was (`ccx desktop mode fork`). `ccx desktop mode same`
   continues the conversation itself, so reopening it in Desktop later shows the
@@ -92,10 +98,11 @@ ccx desktop handoff credits  # do it by itself (off | limit | credits)
 - It carries on with "Carry on where you stopped." unless you set
   `ccx desktop prompt "<text>"`.
 
-The dashboard shows Desktop's line too, with keys for all of it: `d` cycles
-when conversations move by themselves, `m` copy or same, `t` the carry-on text,
-and `D` moves one. Desktop's own built-in terminal pane loads your shell
-profile, so `claude` typed there already runs through ccx.
+The dashboard shows Desktop's line too, with keys for all of it: `d` steps
+through when conversations move by themselves, `m` copy or same (both ask
+first), `t` the carry-on text, and `D` moves one. Desktop's own built-in
+terminal pane loads your shell profile, so `claude` typed there already runs
+through ccx.
 
 ## Swapping from inside Claude: /ccx
 
@@ -187,8 +194,11 @@ program](docs/reading-ccx-from-another-program.md).
 - **Your conversation continues** on the new account, in place.
 - **Your history stays yours.** ccx sessions read and write your normal
   `~/.claude`, so `/resume` and project memories are exactly where they always
-  were, whether you launch Claude through ccx or not. The only thing ccx _adds_
-  there is the `statusLine` key, and `ccx off` takes it back out.
+  were, whether you launch Claude through ccx or not. What ccx _adds_ there is
+  its own and comes back out with `ccx off`: the `statusLine` key, the `/ccx`
+  skill, and the two Claude Desktop hooks when you turn the handoff on. It also
+  creates the empty `skills`, `agents`, `commands` and `output-styles` folders
+  if you have none, so your sessions can share them.
 - **Careful with your logins.** Credentials are written whole or not at all, the
   previous one is always kept, and a signed-out or damaged credential is never
   written over a good account. Before a login is copied into an account, ccx

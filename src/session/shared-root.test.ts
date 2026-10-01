@@ -1,8 +1,22 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  lstatSync,
+  rmSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { ensureSharedProjects, ensureSharedUserConfig, mergeUserSettings } from './shared-root.js';
+import {
+  ensureSharedProjects,
+  ensureSharedUserConfig,
+  mergeUserSettings,
+  returnSharedUserFiles,
+} from './shared-root.js';
 import type { PathCtx } from '../config/paths.js';
 
 function setup(): { home: string; sessionDir: string; c: PathCtx } {
@@ -148,5 +162,45 @@ describe('ensureSharedUserConfig', () => {
     writeFileSync(path.join(home, '.claude', 'CLAUDE.md'), 'user memory', 'utf8');
     ensureSharedUserConfig(sessionDir, c);
     expect(readFileSync(path.join(sessionDir, 'CLAUDE.md'), 'utf8')).toBe('session copy');
+  });
+});
+
+describe('returnSharedUserFiles', () => {
+  const later = (file: string): void => {
+    const t = Date.now() / 1000 + 60;
+    utimesSync(file, t, t);
+  };
+
+  it('hands back an edit only the session held, after an editor replaced the linked file', () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const theirs = path.join(home, '.claude', 'CLAUDE.md');
+    writeFileSync(theirs, 'before', 'utf8');
+    ensureSharedUserConfig(sessionDir, c);
+    // Saved by writing a new file and renaming it over: the link is broken.
+    const mine = path.join(sessionDir, 'CLAUDE.md');
+    rmSync(mine);
+    writeFileSync(mine, 'edited in the session', 'utf8');
+    later(mine);
+    returnSharedUserFiles(sessionDir, c);
+    expect(readFileSync(theirs, 'utf8')).toBe('edited in the session');
+  });
+
+  it('keeps a memory first written inside a session, which was never linked', () => {
+    const { home, sessionDir, c } = setup();
+    writeFileSync(path.join(sessionDir, 'CLAUDE.md'), 'remember this', 'utf8');
+    returnSharedUserFiles(sessionDir, c);
+    expect(readFileSync(path.join(home, '.claude', 'CLAUDE.md'), 'utf8')).toBe('remember this');
+  });
+
+  it('leaves the user file alone when it is newer, or the session never changed it', () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const theirs = path.join(home, '.claude', 'CLAUDE.md');
+    writeFileSync(path.join(sessionDir, 'CLAUDE.md'), 'older session copy', 'utf8');
+    writeFileSync(theirs, 'edited by hand since', 'utf8');
+    later(theirs);
+    returnSharedUserFiles(sessionDir, c);
+    expect(readFileSync(theirs, 'utf8')).toBe('edited by hand since');
   });
 });

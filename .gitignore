@@ -38,3 +38,6 @@ Thumbs.db
 # Git Bash crash dumps, which land in the repo root
 *.stackdump
 .npmrc
+
+# Written by the fake claude in tests
+fake-last-run.json

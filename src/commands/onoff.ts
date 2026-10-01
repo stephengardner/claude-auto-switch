@@ -5,6 +5,7 @@ import { enableEditor, disableEditor } from './editor.js';
 import { installStatusline, removeStatusline } from '../statusline/settings-install.js';
 import { thrownReason } from '../util/thrown-reason.js';
 import { installSkill, removeSkill, type SkillOutcome } from '../skill/install-skill.js';
+import { installDesktopHooks, readInstalledHandoff, refreshDesktopHooks } from '../desktop/hooks.js';
 import type { CliContext } from '../context.js';
 
 export interface ShimOptions {
@@ -54,6 +55,14 @@ export function onCommand(context: CliContext, options: ShimOptions = {}): numbe
     context.out(statuslineMessage(installStatusline(context.ctx)));
   }
   context.out(skillMessage(installSkill(context.ctx)));
+  // The Desktop hooks name this ccx by path; after an update that moved it they
+  // would run nothing, in every session, so they follow it here, and come back
+  // after a `ccx off` as they were chosen.
+  const hooks = refreshDesktopHooks(context.config.desktop.handoff, context.ctx);
+  if (hooks?.ok && hooks.changed) context.out('claude: Claude Desktop handoff hooks set up');
+  else if (hooks && !hooks.ok) {
+    context.out(`claude: Claude Desktop handoff hooks not set up: ${hooks.reason}`);
+  }
 
   let editorFailed = false;
   if (options.editor !== false) {
@@ -151,6 +160,16 @@ export function offCommand(context: CliContext, options: ShimOptions = {}): numb
           ? 'claude: no /ccx to remove'
           : 'claude: could not remove ~/.claude/skills/ccx; delete it by hand',
   );
+  // Everything ccx put into ~/.claude goes, so nothing there runs a ccx that
+  // may be uninstalled next. The choice is kept: `ccx on` puts them back.
+  if (readInstalledHandoff(context.ctx) !== 'off') {
+    const hooks = installDesktopHooks('off', context.ctx);
+    context.out(
+      hooks.ok
+        ? 'claude: Claude Desktop handoff hooks removed (ccx on puts them back)'
+        : `claude: could not remove the Claude Desktop handoff hooks: ${hooks.reason}`,
+    );
+  }
 
   if (options.editor !== false) {
     for (const editor of detectEditors(context.ctx)) {
