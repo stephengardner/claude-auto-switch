@@ -3,6 +3,7 @@ import { thrownReason } from '../util/thrown-reason.js';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
+import { sweepAbandonedTemps } from '../util/fs-json.js';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import {
@@ -226,6 +227,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // the wrong profile. Swept first, because a session that is killed never gets
   // to clean up, and what it leaves behind is a credential.
   sweepDeadSessionDirs(context.ctx, { keepPid: process.pid });
+  // And the temp files of writes that failed without cleaning up after
+  // themselves, which ccx did until 1.51.1: hundreds of them, never used again.
+  sweepAbandonedTemps(configHome(context.ctx));
   const sessionDir = sessionDirFor(process.pid, context.ctx);
   secureMkdir(sessionDir);
   const sessionCreds = path.join(sessionDir, CREDS);
@@ -1323,6 +1327,11 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         input: terminalInput,
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
         ...(debugLog ? { debugLog } : {}),
+        // Claude's own record of which conversation the child is in, kept
+        // where `conversationId()` reads first. It is what keeps a swap in the
+        // conversation actually on screen after `/clear` or `/resume`, and for
+        // a run started with `--continue` or the picker, where ccx never knew.
+        onConversation: (id: string) => rememberReport(sessionDir, { id }),
       };
       // A relaunch after a swap resumes this run's own conversation by id.
       // `--continue` was "the most recent one in this directory", which is a

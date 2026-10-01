@@ -15,7 +15,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { isLink } from '../daemon/junction.js';
-import { defaultClaudeRoot } from './shared-root.js';
+import { defaultClaudeRoot, USER_OWNED_SETTINGS } from './shared-root.js';
 
 /**
  * A session directory per running session, instead of one shared by all of them.
@@ -125,6 +125,10 @@ export function seedFromKeptSettings(sessionDir: string, c: PathCtx = {}): boole
  * which is the smallest set that still does the job it exists for (holding a
  * `/model` pin). It is also self-healing: once the real settings agree, the
  * override drops out on its own.
+ *
+ * Self-healing needs the real settings to be able to catch up, which they
+ * never do for a key ccx itself rewrites in the real file: the session's copy
+ * stays different forever. Those keys are never carried (USER_OWNED_SETTINGS).
  */
 export function changedFromUser(
   session: Record<string, unknown>,
@@ -132,6 +136,7 @@ export function changedFromUser(
 ): Record<string, unknown> {
   const changed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(session)) {
+    if (USER_OWNED_SETTINGS.includes(key)) continue;
     // Deep equality, not serialised text: Claude rewrites this file and can
     // emit the same object with its keys in a different order. Comparing the
     // text would call that a change and make it a permanent override, which is

@@ -1,5 +1,6 @@
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { replaceFileSync } from './replace-file.js';
 
 /**
  * These helpers keep credential material and other sensitive files off other
@@ -37,7 +38,7 @@ function writeSecretBytes(file: string, data: string | Buffer): void {
   try {
     writeFileSync(tmp, data, { mode: 0o600 });
     restrictPermissions(tmp, 0o600);
-    renameSync(tmp, file);
+    replaceFileSync(tmp, file);
   } catch (err) {
     try {
       rmSync(tmp, { force: true });

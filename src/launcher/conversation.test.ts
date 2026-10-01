@@ -265,3 +265,95 @@ describe('the prompt a session armed for its own relaunch', () => {
     expect(hasOwnPrompt(['--effort', 'max', '--'])).toBe(false);
   });
 });
+
+describe('the other spellings of a conversation flag', () => {
+  it('reads --resume=<id> as --resume <id>, so ccx does not add a --session-id Claude refuses', () => {
+    // Claude Desktop launches its sessions this way. Read as a fresh start, ccx
+    // appended --session-id, and Claude will not take that with a resume.
+    const plan = planConversation([`--resume=${ID}`], ids(OTHER));
+    expect(plan).toEqual({ args: [`--resume=${ID}`], id: ID });
+    expect(wantsExistingConversation([`--resume=${ID}`])).toBe(true);
+    expect(conversationIdIn([`--session-id=${ID}`])).toBe(ID);
+  });
+
+  it('strips an inline value with its flag, and never the argument after it', () => {
+    expect(withoutConversationFlags([`--resume=${ID}`, '--model', 'opus'])).toEqual([
+      '--model',
+      'opus',
+    ]);
+    expect(withoutConversationFlags([`--session-id=${ID}`, 'do the thing'])).toEqual([
+      'do the thing',
+    ]);
+    expect(relaunchArgs([`--resume=${ID}`, '--effort', 'max'], ID)).toEqual([
+      '--effort',
+      'max',
+      '--resume',
+      ID,
+    ]);
+  });
+});
+
+describe('a fork', () => {
+  const FORK = '77777777-6666-4555-8444-333333333333';
+
+  it('is named up front, because the id after --resume is where it came FROM', () => {
+    const plan = planConversation(['--resume', ID, '--fork-session'], ids(FORK));
+    expect(plan.id).toBe(FORK);
+    expect(plan.args).toEqual(['--resume', ID, '--fork-session', '--session-id', FORK]);
+  });
+
+  it('keeps a name the operator already gave it', () => {
+    const plan = planConversation(
+      ['--resume', ID, '--fork-session', '--session-id', FORK],
+      ids(OTHER),
+    );
+    expect(plan).toEqual({
+      args: ['--resume', ID, '--fork-session', '--session-id', FORK],
+      id: FORK,
+    });
+    const inline = planConversation(
+      [`--resume=${ID}`, '--fork-session', `--session-id=${FORK}`],
+      ids(OTHER),
+    );
+    expect(inline.id).toBe(FORK);
+  });
+
+  it('does not claim a name Claude would reject', () => {
+    const plan = planConversation(
+      ['--resume', ID, '--fork-session', '--session-id', 'nope'],
+      ids(OTHER),
+    );
+    expect(plan).toEqual({
+      args: ['--resume', ID, '--fork-session', '--session-id', 'nope'],
+      id: null,
+    });
+  });
+
+  it('is named from --continue too', () => {
+    expect(planConversation(['--continue', '--fork-session'], ids(FORK))).toEqual({
+      args: ['--continue', '--fork-session', '--session-id', FORK],
+      id: FORK,
+    });
+  });
+
+  it('is resumed by a swap, never copied again', () => {
+    // Keeping --fork-session made every swap another copy, and resuming the
+    // source id dropped everything done in the copy.
+    const plan = planConversation(['--resume', ID, '--fork-session', '--effort', 'max'], ids(FORK));
+    expect(relaunchArgs(plan.args, plan.id)).toEqual(['--effort', 'max', '--resume', FORK]);
+  });
+
+  it('does not survive into a fresh start either', () => {
+    expect(freshStartArgs(['--resume', ID, '--fork-session'], ids(OTHER)).args).toEqual([
+      '--session-id',
+      OTHER,
+    ]);
+  });
+
+  it('means nothing without a resume, so a plain start is named as before', () => {
+    expect(planConversation(['--fork-session'], ids(FORK))).toEqual({
+      args: ['--fork-session', '--session-id', FORK],
+      id: FORK,
+    });
+  });
+});

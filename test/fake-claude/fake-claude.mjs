@@ -3,7 +3,7 @@
 // claude-auto-switch drives: `auth status`, `auth login`, and a generic run.
 // Behavior is driven by a scenario JSON, resolved from FAKE_CLAUDE_SCENARIO or
 // <CLAUDE_CONFIG_DIR>/fake-scenario.json. No network, no model spend, no logins.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
 const args = process.argv.slice(2);
@@ -79,6 +79,49 @@ if (runsLog) {
   appendFileSync(runsLog, `${JSON.stringify({ type: 'launch', args, marker: readMarker() })}\n`, 'utf8');
 }
 process.stdout.write(`fake-claude ran: ${args.join(' ')}\n`);
+
+// The real CLI's answer to resuming a conversation that was never written (a
+// swap before the first message): a message on stderr and exit 1, at once.
+const resumeAt = args.indexOf('--resume');
+if (process.env.FAKE_CLAUDE_NOTHING_TO_RESUME && resumeAt >= 0 && args[resumeAt + 1]) {
+  process.stderr.write(`No conversation found with session ID: ${args[resumeAt + 1]}\n`);
+  process.exit(1);
+}
+
+// The real CLI's own record of which conversation this process is in, at
+// <config dir>/sessions/<pid>.json, written once it is up, rewritten on every
+// switch (/clear, /resume, a pick from the picker) and deleted on exit.
+// Measured against the real binary: a fork records its --session-id, a resume
+// the resumed id, --continue or the picker whatever it lands on.
+if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
+  const valueAfter = (flag) => {
+    const i = args.indexOf(flag);
+    return i >= 0 && args[i + 1] && !args[i + 1].startsWith('-') ? args[i + 1] : null;
+  };
+  const record = path.join(configDir, 'sessions', `${process.pid}.json`);
+  const startedAt = Date.now();
+  const writeRecord = (sessionId) =>
+    writeJson(record, { pid: process.pid, sessionId, cwd: process.cwd(), startedAt, kind: 'interactive' });
+  writeRecord(
+    valueAfter('--session-id') ??
+      valueAfter('--resume') ??
+      process.env.FAKE_CLAUDE_LANDS_ON ??
+      '00000000-0000-4000-8000-000000000000',
+  );
+  // A conversation switch made inside the session, at human speed.
+  const switchTo = process.env.FAKE_CLAUDE_SWITCH_TO;
+  if (switchTo) {
+    const t = setTimeout(() => writeRecord(switchTo), Number(process.env.FAKE_CLAUDE_SWITCH_AFTER_MS) || 200);
+    if (t.unref) t.unref();
+  }
+  process.on('exit', () => {
+    try {
+      rmSync(record, { force: true });
+    } catch {
+      /* gone */
+    }
+  });
+}
 
 // Simulate a resume that has nothing to resume. Only on --continue, exactly as
 // the real CLI does, so the fresh retry that follows does NOT emit it again and

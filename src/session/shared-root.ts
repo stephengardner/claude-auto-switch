@@ -104,11 +104,24 @@ function mergeTree(src: string, dest: string): void {
 }
 
 /**
+ * Settings ccx manages in the user's REAL settings file, where the real value
+ * always wins over anything a session carried.
+ *
+ * `statusLine` is the one: `ccx on` wraps the user's own line in
+ * `ccx statusline`, and that wrapper is how ccx hears which conversation and
+ * which model a session is on. A session that started before the wrap still
+ * held the old line, carried it out as "a change it made", and from then on it
+ * overrode the real setting in every ccx session, silently taking ccx's own
+ * status line away from all of them.
+ */
+export const USER_OWNED_SETTINGS: readonly string[] = ['statusLine'];
+
+/**
  * Merge the user's REAL ~/.claude/settings.json (hooks, permissions, statusline)
  * into the session settings, with the session's own keys (e.g. the model pin)
- * winning on conflict. Without this, ccx sessions silently ran WITHOUT the
- * user's hooks and permission rules. Idempotent; runs each session start so
- * settings edits are picked up.
+ * winning on conflict, except the ones ccx manages in the real file. Without
+ * this, ccx sessions silently ran WITHOUT the user's hooks and permission
+ * rules. Idempotent; runs each session start so settings edits are picked up.
  */
 export function mergeUserSettings(sessionDir: string, c: PathCtx = {}): void {
   let userFile: string;
@@ -122,6 +135,9 @@ export function mergeUserSettings(sessionDir: string, c: PathCtx = {}): void {
   if (!user) return; // no real settings to inherit
   const session = readJson(sessionFile) ?? {};
   const merged = { ...user, ...session };
+  for (const key of USER_OWNED_SETTINGS) {
+    if (key in user) merged[key] = user[key];
+  }
   try {
     writeFileSync(sessionFile, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
   } catch {

@@ -212,6 +212,30 @@ describe('carrying only what a session CHANGED', () => {
     expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'fable[1m]' });
   });
 
+  it('never carries the status line, which ccx itself rewrites in the real settings', () => {
+    // A session that started before `ccx on` wrapped the user's line kept the
+    // old one. It differed from the real setting forever after, so it was
+    // carried as a change and overrode ccx's own line in every later session.
+    const { ctx, root, claudeSettings } = home();
+    writeUserSettings(claudeSettings, {
+      statusLine: { type: 'command', command: 'ccx statusline --wrap "ccstatusline"' },
+      model: 'fable',
+    });
+    const dir = path.join(root, '4545');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, 'settings.json'),
+      JSON.stringify({
+        statusLine: { type: 'command', command: 'ccstatusline', padding: 0 },
+        model: 'opus',
+      }),
+      'utf8',
+    );
+
+    sweepDeadSessionDirs(ctx, { isAlive: () => false });
+    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'opus' });
+  });
+
   it('lets a setting the user turns OFF actually turn off', () => {
     // The end of the story above: with the real settings changed to `default`
     // and the session still carrying `fullscreen` from before, the next
