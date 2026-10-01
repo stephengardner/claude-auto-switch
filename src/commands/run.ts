@@ -47,6 +47,10 @@ function isHeadless(args: string[]): boolean {
 export interface RunCommandOptions {
   /** Start armed: see HotSwapOptions.resumePrompt. Interactive sessions only. */
   resumePrompt?: string;
+  /** See HotSwapOptions.startPrompt. Interactive sessions only. */
+  startPrompt?: string;
+  /** See HotSwapOptions.account. Interactive sessions only. */
+  account?: string;
 }
 
 export async function runCommand(
@@ -85,11 +89,14 @@ export async function runCommand(
     maybeHintShim(context); // one-time tip after the session, if the shim is off
     return code;
   }
-  if (options.resumePrompt !== undefined) {
+  const ignored = (['resumePrompt', 'startPrompt', 'account'] as const).filter(
+    (key) => options[key] !== undefined,
+  );
+  if (ignored.length > 0) {
     // Said rather than dropped silently: a -p run ends when it answers, so there
     // is no later swap for an armed prompt to ride.
     (context.err ?? ((m: string) => process.stderr.write(`${m}\n`)))(
-      'ccx: --resume-prompt is for interactive sessions; ignored for this run',
+      `ccx: ${ignored.join(', ')} ${ignored.length === 1 ? 'is' : 'are'} for interactive sessions; ignored for this run`,
     );
   }
 

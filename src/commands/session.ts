@@ -235,7 +235,18 @@ export interface HotSwapOptions {
    * starts with it too, so nothing has to reach in from outside to arm it.
    */
   resumePrompt?: string;
+  /**
+   * Submitted once, on the first launch, when the run resumes a conversation:
+   * a message held back from Claude Desktop goes here, while `resumePrompt`
+   * stays the one later swaps resume with. Any length, any number of lines.
+   */
+  startPrompt?: string;
+  /** Start on this account rather than the active one (it must be usable). */
+  account?: string;
 }
+
+/** The longest start prompt taken: far beyond any message, short of a runaway. */
+const START_PROMPT_MAX_CHARS = 100_000;
 
 export async function runInteractiveHotSwap(
   context: CliContext,
@@ -253,7 +264,22 @@ export async function runInteractiveHotSwap(
     }
     startPrompt = checked.prompt;
   }
+  const say = context.err ?? ((m: string) => process.stderr.write(`${m}\n`));
+  if (options.startPrompt !== undefined) {
+    const text = options.startPrompt;
+    if (text.trim() === '' || text.length > START_PROMPT_MAX_CHARS || text.includes('\0')) {
+      say('start prompt not used: it must be some text, under 100,000 characters');
+      return 1;
+    }
+  }
   const accounts = listAccounts(context.ctx);
+  if (options.account !== undefined) {
+    const chosen = accounts.find((a) => a.name === options.account);
+    if (!chosen || !chosen.enabled) {
+      say(`no enabled account named "${options.account}" (see: ccx list)`);
+      return 1;
+    }
+  }
   const claude = getClaude(context);
   // A directory of this session's OWN, never one shared with other sessions.
   // Starting a session copies the chosen account's login into here, so while
@@ -1043,7 +1069,8 @@ export async function runInteractiveHotSwap(
       accounts.filter((a) => a.enabled && !hasLogin(a.dir)).map((a) => a.name),
     nextAccount: (excluding) => {
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
-      const pinned = getActive(context.ctx);
+      // An account this run was told to start on outranks the active one.
+      const pinned = options.account ?? getActive(context.ctx);
       // Ordered by the operator's policy: `most-room` reaches for the least-used
       // account first (the one with the most headroom), `priority` keeps the
       // classic order. Same comparator the `select`/`rotate`/dashboard paths use,
@@ -1431,17 +1458,20 @@ export async function runInteractiveHotSwap(
               data: { applied: false },
             });
           }
-        } else if (startPrompt !== null && startsByResuming(modelArgs)) {
+        } else if ((options.startPrompt ?? startPrompt) !== null && startsByResuming(modelArgs)) {
           // Started armed AND resuming a conversation: picking it up is exactly
-          // the moment the prompt is for, so the very first launch gets it.
-          const placed = withResumePrompt(modelArgs, startPrompt);
+          // the moment the prompt is for, so the very first launch gets it. A
+          // start prompt of its own (a message held back from Desktop) goes
+          // first; the armed one is for the swaps after.
+          const first = (options.startPrompt ?? startPrompt) as string;
+          const placed = withResumePrompt(modelArgs, first);
           runArgs = placed.args;
-          if (placed.applied) appliedPrompt = startPrompt;
+          if (placed.applied) appliedPrompt = first;
           logEvent(
             placed.applied
-              ? 'started with the resume prompt this run was armed with'
-              : `resume prompt not used at start: ${placed.reason}`,
-            { kind: 'resume-prompt', data: { applied: placed.applied, chars: startPrompt.length, atStart: true } },
+              ? 'started with the prompt this run was given'
+              : `start prompt not used: ${placed.reason}`,
+            { kind: 'resume-prompt', data: { applied: placed.applied, chars: first.length, atStart: true } },
           );
         }
         let outcome = await runPtySession({ ...base, args: runArgs });

@@ -182,7 +182,7 @@ function readJsonObject(file: string): Record<string, unknown> | null {
 }
 
 /** Default liveness check: signal 0 tests for the process without touching it. */
-function processIsAlive(pid: number): boolean {
+export function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

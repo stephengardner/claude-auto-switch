@@ -25,6 +25,7 @@ import { loginCommand } from './commands/login.js';
 import { enableCommand, disableCommand, priorityCommand } from './commands/account-config.js';
 import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
+import { desktopCommand, desktopHookCommand, type DesktopOptions } from './commands/desktop.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { homeCommand } from './commands/home.js';
 import { sessionsCommand } from './commands/sessions.js';
@@ -268,11 +269,15 @@ program
     '--resume-prompt <text>',
     'start armed with the prompt this session resumes with after a swap (and at start, when it resumes a conversation)',
   )
+  .option('--start-prompt <text>', 'submitted once when the run resumes a conversation, before the armed prompt takes over')
+  .option('--account <name>', 'start on this account instead of the active one')
   .allowUnknownOption()
   .argument('[args...]')
-  .action(async (args: string[], opts: { resumePrompt?: string }) => {
-    process.exitCode = await runCommand(context(), args, opts);
-  });
+  .action(
+    async (args: string[], opts: { resumePrompt?: string; startPrompt?: string; account?: string }) => {
+      process.exitCode = await runCommand(context(), args, opts);
+    },
+  );
 
 program
   .command('remove <name>')
@@ -324,6 +329,27 @@ program
   .description('always-on rotation everywhere: install|uninstall|status|start|stop|run')
   .action(async (action?: string) => {
     process.exitCode = await daemonCommand(context(), action);
+  });
+
+program
+  .command('desktop [action] [args...]')
+  .description(
+    "Claude Desktop: which account it spends, and moving its conversations to a terminal ccx controls (handoff off|limit|credits, mode fork|same, prompt, move)",
+  )
+  .option('--wait', 'move: open the terminal now and pick the conversation up the moment Desktop stops')
+  .option('--to <account>', 'move: continue on this account')
+  .option('--again', 'move: move a conversation that was moved recently')
+  .option('--dry-run', 'move: show what would run, without opening anything')
+  .option('--timeout <minutes>', 'wait: how long to wait for Desktop (default 60)')
+  .action(async (action: string | undefined, args: string[] | undefined, opts: DesktopOptions) => {
+    process.exitCode = await desktopCommand(context(), action, args ?? [], opts);
+  });
+
+// Run by Claude Desktop's sessions, through the hooks `ccx desktop handoff` installs.
+program
+  .command('desktop-hook <event>', { hidden: true })
+  .action(async (event: string) => {
+    process.exitCode = await desktopHookCommand(context(), event);
   });
 
 async function main(): Promise<void> {
