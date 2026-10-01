@@ -15,7 +15,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { isLink } from '../daemon/junction.js';
-import { defaultClaudeRoot } from './shared-root.js';
+import { defaultClaudeRoot, realSettingWins } from './shared-root.js';
 
 /**
  * A session directory per running session, instead of one shared by all of them.
@@ -125,6 +125,11 @@ export function seedFromKeptSettings(sessionDir: string, c: PathCtx = {}): boole
  * which is the smallest set that still does the job it exists for (holding a
  * `/model` pin). It is also self-healing: once the real settings agree, the
  * override drops out on its own.
+ *
+ * Self-healing needs the real settings to be able to catch up, which they
+ * never do for a key ccx itself rewrites in the real file: the session's copy
+ * stays different forever. ccx's own status line is never carried (see
+ * realSettingWins).
  */
 export function changedFromUser(
   session: Record<string, unknown>,
@@ -132,6 +137,7 @@ export function changedFromUser(
 ): Record<string, unknown> {
   const changed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(session)) {
+    if (realSettingWins(key, user)) continue;
     // Deep equality, not serialised text: Claude rewrites this file and can
     // emit the same object with its keys in a different order. Comparing the
     // text would call that a change and make it a permanent override, which is
@@ -223,6 +229,23 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
     if (removeSessionDir(dir)) removed.push(name);
   }
   return removed;
+}
+
+/**
+ * Clear out the directory a starting session is about to use, when a DEAD
+ * process left it there.
+ *
+ * Session directories are named by pid, and pids are reused. A session that
+ * finds its own directory already there found another process's, which the
+ * sweep cannot tell, because the pid it belongs to is alive again: it is this
+ * one. Taken over as found, the new session would inherit that process's
+ * conversation and the prompt it armed for its swaps. Its settings are carried
+ * out first, exactly as the sweep does for any other dead session.
+ */
+export function retireLeftoverSessionDir(dir: string, c: PathCtx = {}): boolean {
+  if (!existsSync(dir)) return false;
+  preserveSettings(dir, c);
+  return removeSessionDir(dir);
 }
 
 /**

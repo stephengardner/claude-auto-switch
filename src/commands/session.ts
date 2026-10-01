@@ -3,6 +3,7 @@ import { thrownReason } from '../util/thrown-reason.js';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
+import { sweepAbandonedTemps } from '../util/fs-json.js';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import {
@@ -26,7 +27,12 @@ import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { runHotSwapSession, type SessionOutcome } from '../launcher/hot-swap.js';
 import { lastResortStart } from '../session/last-resort.js';
-import { sessionDirFor, sweepDeadSessionDirs, seedFromKeptSettings } from '../session/session-dir.js';
+import {
+  sessionDirFor,
+  sweepDeadSessionDirs,
+  seedFromKeptSettings,
+  retireLeftoverSessionDir,
+} from '../session/session-dir.js';
 import { runPtySession } from '../launcher/pty-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
 import {
@@ -44,8 +50,15 @@ import { planRotation, spentKey } from '../usage/rotation-plan.js';
 import { orderComparator } from '../selector/selector.js';
 import { roomOfFromSnapshot } from '../usage/account-room.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
-import { planConversation, relaunchArgs, freshStartArgs, withResumePrompt } from '../launcher/conversation.js';
-import { readResumePrompt } from '../session/resume-prompt.js';
+import {
+  planConversation,
+  relaunchArgs,
+  freshStartArgs,
+  withResumePrompt,
+  forksConversation,
+  startsByResuming,
+} from '../launcher/conversation.js';
+import { readResumePrompt, writeResumePrompt, checkResumePrompt } from '../session/resume-prompt.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
 import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
@@ -215,7 +228,31 @@ function writeJsonSafe(file: string, data: unknown): void {
  * possibly-refreshed credential back out first, so nothing is lost). This uses
  * the logins you already have, with no tokens, on Windows and Linux.
  */
-export async function runInteractiveHotSwap(context: CliContext, args: string[]): Promise<number> {
+export interface HotSwapOptions {
+  /**
+   * Start armed (`ccx run --resume-prompt`): the session is born with the
+   * prompt its swaps resume with, and a run that itself resumes a conversation
+   * starts with it too, so nothing has to reach in from outside to arm it.
+   */
+  resumePrompt?: string;
+}
+
+export async function runInteractiveHotSwap(
+  context: CliContext,
+  args: string[],
+  options: HotSwapOptions = {},
+): Promise<number> {
+  // Checked before anything is set up, so a prompt that would be refused never
+  // leaves a half-started session behind it.
+  let startPrompt: string | null = null;
+  if (options.resumePrompt !== undefined) {
+    const checked = checkResumePrompt(options.resumePrompt);
+    if (!checked.ok) {
+      (context.err ?? ((m: string) => process.stderr.write(`${m}\n`)))(`resume prompt not armed: ${checked.reason}`);
+      return 1;
+    }
+    startPrompt = checked.prompt;
+  }
   const accounts = listAccounts(context.ctx);
   const claude = getClaude(context);
   // A directory of this session's OWN, never one shared with other sessions.
@@ -226,7 +263,14 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // the wrong profile. Swept first, because a session that is killed never gets
   // to clean up, and what it leaves behind is a credential.
   sweepDeadSessionDirs(context.ctx, { keepPid: process.pid });
+  // And the temp files of writes that failed without cleaning up after
+  // themselves, which ccx did until 1.51.1: hundreds of them, never used again.
+  sweepAbandonedTemps(configHome(context.ctx));
   const sessionDir = sessionDirFor(process.pid, context.ctx);
+  // The sweep above cannot see a directory left by a dead process that had
+  // this pid, because the pid is alive again: it is this one. Taking it over as
+  // found would hand this session that process's conversation and armed prompt.
+  retireLeftoverSessionDir(sessionDir, context.ctx);
   secureMkdir(sessionDir);
   const sessionCreds = path.join(sessionDir, CREDS);
   // Share the user's REAL ~/.claude session/memory store (projects) so /resume
@@ -248,6 +292,7 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // request carries no generation, so clearing it here is what bounds its age.
   clearSwitchRequest(context.ctx);
   clearSwitchRequest(context.ctx, process.pid);
+  if (startPrompt !== null) writeResumePrompt(sessionDir, startPrompt);
   const err = context.err ?? ((m: string) => process.stderr.write(`${m}\n`));
   const home = configHome(context.ctx);
   // Record events to the shared log so an open `ccx dashboard` shows swaps live.
@@ -265,9 +310,17 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
   // Not a constant: a resume that finds nothing starts a new conversation, and
   // the run has to carry the new id from then on.
   let plannedConversationId = conversation.id;
+  /**
+   * What Claude's own record last said the child is in. Read first: it is
+   * Claude's word, rewritten on every switch, and kept here so that a status
+   * line finishing late cannot write an older id over it in the shared file.
+   */
+  let liveConversationId: string | null = null;
   /** The conversation to resume, preferring what Claude itself reported. */
   const conversationId = (): string | null =>
-    readConversation(sessionDir) ?? plannedConversationId;
+    liveConversationId ?? readConversation(sessionDir) ?? plannedConversationId;
+  /** A fork's own first launch, kept to copy it again if the copy was never saved. */
+  const forkLaunch = forksConversation(args) && conversation.id !== null ? { args, id: conversation.id } : null;
 
   /**
    * True while Claude owns the screen. Anything ccx writes to stderr then lands
@@ -1323,6 +1376,14 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         input: terminalInput,
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
         ...(debugLog ? { debugLog } : {}),
+        // Claude's own record of which conversation the child is in, kept
+        // where `conversationId()` reads first. It is what keeps a swap in the
+        // conversation actually on screen after `/clear` or `/resume`, and for
+        // a run started with `--continue` or the picker, where ccx never knew.
+        onConversation: (id: string) => {
+          liveConversationId = id;
+          rememberReport(sessionDir, { id });
+        },
       };
       // A relaunch after a swap resumes this run's own conversation by id.
       // `--continue` was "the most recent one in this directory", which is a
@@ -1350,11 +1411,14 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
         // start below reuses it, and a brand-new conversation must not be handed
         // an instruction written for the one that could not be resumed.
         let runArgs = modelArgs;
+        /** The prompt this launch was given, so a copy made again below gets it too. */
+        let appliedPrompt: string | null = null;
         if (isContinue) {
           const armed = readResumePrompt(sessionDir);
           if (armed.armed) {
             const placed = withResumePrompt(modelArgs, armed.prompt);
             runArgs = placed.args;
+            if (placed.applied) appliedPrompt = armed.prompt;
             logEvent(
               placed.applied
                 ? 'relaunched with the resume prompt this session armed'
@@ -1367,8 +1431,32 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
               data: { applied: false },
             });
           }
+        } else if (startPrompt !== null && startsByResuming(modelArgs)) {
+          // Started armed AND resuming a conversation: picking it up is exactly
+          // the moment the prompt is for, so the very first launch gets it.
+          const placed = withResumePrompt(modelArgs, startPrompt);
+          runArgs = placed.args;
+          if (placed.applied) appliedPrompt = startPrompt;
+          logEvent(
+            placed.applied
+              ? 'started with the resume prompt this run was armed with'
+              : `resume prompt not used at start: ${placed.reason}`,
+            { kind: 'resume-prompt', data: { applied: placed.applied, chars: startPrompt.length, atStart: true } },
+          );
         }
-        const outcome = await runPtySession({ ...base, args: runArgs });
+        let outcome = await runPtySession({ ...base, args: runArgs });
+        // A fork swapped before its first message: the copy is only saved with
+        // that message, so there is nothing under its name to resume yet. Copy
+        // it again under the same name rather than starting empty, which would
+        // throw away the whole conversation it was copied from.
+        if (outcome.kind === 'no-conversation' && isContinue && forkLaunch && conversationId() === forkLaunch.id) {
+          notice('the copy of this conversation was never saved; copying it again');
+          const again = chosenModel ? withModel(forkLaunch.args, chosenModel) : forkLaunch.args;
+          outcome = await runPtySession({
+            ...base,
+            args: appliedPrompt !== null ? withResumePrompt(again, appliedPrompt).args : again,
+          });
+        }
         // If we tried to resume but the new account has no saved conversation,
         // start a fresh session on it instead of dead-ending.
         if (outcome.kind === 'no-conversation') {
@@ -1384,6 +1472,9 @@ export async function runInteractiveHotSwap(context: CliContext, args: string[])
           // start over, losing the conversation on every single swap.
           const fresh = freshStartArgs(modelArgs);
           plannedConversationId = fresh.id;
+          // And the live one, which is read before both and still names the id
+          // that has just been shown to lead nowhere.
+          liveConversationId = fresh.id;
           // Overwrite the RECORDED id as well, not just the planned one. The
           // recording is read first (it is normally the more accurate of the
           // two), and it still holds the id that just failed to resume, so a

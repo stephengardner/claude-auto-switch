@@ -755,11 +755,10 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     expect(newId).not.toBeNull();
     // And the RECORDED id is replaced too. That file is read in preference to
     // the planned one, so leaving the failed id there would send the very next
-    // swap straight back to the conversation that does not exist.
-    const recorded = path.join(home, 'sessions', String(process.pid), 'conversation.json');
-    if (existsSync(recorded)) {
-      expect((JSON.parse(readFileSync(recorded, 'utf8')) as { id: string }).id).toBe(newId);
-    }
+    // swap straight back to the conversation that does not exist. (This read a
+    // file ccx never writes, behind an existsSync, so it never asserted at all.)
+    const recorded = path.join(home, 'sessions', String(process.pid), 'claude-report.json');
+    expect((JSON.parse(readFileSync(recorded, 'utf8')) as { id: string }).id).toBe(newId);
   });
 
   it('does NOT move off a model whose limit has already reset', async () => {

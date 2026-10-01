@@ -9,7 +9,8 @@ import { createBlockedWatch, type BlockedWatchOptions } from './blocked-watch.js
 import { createCapOutcome } from './cap-outcome.js';
 import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
-import { wantsExistingConversation } from './conversation.js';
+import { wantsExistingConversation, conversationIdIn } from './conversation.js';
+import { readLiveConversation } from '../session/live-conversation.js';
 
 export interface PtySessionOptions {
   claude: ClaudeInvoker;
@@ -88,6 +89,13 @@ export interface PtySessionOptions {
    * reached in seconds; production uses 20s.
    */
   refuteBackoffMs?: number;
+  /**
+   * Told which conversation the child is in whenever that changes, in Claude's
+   * own words (see session/live-conversation). Checked on the poll and once
+   * more just before ccx ends the child: Claude deletes its record as it
+   * exits, and a `/resume` made a moment before a swap must not be missed.
+   */
+  onConversation?: (id: string) => void;
 }
 
 function cleanEnv(extra: Record<string, string>): Record<string, string> {
@@ -178,6 +186,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     // Shared with the retry that strips these flags, so the check that decides
     // "this was a resume" and the code that undoes a resume cannot disagree.
     const watchNoConversation = wantsExistingConversation(options.args);
+    /** The conversation this launch resumes by id, the one "not found" would name. */
+    const resumedId = conversationIdIn(options.args);
     let totalOutput = 0;
 
     /**
@@ -201,6 +211,16 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       }
     };
 
+    let lastConversation: string | null = null;
+    /** Ask Claude which conversation the child is in, and pass on a change. */
+    const noteConversation = (): void => {
+      if (!options.onConversation || !child.pid) return;
+      const id = readLiveConversation(options.configDir, child.pid, startedAt);
+      if (!id || id === lastConversation) return;
+      lastConversation = id;
+      options.onConversation(id);
+    };
+
     let weKilled = false;
     /**
      * End the child. On Windows we terminate the process tree directly instead
@@ -211,6 +231,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      */
     const safeKill = (): void => {
       if (exited) return;
+      // Last chance to learn the conversation: the record goes with the child.
+      noteConversation();
       weKilled = true;
       if (process.platform === 'win32' && child.pid) {
         try {
@@ -286,16 +308,21 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     // The operator can pick a different account mid-session (dashboard Enter /
     // `ccx use`); poll for that and end the child so the swap loop relaunches
     // resume this conversation on the chosen account, in place.
-    const switchPoll = options.switchWatch
-      ? setInterval(() => {
+    let ticks = 0;
+    const switchPoll =
+      options.switchWatch || options.onConversation
+        ? setInterval(() => {
           // Housekeeping FIRST, and never behind the early return below. The
           // session's "I am still using this account" heartbeat used to ride
           // inside switchWatch, so the moment a cap or a pending switch short
           // circuited this poll the session went quiet and its protection could
           // lapse while it was still running.
           options.onTick?.();
-          if (cap.isSet() || switching || noConversation) return;
-          const target = options.switchWatch!();
+          // Every third tick: the conversation changes at human speed, and a
+          // swap reads it once more before ending the child anyway.
+          if (ticks++ % 3 === 0) noteConversation();
+          if (!options.switchWatch || cap.isSet() || switching || noConversation) return;
+          const target = options.switchWatch();
           if (target) {
             switching = target;
             setTimeout(safeKill, 80);
@@ -331,7 +358,14 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       if (
         watchNoConversation &&
         totalOutput <= 6000 &&
-        /No conversation found to continue/i.test(window)
+        // `--continue` with nothing in the folder, or `--resume <id>` for a
+        // conversation that was never written: a swap before the first message
+        // has nothing on disk yet. Both exit at once, and treating the second
+        // as an ordinary exit ended the operator's session on a swap. The
+        // second is matched with the id this launch asked for, so a replayed
+        // conversation that merely mentions the message cannot end it.
+        (/No conversation found to continue/i.test(window) ||
+          (resumedId !== null && window.includes(`No conversation found with session ID: ${resumedId}`)))
       ) {
         noConversation = true;
         setTimeout(() => safeKill(), 100);

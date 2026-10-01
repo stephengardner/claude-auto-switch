@@ -44,7 +44,16 @@ function isHeadless(args: string[]): boolean {
  * past capped accounts; interactive sessions launch once (mid-session rotation
  * is Phase 4).
  */
-export async function runCommand(context: CliContext, passthroughArgs: string[]): Promise<number> {
+export interface RunCommandOptions {
+  /** Start armed: see HotSwapOptions.resumePrompt. Interactive sessions only. */
+  resumePrompt?: string;
+}
+
+export async function runCommand(
+  context: CliContext,
+  passthroughArgs: string[],
+  options: RunCommandOptions = {},
+): Promise<number> {
   // A SUBCOMMAND is not a session. `claude update`, `claude mcp list`, `claude
   // rc` and the rest manage the installation or its background sessions and
   // take their own options, while the session path adds `--session-id` for
@@ -72,9 +81,16 @@ export async function runCommand(context: CliContext, passthroughArgs: string[])
   // Interactive sessions with stored tokens get transparent hot-swap: the token
   // selects the account, so we skip the slow per-account health probe.
   if (!isHeadless(passthroughArgs) && hasAnyUsableAccount(context)) {
-    const code = await runInteractiveHotSwap(context, passthroughArgs);
+    const code = await runInteractiveHotSwap(context, passthroughArgs, options);
     maybeHintShim(context); // one-time tip after the session, if the shim is off
     return code;
+  }
+  if (options.resumePrompt !== undefined) {
+    // Said rather than dropped silently: a -p run ends when it answers, so there
+    // is no later swap for an armed prompt to ride.
+    (context.err ?? ((m: string) => process.stderr.write(`${m}\n`)))(
+      'ccx: --resume-prompt is for interactive sessions; ignored for this run',
+    );
   }
 
   const pinned = getActive(context.ctx) ?? undefined;

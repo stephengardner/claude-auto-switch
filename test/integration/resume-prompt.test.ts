@@ -186,9 +186,8 @@ describe.skipIf(!PTY_AVAILABLE)('a resume prompt the session armed (against fake
     await loginAccount(context, home, 'A');
     await loginAccount(context, home, 'B');
     setActive('A', context.ctx);
-    arm(context, PROMPT); // armed before the session starts
-
-    expect(await runCommand(context, [])).toBe(0);
+    // Started armed, the way a run that must carry on by itself is launched.
+    expect(await runCommand(context, [], { resumePrompt: PROMPT })).toBe(0);
 
     const launches = launchesIn(runsLog);
     expect(launches.length).toBeGreaterThanOrEqual(2);
@@ -226,10 +225,10 @@ describe.skipIf(!PTY_AVAILABLE)('a resume prompt the session armed (against fake
     await loginAccount(context, home, 'A');
     await loginAccount(context, home, 'B');
     setActive('A', context.ctx);
-    arm(context, PROMPT);
-
     expect(
-      await runCommand(context, ['--dangerously-skip-permissions', 'fix the flaky test']),
+      await runCommand(context, ['--dangerously-skip-permissions', 'fix the flaky test'], {
+        resumePrompt: PROMPT,
+      }),
     ).toBe(0);
 
     const runs = readRuns(runsLog);

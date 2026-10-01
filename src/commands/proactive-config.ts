@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig } from '../config/config.js';
+import { loadConfigFile, saveConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
 
 /** The percent used when turning this on without naming one. */
@@ -43,9 +43,13 @@ export function proactiveCommand(
     }
   }
 
-  // Re-read from disk so unrelated settings written by hand are preserved.
-  const onDisk = loadConfig(context.ctx);
-  saveConfig({ ...onDisk, rotation: { ...onDisk.rotation, proactivePercent: percent } }, context.ctx);
+  // Read only the FILE, not the env-merged config: writing that back baked any
+  // temporary CAS_* override, and every default, permanently into the file.
+  const onDisk = loadConfigFile(context.ctx);
+  saveConfig(
+    { ...onDisk, rotation: { ...onDisk.rotation, proactivePercent: percent } },
+    context.ctx,
+  );
 
   context.out(
     percent > 0

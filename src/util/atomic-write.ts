@@ -3,11 +3,11 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import { replaceFileSync } from './replace-file.js';
 
 /**
  * Replace a file in one step, so a reader never sees half of it.
@@ -42,7 +42,7 @@ export function writeFileAtomic(file: string, contents: string): void {
     } finally {
       closeSync(handle);
     }
-    renameSync(temp, file);
+    replaceFileSync(temp, file);
   } catch (error) {
     // The original survived; a stray temp file beside it should not. Cleanup
     // is best effort on purpose: if removing the temp file also fails, that

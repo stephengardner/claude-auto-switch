@@ -20,6 +20,7 @@ import {
   removeSessionDir,
   keptSettingsPath,
   seedFromKeptSettings,
+  retireLeftoverSessionDir,
 } from './session-dir.js';
 
 /**
@@ -108,6 +109,23 @@ describe('sweeping session directories left behind', () => {
   it('says nothing happened when no session has ever run', () => {
     const { ctx } = home();
     expect(sweepDeadSessionDirs(ctx, { isAlive: () => false })).toEqual([]);
+  });
+
+  it('clears out a folder a dead process with this pid left, keeping its settings changes', () => {
+    // The sweep cannot see it: the pid it is named for is alive again, as the
+    // session starting now. What it holds belongs to that dead process.
+    const { ctx, root, claudeSettings } = home();
+    writeUserSettings(claudeSettings, { model: 'fable' });
+    const dir = seed(root, '4747');
+    writeFileSync(path.join(dir, 'claude-report.json'), JSON.stringify({ id: 'theirs' }), 'utf8');
+    writeFileSync(path.join(dir, 'resume-prompt.txt'), 'their task', 'utf8');
+    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ model: 'opus' }), 'utf8');
+
+    expect(retireLeftoverSessionDir(dir, ctx)).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'opus' });
+    // Nothing there is a no-op.
+    expect(retireLeftoverSessionDir(dir, ctx)).toBe(false);
   });
 });
 
@@ -210,6 +228,44 @@ describe('carrying only what a session CHANGED', () => {
     sweepDeadSessionDirs(ctx, { isAlive: () => false });
     // Only the pin. The user's own settings are theirs to change from now on.
     expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'fable[1m]' });
+  });
+
+  it('still carries a status line set in a session when ccx has none in the real settings', () => {
+    // Without ccx's line in the real file there is nothing of ccx's to protect,
+    // so a line set from inside a session is a change like any other.
+    const { ctx, root, claudeSettings } = home();
+    writeUserSettings(claudeSettings, { model: 'fable' });
+    const dir = path.join(root, '4646');
+    mkdirSync(dir, { recursive: true });
+    const own = { type: 'command', command: 'my-line' };
+    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ statusLine: own }), 'utf8');
+
+    sweepDeadSessionDirs(ctx, { isAlive: () => false });
+    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ statusLine: own });
+  });
+
+  it('never carries a status line over the ccx one in the real settings', () => {
+    // A session that started before `ccx on` wrapped the user's line kept the
+    // old one. It differed from the real setting forever after, so it was
+    // carried as a change and overrode ccx's own line in every later session.
+    const { ctx, root, claudeSettings } = home();
+    writeUserSettings(claudeSettings, {
+      statusLine: { type: 'command', command: 'ccx statusline --wrap "ccstatusline"' },
+      model: 'fable',
+    });
+    const dir = path.join(root, '4545');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, 'settings.json'),
+      JSON.stringify({
+        statusLine: { type: 'command', command: 'ccstatusline', padding: 0 },
+        model: 'opus',
+      }),
+      'utf8',
+    );
+
+    sweepDeadSessionDirs(ctx, { isAlive: () => false });
+    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'opus' });
   });
 
   it('lets a setting the user turns OFF actually turn off', () => {

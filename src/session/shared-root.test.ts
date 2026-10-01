@@ -71,6 +71,45 @@ describe('mergeUserSettings', () => {
     expect(merged.model).toBe('pinned'); // session pin wins
   });
 
+  it('lets the real status line win, because ccx manages it there and listens to it', () => {
+    // `ccx on` wraps the user's own line in `ccx statusline`, which is how ccx
+    // hears which conversation and model a session is on. A session carrying the
+    // line from before the wrap used to override it in every later session.
+    const { home, sessionDir, c } = setup();
+    const ours = { type: 'command', command: 'ccx statusline --wrap "ccstatusline"' };
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    writeFileSync(
+      path.join(home, '.claude', 'settings.json'),
+      JSON.stringify({ statusLine: ours }),
+      'utf8',
+    );
+    writeFileSync(
+      path.join(sessionDir, 'settings.json'),
+      JSON.stringify({
+        model: 'pinned',
+        statusLine: { type: 'command', command: 'ccstatusline', padding: 0 },
+      }),
+      'utf8',
+    );
+
+    mergeUserSettings(sessionDir, c);
+    const merged = JSON.parse(readFileSync(path.join(sessionDir, 'settings.json'), 'utf8'));
+    expect(merged.statusLine).toEqual(ours);
+    expect(merged.model).toBe('pinned'); // everything else is as it was
+  });
+
+  it('keeps a session status line when the real settings have none', () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: {} }), 'utf8');
+    const own = { type: 'command', command: 'my-line' };
+    writeFileSync(path.join(sessionDir, 'settings.json'), JSON.stringify({ statusLine: own }), 'utf8');
+
+    mergeUserSettings(sessionDir, c);
+    const merged = JSON.parse(readFileSync(path.join(sessionDir, 'settings.json'), 'utf8'));
+    expect(merged.statusLine).toEqual(own);
+  });
+
   it('is a no-op when the user has no settings file', () => {
     const { sessionDir, c } = setup();
     mergeUserSettings(sessionDir, c);

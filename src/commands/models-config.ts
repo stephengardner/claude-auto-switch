@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig } from '../config/config.js';
+import { loadConfigFile, saveConfig } from '../config/config.js';
 import type { RotationStrategy } from '../usage/rotation-plan.js';
 import type { CliContext } from '../context.js';
 
@@ -34,10 +34,11 @@ export function modelsCommand(
   models: string[] | undefined,
   options: ModelsCommandOptions = {},
 ): number {
-  const onDisk = loadConfig(context.ctx);
+  // What is in effect, defaults included, for reporting and as the base of a change.
+  const current = context.config.rotation;
   const named = (models ?? []).flatMap((m) => m.split(',')).map((m) => m.trim()).filter(Boolean);
 
-  let strategy = onDisk.rotation.modelStrategy;
+  let strategy = current.modelStrategy;
   if (options.strategy !== undefined) {
     const wanted = options.strategy.trim().toLowerCase();
     if (!STRATEGIES.includes(wanted as RotationStrategy)) {
@@ -49,7 +50,7 @@ export function modelsCommand(
 
   // Nothing to change: report where things stand, and how to change them.
   if (named.length === 0 && options.strategy === undefined) {
-    const chain = onDisk.rotation.modelPreference;
+    const chain = current.modelPreference;
     context.out(`models:   ${chain.join(' then ')}`);
     context.out(`strategy: ${describeStrategy(strategy, chain)}`);
     context.out('');
@@ -59,14 +60,17 @@ export function modelsCommand(
     return 0;
   }
 
-  const chain = named.length > 0 ? named : [...onDisk.rotation.modelPreference];
+  const chain = named.length > 0 ? named : [...current.modelPreference];
+  // Write only what was asked for, on top of the FILE. Writing the env-merged
+  // config back baked temporary CAS_* overrides, and every default, into it.
+  const onDisk = loadConfigFile(context.ctx);
   saveConfig(
     {
       ...onDisk,
       rotation: {
         ...onDisk.rotation,
-        modelPreference: chain as [string, ...string[]],
-        modelStrategy: strategy,
+        ...(named.length > 0 ? { modelPreference: chain } : {}),
+        ...(options.strategy !== undefined ? { modelStrategy: strategy } : {}),
       },
     },
     context.ctx,
