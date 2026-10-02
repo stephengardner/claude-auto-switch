@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.54.1]
+
+### Fixed
+
+- **`ccx doctor` no longer reports sessions on different accounts as a
+  problem.** Its session check compared the newest session with the account new
+  sessions start on, which was right when every session shared one folder.
+  With a folder each, a terminal on another account was reported as "two
+  sessions share one session directory", with advice to end one of them. Every
+  running session is now compared with the account ccx gave it.
+
 ## [1.54.0]
 
 ### Changed
