@@ -7,7 +7,7 @@ import { configHome, profilesDir } from '../config/paths.js';
 import { detectEditors } from '../editor/settings.js';
 import { readEditorEnvVar } from '../editor/install.js';
 import { editorTargetAccount } from '../editor/junction.js';
-import { isShimInstalled, shimHasFallback } from '../shell/install-shim.js';
+import { isShimInstalled, shimHasFallback, shimIsCurrent } from '../shell/install-shim.js';
 import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-path.js';
 import { isLink, readTarget } from '../daemon/junction.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
@@ -24,6 +24,7 @@ import { getClaude, type CliContext } from '../context.js';
 import type { ClaudeInvoker } from '../invoker.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { settingsPath, readSettings, isOurs } from '../statusline/settings-install.js';
+import { installedHooksProblem, readInstalledHandoff } from '../desktop/hooks.js';
 
 export interface DoctorCheck {
   name: string;
@@ -164,6 +165,17 @@ export function auditShim(context: CliContext, deps: DoctorDeps = {}): DoctorChe
       name: 'terminal-shim',
       ok: false,
       detail: 'an old shim is installed; removing ccx would break `claude`',
+      fix: ['ccx on'],
+    };
+  }
+  // By the profile, not the platform: `ccx on --shell powershell` puts the
+  // PowerShell shim into a pwsh profile on macOS and Linux too.
+  const shell = /\.ps1$/i.test(profile) ? 'powershell' : 'posix';
+  if (!shimIsCurrent(profile, shell)) {
+    return {
+      name: 'terminal-shim',
+      ok: false,
+      detail: 'the shim is from an older ccx (in PowerShell, `claude --version` and `claude --help` reached ccx)',
       fix: ['ccx on'],
     };
   }
@@ -427,6 +439,25 @@ export function auditEditor(context: CliContext): DoctorCheck {
   };
 }
 
+/**
+ * Can Claude run the Desktop handoff hooks? They name a node and a ccx by
+ * path, and Claude runs them in every session, so a ccx moved or removed since
+ * shows up as a broken hook everywhere.
+ */
+function auditDesktopHooks(context: CliContext): DoctorCheck | null {
+  const when = readInstalledHandoff(context.ctx);
+  if (when === 'off') return null;
+  const problem = installedHooksProblem(context.ctx);
+  return problem
+    ? {
+        name: 'desktop-hooks',
+        ok: false,
+        detail: `the Claude Desktop hooks cannot run: ${problem}`,
+        fix: ['ccx on'],
+      }
+    : { name: 'desktop-hooks', ok: true, detail: `Desktop conversations move on: ${when}` };
+}
+
 export async function runDoctor(
   context: CliContext,
   deps: DoctorDeps = {},
@@ -451,6 +482,7 @@ export async function runDoctor(
     auditRealClaude(context, deps),
     auditEditor(context),
     await auditBrowserPort(context, deps),
+    ...[auditDesktopHooks(context)].filter((c): c is DoctorCheck => c !== null),
   ];
   return { checks, ok: checks.every((c) => c.ok) };
 }
@@ -470,6 +502,7 @@ const LABELS: Record<string, string> = {
   'real-claude': 'claude',
   editor: 'editor',
   'browser-debug-port': 'browser',
+  'desktop-hooks': 'Claude Desktop',
 };
 
 /** Print the doctor report and return 0 when all checks pass, 1 otherwise. */

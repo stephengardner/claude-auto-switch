@@ -98,3 +98,12 @@ describe('quitting with Escape', () => {
     expect(dispatchKey('\x04', 4, 0, 3).action).toBe('quit');
   });
 });
+
+describe('the Claude Desktop keys', () => {
+  it('d, m and t change its settings, and capital D moves a conversation', () => {
+    expect(dispatchKey('d', 100, 2, 3)).toEqual({ selected: 2, action: 'desktop-handoff' });
+    expect(dispatchKey('m', 109, 2, 3).action).toBe('desktop-mode');
+    expect(dispatchKey('t', 116, 2, 3).action).toBe('desktop-prompt');
+    expect(dispatchKey('D', 68, 2, 3).action).toBe('desktop-move');
+  });
+});

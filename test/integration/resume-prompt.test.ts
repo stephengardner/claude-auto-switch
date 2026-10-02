@@ -239,7 +239,8 @@ describe.skipIf(!PTY_AVAILABLE)('a resume prompt the session armed (against fake
     expect(events).not.toContain('relaunching instead of relieving in place');
   });
 
-  it('changes nothing for a session that armed nothing', async () => {
+  /** A run that is restarted once on another account; returns the relaunch's arguments. */
+  async function restartedOnce(prepare?: (context: CliContext) => void): Promise<string[]> {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-resume-none-'));
     const runsLog = path.join(home, 'runs.jsonl');
     process.env.FAKE_CLAUDE_IDLE_MS = '2500';
@@ -249,6 +250,7 @@ describe.skipIf(!PTY_AVAILABLE)('a resume prompt the session armed (against fake
     await loginAccount(context, home, 'A');
     await loginAccount(context, home, 'B');
     setActive('A', context.ctx);
+    prepare?.(context);
 
     const run = runCommand(context, []);
     await waitFor(
@@ -258,11 +260,24 @@ describe.skipIf(!PTY_AVAILABLE)('a resume prompt the session armed (against fake
     );
     writeSwitchRequest('B', Date.now(), 'restart', context.ctx);
     expect(await run).toBe(0);
+    return launchesIn(runsLog)[1]?.args ?? [];
+  }
 
-    const relaunch = launchesIn(runsLog)[1]?.args ?? [];
+  it('carries on with the default prompt when the session armed nothing', async () => {
+    // A restarted session that waits at its prompt has, unattended, just stopped.
+    const relaunch = await restartedOnce();
     const i = relaunch.indexOf('--resume');
     expect(i).toBeGreaterThanOrEqual(0);
-    // Nothing after the conversation id: exactly the relaunch ccx always made.
+    expect(relaunch[i + 2]).toMatch(/^ccx restarted this session/);
+  });
+
+  it('changes nothing when carrying on is turned off', async () => {
+    const relaunch = await restartedOnce((context) => {
+      context.config.resume.auto = false;
+    });
+    const i = relaunch.indexOf('--resume');
+    expect(i).toBeGreaterThanOrEqual(0);
+    // Nothing after the conversation id: exactly the relaunch ccx made before.
     expect(relaunch.length).toBe(i + 2);
   });
 });

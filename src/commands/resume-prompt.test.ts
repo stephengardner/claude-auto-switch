@@ -5,7 +5,7 @@ import path from 'node:path';
 import { resumePromptCommand } from './resume-prompt.js';
 import { takeLease } from '../session/lease.js';
 import { sessionDirFor } from '../session/session-dir.js';
-import { RESUME_PROMPT_FILE, readResumePrompt } from '../session/resume-prompt.js';
+import { RESUME_PROMPT_FILE, readResumePrompt, resumePromptOff } from '../session/resume-prompt.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
 
@@ -56,10 +56,10 @@ describe('ccx resume-prompt', () => {
     expect(readResumePrompt(dir)).toEqual({ armed: true, prompt: 'carry on' });
   });
 
-  it('shows what is armed, and says so when nothing is', () => {
+  it('shows what is armed, and the default a session carries on with when nothing is', () => {
     const { context, lines } = liveSession();
     expect(resumePromptCommand(context, [], { session: String(process.pid) })).toBe(0);
-    expect(lines.join('\n')).toMatch(/nothing armed/);
+    expect(lines.join('\n')).toMatch(/carries on with the default after a swap: ccx restarted this session/);
     resumePromptCommand(context, ['carry on'], { session: String(process.pid) });
     lines.length = 0;
     expect(resumePromptCommand(context, [], { session: String(process.pid) })).toBe(0);
@@ -83,6 +83,11 @@ describe('ccx resume-prompt', () => {
     ).toBe(1);
     expect(resumePromptCommand(context, [], { session: String(process.pid), clear: true })).toBe(0);
     expect(readResumePrompt(dir)).toEqual({ armed: false });
+    // And the default is off for it too: --clear means no prompt at all.
+    expect(resumePromptOff(dir)).toBe(true);
+    // Arming again undoes that.
+    resumePromptCommand(context, ['carry on'], { session: String(process.pid) });
+    expect(resumePromptOff(dir)).toBe(false);
   });
 
   it('refuses when it cannot tell which session is meant', () => {

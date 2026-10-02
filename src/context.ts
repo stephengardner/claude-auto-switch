@@ -5,6 +5,7 @@ import type { PathCtx } from './config/paths.js';
 import type { ClaudeInvoker } from './invoker.js';
 import type { LimitVerdict } from './usage/limit-probe.js';
 import type { BlockedWatchOptions } from './launcher/blocked-watch.js';
+import type { NewerInstall } from './update/newer-install.js';
 
 /** Everything a command needs: paths context, config, output sink, and flags. */
 export interface CliContext {
@@ -22,6 +23,8 @@ export interface CliContext {
   blockedWatch?: BlockedWatchOptions;
   /** Injected in tests: overrides the API lookup of who a stored login belongs to. */
   lookupOwner?: (dir: string) => Promise<string | null>;
+  /** Injected in tests: a newer ccx installed under this one (update/newer-install). */
+  newerInstall?: () => NewerInstall | null;
   out: (message: string) => void;
   /** ccx's own status messages. MUST go to stderr so it never corrupts a run's stdout protocol. */
   err?: (message: string) => void;

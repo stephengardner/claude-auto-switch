@@ -5,7 +5,9 @@ import path from 'node:path';
 import {
   RESUME_PROMPT_FILE,
   RESUME_PROMPT_MAX_CHARS,
+  START_PROMPT_MAX_CHARS,
   checkResumePrompt,
+  checkStartPrompt,
   readResumePrompt,
   writeResumePrompt,
   clearResumePrompt,
@@ -113,5 +115,18 @@ describe('arming, reading and disarming a session', () => {
     expect(existsSync(path.join(dir, RESUME_PROMPT_FILE))).toBe(false);
     expect(readResumePrompt(dir)).toEqual({ armed: false });
     expect(clearResumePrompt(dir)).toBe(false);
+  });
+});
+
+describe('what a start prompt may be', () => {
+  it('is somebody own message, kept exactly, lines and quotes and all', () => {
+    expect(checkStartPrompt('fix "the" test\n- then push')).toEqual({ ok: true });
+  });
+
+  it('is refused when empty, or longer than one Windows command line can carry', () => {
+    expect(checkStartPrompt('  ').ok).toBe(false);
+    expect(checkStartPrompt('x'.repeat(START_PROMPT_MAX_CHARS)).ok).toBe(true);
+    const long = checkStartPrompt('x'.repeat(START_PROMPT_MAX_CHARS + 1));
+    expect(long.ok ? '' : long.reason).toMatch(/more than the 15000 one command line can carry/);
   });
 });

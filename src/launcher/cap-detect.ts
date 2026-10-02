@@ -141,6 +141,15 @@ function extractResetAt(text: string): number | undefined {
   return undefined;
 }
 
+/**
+ * The reset time a refusal names, when it names one. Read from a refusal the
+ * conversation's record already identified, so nothing here decides WHETHER it
+ * was one.
+ */
+export function resetAtIn(text: string): number | undefined {
+  return extractResetAt(text);
+}
+
 function firstLine(s: string): string {
   return s.split(/\r?\n/)[0]?.trim() ?? '';
 }

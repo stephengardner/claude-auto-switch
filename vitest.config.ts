@@ -7,6 +7,8 @@ export default defineConfig({
     // coverage that exists. The gate's tests were silently skipped that way once.
     include: ['src/**/*.test.ts', 'test/**/*.test.ts', 'scripts/**/*.test.ts'],
     environment: 'node',
+    // Strips the live Claude session's variables first: see the file.
+    setupFiles: ['test/setup-env.ts'],
     // Several tests spawn real `node`/fake-claude child processes; cold starts
     // under CI load can exceed the 5s default, so give them headroom.
     testTimeout: 20000,

@@ -41,6 +41,8 @@ export interface SnapshotInput {
   version?: string;
   /** Where rotation would go next, in words. See dashboard/next-up.ts. */
   nextUp?: string;
+  /** Claude Desktop's line and keys. See desktop/summary.ts. */
+  desktop?: { line: string; keys: string } | null;
 }
 
 export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
@@ -71,5 +73,6 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
     ...(input.model ? { model: input.model } : {}),
     ...(input.version ? { version: input.version } : {}),
     ...(input.nextUp ? { nextUp: input.nextUp } : {}),
+    ...(input.desktop ? { desktop: input.desktop } : {}),
   };
 }

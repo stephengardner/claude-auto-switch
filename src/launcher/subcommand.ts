@@ -81,5 +81,13 @@ export const SUBCOMMANDS = new Set([
  */
 export function claudeSubcommandIn(args: readonly string[]): string | null {
   const first = args[0];
+  if (first !== undefined && ASKS_ABOUT_CLAUDE.has(first)) return first;
   return first !== undefined && SUBCOMMANDS.has(first) ? first : null;
 }
+
+/**
+ * Questions about Claude itself, answered and exited without a session. Run as
+ * a session they still worked, but only after ccx had picked an account and
+ * copied its login in, for a line of output.
+ */
+const ASKS_ABOUT_CLAUDE = new Set(['--version', '-v', '--help', '-h']);

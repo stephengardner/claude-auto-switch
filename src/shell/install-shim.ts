@@ -17,7 +17,10 @@ export function shimBlock(shell: ShellKind): string {
       ? [
           'function claude {',
           '    if (Get-Command ccx -ErrorAction SilentlyContinue) {',
-          '        ccx run -- @args',
+          // Quoted: handing arguments to another PowerShell command (npm's
+          // ccx.ps1 is one), PowerShell swallows a bare `--`, and ccx then
+          // reads Claude's flags as its own (`claude --version` printed ccx's).
+          "        ccx run '--' @args",
           '    }',
           '    else {',
           '        $real = Get-Command claude -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1',
@@ -49,19 +52,30 @@ export function shimHasFallback(profilePath: string): boolean {
   return text.includes('Get-Command ccx') || text.includes('command -v ccx');
 }
 
+/** True when the installed shim block is exactly the current one for `shell`. */
+export function shimIsCurrent(profilePath: string, shell: ShellKind): boolean {
+  if (!isShimInstalled(profilePath)) return false;
+  const lines = readFileSync(profilePath, 'utf8').split(/\r?\n/);
+  const start = lines.findIndex((l) => l.includes(MARKER_START));
+  const end = lines.findIndex((l) => l.includes(MARKER_END));
+  if (start === -1 || end < start) return false;
+  return lines.slice(start, end + 1).join('\n') === shimBlock(shell);
+}
+
 /**
  * Install the shim block idempotently, backing up an existing profile first.
- * An installed but OUTDATED block (no uninstall fallback) is upgraded in place.
+ * An installed block that is not the current one (an older ccx wrote it) is
+ * replaced in place, so a fix to the shim reaches everyone who runs `ccx on`.
  */
 export function installShim(profilePath: string, shell: ShellKind): 'installed' | 'already-present' {
-  if (isShimInstalled(profilePath)) {
-    if (shimHasFallback(profilePath)) return 'already-present';
-    uninstallShim(profilePath); // outdated block: replace with the current one
-  }
+  if (isShimInstalled(profilePath) && shimIsCurrent(profilePath, shell)) return 'already-present';
+  // Backed up before anything changes, the outdated block included, so an edit
+  // somebody made inside it is still in the backup.
+  if (existsSync(profilePath)) copyFileSync(profilePath, `${profilePath}.cas-backup`);
+  if (isShimInstalled(profilePath)) uninstallShim(profilePath); // outdated: replaced below
 
   mkdirSync(path.dirname(profilePath), { recursive: true });
   const existing = existsSync(profilePath) ? readFileSync(profilePath, 'utf8') : '';
-  if (existsSync(profilePath)) copyFileSync(profilePath, `${profilePath}.cas-backup`);
 
   const block = shimBlock(shell);
   const next = existing.trim().length > 0 ? `${existing.trimEnd()}\n\n${block}\n` : `${block}\n`;

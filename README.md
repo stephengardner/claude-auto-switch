@@ -20,15 +20,16 @@ npm install -g claude-auto-switch
 
 ccx add work        # log in an account (opens your browser)
 ccx add personal    # add another to switch between
-ccx on              # set up once: terminal, editor, status line
+ccx on              # set up once: terminal, editor, status line, /ccx
 ```
 
 That is the entire setup. Now use Claude normally.
 
-`ccx on` does three things and tells you about each one: it makes `claude` run
+`ccx on` does four things and tells you about each one: it makes `claude` run
 through ccx in your shell, points the Claude Code editor extension at your
-accounts, and adds a line to Claude's own status bar so you can always see which
-account you are on. `ccx off` undoes all three.
+accounts, adds a line to Claude's own status bar so you can always see which
+account you are on, and adds `/ccx` to Claude so you can see every account and
+swap from inside a session. `ccx off` undoes all four.
 
 > Adding a second account? Your browser is still signed in to the first one, so
 > sign out at claude.ai first (or use a different browser profile). Otherwise
@@ -57,8 +58,61 @@ hit one. Nothing new to learn, nothing to remember.
 
 `ccx on` also points the Claude Code extension at your accounts (or run
 `ccx editor on` for just the editor). Restart your editor and use Claude in it as
-usual. It only changes *which account* the editor uses, never *how* it launches
+usual. It only changes _which account_ the editor uses, never _how_ it launches
 Claude, so it cannot break Claude in your editor.
+
+## Using it with Claude Desktop
+
+Claude Desktop runs its conversations on the account the Desktop app itself is
+signed into. It hands each conversation that login on its own, so nothing
+outside Desktop can switch a Desktop conversation to another account, ccx
+included. What ccx does instead is move a conversation from Desktop to a
+terminal window, where it does switch accounts: the conversation keeps all its
+history (Desktop and ccx share Claude's conversation store), picks up on the
+same model, effort and permission mode it had in Desktop, and carries on by
+itself.
+
+```sh
+ccx desktop                  # which account Desktop spends, and what is open there
+ccx desktop move 2           # carry conversation 2 on in a terminal
+ccx desktop move 2 --wait    # the same, picking it up the moment Desktop stops
+ccx desktop handoff credits  # do it by itself (off | limit | credits)
+```
+
+- `handoff limit` moves a conversation by itself when a Desktop turn ends on a
+  usage limit.
+- `handoff credits` does that too, and also holds back a message sent in Desktop
+  once its account is past its plan, so it never spends usage credits: the
+  conversation continues in a terminal on an account with room, with your
+  message. A message too long to carry over (more than 15,000 characters) goes
+  to Desktop as usual instead of being held.
+- Both are hooks in `~/.claude/settings.json` that run node with ccx's hook
+  script directly, with no shell, so they work the same whichever shell Claude
+  would use. Every Claude session runs them, and anything that is not Desktop
+  is gone before ccx is even loaded. `ccx doctor` checks they still point at
+  your ccx, and `ccx on` points them at it again after an update.
+- A moved conversation continues as a copy by default, so Desktop keeps the
+  original exactly as it was (`ccx desktop mode fork`). `ccx desktop mode same`
+  continues the conversation itself, so reopening it in Desktop later shows the
+  work; send nothing to it in Desktop while the terminal carries on.
+- It carries on with "Carry on where you stopped." unless you set
+  `ccx desktop prompt "<text>"`.
+
+The dashboard shows Desktop's line too, with keys for all of it: `d` steps
+through when conversations move by themselves, `m` copy or same (both ask
+first), `t` the carry-on text, and `D` moves one. Desktop's own built-in
+terminal pane loads your shell profile, so `claude` typed there already runs
+through ccx.
+
+## Swapping from inside Claude: /ccx
+
+Type `/ccx` (or `/ccx swap`) in any Claude session, including Claude Desktop.
+It shows every account's 5-hour, weekly and model usage as bars, what is spent
+and when it comes back, and which account has the most room, then asks which
+one to move to. In a ccx session the swap happens in place and nothing
+restarts; in Claude Desktop the conversation continues in a terminal on the
+account you pick, once the reply ends. `/ccx status` shows the board only.
+From a terminal, `ccx swap` draws the same board and `ccx swap <name>` swaps.
 
 ## Knowing where you stand
 
@@ -140,8 +194,11 @@ program](docs/reading-ccx-from-another-program.md).
 - **Your conversation continues** on the new account, in place.
 - **Your history stays yours.** ccx sessions read and write your normal
   `~/.claude`, so `/resume` and project memories are exactly where they always
-  were, whether you launch Claude through ccx or not. The only thing ccx *adds*
-  there is the `statusLine` key, and `ccx off` takes it back out.
+  were, whether you launch Claude through ccx or not. What ccx _adds_ there is
+  its own and comes back out with `ccx off`: the `statusLine` key, the `/ccx`
+  skill, and the two Claude Desktop hooks when you turn the handoff on. It also
+  creates the empty `skills`, `agents`, `commands` and `output-styles` folders
+  if you have none, so your sessions can share them.
 - **Careful with your logins.** Credentials are written whole or not at all, the
   previous one is always kept, and a signed-out or damaged credential is never
   written over a good account. Before a login is copied into an account, ccx
@@ -170,33 +227,46 @@ program](docs/reading-ccx-from-another-program.md).
 
 ## How it works
 
-ccx runs the real Claude for you and quietly watches its output. When Claude
-reports a usage limit, ccx confirms it against your account's real usage, marks
-that account as out, and moves your session to one with room, continuing the
-conversation. There is one shared "active account" that your terminal and your
-editor both follow, so a switch made anywhere carries everywhere.
+ccx runs the real Claude for you and follows the conversation's own record,
+which Claude keeps on disk. When Claude records a turn as refused for usage (it
+writes each one with its own codes, never needing anyone to read the screen),
+ccx confirms it against your account's real usage, marks that account as out,
+and moves your session to one with room, continuing the conversation. Words on
+the screen decide nothing, so a session whose work is about limits is never
+moved for talking about them. There is one shared "active account" that your
+terminal and your editor both follow, so a switch made anywhere carries
+everywhere.
 
 Switching a running session is seamless: ccx swaps the login underneath it and
 Claude picks it up within about half a minute, with nothing restarted. When you
 want it immediately instead, `ccx use <name> --now` restarts the session on the
 new account and resumes the same conversation.
 
-A restarted session comes back idle at its prompt, which is fine when you are at
-the keyboard and a dead stop when nobody is: an unattended session, a long
-autonomous run, waits there until someone types. So a session can arm the prompt
-it wants when it comes back, `ccx resume-prompt "carry on where you stopped"`,
-and every relaunch after a swap submits it, resuming the same conversation with
-that prompt. When an armed session hits a verified usage limit, it is relaunched
-rather than switched in place, because the limit ends the turn it interrupted and
-only a relaunch can hand the session its prompt. A switch made in place, such as
-a seamless `ccx use` or a proactive move, hands over no prompt: it does not
-interrupt the session, so there is nothing to pick back up. Run it from inside
-the session (it finds itself through the config folder Claude runs with), or
-name one with `--session <pid>` or `--here`; `--clear` disarms it. Or start a
-session already armed: `ccx run --resume-prompt "carry on where you stopped" --
---resume <id>` picks that conversation up with the prompt at once, and keeps it
-for every swap after. Nothing is armed by default, and a fresh conversation
-started because there was nothing to resume never gets it.
+A restarted session carries on by itself. Every relaunch, usually on another
+account, tells it to carry on where it stopped, or, if its work was already
+finished, to say so in one line and wait; an unattended session, a long
+autonomous run, keeps going instead of waiting for someone to type. When a
+session hits a verified usage limit it is relaunched rather than switched in
+place for the same reason: the limit ended the turn it interrupted, and only a
+relaunch can tell it to pick that turn back up. A switch made in place, such as
+a seamless `ccx use` or a proactive move, says nothing: it does not interrupt
+the session, so there is nothing to pick back up.
+
+A session can say something else instead: `ccx resume-prompt "<text>"` from
+inside it (it finds itself through the config folder Claude runs with), or for
+one named with `--session <pid>` or `--here`. `--clear` makes that session come
+back silent, and `resume.auto` in the config turns carrying on off everywhere.
+Or start a session armed: `ccx run --resume-prompt "<text>" -- --resume <id>`
+picks that conversation up with the prompt at once, and keeps it for every swap
+after. A fresh conversation started because there was nothing to resume never
+gets it.
+
+Running sessions take updates by themselves. When a newer ccx is installed,
+each session moves to it in the same terminal, on the same conversation and
+account: when Claude is being relaunched anyway, or once it has been idle for
+twenty seconds, never in the middle of a turn. On Windows, sessions load their
+terminal library from a copy of their own, so `npm install -g` works while they
+run (`update.follow` in the config turns the moving off).
 
 A swap resumes the conversation that is actually on screen, even after `/clear`
 or `/resume`, and even in a session started with `--continue` or the picker:
@@ -209,32 +279,34 @@ ccx follows Claude's own record of which conversation each session is in.
 The two you actually use are `ccx add` and `ccx on`. The rest are here when you
 want them.
 
-| Command | What it does |
-| --- | --- |
-| `ccx add <name>` | Log in an account and give it its own folder |
-| `ccx on` / `off` | Set up (or remove) ccx everywhere: terminal + editors |
-| `ccx editor on` / `off` | Set up (or remove) just an editor (Cursor / VS Code) |
-| `ccx` | A quick status glance (or a getting-started guide if you're new) |
-| `ccx usage` | Real usage per account: hourly, weekly, and per model |
-| `ccx statusline` | One line for Claude's status line (`--wrap`, `--compact`) |
-| `ccx dashboard` (alias `watch`) | Live view of every account, with keys to act |
-| `ccx doctor` | Check the whole setup, including who each profile really is |
-| `ccx use <name>` | Make an account active (`--now` to switch instantly) |
-| `ccx resume-prompt "<text>"` | Arm the prompt a session is resumed with after a swap (`--clear`, `--session <pid>`, `--here`) |
-| `ccx rotate` | Switch to the next healthy account now |
-| `ccx order [most-room\|priority]` | Which account to reach for first: least-used (default) or by priority |
-| `ccx proactive on` / `off` | Move to a roomier account before running out |
-| `ccx auto` | Do that check once now (`--once`, `--json`, for scripts) |
-| `ccx list` / `status [name]` | Account health (email, plan, signed in, capped until) |
-| `ccx enable` / `disable <name>` | Include or exclude an account from switching |
-| `ccx priority <name> <n>` | Set an account's priority: the tiebreak by default, the full order under `ccx order priority` (lower first) |
-| `ccx login <name>` / `--all` | Sign a stale account back in |
-| `ccx remove <name>` | Remove an account (`--purge` also deletes its folder) |
-| `ccx setup` | Shows your next step, wherever you are in setup |
-| `ccx history` | What ccx has done to your logins, and when |
-| `ccx cap <name>` | Mark an account limited by hand, or `--clear` one that is not |
-| `ccx daemon install` | Always-on rotation, including outside a terminal |
-| `ccx run -- <args>` | Run a one-off through ccx without installing the shim (`--resume-prompt "<text>"` to start armed) |
+| Command                           | What it does                                                                                                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ccx add <name>`                  | Log in an account and give it its own folder                                                                                                                        |
+| `ccx on` / `off`                  | Set up (or remove) ccx everywhere: terminal, editors, status line, `/ccx`                                                                                           |
+| `ccx editor on` / `off`           | Set up (or remove) just an editor (Cursor / VS Code)                                                                                                                |
+| `ccx swap [name]`                 | Every account's room as bars; swap the session you are in to `name` (`/ccx` inside Claude)                                                                          |
+| `ccx desktop`                     | Claude Desktop: which account it spends, its open conversations; `move [n]` (`--wait`, `--to`), `handoff off\|limit\|credits`, `mode fork\|same`, `prompt "<text>"` |
+| `ccx`                             | A quick status glance (or a getting-started guide if you're new)                                                                                                    |
+| `ccx usage`                       | Real usage per account: hourly, weekly, and per model                                                                                                               |
+| `ccx statusline`                  | One line for Claude's status line (`--wrap`, `--compact`)                                                                                                           |
+| `ccx dashboard` (alias `watch`)   | Live view of every account, with keys to act                                                                                                                        |
+| `ccx doctor`                      | Check the whole setup, including who each profile really is                                                                                                         |
+| `ccx use <name>`                  | Make an account active (`--now` to switch instantly)                                                                                                                |
+| `ccx resume-prompt "<text>"`      | What a session says to itself after a restart, instead of the default (`--clear` for nothing, `--session <pid>`, `--here`)                                          |
+| `ccx rotate`                      | Switch to the next healthy account now                                                                                                                              |
+| `ccx order [most-room\|priority]` | Which account to reach for first: least-used (default) or by priority                                                                                               |
+| `ccx proactive on` / `off`        | Move to a roomier account before running out                                                                                                                        |
+| `ccx auto`                        | Do that check once now (`--once`, `--json`, for scripts)                                                                                                            |
+| `ccx list` / `status [name]`      | Account health (email, plan, signed in, capped until)                                                                                                               |
+| `ccx enable` / `disable <name>`   | Include or exclude an account from switching                                                                                                                        |
+| `ccx priority <name> <n>`         | Set an account's priority: the tiebreak by default, the full order under `ccx order priority` (lower first)                                                         |
+| `ccx login <name>` / `--all`      | Sign a stale account back in                                                                                                                                        |
+| `ccx remove <name>`               | Remove an account (`--purge` also deletes its folder)                                                                                                               |
+| `ccx setup`                       | Shows your next step, wherever you are in setup                                                                                                                     |
+| `ccx history`                     | What ccx has done to your logins, and when                                                                                                                          |
+| `ccx cap <name>`                  | Mark an account limited by hand, or `--clear` one that is not                                                                                                       |
+| `ccx daemon install`              | Always-on rotation, including outside a terminal                                                                                                                    |
+| `ccx run -- <args>`               | Run a one-off through ccx without installing the shim (`--resume-prompt "<text>"` to start armed)                                                                   |
 
 ## Configuration
 
@@ -290,7 +362,6 @@ This applies only when a model is actually in play, meaning you passed
 Claude picks its own default, ccx has no way to read which one that is, and
 imposing a model you never asked for would be the wrong answer. Those sessions
 rotate on account capacity alone.
-
 
 - `priorityOrder`: which accounts to prefer, in order (for example, burn the
   personal one first and save work for last).

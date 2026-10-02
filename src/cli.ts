@@ -25,6 +25,13 @@ import { loginCommand } from './commands/login.js';
 import { enableCommand, disableCommand, priorityCommand } from './commands/account-config.js';
 import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
+import {
+  desktopCommand,
+  desktopContinueCommand,
+  desktopRunCommand,
+  type DesktopOptions,
+} from './commands/desktop.js';
+import { swapCommand } from './commands/swap.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { homeCommand } from './commands/home.js';
 import { sessionsCommand } from './commands/sessions.js';
@@ -268,11 +275,15 @@ program
     '--resume-prompt <text>',
     'start armed with the prompt this session resumes with after a swap (and at start, when it resumes a conversation)',
   )
+  .option('--start-prompt <text>', 'submitted once when the run resumes a conversation, before the armed prompt takes over')
+  .option('--account <name>', 'start on this account instead of the active one')
   .allowUnknownOption()
   .argument('[args...]')
-  .action(async (args: string[], opts: { resumePrompt?: string }) => {
-    process.exitCode = await runCommand(context(), args, opts);
-  });
+  .action(
+    async (args: string[], opts: { resumePrompt?: string; startPrompt?: string; account?: string }) => {
+      process.exitCode = await runCommand(context(), args, opts);
+    },
+  );
 
 program
   .command('remove <name>')
@@ -324,6 +335,46 @@ program
   .description('always-on rotation everywhere: install|uninstall|status|start|stop|run')
   .action(async (action?: string) => {
     process.exitCode = await daemonCommand(context(), action);
+  });
+
+program
+  .command('desktop [action] [args...]')
+  .description(
+    "Claude Desktop: which account it spends, and moving its conversations to a terminal ccx controls (handoff off|limit|credits, mode fork|same, prompt, move)",
+  )
+  .option('--wait', 'move: open the terminal now and pick the conversation up the moment Desktop stops')
+  .option('--to <account>', 'move: continue on this account')
+  .option('--again', 'move: move a conversation that was moved recently')
+  .option('--dry-run', 'move: show what would run, without opening anything')
+  .option('--timeout <minutes>', 'wait: how long to wait for Desktop (default 60)')
+  .action(async (action: string | undefined, args: string[] | undefined, opts: DesktopOptions) => {
+    process.exitCode = await desktopCommand(context(), action, args ?? [], opts);
+  });
+
+program
+  .command('swap [name]')
+  .description(
+    'every account and how much room it has; swap the session you are in to <name> (also /ccx inside Claude; --json for the board as data)',
+  )
+  .action(async (name: string | undefined) => {
+    const ctx = context();
+    process.exitCode = await swapCommand(ctx, name, { json: ctx.json });
+  });
+
+// The hooks `ccx desktop handoff` installs run dist/desktop/hook-entry.js, not
+// this file, so the sessions that are not Desktop's never load ccx. These are
+// the two steps after it: started detached by the hook, to do the slow half
+// once it has returned, and then what the window that opens runs.
+program
+  .command('desktop-continue <job>', { hidden: true })
+  .action((job: string) => {
+    process.exitCode = desktopContinueCommand(context(), job);
+  });
+
+program
+  .command('desktop-run <file>', { hidden: true })
+  .action(async (file: string) => {
+    process.exitCode = await desktopRunCommand(context(), file);
   });
 
 async function main(): Promise<void> {

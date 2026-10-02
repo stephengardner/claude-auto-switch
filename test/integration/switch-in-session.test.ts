@@ -253,6 +253,9 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
       calls += 1;
       return Promise.resolve(calls === 1 ? 'limited' : 'allowed');
     });
+    // In place only when nothing is to be said on coming back: carrying on
+    // needs a relaunch to deliver the prompt (resume-prompt.test covers that).
+    context.config.resume.auto = false;
     await loginAccount(context, home, 'A');
     await loginAccount(context, home, 'B');
     setActive('A', context.ctx);
@@ -297,6 +300,7 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
       calls += 1;
       return Promise.resolve(calls === 1 ? 'limited' : 'allowed');
     });
+    context.config.resume.auto = false; // the in-place path, as above
     await loginAccount(context, home, 'A');
     await loginAccount(context, home, 'B');
     setActive('A', context.ctx);

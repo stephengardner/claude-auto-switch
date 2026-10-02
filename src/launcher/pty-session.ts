@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { resetChildTerminalModes } from '../ui/child-terminal-modes.js';
-import { spawn, type IPty } from 'node-pty';
-import { matchesCapText } from './cap-detect.js';
+import type { IPty } from 'node-pty';
+import { nodePty } from '../util/native-pty.js';
+import { matchesCapText, resetAtIn } from './cap-detect.js';
+import { createRefusalFollower, type Refusal } from '../session/transcript.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { normalizeExitCode } from './exit-code.js';
@@ -10,7 +12,7 @@ import { createCapOutcome } from './cap-outcome.js';
 import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
 import { wantsExistingConversation, conversationIdIn } from './conversation.js';
-import { readLiveConversation } from '../session/live-conversation.js';
+import { idleForMs, readLiveConversation } from '../session/live-conversation.js';
 
 export interface PtySessionOptions {
   claude: ClaudeInvoker;
@@ -84,6 +86,12 @@ export interface PtySessionOptions {
    */
   blockedWatch?: BlockedWatchOptions;
   /**
+   * Whether a newer ccx is installed and waiting to take this session over.
+   * When it is, Claude is ended once it has been idle a while (from its own
+   * record, never mid-turn), and the outcome says so (`handover`).
+   */
+  handoverWhenIdle?: () => boolean;
+  /**
    * How long a REFUTED match backs off before another probe. Injected in tests
    * so the case where a wall recurs AFTER the backoff has expired can be
    * reached in seconds; production uses 20s.
@@ -114,7 +122,7 @@ function cleanEnv(extra: Record<string, string>): Record<string, string> {
  */
 export function runPtySession(options: PtySessionOptions): Promise<SessionOutcome> {
   return new Promise((resolve) => {
-    const child: IPty = spawn(options.claude.bin, invokerArgs(options.claude, options.args), {
+    const child: IPty = nodePty().spawn(options.claude.bin, invokerArgs(options.claude, options.args), {
       name: process.env.TERM ?? 'xterm-256color',
       cols: process.stdout.columns ?? 80,
       rows: process.stdout.rows ?? 24,
@@ -170,6 +178,12 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      */
     const RELIEF_GRACE_MS = 400;
     let noConversation = false;
+    /** The conversation's own record, read as it grows (see session/transcript). */
+    // A launch that starts a new conversation reads its record whole; one that
+    // resumes skips the history it brings with it.
+    const record = createRefusalFollower(options.configDir, !wantsExistingConversation(options.args));
+    /** Whether that record can be read yet. Until it can, the screen stands in for it. */
+    let recordReadable = false;
     let window = '';
     let captured = '';
     let switching: string | null = null;
@@ -219,6 +233,44 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       if (!id || id === lastConversation) return;
       lastConversation = id;
       options.onConversation(id);
+    };
+
+    /** A refusal as evidence: Claude's own codes, and the wording for the checks that read it. */
+    const hitOf = (refusal: Refusal): { text: string; hit: { reason?: string; resetAt?: number } } => {
+      const resetAt = resetAtIn(refusal.text);
+      return {
+        text: refusal.text,
+        hit: { reason: refusal.apiError ?? refusal.error, ...(resetAt !== undefined ? { resetAt } : {}) },
+      };
+    };
+
+    /**
+     * Hand on each turn the conversation's record says was refused, once. This
+     * is what decides whether a session hit a wall, whatever the screen says.
+     */
+    const checkRecord = (): void => {
+      if (options.ignoreLimits || cap.isSet() || switching || pendingCapRelief || noConversation) return;
+      const seen = record.poll(lastConversation);
+      recordReadable = seen.readable;
+      for (const refusal of seen.refusals) {
+        const { text, hit } = hitOf(refusal);
+        onLimitEvidence(hit, text);
+      }
+    };
+
+    /**
+     * Idle long enough to be a pause, not the gap between two tool calls: a
+     * turn in progress is never ended for an update.
+     */
+    const HANDOVER_IDLE_MS = 20_000;
+    let handover = false;
+    const checkHandover = (): void => {
+      if (handover || exited || cap.isSet() || switching || pendingCapRelief || !child.pid) return;
+      if (!options.handoverWhenIdle?.()) return;
+      const idle = idleForMs(options.configDir, child.pid, startedAt);
+      if (idle === null || idle < HANDOVER_IDLE_MS) return;
+      handover = true;
+      safeKill();
     };
 
     let weKilled = false;
@@ -320,7 +372,11 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
           options.onTick?.();
           // Every third tick: the conversation changes at human speed, and a
           // swap reads it once more before ending the child anyway.
-          if (ticks++ % 3 === 0) noteConversation();
+          if (ticks++ % 3 === 0) {
+            noteConversation();
+            checkRecord();
+            checkHandover();
+          }
           if (!options.switchWatch || cap.isSet() || switching || noConversation) return;
           const target = options.switchWatch();
           if (target) {
@@ -377,7 +433,9 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // every account in turn. Verify against the API and only act when the
       // account is confirmed limited. Refuted matches back off briefly so a
       // replay cannot spam probes.
-      if (options.ignoreLimits) return;
+      // The conversation's own record decides once it can be read (see
+      // checkRecord): the screen only stands in for it until then.
+      if (options.ignoreLimits || recordReadable) return;
       const hit = matchesCapText(window);
       if (!hit) return;
       // Cleared HERE, before anything can return early. One message is one
@@ -386,13 +444,21 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // then look like three walls and raise a hold nobody hit.
       const snapshot = window;
       window = '';
+      onLimitEvidence(hit, snapshot);
+    });
 
+    /**
+     * What to make of a refused turn, however it was seen: in the
+     * conversation's own record, or on screen while that cannot be read yet.
+     */
+    const onLimitEvidence = (hit: { reason?: string; resetAt?: number }, snapshot: string): void => {
       // Counted BEFORE the suppression below, and that ordering is the whole
       // point. A hit arriving inside the refute backoff, or while a probe was
       // in flight, used to return above this line and never be seen at all: the
       // one signal that says "this session is STILL stuck" was thrown away to
       // avoid re-probing. So the session could be walled off indefinitely while
-      // every guard agreed there was nothing to act on.
+      // every guard agreed there was nothing to act on. With the record read,
+      // each of these is a turn the API really refused.
       if (blockedWatch.sawLimitText(Date.now()) && !switching) {
         cap.hold({
           reason: hit.reason ?? 'the same limit keeps coming back and nothing explains it',
@@ -475,7 +541,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
           suppressUntil = Date.now() + refuteBackoffMs;
           return false;
         });
-    });
+    };
 
     // Borrow the keyboard from the run's owner (or the one claimed above when
     // running standalone, e.g. in tests). Attaching is what starts keystrokes
@@ -537,7 +603,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
                 }
               : noConversation
                 ? { kind: 'no-conversation', exitCode, ranMs }
-                : { kind: 'ok', exitCode, ranMs },
+                : { kind: 'ok', exitCode, ranMs, ...(handover ? { handover: true as const } : {}) },
         );
       };
 
@@ -593,8 +659,14 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
          * gone and there will be no other opportunity.
          */
         const verifyHeldThenFinalize = (): void => {
-          const live = matchesCapText(window);
-          const pending = unprobed ?? (live ? { text: window, hit: live } : null);
+          // One last read of the record, for a refusal written just before the
+          // exit; the screen only counts while the record could not be read.
+          const final = options.ignoreLimits ? null : record.poll(lastConversation);
+          if (final?.readable) recordReadable = true;
+          const lastRefusal = final?.refusals[final.refusals.length - 1];
+          const recorded = lastRefusal ? hitOf(lastRefusal) : null;
+          const live = recordReadable ? null : matchesCapText(window);
+          const pending = unprobed ?? recorded ?? (live ? { text: window, hit: live } : null);
           if (pending && options.verifyCap) {
             void timeboxed(options.verifyCap(pending.text).catch(() => false)).then((confirmed) => {
               if (confirmed) {

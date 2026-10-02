@@ -8,6 +8,14 @@ export type KeyAction =
   | 'add'
   | 'rename'
   | 'login'
+  /** Claude Desktop: when its conversations move by themselves (d). */
+  | 'desktop-handoff'
+  /** Claude Desktop: continue a moved conversation as a copy or as itself (m). */
+  | 'desktop-mode'
+  /** Claude Desktop: what a moved conversation carries on with (t). */
+  | 'desktop-prompt'
+  /** Claude Desktop: move one of its conversations to a terminal (D). */
+  | 'desktop-move'
   | 'none';
 
 export interface KeyOutcome {
@@ -57,6 +65,12 @@ export function dispatchKey(
   if (key === 'l' || key === 'L') return { selected, action: 'login' };
   if (key === 'e') return { selected, action: 'toggle' };
   if (key === 'r') return { selected, action: 'rotate' };
+  // Claude Desktop. Lowercase for the settings, which only cycle and are undone
+  // by pressing again; the capital for the one that opens a window.
+  if (key === 'd') return { selected, action: 'desktop-handoff' };
+  if (key === 'm') return { selected, action: 'desktop-mode' };
+  if (key === 't') return { selected, action: 'desktop-prompt' };
+  if (key === 'D') return { selected, action: 'desktop-move' };
   return { selected, action: 'none' };
 }
 

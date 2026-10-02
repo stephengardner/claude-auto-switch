@@ -14,7 +14,9 @@ function profile(content?: string): string {
 describe('shimBlock', () => {
   it('emits a PowerShell function', () => {
     expect(shimBlock('powershell')).toContain('function claude {');
-    expect(shimBlock('powershell')).toContain('ccx run -- @args');
+    // Quoted: PowerShell swallows a bare `--` handing arguments to ccx.ps1,
+    // and ccx then took `claude --version` as a question about itself.
+    expect(shimBlock('powershell')).toContain("ccx run '--' @args");
   });
 
   it('emits a POSIX function', () => {
@@ -43,6 +45,27 @@ describe('shim installer', () => {
     expect(installShim(p, 'powershell')).toBe('already-present');
     // Exactly ONE shim block exists after repeated installs.
     expect(readFileSync(p, 'utf8').split('>>> claude-auto-switch shim >>>').length - 1).toBe(1);
+  });
+
+  it('replaces a shim an older ccx wrote, so a fix to it reaches you through ccx on', () => {
+    const old = [
+      '# >>> claude-auto-switch shim >>>',
+      'function claude {',
+      '    if (Get-Command ccx -ErrorAction SilentlyContinue) {',
+      '        ccx run -- @args',
+      '    }',
+      '}',
+      '# <<< claude-auto-switch shim <<<',
+    ].join('\n');
+    const p = profile(`Set-Alias ll ls\n\n${old}\n`);
+    expect(installShim(p, 'powershell')).toBe('installed');
+    const text = readFileSync(p, 'utf8');
+    expect(text).toContain("ccx run '--' @args");
+    expect(text).not.toContain('ccx run -- @args');
+    expect(text).toContain('Set-Alias ll ls');
+    expect(text.split('>>> claude-auto-switch shim >>>').length - 1).toBe(1);
+    // Backed up before the old block went, so an edit made inside it is kept.
+    expect(readFileSync(`${p}.cas-backup`, 'utf8')).toContain('ccx run -- @args');
   });
 
   it('falls back to the real claude when ccx is not on PATH', () => {

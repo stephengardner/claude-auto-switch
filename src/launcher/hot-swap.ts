@@ -29,6 +29,11 @@ export interface SessionOutcome {
   unproven?: true;
   /** For kind 'switch': the account the operator asked to switch to, in place. */
   switchTo?: string;
+  /**
+   * For kind 'ok': ccx ended an idle Claude itself so a newer ccx can take the
+   * session over. The run ends here, and the caller starts the newer one.
+   */
+  handover?: true;
 }
 
 export interface HotSwapDeps {

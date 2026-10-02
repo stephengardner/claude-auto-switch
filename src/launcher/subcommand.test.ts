@@ -28,6 +28,14 @@ describe('telling a subcommand apart from a session', () => {
     expect(claudeSubcommandIn(['--model', 'opus'])).toBeNull();
   });
 
+  it('answers a question about Claude itself without starting a session', () => {
+    for (const flag of ['--version', '-v', '--help', '-h']) {
+      expect(claudeSubcommandIn([flag])).toBe(flag);
+    }
+    // Only as the first argument, like a command: later it may be a value.
+    expect(claudeSubcommandIn(['--model', '-h'])).toBeNull();
+  });
+
   it('does not mistake a prompt that merely CONTAINS a command word', () => {
     expect(claudeSubcommandIn(['fix', 'the', 'update', 'script'])).toBeNull();
     expect(claudeSubcommandIn(['why is mcp failing?'])).toBeNull();

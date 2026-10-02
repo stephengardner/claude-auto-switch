@@ -29,6 +29,29 @@ export const RESUME_PROMPT_FILE = 'resume-prompt.txt';
 /** Long enough for a real instruction, short enough to stay a sane argument. */
 export const RESUME_PROMPT_MAX_CHARS = 2000;
 
+/**
+ * The longest start prompt taken. It becomes one argument on Claude's command
+ * line, Windows caps a whole command line at 32,767 characters, and a quote in
+ * the text takes two once it is escaped: 15,000 fits, with room for the rest.
+ */
+export const START_PROMPT_MAX_CHARS = 15_000;
+
+/**
+ * A start prompt is somebody's own message, so it is kept exactly as written,
+ * lines and all, or refused with the reason: never trimmed into something else.
+ */
+export function checkStartPrompt(text: string): { ok: true } | { ok: false; reason: string } {
+  if (text.trim() === '') return { ok: false, reason: 'it is empty' };
+  if (text.includes('\0')) return { ok: false, reason: 'it contains a NUL character' };
+  if (text.length > START_PROMPT_MAX_CHARS) {
+    return {
+      ok: false,
+      reason: `it is ${text.length} characters, more than the ${START_PROMPT_MAX_CHARS} one command line can carry`,
+    };
+  }
+  return { ok: true };
+}
+
 export type ResumePromptCheck = { ok: true; prompt: string } | { ok: false; reason: string };
 
 export type ResumePromptRead = { armed: true; prompt: string } | { armed: false; invalid?: string };
@@ -85,13 +108,32 @@ export function writeResumePrompt(sessionDir: string, raw: string): ResumePrompt
   // see the old prompt or the new one, never a truncated file that reads as
   // unarmed and sends the session back to sitting idle.
   writeSecretFile(resumePromptPath(sessionDir), `${checked.prompt}\n`);
+  // Arming again undoes a --clear.
+  rmSync(path.join(sessionDir, RESUME_PROMPT_OFF_FILE), { force: true });
   return checked;
 }
 
-/** Disarm a session. Returns whether anything was armed. */
+/**
+ * Disarm a session, and keep the default (config `resume`) off it too: a
+ * session told to resume without a prompt means exactly that. Returns whether
+ * a prompt of its own was armed.
+ */
 export function clearResumePrompt(sessionDir: string): boolean {
   const file = resumePromptPath(sessionDir);
-  if (!existsSync(file)) return false;
+  const was = existsSync(file);
   rmSync(file, { force: true });
-  return true;
+  try {
+    writeSecretFile(path.join(sessionDir, RESUME_PROMPT_OFF_FILE), 'off\n');
+  } catch {
+    /* the session folder is gone; nothing will resume it */
+  }
+  return was;
+}
+
+/** Marks a session that resumes without any prompt, its own or the default. */
+export const RESUME_PROMPT_OFF_FILE = 'resume-prompt.off';
+
+/** Whether a session was told to resume without a prompt (see clearResumePrompt). */
+export function resumePromptOff(sessionDir: string): boolean {
+  return existsSync(path.join(sessionDir, RESUME_PROMPT_OFF_FILE));
 }

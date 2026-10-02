@@ -54,11 +54,24 @@ export function constraintsOn(
   // ccx's own record of being refused. Kept separate from the numbers because
   // it is different evidence: this one was measured by being told no.
   if (a.cappedUntil && a.cappedUntil > now) out.push({ label: 'capped', until: a.cappedUntil });
+  return [...out, ...usageConstraints(a.usage, model, now)];
+}
 
+/**
+ * What the usage numbers alone say is spent, for a session on `model`.
+ *
+ * Separate so the same rule answers "is Claude Desktop's account past its
+ * plan", which has no ccx record of refusals to add, only the numbers.
+ */
+export function usageConstraints(
+  u: DashboardAccount['usage'],
+  model: string | null,
+  now: number,
+): Constraint[] {
+  const out: Constraint[] = [];
   const spent = (used: number | null | undefined, resetsAt: number | null | undefined): boolean =>
     (effectiveUtilization(used, resetsAt, now) ?? 0) >= 1;
 
-  const u = a.usage;
   if (u) {
     // Account-wide windows stop everything, whatever model you are on.
     if (spent(u.fiveHour, u.fiveHourReset)) out.push({ label: '5h', until: u.fiveHourReset });

@@ -9,6 +9,7 @@ import {
   looksLikeConversationId,
   withResumePrompt,
   hasOwnPrompt,
+  promptOperand,
   startsByResuming,
 } from './conversation.js';
 
@@ -264,6 +265,19 @@ describe('the prompt a session armed for its own relaunch', () => {
   it('counts everything after -- as the prompt, dash or not', () => {
     expect(hasOwnPrompt(['--', '-leading dash'])).toBe(true);
     expect(hasOwnPrompt(['--effort', 'max', '--'])).toBe(false);
+  });
+
+  it('is never read as an option or a subcommand, which Claude does even after --', () => {
+    // Measured against Claude 2.1.284: "- x" fails as an unknown option, and
+    // "mcp" runs the mcp subcommand; with a leading space both are the prompt.
+    expect(promptOperand('- fix the test\n- then push')).toBe(' - fix the test\n- then push');
+    expect(promptOperand('-p do it')).toBe(' -p do it');
+    expect(promptOperand('mcp')).toBe(' mcp');
+    expect(promptOperand('update')).toBe(' update');
+    // Everything else exactly as written, so a slash command still runs as one.
+    expect(promptOperand('/compact')).toBe('/compact');
+    expect(promptOperand('carry on')).toBe('carry on');
+    expect(withResumePrompt(relaunchArgs([], ID), 'continue').args.at(-1)).toBe(' continue');
   });
 });
 

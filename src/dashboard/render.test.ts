@@ -636,3 +636,19 @@ describe('the footer on a narrow terminal', () => {
     }
   });
 });
+
+describe('the Claude Desktop line', () => {
+  const desktop = { line: 'Desktop  on stephen, week spent for 4d 17h (past its plan) · 2 busy, 8 idle', keys: 'd moves by hand' };
+
+  it('shows what Desktop is spending, and its keys only where keys work', () => {
+    const plain = renderDashboard({ ...snapshot([account()]), desktop }, { color: false });
+    expect(plain).toContain('Desktop  on stephen, week spent for 4d 17h (past its plan) · 2 busy, 8 idle');
+    expect(plain).not.toContain('d moves by hand');
+    const live = renderDashboard({ ...snapshot([account()]), desktop }, { color: false, interactive: true });
+    expect(live).toContain('d moves by hand');
+  });
+
+  it('is not there at all when Desktop is not in use', () => {
+    expect(renderDashboard(snapshot([account()]), { color: false })).not.toContain('Desktop');
+  });
+});

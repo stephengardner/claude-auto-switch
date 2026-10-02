@@ -15,7 +15,8 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { isLink } from '../daemon/junction.js';
-import { defaultClaudeRoot, realSettingWins } from './shared-root.js';
+import { defaultClaudeRoot, realSettingWins, returnSharedUserFiles } from './shared-root.js';
+import { CasError } from '../util/errors.js';
 
 /**
  * A session directory per running session, instead of one shared by all of them.
@@ -182,7 +183,7 @@ function readJsonObject(file: string): Record<string, unknown> | null {
 }
 
 /** Default liveness check: signal 0 tests for the process without touching it. */
-function processIsAlive(pid: number): boolean {
+export function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -224,8 +225,11 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
     const pid = pidOfSessionDir(name);
     if (pid === null || pid === options.keepPid || isAlive(pid)) continue;
     const dir = path.join(root, name);
-    // Before the delete, not after: the settings go with the directory.
+    // Before the delete, not after: the settings go with the directory, and so
+    // would an edit to the user's memory that only the session still holds.
     preserveSettings(dir, c);
+    // Kept for the next sweep when the only copy of an edit could not be saved.
+    if (!returnSharedUserFiles(dir, c)) continue;
     if (removeSessionDir(dir)) removed.push(name);
   }
   return removed;
@@ -245,6 +249,14 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
 export function retireLeftoverSessionDir(dir: string, c: PathCtx = {}): boolean {
   if (!existsSync(dir)) return false;
   preserveSettings(dir, c);
+  // An edit that could be neither handed back nor kept aside (a failed write
+  // AND a failed copy: a full disk) exists only in here. The folder stays, and
+  // this session does not start in it, rather than take it over or clear it.
+  if (!returnSharedUserFiles(dir, c)) {
+    throw new CasError(
+      `ccx: the session that last used ${dir} left an edit to your CLAUDE.md or keybindings.json that could not be saved, and it is still in that folder. Free some disk space and start again.`,
+    );
+  }
   return removeSessionDir(dir);
 }
 
