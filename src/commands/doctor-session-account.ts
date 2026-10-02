@@ -68,10 +68,13 @@ export function auditSessionAccount(input: SessionAccountInput): DoctorCheck {
   if (input.leases.length === 0) return { name, ok: true, detail: 'no session is running' };
 
   const wrong: string[] = [];
+  // What could be checked, said as it is: a session passed over is not one
+  // found to be on its own account.
+  const tally = { verified: 0, renewed: 0, unreadable: 0 };
   for (const lease of input.leases) {
+    let present: boolean;
     try {
-      // Starting, or between accounts: nothing to compare yet.
-      if (!exists(path.join(lease.configDir, '.credentials.json'))) continue;
+      present = exists(path.join(lease.configDir, '.credentials.json'));
     } catch (error) {
       return {
         name,
@@ -79,33 +82,34 @@ export function auditSessionAccount(input: SessionAccountInput): DoctorCheck {
         detail: `could not check the login of session ${lease.pid}: ${thrownReason(error)}`,
       };
     }
-    const login = fingerprintOf(lease.configDir);
-    if (!login) continue;
+    // Starting, or between accounts: nothing to compare yet.
+    const login = present ? fingerprintOf(lease.configDir) : null;
+    if (!login) {
+      tally.unreadable += 1;
+      continue;
+    }
     const holders = input.accounts
       .filter((account) => fingerprintOf(account.dir) === login)
       .map((account) => account.name);
     // A login no profile holds is ordinary: a running Claude renews its own
     // token, and it is newer than the stored copy until it is saved back.
-    // Saying "unrecognised" here would cry wolf every few hours. Two profiles
-    // holding one login is not this session's problem either.
-    if (holders.length === 0 || holders.includes(lease.account)) continue;
+    // Saying "unrecognised" here would cry wolf every few hours.
+    if (holders.length === 0) {
+      tally.renewed += 1;
+      continue;
+    }
+    // Two profiles holding one login is not this session's problem.
+    if (holders.includes(lease.account)) {
+      tally.verified += 1;
+      continue;
+    }
     wrong.push(
       `session ${lease.pid} was given "${lease.account}" but holds the login of ` +
         holders.map((h) => `"${h}"`).join(' or '),
     );
   }
 
-  if (wrong.length === 0) {
-    const [only] = input.leases;
-    return {
-      name,
-      ok: true,
-      detail:
-        input.leases.length === 1 && only
-          ? `the running session holds the login of "${only.account}", the account it was given`
-          : `each of the ${input.leases.length} running sessions holds the login of the account it was given`,
-    };
-  }
+  if (wrong.length === 0) return { name, ok: true, detail: describeTally(tally) };
 
   return {
     name,
@@ -113,6 +117,28 @@ export function auditSessionAccount(input: SessionAccountInput): DoctorCheck {
     detail: `${wrong.join('; ')}. A limit hit there would be recorded against the wrong account.`,
     fix: ['end that session and start it again: it picks its account up afresh'],
   };
+}
+
+/** What the check found, session by session, in a sentence. */
+function describeTally(tally: { verified: number; renewed: number; unreadable: number }): string {
+  const parts: string[] = [];
+  if (tally.verified > 0) {
+    parts.push(
+      tally.verified === 1
+        ? '1 holds the login of the account it was given'
+        : `${tally.verified} hold the login of the account each was given`,
+    );
+  }
+  if (tally.renewed > 0) {
+    parts.push(
+      `${tally.renewed} renewed ${tally.renewed === 1 ? 'its' : 'their'} login in place (newer than any stored copy)`,
+    );
+  }
+  if (tally.unreadable > 0) {
+    parts.push(`${tally.unreadable} ${tally.unreadable === 1 ? 'has' : 'have'} no readable login yet`);
+  }
+  const total = tally.verified + tally.renewed + tally.unreadable;
+  return `${total} running session${total === 1 ? '' : 's'}: ${parts.join(', ')}`;
 }
 
 /**

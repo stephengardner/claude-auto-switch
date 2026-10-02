@@ -51,7 +51,7 @@ describe('whether each running session is on the account ccx gave it', () => {
       profiles: { second: 'login-second', phx: 'login-phx' },
     });
     expect(result.ok).toBe(true);
-    expect(result.detail).toContain('"second", the account it was given');
+    expect(result.detail).toBe('1 running session: 1 holds the login of the account it was given');
   });
 
   it('is happy with sessions on different accounts, which is what a folder each is for', () => {
@@ -66,7 +66,7 @@ describe('whether each running session is on the account ccx gave it', () => {
       profiles: { contactss: 'login-contactss', alvi: 'login-alvi', aass: 'login-aass' },
     });
     expect(result.ok).toBe(true);
-    expect(result.detail).toContain('each of the 2 running sessions');
+    expect(result.detail).toBe('2 running sessions: 2 hold the login of the account each was given');
   });
 
   it("FAILS when a session holds another account's login than the one it was given", () => {
@@ -93,6 +93,8 @@ describe('whether each running session is on the account ccx gave it', () => {
       profiles: { second: 'login-second', phx: 'login-phx' },
     });
     expect(result.ok).toBe(true);
+    // Said as what it is, not counted as a session found on its own account.
+    expect(result.detail).toBe('1 running session: 1 renewed its login in place (newer than any stored copy)');
   });
 
   it('is happy when the account it was given shares its login with another profile', () => {
@@ -103,8 +105,19 @@ describe('whether each running session is on the account ccx gave it', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('passes over a session whose login cannot be read yet, or is not there', () => {
-    expect(check({ sessions: [{ account: 'second', pid: 111, login: null }] }).ok).toBe(true);
+  it('passes over a session whose login cannot be read yet, or is not there, and says so', () => {
+    const unread = check({
+      sessions: [
+        { account: 'second', pid: 111, login: null },
+        { account: 'phx', pid: 222, login: 'login-phx' },
+        { account: 'other', pid: 333, login: 'login-renewed' },
+      ],
+      profiles: { second: 'login-second', phx: 'login-phx' },
+    });
+    expect(unread.ok).toBe(true);
+    expect(unread.detail).toBe(
+      '3 running sessions: 1 holds the login of the account it was given, 1 renewed its login in place (newer than any stored copy), 1 has no readable login yet',
+    );
     expect(
       check({ sessions: [{ account: 'second', pid: 111, login: 'x' }], sessionFileExists: false }).ok,
     ).toBe(true);
