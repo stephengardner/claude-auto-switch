@@ -14,9 +14,8 @@ import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { isLink } from '../daemon/junction.js';
 import { defaultClaudeRoot, returnSharedUserFiles } from './shared-root.js';
-import { writeFileAtomic } from '../util/atomic-write.js';
 import { CasError } from '../util/errors.js';
-import { handBackOrRescue } from './write-back.js';
+import { handBackOrRescue, mergeInto } from './write-back.js';
 
 /**
  * A session directory per running session, instead of one shared by all of them.
@@ -106,16 +105,15 @@ export function retireKeptSettings(c: PathCtx = {}): void {
   try {
     const store = readJsonObject(kept);
     if (store) {
-      const userFile = path.join(defaultClaudeRoot(c), 'settings.json');
-      const user = existsSync(userFile) ? readJsonObject(userFile) : {};
-      // A real file that does not parse is never rewritten: the store waits.
-      if (!user) return;
-      // Never a status line: the store held one whenever the real file's was
-      // not ccx's, which after `ccx off` would put ccx's back by the side door.
-      const missing = Object.entries(store).filter(([key]) => key !== 'statusLine' && !(key in user));
-      if (missing.length > 0) {
-        writeFileAtomic(userFile, `${JSON.stringify({ ...user, ...Object.fromEntries(missing) }, null, 2)}\n`);
-      }
+      // The same way in as every hand-back (lock, re-read before writing). A
+      // real file that does not parse is never rewritten: the store waits.
+      const outcome = mergeInto(path.join(defaultClaudeRoot(c), 'settings.json'), c, (user) => {
+        // Never a status line: the store held one whenever the real file's was
+        // not ccx's, which after `ccx off` would put ccx's back by the side door.
+        const missing = Object.entries(store).filter(([key]) => key !== 'statusLine' && !(key in user));
+        return { changed: missing.length > 0, theirs: { ...user, ...Object.fromEntries(missing) } };
+      });
+      if (outcome === 'failed') return;
     }
     renameSync(kept, `${kept}.retired`);
   } catch {
