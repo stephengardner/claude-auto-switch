@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -6,6 +6,7 @@ import type { PathCtx } from '../config/paths.js';
 import {
   forgetEarlierStart,
   handBackOrRescue,
+  mergeInto,
   resyncSession,
   returnSettings,
   returnState,
@@ -307,6 +308,35 @@ describe("handing back Claude's state", () => {
 
     returnState(s.sessionDir, s.c);
     expect(read(s.state)).toEqual({ mcpServers: { theirs: { command: 't' }, srv: { command: 'x' } } });
+  });
+});
+
+describe('two writers at once', () => {
+  it('merges again from what is there when something wrote the file meanwhile', () => {
+    // Plain `claude`, or an edit by hand, landing between the read and the write.
+    const s = setup();
+    write(s.settings, { a: 1 });
+    let calls = 0;
+    const undo = vi.fn();
+    const outcome = mergeInto(s.settings, s.c, (theirs) => {
+      calls += 1;
+      if (calls === 1) write(s.settings, { a: 1, theirs: 'meanwhile' });
+      return { changed: true, theirs: { ...theirs, ours: true }, undo };
+    });
+
+    expect(outcome).toBe('written');
+    expect(calls).toBe(2);
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(read(s.settings)).toEqual({ a: 1, theirs: 'meanwhile', ours: true });
+  });
+
+  it('waits for another session handing back, rather than race it', { timeout: 20_000 }, () => {
+    const s = setup();
+    settingsSession(s, { model: 'fable' }, { model: 'opus' });
+    mkdirSync(path.join(s.ccxHome, 'write-back.lock')); // held, and fresh
+
+    expect(returnSettings(s.sessionDir, s.c)).toBe(false);
+    expect(read(s.settings)).toEqual({ model: 'fable' });
   });
 });
 

@@ -1682,8 +1682,17 @@ export async function runInteractiveHotSwap(
   clearSwitchRequest(context.ctx, process.pid);
   terminalInput.close();
   // Claude has stopped: what it changed in this session's settings and state
-  // goes back to the user's own files, where plain `claude` reads them.
-  returnSessionChanges(sessionDir, context.ctx);
+  // goes back to the user's own files, where plain `claude` reads them. What
+  // cannot go back yet stays in the session folder, and the next ccx start
+  // tries again, or keeps it in rescued/ before the folder goes (sweep).
+  if (!returnSessionChanges(sessionDir, context.ctx)) {
+    const m =
+      "this session's changes to your Claude settings could not be saved into ~/.claude yet " +
+      `(is settings.json valid JSON?). They are kept in ${sessionDir}, and the next ccx start saves them, ` +
+      'or keeps them in ~/.claude-auto-switch/rescued/.';
+    logEvent(m, { kind: 'write-back-failed' });
+    screen.say(`ccx: ${m}`);
+  }
   // The last write of the run: put the child's terminal modes back once more
   // (a flush that landed after the per-session reset can have switched them
   // back on) and say anything still held. After this the shell has the

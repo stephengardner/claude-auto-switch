@@ -1,6 +1,17 @@
-import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { acquireLockDir, type LockHandle } from '../claude/locks.js';
+import { configHome } from '../config/paths.js';
 import { defaultClaudeJsonPath } from '../daemon/reference-config.js';
 import { keepOursOver } from '../statusline/settings-install.js';
 import { isOurs } from '../statusline/ours.js';
@@ -230,6 +241,101 @@ function sides(sessionDir: string, own: string, baseName: string): Sides {
   return base ? { base, ours, legacy: false } : 'unreadable';
 }
 
+type Merged = { changed: boolean; theirs: Json; undo?: () => void } | null;
+
+/**
+ * Read the user's file, merge the session's changes into it, and write it back:
+ * under ccx's write-back lock, so two sessions handing back at once cannot
+ * overwrite each other's change, and only if nothing else (plain `claude`, an
+ * edit by hand) wrote the file while this was merging. If something did, the
+ * merge is done again from what is there now. A file that does not parse
+ * holds the user's own work and is never rewritten.
+ */
+export function mergeInto(
+  userFile: string,
+  c: PathCtx,
+  merge: (theirs: Json) => Merged,
+): 'written' | 'unchanged' | 'failed' {
+  const attempt = (): 'written' | 'unchanged' | 'failed' | 'again' => {
+    const before = readText(userFile);
+    if (before === undefined) return 'failed';
+    const theirs = before === null || before.trim() === '' ? {} : parseObject(before);
+    if (!theirs) return 'failed';
+    const result = merge(theirs);
+    if (!result) return 'failed';
+    if (!result.changed) return 'unchanged';
+    if (readText(userFile) !== before) {
+      result.undo?.();
+      return 'again';
+    }
+    try {
+      writeFileAtomic(userFile, `${JSON.stringify(result.theirs, null, 2)}\n`);
+      return 'written';
+    } catch {
+      result.undo?.();
+      return 'failed';
+    }
+  };
+  const locked = withWriteBackLock(c, () => {
+    for (let tries = 0; tries < 3; tries += 1) {
+      const outcome = attempt();
+      if (outcome !== 'again') return outcome;
+    }
+    return 'failed';
+  });
+  return locked ?? 'failed';
+}
+
+/**
+ * ccx's own lock for handing back, shared by every ccx session. Not taken
+ * within a few seconds (a holder that is stuck), the hand-back waits for a
+ * later try rather than race it.
+ */
+function withWriteBackLock<T>(c: PathCtx, fn: () => T): T | null {
+  let lock: LockHandle;
+  try {
+    const home = configHome(c);
+    mkdirSync(home, { recursive: true });
+    lock = acquireLockDir(path.join(home, 'write-back.lock'), { waitMs: 5000 });
+  } catch {
+    return null;
+  }
+  if (!lock.held) return null;
+  try {
+    return fn();
+  } finally {
+    lock.release();
+  }
+}
+
+/** A file's text; null when it is not there, undefined when it cannot be read. */
+function readText(file: string): string | null | undefined {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined;
+  }
+}
+
+function parseObject(text: string): Json | null {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return isObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Handed back: the next hand-back starts from here, so nothing goes twice. */
+function advanceBase(sessionDir: string, own: string, baseName: string): boolean {
+  try {
+    copyFileSync(path.join(sessionDir, own), path.join(sessionDir, baseName));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Hand back a session's settings changes. True when nothing is left to hand back. */
 export function returnSettings(sessionDir: string, c: PathCtx = {}): boolean {
   const found = sides(sessionDir, 'settings.json', SETTINGS_BASE);
@@ -241,22 +347,21 @@ export function returnSettings(sessionDir: string, c: PathCtx = {}): boolean {
   } catch {
     return true;
   }
-  const read = existsSync(userFile) ? readObject(userFile) : {};
-  // A real settings file that does not parse holds the user's hooks and
-  // permissions: never rewritten, whatever this session changed.
-  if (!read) return false;
-  let theirs = read;
-  const lineBefore = theirs.statusLine;
   const ours = found.legacy ? pick(found.ours, LEGACY_SETTINGS) : found.ours;
-  const changed = merge3(found.base, ours, theirs);
-  // A line set inside a session goes in wrapped by ccx's, never over it. One
-  // removed inside a session leaves ccx's own, as `ccx on` would with no line.
-  if (changed && isOurs(lineBefore) && !isOurs(theirs.statusLine)) {
-    const kept = keepOursOver(theirs, c);
-    if (!kept) return false; // tried again later, or kept aside (handBackOrRescue)
-    theirs = kept;
-  }
-  return finish(changed, userFile, theirs, sessionDir, 'settings.json', SETTINGS_BASE);
+  const outcome = mergeInto(userFile, c, (theirs) => {
+    const lineBefore = theirs.statusLine;
+    const changed = merge3(found.base, ours, theirs);
+    // A line set inside a session goes in wrapped by ccx's, never over it. One
+    // removed inside a session leaves ccx's own, as `ccx on` would with no line.
+    if (changed && isOurs(lineBefore) && !isOurs(theirs.statusLine)) {
+      const kept = keepOursOver(theirs, c);
+      return kept ? { changed, theirs: kept.settings, undo: kept.undo } : null;
+    }
+    return { changed, theirs };
+  });
+  // Not handed back: tried again later, or kept aside (handBackOrRescue).
+  if (outcome === 'failed') return false;
+  return advanceBase(sessionDir, 'settings.json', SETTINGS_BASE);
 }
 
 /** The user's own choices in Claude's state, and nothing else of it. */
@@ -285,28 +390,11 @@ export function returnState(sessionDir: string, c: PathCtx = {}): boolean {
   } catch {
     return true;
   }
-  const theirs = existsSync(userFile) ? readObject(userFile) : {};
-  if (!theirs) return false;
-  const changed = merge3(stateChoices(found.base), stateChoices(found.ours), theirs);
-  return finish(changed, userFile, theirs, sessionDir, '.claude.json', STATE_BASE);
-}
-
-function finish(
-  changed: boolean,
-  userFile: string,
-  theirs: Json,
-  sessionDir: string,
-  own: string,
-  baseName: string,
-): boolean {
-  try {
-    if (changed) writeFileAtomic(userFile, `${JSON.stringify(theirs, null, 2)}\n`);
-    // Handed back: the next hand-back starts from here, so nothing goes twice.
-    copyFileSync(path.join(sessionDir, own), path.join(sessionDir, baseName));
-    return true;
-  } catch {
-    return false;
-  }
+  const base = stateChoices(found.base);
+  const ours = stateChoices(found.ours);
+  const outcome = mergeInto(userFile, c, (theirs) => ({ changed: merge3(base, ours, theirs), theirs }));
+  if (outcome === 'failed') return false;
+  return advanceBase(sessionDir, '.claude.json', STATE_BASE);
 }
 
 /** Hand back everything a session changed in the user's settings and state. */

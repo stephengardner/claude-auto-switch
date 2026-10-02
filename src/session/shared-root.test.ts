@@ -250,6 +250,33 @@ describe('returnSharedUserFiles', () => {
     expect(readFileSync(path.join(rescued, kept ?? ''), 'utf8')).toBe('session edit');
   });
 
+  it('keeps an edit aside, never resurrects the file, when the user deleted it meanwhile', () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const theirs = path.join(home, '.claude', 'CLAUDE.md');
+    writeFileSync(theirs, 'old memory', 'utf8');
+    ensureSharedUserConfig(sessionDir, c);
+    rmSync(path.join(sessionDir, 'CLAUDE.md'));
+    writeFileSync(path.join(sessionDir, 'CLAUDE.md'), 'edited in the session', 'utf8');
+    rmSync(theirs);
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(true);
+    expect(existsSync(theirs)).toBe(false);
+    const rescued = path.join(home, '.claude-auto-switch', 'rescued');
+    const kept = readdirSync(rescued).find((name) => name.endsWith('-CLAUDE.md'));
+    expect(readFileSync(path.join(rescued, kept ?? ''), 'utf8')).toBe('edited in the session');
+  });
+
+  it("hands back a memory first written in the session when the user had none", () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    ensureSharedUserConfig(sessionDir, c); // nothing to share: an empty record of the start
+    writeFileSync(path.join(sessionDir, 'CLAUDE.md'), 'remember this', 'utf8');
+
+    returnSharedUserFiles(sessionDir, c);
+    expect(readFileSync(path.join(home, '.claude', 'CLAUDE.md'), 'utf8')).toBe('remember this');
+  });
+
   it('leaves a memory the user deleted deleted, when the session never touched it', () => {
     const { home, sessionDir, c } = setup();
     mkdirSync(path.join(home, '.claude'), { recursive: true });

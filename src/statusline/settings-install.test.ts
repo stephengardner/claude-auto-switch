@@ -20,6 +20,7 @@ import {
   installStatusline,
   removeStatusline,
   settingsPath,
+  keepOursOver,
   CCX_COMMAND,
 } from './settings-install.js';
 
@@ -174,6 +175,35 @@ describe('reading the settings file', () => {
     writeFileSync(blank, '\n', 'utf8');
     expect(readSettings(blank)).toEqual({ ok: true, settings: {} });
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("keeping ccx's line over one a session set", () => {
+  function sandbox(): { ctx: PathCtx; backup: string } {
+    const home = mkdtempSync(path.join(tmpdir(), 'ccx-keep-'));
+    const ccxHome = path.join(home, '.claude-auto-switch');
+    mkdirSync(ccxHome, { recursive: true });
+    const ctx: PathCtx = { env: { HOME: home, USERPROFILE: home, CLAUDE_AUTO_SWITCH_HOME: ccxHome } };
+    return { ctx, backup: path.join(ccxHome, 'statusline-backup.json') };
+  }
+
+  it('wraps the session line and makes it the restore point, and undo puts the old one back', () => {
+    // Undone when the settings are not written after all: a restore point
+    // naming a line that was never installed is what `ccx off` would put in.
+    const { ctx, backup } = sandbox();
+    writeFileSync(backup, '{"type":"command","command":"old"}', 'utf8');
+
+    const kept = keepOursOver({ statusLine: { type: 'command', command: 'mine' } }, ctx);
+    expect(kept?.settings.statusLine).toEqual({ type: 'command', command: 'ccx statusline --wrap "mine"' });
+    expect(JSON.parse(readFileSync(backup, 'utf8'))).toEqual({ type: 'command', command: 'mine' });
+    kept?.undo();
+    expect(readFileSync(backup, 'utf8')).toBe('{"type":"command","command":"old"}');
+  });
+
+  it('takes away a restore point it made when undone', () => {
+    const { ctx, backup } = sandbox();
+    keepOursOver({ statusLine: { type: 'command', command: 'mine' } }, ctx)?.undo();
+    expect(existsSync(backup)).toBe(false);
   });
 });
 

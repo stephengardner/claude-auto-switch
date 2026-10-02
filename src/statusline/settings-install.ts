@@ -199,19 +199,46 @@ function clearBackup(c: PathCtx): void {
  * every session after it. Null when the restore point cannot be saved: then
  * nothing is written and the hand-back is tried again later, so neither the
  * session's line nor ccx's is lost.
+ *
+ * The restore point changes before the settings are written, so `undo` puts it
+ * back as it was for when they are not: a restore point naming a line that was
+ * never installed would be what `ccx off` puts in.
  */
 export function keepOursOver(
   settings: Record<string, unknown>,
   c: PathCtx = {},
-): Record<string, unknown> | null {
+): { settings: Record<string, unknown>; undo: () => void } | null {
   const plan = planInstall(settings);
-  if (plan.kind === 'already') return settings;
+  if (plan.kind === 'already') return { settings, undo: () => {} };
+  const previous = readBackupText(c);
+  const undo = (): void => restoreBackupText(c, previous);
   if (plan.kind === 'wrapped') {
-    if (!writeBackup(c, plan.displaced)) return null;
+    if (!writeBackup(c, plan.displaced)) {
+      undo();
+      return null;
+    }
   } else {
     clearBackup(c);
   }
-  return plan.settings;
+  return { settings: plan.settings, undo };
+}
+
+/** The restore point as it is on disk, or null when there is none. */
+function readBackupText(c: PathCtx): string | null {
+  try {
+    return readFileSync(backupPath(c), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function restoreBackupText(c: PathCtx, text: string | null): void {
+  try {
+    if (text === null) rmSync(backupPath(c), { force: true });
+    else writeFileSync(backupPath(c), text, 'utf8');
+  } catch {
+    /* best effort: the next hand-back tries again */
+  }
 }
 
 export type InstallOutcome =

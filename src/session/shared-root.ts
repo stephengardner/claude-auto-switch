@@ -269,7 +269,13 @@ function planWhole(from: string, to: string, baseFile: string): { write: string 
   const mine = readFileSync(from);
   const back = { write: mine.toString('utf8'), keepAside: false };
   const base = existsSync(baseFile) ? readFileSync(baseFile) : null;
-  if (!existsSync(to)) return base && mine.equals(base) ? none : back;
+  if (!existsSync(to)) {
+    // The user had none at the start (an empty record): the session's is new.
+    if (!base || base.length === 0) return back;
+    // The user deleted theirs since: untouched in the session, it stays
+    // deleted; edited there too, the edit is kept aside, not resurrected.
+    return mine.equals(base) ? none : { write: null, keepAside: true };
+  }
   const a = statSync(from, { bigint: true });
   const b = statSync(to, { bigint: true });
   if (a.ino === b.ino && a.dev === b.dev) return none; // still one file

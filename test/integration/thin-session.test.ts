@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -89,6 +89,22 @@ describe('a ccx session is your own Claude but for the account', () => {
     const saved = read(state);
     expect(saved.theme).toBe('light');
     expect(saved).not.toHaveProperty('oauthAccount');
+  });
+
+  it('says so when a change cannot be saved yet, and keeps it for the next start', async () => {
+    const { home, context } = await sandbox('cas-thin-unsaved-');
+    const settings = path.join(home, '.claude', 'settings.json');
+    mkdirSync(path.dirname(settings), { recursive: true });
+    writeFileSync(settings, '{ "hooks": ', 'utf8'); // does not parse
+    process.env.FAKE_CLAUDE_SET_SETTINGS = JSON.stringify({ model: 'opus' });
+
+    expect(await runCommand(context, [])).toBe(0);
+    expect(readFileSync(settings, 'utf8')).toBe('{ "hooks": ');
+    const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
+    expect(events).toContain('"kind":"write-back-failed"');
+    // Still in the session folder, for the next start to save or keep aside.
+    const kept = readdirSync(path.join(home, 'sessions')).map((pid) => path.join(home, 'sessions', pid, 'settings.json'));
+    expect(kept.some((file) => existsSync(file) && read(file).model === 'opus')).toBe(true);
   });
 
   it("starts from the real settings, folding ccx's old store in only where they had nothing", async () => {
