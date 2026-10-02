@@ -1,22 +1,21 @@
 import { clearCredential, credentialPath } from '../accounts/credential-vault.js';
 import { readCredential, writeCredential } from '../accounts/credential-storage.js';
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { isLink } from '../daemon/junction.js';
-import { defaultClaudeRoot, realSettingWins, returnSharedUserFiles } from './shared-root.js';
+import { defaultClaudeRoot, returnSharedUserFiles } from './shared-root.js';
 import { CasError } from '../util/errors.js';
+import { handBackOrRescue, mergeInto } from './write-back.js';
 
 /**
  * A session directory per running session, instead of one shared by all of them.
@@ -77,96 +76,48 @@ export function pidOfSessionDir(name: string): number | null {
 }
 
 /**
- * Where session settings are kept BETWEEN sessions.
- *
- * The model pin lives in the session directory, because that is the config
- * directory Claude writes to when you use /model. A directory per session would
- * therefore forget the pin every time, silently putting you back on whatever
- * the default is, so it is carried out here as a session ends and back in as the
- * next one starts.
+ * Where ccx used to keep a session's settings BETWEEN sessions, and laid them
+ * over the user's real ones in every session it started. Read once more by
+ * retireKeptSettings, and never written again.
  */
 export function keptSettingsPath(c: PathCtx = {}): string {
   return path.join(configHome(c), 'session-settings.json');
 }
 
 /**
- * Give a fresh session directory the settings the last one ended with.
+ * Fold ccx's old store of session settings into the user's real settings, once,
+ * and retire it.
  *
- * Falls back to the pre-split single directory, which is where the pin lives
- * for anyone upgrading: without that, the first session after the change starts
- * on a different model than the one they left running.
+ * The store overrode ~/.claude/settings.json in every ccx session, so ccx
+ * sessions and plain `claude` could run on different models, effort and
+ * screen modes off what looked like one settings file, and nothing changed in
+ * the real file could reach a key the store held. Now what a session changes
+ * goes straight back to the real file (write-back), and the store has no job.
+ *
+ * Where the real file has a value, it wins: it is the one the user can see and
+ * edit, and editing it is how they tried to change it. A value only the store
+ * has is the one record of a choice made in a session, and goes in. The store
+ * is renamed aside, never deleted.
  */
-export function seedFromKeptSettings(sessionDir: string, c: PathCtx = {}): boolean {
-  const dest = path.join(sessionDir, 'settings.json');
-  if (existsSync(dest)) return false;
-  const sources = [keptSettingsPath(c), path.join(configHome(c), 'session', 'settings.json')];
-  for (const source of sources) {
-    try {
-      if (!existsSync(source)) continue;
-      copyFileSync(source, dest);
-      return true;
-    } catch {
-      /* try the next source */
-    }
-  }
-  return false;
-}
-
-/**
- * What a session changed, as opposed to everything it was holding.
- *
- * The kept settings win over the user's real ones when the next session is
- * built, so anything in here overrides `~/.claude/settings.json` from now on.
- * Keeping a whole copy therefore froze the user's settings at the moment a
- * session last ended: editing the real file after that changed nothing, and
- * the frozen value could not be removed by any normal means. That is exactly
- * how `"tui": "fullscreen"` became unkillable.
- *
- * So only the keys that actually DIFFER from the real settings are carried,
- * which is the smallest set that still does the job it exists for (holding a
- * `/model` pin). It is also self-healing: once the real settings agree, the
- * override drops out on its own.
- *
- * Self-healing needs the real settings to be able to catch up, which they
- * never do for a key ccx itself rewrites in the real file: the session's copy
- * stays different forever. ccx's own status line is never carried (see
- * realSettingWins).
- */
-export function changedFromUser(
-  session: Record<string, unknown>,
-  user: Record<string, unknown>,
-): Record<string, unknown> {
-  const changed: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(session)) {
-    if (realSettingWins(key, user)) continue;
-    // Deep equality, not serialised text: Claude rewrites this file and can
-    // emit the same object with its keys in a different order. Comparing the
-    // text would call that a change and make it a permanent override, which is
-    // the very thing being fixed here. Array order still counts, because the
-    // order of hooks is part of what they mean.
-    if (!isDeepStrictEqual(value, user[key])) changed[key] = value;
-  }
-  return changed;
-}
-
-/**
- * Carry a finished session's changes out before its directory is deleted.
- *
- * Newest wins, so sweeping several dead sessions at once cannot let the oldest
- * of them overwrite a pin set later.
- */
-export function preserveSettings(sessionDir: string, c: PathCtx = {}): void {
-  const from = path.join(sessionDir, 'settings.json');
-  const to = keptSettingsPath(c);
+export function retireKeptSettings(c: PathCtx = {}): void {
+  const kept = keptSettingsPath(c);
+  if (!existsSync(kept)) return;
   try {
-    if (!existsSync(from)) return;
-    if (existsSync(to) && statSync(to).mtimeMs >= statSync(from).mtimeMs) return;
-    const session = readJsonObject(from);
-    if (!session) return;
-    const user = readJsonObject(path.join(defaultClaudeRoot(c), 'settings.json')) ?? {};
-    writeFileSync(to, `${JSON.stringify(changedFromUser(session, user), null, 2)}\n`, 'utf8');
+    const store = readJsonObject(kept);
+    if (store) {
+      // The same way in as every hand-back (lock, re-read before writing). A
+      // real file that does not parse is never rewritten: the store waits.
+      const outcome = mergeInto(path.join(defaultClaudeRoot(c), 'settings.json'), c, (user) => {
+        // Never a status line: the store held one whenever the real file's was
+        // not ccx's, which after `ccx off` would put ccx's back by the side door.
+        const missing = Object.entries(store).filter(([key]) => key !== 'statusLine' && !(key in user));
+        return { changed: missing.length > 0, theirs: { ...user, ...Object.fromEntries(missing) } };
+      });
+      if (outcome === 'failed') return;
+    }
+    renameSync(kept, `${kept}.retired`);
   } catch {
-    /* a forgotten pin is an annoyance; throwing here would block the sweep */
+    /* tried again at the next start */
   }
 }
 
@@ -225,10 +176,10 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
     const pid = pidOfSessionDir(name);
     if (pid === null || pid === options.keepPid || isAlive(pid)) continue;
     const dir = path.join(root, name);
-    // Before the delete, not after: the settings go with the directory, and so
-    // would an edit to the user's memory that only the session still holds.
-    preserveSettings(dir, c);
-    // Kept for the next sweep when the only copy of an edit could not be saved.
+    // Before the delete, not after: a session killed before it could hand its
+    // changes back still holds them, and so might an edit to the user's memory.
+    // Kept for the next sweep when the only copy of either could not be saved.
+    if (!handBackOrRescue(dir, c)) continue;
     if (!returnSharedUserFiles(dir, c)) continue;
     if (removeSessionDir(dir)) removed.push(name);
   }
@@ -243,18 +194,19 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
  * finds its own directory already there found another process's, which the
  * sweep cannot tell, because the pid it belongs to is alive again: it is this
  * one. Taken over as found, the new session would inherit that process's
- * conversation and the prompt it armed for its swaps. Its settings are carried
- * out first, exactly as the sweep does for any other dead session.
+ * conversation and the prompt it armed for its swaps. Its changes are handed
+ * back first, exactly as the sweep does for any other dead session.
  */
 export function retireLeftoverSessionDir(dir: string, c: PathCtx = {}): boolean {
   if (!existsSync(dir)) return false;
-  preserveSettings(dir, c);
-  // An edit that could be neither handed back nor kept aside (a failed write
+  // A change that could be neither handed back nor kept aside (a failed write
   // AND a failed copy: a full disk) exists only in here. The folder stays, and
   // this session does not start in it, rather than take it over or clear it.
-  if (!returnSharedUserFiles(dir, c)) {
+  const changesKept = handBackOrRescue(dir, c);
+  const filesKept = returnSharedUserFiles(dir, c);
+  if (!changesKept || !filesKept) {
     throw new CasError(
-      `ccx: the session that last used ${dir} left an edit to your CLAUDE.md or keybindings.json that could not be saved, and it is still in that folder. Free some disk space and start again.`,
+      `ccx: the session that last used ${dir} left changes to your Claude settings or files that could not be saved, and they are still in that folder. Free some disk space and start again.`,
     );
   }
   return removeSessionDir(dir);

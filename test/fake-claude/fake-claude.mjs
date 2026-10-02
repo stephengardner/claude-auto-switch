@@ -79,8 +79,30 @@ const readMarker = () => {
     return null; // no credential present
   }
 };
+const readObject = (file) => {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return {};
+  }
+};
 if (runsLog) {
-  appendFileSync(runsLog, `${JSON.stringify({ type: 'launch', args, marker: readMarker() })}\n`, 'utf8');
+  // The model the session was given in its settings, as Claude would read it.
+  const settingsModel = readObject(path.join(configDir, 'settings.json')).model ?? null;
+  appendFileSync(runsLog, `${JSON.stringify({ type: 'launch', args, marker: readMarker(), settingsModel })}\n`, 'utf8');
+}
+
+// What Claude itself writes into its config folder during a run: a model picked
+// with /model, a theme, a folder trusted. Merged in, as Claude would save them.
+if (process.env.CLAUDE_CONFIG_DIR) {
+  for (const [variable, name] of [
+    ['FAKE_CLAUDE_SET_SETTINGS', 'settings.json'],
+    ['FAKE_CLAUDE_SET_STATE', '.claude.json'],
+  ]) {
+    if (!process.env[variable]) continue;
+    const file = path.join(configDir, name);
+    writeJson(file, { ...readObject(file), ...JSON.parse(process.env[variable]) });
+  }
 }
 process.stdout.write(`fake-claude ran: ${args.join(' ')}\n`);
 

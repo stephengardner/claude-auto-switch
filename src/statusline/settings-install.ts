@@ -15,8 +15,9 @@ import { CCX_COMMAND, isOurs } from './ours.js';
  * your account switching is on. Claude's status line is the one piece of the
  * screen ccx can write to during a session without stepping on the interface.
  *
- * This is the ONLY thing ccx writes into ~/.claude, and it writes exactly one
- * key. The planning is pure and separate from the file work because the file
+ * This is the only thing of ccx's own it puts into ~/.claude, and it is exactly
+ * one key (what else ccx writes there is what a session changed, handed back:
+ * see write-back). The planning is pure and separate from the file work because the file
  * belongs to the user: hooks, permissions and MCP servers live in it, and
  * losing them to a careless write would be far worse than having no status
  * line at all.
@@ -186,6 +187,57 @@ function clearBackup(c: PathCtx): void {
     rmSync(backupPath(c), { force: true });
   } catch {
     /* harmless once the settings no longer point at ours */
+  }
+}
+
+/**
+ * Keep ccx's line over a status line a session set for itself (write-back).
+ *
+ * With ccx's line in the real file, a line set from inside a session goes in
+ * wrapped by it, the way `ccx on` would have put it, and becomes the line
+ * `ccx off` gives back. Handing it back bare would take ccx's line away from
+ * every session after it. Null when the restore point cannot be saved: then
+ * nothing is written and the hand-back is tried again later, so neither the
+ * session's line nor ccx's is lost.
+ *
+ * The restore point changes before the settings are written, so `undo` puts it
+ * back as it was for when they are not: a restore point naming a line that was
+ * never installed would be what `ccx off` puts in.
+ */
+export function keepOursOver(
+  settings: Record<string, unknown>,
+  c: PathCtx = {},
+): { settings: Record<string, unknown>; undo: () => void } | null {
+  const plan = planInstall(settings);
+  if (plan.kind === 'already') return { settings, undo: () => {} };
+  const previous = readBackupText(c);
+  const undo = (): void => restoreBackupText(c, previous);
+  if (plan.kind === 'wrapped') {
+    if (!writeBackup(c, plan.displaced)) {
+      undo();
+      return null;
+    }
+  } else {
+    clearBackup(c);
+  }
+  return { settings: plan.settings, undo };
+}
+
+/** The restore point as it is on disk, or null when there is none. */
+function readBackupText(c: PathCtx): string | null {
+  try {
+    return readFileSync(backupPath(c), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function restoreBackupText(c: PathCtx, text: string | null): void {
+  try {
+    if (text === null) rmSync(backupPath(c), { force: true });
+    else writeFileSync(backupPath(c), text, 'utf8');
+  } catch {
+    /* best effort: the next hand-back tries again */
   }
 }
 

@@ -1,9 +1,16 @@
 import { hasCredential, removeCredential } from '../accounts/credential-storage.js';
 import { thrownReason } from '../util/thrown-reason.js';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { newerInstall } from '../update/newer-install.js';
+import {
+  forgetEarlierStart,
+  resyncSession,
+  returnSessionChanges,
+  snapshotSettingsBase,
+  snapshotStateBase,
+} from '../session/write-back.js';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { sweepAbandonedTemps } from '../util/fs-json.js';
 import { listAccounts } from '../accounts/registry.js';
@@ -32,7 +39,7 @@ import { lastResortStart } from '../session/last-resort.js';
 import {
   sessionDirFor,
   sweepDeadSessionDirs,
-  seedFromKeptSettings,
+  retireKeptSettings,
   retireLeftoverSessionDir,
 } from '../session/session-dir.js';
 import { runPtySession } from '../launcher/pty-session.js';
@@ -42,7 +49,7 @@ import {
   notifyTerminal,
   setTerminalOwnedElsewhere,
 } from '../launcher/notify.js';
-import { ensureSharedProjects, ensureSharedUserConfig, mergeUserSettings } from '../session/shared-root.js';
+import { copyUserSettings, ensureSharedProjects, ensureSharedUserConfig } from '../session/shared-root.js';
 import { confirmSessionCap } from '../usage/confirm-cap.js';
 import { resolveSessionIdentity, maskEmail } from '../session/session-identity.js';
 import { createTerminalWriter } from '../ui/terminal-writer.js';
@@ -69,7 +76,7 @@ import {
 } from '../session/resume-prompt.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
-import { secureMkdir, writeSecretFile, copySecretFile } from '../util/secret-file.js';
+import { secureMkdir, writeSecretFile } from '../util/secret-file.js';
 import {
   installCredential,
   rollbackCredential,
@@ -123,25 +130,12 @@ export function hasAnyUsableAccount(context: CliContext): boolean {
   return listAccounts(context.ctx).some((a) => hasLogin(a.dir));
 }
 
-/** Seed the session dir with an account's settings (the model pin) so swaps stay on the model. */
-function seedSessionSettings(sessionDir: string, accounts: Account[]): void {
-  const dest = path.join(sessionDir, 'settings.json');
-  if (existsSync(dest)) return;
-  for (const account of accounts) {
-    const src = path.join(account.dir, 'settings.json');
-    if (existsSync(src)) {
-      copySecretFile(src, dest);
-      return;
-    }
-  }
-}
-
 /**
  * The model this session is running, or null when nothing pins one.
  *
- * Read from the settings file the session dir uses, which is where the model pin
- * lives, and from `--model` on the command line, which wins because it is the
- * more explicit of the two.
+ * Read from the settings file the session dir uses, which holds the user's own
+ * settings and is where /model saves, and from `--model` on the command line,
+ * which wins because it is the more explicit of the two.
  */
 function sessionModel(sessionDir: string, args: string[]): string | null {
   // Same parser the rewriting uses, so a spelling one accepts cannot be a
@@ -322,21 +316,26 @@ export async function runInteractiveHotSwap(
   // found would hand this session that process's conversation and armed prompt.
   retireLeftoverSessionDir(sessionDir, context.ctx);
   secureMkdir(sessionDir);
+  // What an earlier session here started from, if its folder could not be
+  // cleared, is not this one's start.
+  forgetEarlierStart(sessionDir);
   const sessionCreds = path.join(sessionDir, CREDS);
   // Share the user's REAL ~/.claude session/memory store (projects) so /resume
   // and project memories are complete and identical in ccx sessions and plain
   // `claude` alike. Self-heals each start; skips safely if files are busy.
   ensureSharedProjects(sessionDir, context.ctx);
-  // And the rest of what makes it the user's Claude: their skills (ccx's own
-  // `/ccx` among them), agents, commands, output styles, memory, keybindings.
+  // And everything else of ~/.claude but the login: prompt history, /rewind
+  // checkpoints, plugins, the editor link, skills (ccx's own `/ccx` among
+  // them), agents, commands, memory, keybindings. See ensureSharedUserConfig.
   ensureSharedUserConfig(sessionDir, context.ctx);
-  // The model pin lives in these settings, and this directory is new every
-  // session now, so carry forward what the last one ended with before falling
-  // back to an account's defaults.
-  seedFromKeptSettings(sessionDir, context.ctx);
-  seedSessionSettings(sessionDir, accounts);
-  // Bring in the user's real settings (hooks, permissions), session keys winning.
-  mergeUserSettings(sessionDir, context.ctx);
+  // The user's real settings, exactly: a ccx session is their own Claude but
+  // for the account. Nothing is laid over them any more, neither an account
+  // folder's settings nor ccx's old store of session settings, which is folded
+  // into the real file once and retired.
+  retireKeptSettings(context.ctx);
+  copyUserSettings(sessionDir, context.ctx);
+  // What the session starts with, so what it changes can be handed back.
+  snapshotSettingsBase(sessionDir);
   // Drop any stale switch request so a fresh session starts on the active account
   // and only a NEW mid-session pick triggers an in-place swap. Both the broadcast
   // request AND this pid's own per-session request: pids are reused, and a
@@ -917,6 +916,8 @@ export async function runInteractiveHotSwap(
             // Stamp the account's identity (oauthAccount/userID) so the interactive
             // app sees a logged-in account instead of prompting for login.
             applyAccountIdentity(sessionDir, account.dir, context.ctx);
+            // Once, as first built: later swaps only change the identity in it.
+            snapshotStateBase(sessionDir);
             // What we just put there is by definition already in the profile, so it
             // is not a change to mirror back.
             mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
@@ -1485,6 +1486,10 @@ export async function runInteractiveHotSwap(
       // `--continue` was "the most recent one in this directory", which is a
       // different conversation entirely whenever two sessions share a project.
       const launchArgs = isContinue ? relaunchArgs(args, conversationId()) : args;
+      // Between two runs of Claude, nothing is writing either file: hand back
+      // what the last one changed now, rather than only when the session ends,
+      // and start the next one from the user's settings as they are now.
+      if (isContinue) resyncSession(sessionDir, context.ctx);
 
       // A newer ccx installed while this one ran takes the session over HERE,
       // where Claude is being relaunched anyway: the same conversation, on the
@@ -1676,6 +1681,18 @@ export async function runInteractiveHotSwap(
   // too; this just keeps the folder from collecting files between runs.
   clearSwitchRequest(context.ctx, process.pid);
   terminalInput.close();
+  // Claude has stopped: what it changed in this session's settings and state
+  // goes back to the user's own files, where plain `claude` reads them. What
+  // cannot go back yet stays in the session folder, and the next ccx start
+  // tries again, or keeps it in rescued/ before the folder goes (sweep).
+  if (!returnSessionChanges(sessionDir, context.ctx)) {
+    const m =
+      "this session's changes to your Claude settings could not be saved into ~/.claude yet " +
+      `(is settings.json valid JSON?). They are kept in ${sessionDir}, and the next ccx start saves them, ` +
+      'or keeps them in ~/.claude-auto-switch/rescued/.';
+    logEvent(m, { kind: 'write-back-failed' });
+    screen.say(`ccx: ${m}`);
+  }
   // The last write of the run: put the child's terminal modes back once more
   // (a flush that landed after the per-session reset can have switched them
   // back on) and say anything still held. After this the shell has the

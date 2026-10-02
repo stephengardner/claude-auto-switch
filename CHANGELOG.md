@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.54.0]
+
+### Changed
+
+- **A ccx session is your own Claude, but for the account.** A session runs
+  Claude on a folder of its own, because that is the only place Claude reads
+  its login from, and a login per session is what lets a session change
+  account in place. Until now most of what Claude keeps in that folder stayed
+  there and went with it: prompt history, `/rewind` checkpoints, plugins (a
+  fresh install of several hundred MB per session), the editor link `/ide`
+  looks for, todos and plans. Every folder of `~/.claude` is now shared with
+  your sessions except Claude's backups of its own state, and so is prompt
+  history.
+- **What Claude saves during a session is saved where plain `claude` would save
+  it.** A session starts from your real `settings.json`, and when Claude stops,
+  or restarts on another account, what it changed goes back to your own files:
+  a model picked with `/model`, a permission allowed for good, a hook, a theme,
+  a folder's allowed tools and MCP servers. Each is merged into what is there,
+  lists entry by entry, so two sessions in one folder both keep what they
+  added. If you changed the same thing elsewhere meanwhile, your change wins;
+  what you removed stays removed. When a session and you both edited your
+  `CLAUDE.md`, yours stays and the session's is kept in
+  `~/.claude-auto-switch/rescued/`. Claude's bookkeeping about each folder
+  (costs, durations, the last conversation) is not carried, and a session
+  folder left by an older ccx gives back nothing but its model. A status line
+  set from inside a session goes in wrapped by ccx's, the way `ccx on` would
+  have put it.
+- **ccx no longer keeps a copy of your settings of its own.**
+  `~/.claude-auto-switch/session-settings.json` was laid over your real
+  settings in every ccx session, so a ccx session could run another model or
+  screen mode than your settings named, and editing them changed nothing. It
+  is folded into your real settings once, only for keys your real file does
+  not have (where both have a value, yours wins), and renamed to
+  `session-settings.json.retired`.
+- **A relaunch starts from your settings as they are at that moment**, the way a
+  fresh `claude` would, so a change made in another session or by hand reaches
+  this one too.
+
+### Upgrading
+
+- Sessions on 1.53.0 move to this version by themselves. Where your settings
+  name a model and ccx's old copy named another, sessions now run the one your
+  settings name; `/model` once changes it everywhere.
+
 ## [1.53.0]
 
 ### Changed
