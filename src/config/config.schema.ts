@@ -100,6 +100,38 @@ export const ConfigSchema = z.object({
       prompt: z.string().min(1).default('Carry on where you stopped.'),
     })
     .default({}),
+  /**
+   * What a session says to itself when ccx restarts it, usually on another
+   * account. Without it the restarted session waits at its prompt for someone
+   * to come back, which for an unattended session means it just stops.
+   */
+  resume: z
+    .object({
+      /** On by default. A session can opt out alone: `ccx resume-prompt --clear`. */
+      auto: z.boolean().default(true),
+      /**
+       * Worded for both cases, since a restart can find the work finished as
+       * easily as half done. A prompt a session armed itself wins over this.
+       */
+      prompt: z
+        .string()
+        .min(1)
+        .default(
+          'ccx restarted this session, usually on another account. If you were in the middle of something, carry on exactly where you stopped. If your work was already finished, say so in one line and wait.',
+        ),
+    })
+    .default({}),
+  /** What a running session does when a newer ccx is installed under it. */
+  update: z
+    .object({
+      /**
+       * Move to it by itself (default): when Claude is being relaunched anyway,
+       * or once it has been idle a little while, never mid-turn. The same
+       * conversation, on the same account, in the same terminal.
+       */
+      follow: z.boolean().default(true),
+    })
+    .default({}),
   realClaudePath: z.string().nullable().default(null),
 });
 
@@ -127,6 +159,13 @@ export interface PartialConfig {
     handoff?: 'off' | 'limit' | 'credits';
     mode?: 'fork' | 'same';
     prompt?: string;
+  };
+  resume?: {
+    auto?: boolean;
+    prompt?: string;
+  };
+  update?: {
+    follow?: boolean;
   };
   realClaudePath?: string | null;
 }

@@ -122,14 +122,51 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
   };
   const record = path.join(configDir, 'sessions', `${process.pid}.json`);
   const startedAt = Date.now();
+  // Idle a minute already when asked: the status Claude keeps while it waits
+  // for the next message.
+  const idle = process.env.FAKE_CLAUDE_IDLE_STATUS
+    ? { status: 'idle', statusUpdatedAt: Date.now() - 60_000 }
+    : {};
   const writeRecord = (sessionId) =>
-    writeJson(record, { pid: process.pid, sessionId, cwd: process.cwd(), startedAt, kind: 'interactive' });
-  writeRecord(
+    writeJson(record, { pid: process.pid, sessionId, cwd: process.cwd(), startedAt, kind: 'interactive', ...idle });
+  const recordedId =
     valueAfter('--session-id') ??
-      valueAfter('--resume') ??
-      process.env.FAKE_CLAUDE_LANDS_ON ??
-      '00000000-0000-4000-8000-000000000000',
-  );
+    valueAfter('--resume') ??
+    process.env.FAKE_CLAUDE_LANDS_ON ??
+    '00000000-0000-4000-8000-000000000000';
+  writeRecord(recordedId);
+
+  // The conversation's own record, at <config dir>/projects/<folder>/<id>.jsonl
+  // where the real CLI keeps it. A refused turn is written the way Claude
+  // 2.1.284 writes one (measured): an answer flagged isApiErrorMessage, with
+  // Claude's code, the API's code and the HTTP status.
+  if (process.env.FAKE_CLAUDE_TRANSCRIPT) {
+    const transcript = path.join(configDir, 'projects', 'fake-project', `${recordedId}.jsonl`);
+    mkdirSync(path.dirname(transcript), { recursive: true });
+    appendFileSync(transcript, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
+    const refuse = () =>
+      appendFileSync(
+        transcript,
+        `${JSON.stringify({
+          type: 'assistant',
+          isSidechain: false,
+          isApiErrorMessage: true,
+          error: 'rate_limit',
+          apiError: 'model_requires_usage_credits',
+          apiErrorStatus: 429,
+          message: {
+            model: '<synthetic>',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Out of room on this account for now.' }],
+          },
+        })}\n`,
+      );
+    const after = Number(process.env.FAKE_CLAUDE_REFUSE_AFTER_MS) || 0;
+    if (after > 0) {
+      const t = setTimeout(refuse, after);
+      if (t.unref) t.unref();
+    }
+  }
   // A conversation switch made inside the session, at human speed.
   const switchTo = process.env.FAKE_CLAUDE_SWITCH_TO;
   if (switchTo) {
@@ -163,8 +200,12 @@ if (process.env.FAKE_CLAUDE_EMIT_CAP) {
 // tries again and the message comes back. A single emission can reproduce a
 // session that was refused once, never one that is STUCK.
 const capEvery = Number(process.env.FAKE_CLAUDE_CAP_EVERY_MS) || 0;
+// Started late when asked, so a test can have ccx reading the conversation's
+// own record before any of it reaches the screen.
+const capFrom = Date.now() + (Number(process.env.FAKE_CLAUDE_CAP_AFTER_MS) || 0);
 if (capEvery > 0) {
   const t = setInterval(() => {
+    if (Date.now() < capFrom) return;
     process.stdout.write("You have reached your Fable 5 limit. Run /usage-credits to continue.\n");
   }, capEvery);
   if (t.unref) t.unref();

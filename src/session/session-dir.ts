@@ -227,7 +227,8 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
     // Before the delete, not after: the settings go with the directory, and so
     // would an edit to the user's memory that only the session still holds.
     preserveSettings(dir, c);
-    returnSharedUserFiles(dir, c);
+    // Kept for the next sweep when the only copy of an edit could not be saved.
+    if (!returnSharedUserFiles(dir, c)) continue;
     if (removeSessionDir(dir)) removed.push(name);
   }
   return removed;
@@ -247,6 +248,8 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
 export function retireLeftoverSessionDir(dir: string, c: PathCtx = {}): boolean {
   if (!existsSync(dir)) return false;
   preserveSettings(dir, c);
+  // This session needs the folder now, so it goes even if an edit could not be
+  // saved anywhere; that takes a failed write AND a failed copy, a full disk.
   returnSharedUserFiles(dir, c);
   return removeSessionDir(dir);
 }

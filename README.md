@@ -227,33 +227,46 @@ program](docs/reading-ccx-from-another-program.md).
 
 ## How it works
 
-ccx runs the real Claude for you and quietly watches its output. When Claude
-reports a usage limit, ccx confirms it against your account's real usage, marks
-that account as out, and moves your session to one with room, continuing the
-conversation. There is one shared "active account" that your terminal and your
-editor both follow, so a switch made anywhere carries everywhere.
+ccx runs the real Claude for you and follows the conversation's own record,
+which Claude keeps on disk. When Claude records a turn as refused for usage (it
+writes each one with its own codes, never needing anyone to read the screen),
+ccx confirms it against your account's real usage, marks that account as out,
+and moves your session to one with room, continuing the conversation. Words on
+the screen decide nothing, so a session whose work is about limits is never
+moved for talking about them. There is one shared "active account" that your
+terminal and your editor both follow, so a switch made anywhere carries
+everywhere.
 
 Switching a running session is seamless: ccx swaps the login underneath it and
 Claude picks it up within about half a minute, with nothing restarted. When you
 want it immediately instead, `ccx use <name> --now` restarts the session on the
 new account and resumes the same conversation.
 
-A restarted session comes back idle at its prompt, which is fine when you are at
-the keyboard and a dead stop when nobody is: an unattended session, a long
-autonomous run, waits there until someone types. So a session can arm the prompt
-it wants when it comes back, `ccx resume-prompt "carry on where you stopped"`,
-and every relaunch after a swap submits it, resuming the same conversation with
-that prompt. When an armed session hits a verified usage limit, it is relaunched
-rather than switched in place, because the limit ends the turn it interrupted and
-only a relaunch can hand the session its prompt. A switch made in place, such as
-a seamless `ccx use` or a proactive move, hands over no prompt: it does not
-interrupt the session, so there is nothing to pick back up. Run it from inside
-the session (it finds itself through the config folder Claude runs with), or
-name one with `--session <pid>` or `--here`; `--clear` disarms it. Or start a
-session already armed: `ccx run --resume-prompt "carry on where you stopped" --
---resume <id>` picks that conversation up with the prompt at once, and keeps it
-for every swap after. Nothing is armed by default, and a fresh conversation
-started because there was nothing to resume never gets it.
+A restarted session carries on by itself. Every relaunch, usually on another
+account, tells it to carry on where it stopped, or, if its work was already
+finished, to say so in one line and wait; an unattended session, a long
+autonomous run, keeps going instead of waiting for someone to type. When a
+session hits a verified usage limit it is relaunched rather than switched in
+place for the same reason: the limit ended the turn it interrupted, and only a
+relaunch can tell it to pick that turn back up. A switch made in place, such as
+a seamless `ccx use` or a proactive move, says nothing: it does not interrupt
+the session, so there is nothing to pick back up.
+
+A session can say something else instead: `ccx resume-prompt "<text>"` from
+inside it (it finds itself through the config folder Claude runs with), or for
+one named with `--session <pid>` or `--here`. `--clear` makes that session come
+back silent, and `resume.auto` in the config turns carrying on off everywhere.
+Or start a session armed: `ccx run --resume-prompt "<text>" -- --resume <id>`
+picks that conversation up with the prompt at once, and keeps it for every swap
+after. A fresh conversation started because there was nothing to resume never
+gets it.
+
+Running sessions take updates by themselves. When a newer ccx is installed,
+each session moves to it in the same terminal, on the same conversation and
+account: when Claude is being relaunched anyway, or once it has been idle for
+twenty seconds, never in the middle of a turn. On Windows, sessions load their
+terminal library from a copy of their own, so `npm install -g` works while they
+run (`update.follow` in the config turns the moving off).
 
 A swap resumes the conversation that is actually on screen, even after `/clear`
 or `/resume`, and even in a session started with `--continue` or the picker:
@@ -279,7 +292,7 @@ want them.
 | `ccx dashboard` (alias `watch`)   | Live view of every account, with keys to act                                                                                                                        |
 | `ccx doctor`                      | Check the whole setup, including who each profile really is                                                                                                         |
 | `ccx use <name>`                  | Make an account active (`--now` to switch instantly)                                                                                                                |
-| `ccx resume-prompt "<text>"`      | Arm the prompt a session is resumed with after a swap (`--clear`, `--session <pid>`, `--here`)                                                                      |
+| `ccx resume-prompt "<text>"`      | What a session says to itself after a restart, instead of the default (`--clear` for nothing, `--session <pid>`, `--here`)                                          |
 | `ccx rotate`                      | Switch to the next healthy account now                                                                                                                              |
 | `ccx order [most-room\|priority]` | Which account to reach for first: least-used (default) or by priority                                                                                               |
 | `ccx proactive on` / `off`        | Move to a roomier account before running out                                                                                                                        |

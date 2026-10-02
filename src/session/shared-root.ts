@@ -11,7 +11,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
-import { homeDir, type PathCtx } from '../config/paths.js';
+import { configHome, homeDir, type PathCtx } from '../config/paths.js';
+import { writeFileAtomic } from '../util/atomic-write.js';
 import { setTarget, isLink } from '../daemon/junction.js';
 import { isOurs } from '../statusline/ours.js';
 
@@ -99,14 +100,20 @@ const SHARED_FILES = ['CLAUDE.md', 'keybindings.json'];
  * never linked at all. A file that is newer than the user's and differs from
  * it, or that the user has none of, goes back; one that is still the same
  * file, or older, or identical, is left alone.
+ *
+ * Written whole or not at all, so a failed write never leaves the user's own
+ * file half done. When it cannot go back, it is kept in `rescued/` in the ccx
+ * folder instead. False only when even that failed: the session folder must
+ * then stay, because it holds the only copy.
  */
-export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): void {
+export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): boolean {
   let root: string;
   try {
     root = defaultClaudeRoot(c);
   } catch {
-    return;
+    return true;
   }
+  let kept = true;
   for (const name of SHARED_FILES) {
     const from = path.join(sessionDir, name);
     const to = path.join(root, name);
@@ -119,12 +126,22 @@ export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): void
         if (mine.mtimeMs <= theirs.mtimeMs) continue;
         if (readFileSync(from).equals(readFileSync(to))) continue;
       }
-      mkdirSync(root, { recursive: true });
-      copyFileSync(from, to);
     } catch {
-      /* best effort: the session's copy goes with its folder */
+      continue; // unreadable: nothing to hand back
+    }
+    try {
+      writeFileAtomic(to, readFileSync(from, 'utf8'));
+    } catch {
+      try {
+        const rescue = path.join(configHome(c), 'rescued', `${Date.now()}-${name}`);
+        mkdirSync(path.dirname(rescue), { recursive: true });
+        copyFileSync(from, rescue);
+      } catch {
+        kept = false;
+      }
     }
   }
+  return kept;
 }
 
 export function ensureSharedUserConfig(sessionDir: string, c: PathCtx = {}): void {

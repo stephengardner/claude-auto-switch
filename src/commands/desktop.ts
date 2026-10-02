@@ -11,6 +11,7 @@ import { checkResumePrompt, checkStartPrompt } from '../session/resume-prompt.js
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { hasLogin } from '../accounts/account-login.js';
 import { cappedNames, loadLedger } from '../ledger/ledger.js';
+import { roomOfFromSnapshot } from '../usage/account-room.js';
 import { runCommand } from './run.js';
 import {
   called,
@@ -58,6 +59,8 @@ export interface DesktopDeps extends HandoffDeps {
   schedule?: (job: HandoffJob, c: PathCtx) => boolean;
   /** Whether a terminal window can be opened here. Injected in tests. */
   canOpen?: () => boolean;
+  /** Which account a conversation leaving Desktop goes to. Injected in tests. */
+  destination?: (context: CliContext, leaving: string | null) => string | null;
   /** What a launcher's `desktop-run` runs. Injected in tests. */
   run?: typeof runCommand;
   /** Usage for one account, refreshed when stale. Injected in tests. */
@@ -250,6 +253,25 @@ export function setPrompt(context: CliContext, words: string[]): number {
 /* ccx desktop move                                                    */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Where a conversation leaving Desktop goes: the account with the most room
+ * that is not the one it is leaving, and never one that is out. Chosen here,
+ * not left to the run, which could start it on the very account it left.
+ * Null when no other account has room.
+ */
+export function destinationFor(context: CliContext, leaving: string | null): string | null {
+  const now = Date.now();
+  const capped = cappedNames(loadLedger(context.ctx), now);
+  const roomOf = roomOfFromSnapshot(context.ctx, now);
+  let best: { name: string; room: number } | null = null;
+  for (const a of listAccounts(context.ctx)) {
+    if (!a.enabled || a.name === leaving || capped.has(a.name) || !hasLogin(a.dir)) continue;
+    const room = roomOf(a.name);
+    if (room > 0 && (!best || room > best.room)) best = { name: a.name, room };
+  }
+  return best?.name ?? null;
+}
+
 function settingsFor(context: CliContext, to?: string, startPrompt?: string): HandoffSettings {
   return {
     mode: context.config.desktop.mode,
@@ -284,8 +306,8 @@ function report(
     context.out(`could not open a terminal: ${result.reason}`);
     return;
   }
-  const where = settings.account ? `on ${settings.account}` : 'on the account with the most room';
-  context.out(`${called(conv)} continues in a ${result.via} window, ${where}.`);
+  const where = settings.account ? ` on ${settings.account}` : '';
+  context.out(`${called(conv)} continues in a ${result.via} window${where}.`);
   context.out(
     settings.mode === 'fork'
       ? 'It carries on as a copy; Desktop keeps the original exactly as it was.'
@@ -327,6 +349,16 @@ export async function moveConversation(
       return 1;
     }
   }
+  const to =
+    opts.to ??
+    (deps.destination ?? destinationFor)(
+      context,
+      desktopAccount(listAccounts(context.ctx), context.ctx),
+    );
+  if (!to) {
+    context.out("No account other than Desktop's own has room right now; ccx swap shows them all.");
+    return 1;
+  }
   if (conv.status === 'busy' && !opts.wait) {
     context.out(
       `${called(conv)} is working in Desktop right now. Press Stop on it there, then run this again,`,
@@ -350,7 +382,7 @@ export async function moveConversation(
     effort: flags.effort,
     permissionMode: flags.permissionMode,
   };
-  const settings = settingsFor(context, opts.to);
+  const settings = settingsFor(context, to);
   if (opts.dryRun) {
     context.out(`would run in ${conv.cwd}:`);
     context.out(`  ccx ${pasteable(continuationArgs(target, settings))}`);
@@ -514,12 +546,27 @@ export async function desktopHookCommand(
     const error = typeof payload.error === 'string' ? payload.error : '';
     if (error !== 'rate_limit' && error !== 'billing_error') return 0;
     if (handedOffRecently(sessionId, context.ctx) !== null) return 0;
-    const ok = schedule(settingsFor(context));
+    const to = (deps.destination ?? destinationFor)(
+      context,
+      desktopAccount(listAccounts(context.ctx), context.ctx),
+    );
+    if (!to) {
+      log(
+        `desktop: ${called(target)} stopped at its account's limit, and no other account has room`,
+        {
+          why: 'limit',
+          error,
+          ok: false,
+        },
+      );
+      return 0;
+    }
+    const ok = schedule(settingsFor(context, to));
     log(
       ok
-        ? `desktop: ${called(target)} hit a usage limit; continuing it in a terminal`
-        : `desktop: ${called(target)} hit a usage limit; could not hand it over`,
-      { why: 'limit', error, ok },
+        ? `desktop: ${called(target)} stopped at its account's limit; continuing it in a terminal on ${to}`
+        : `desktop: ${called(target)} stopped at its account's limit; could not hand it over`,
+      { why: 'limit', error, ok, to },
     );
     return 0;
   }
@@ -539,14 +586,28 @@ export async function desktopHookCommand(
   // Held only when it can be carried over: a message too long for a command
   // line, or a machine with no terminal to open, would be lost, not saved.
   const carry = checkStartPrompt(message);
-  if (!carry.ok || !(deps.canOpen ?? canOpenTerminal)()) {
+  const platform = context.ctx.platform;
+  const canOpen =
+    deps.canOpen ?? (() => canOpenTerminal(platform !== undefined ? { platform } : {}));
+  // And only when somewhere else has room: carried to an account that is just
+  // as spent, it would hit the same wall, or spend the same credits there.
+  const to = (deps.destination ?? destinationFor)(context, account.name);
+  if (!carry.ok || !canOpen() || !to) {
+    const why = !carry.ok
+      ? `it could not be carried over (${carry.reason})`
+      : !to
+        ? 'no other account has room'
+        : 'there is no terminal program to open here';
     log(
-      `desktop: ${called(target)} is past ${account.name}'s plan, but the message went to Desktop: ${carry.ok ? 'there is no terminal program to open here' : `it could not be carried over (${carry.reason})`}`,
-      { why: 'credits', ok: false },
+      `desktop: ${called(target)} is past ${account.name}'s plan, but the message went to Desktop: ${why}`,
+      {
+        why: 'credits',
+        ok: false,
+      },
     );
     return 0;
   }
-  const settings = settingsFor(context, undefined, message);
+  const settings = settingsFor(context, to, message);
   if (!schedule(settings)) {
     // Holding the message with nowhere to send it would strand it; let it through.
     log(`desktop: could not hand ${called(target)} over; the message went to Desktop`, {
@@ -561,7 +622,7 @@ export async function desktopHookCommand(
   });
   tell(
     `ccx: ${account.name} is past its plan (${spent}), so this message did not go to Desktop, where it would spend usage credits. ` +
-      'It continues in a terminal window on an account with plan room, with your message. Carry on there.',
+      `It continues in a terminal window on ${to}, with your message. Carry on there.`,
   );
   return 2;
 }

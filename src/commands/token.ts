@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { spawn, type IPty } from 'node-pty';
+import type { IPty } from 'node-pty';
+import { nodePty } from '../util/native-pty.js';
 import { getAccount } from '../accounts/registry.js';
 import { invokerArgs } from '../invoker.js';
 import { saveToken, extractToken } from '../daemon/token-store.js';
@@ -38,7 +39,7 @@ export async function tokenCommand(context: CliContext, name: string): Promise<n
   err(`minting a token for "${name}" (approve in the browser when it opens)...`);
 
   return new Promise<number>((resolve) => {
-    const child: IPty = spawn(claude.bin, invokerArgs(claude, ['setup-token']), {
+    const child: IPty = nodePty().spawn(claude.bin, invokerArgs(claude, ['setup-token']), {
       name: process.env.TERM ?? 'xterm-256color',
       cols: process.stdout.columns ?? 80,
       rows: process.stdout.rows ?? 24,

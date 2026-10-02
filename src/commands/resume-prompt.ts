@@ -5,6 +5,7 @@ import { isSessionDir, pidOfSessionDir, sessionDirFor } from '../session/session
 import {
   clearResumePrompt,
   readResumePrompt,
+  resumePromptOff,
   writeResumePrompt,
 } from '../session/resume-prompt.js';
 import type { CliContext } from '../context.js';
@@ -47,13 +48,17 @@ export function resumePromptCommand(
       context.out('give either a prompt or --clear, not both');
       return 1;
     }
-    const had = clearResumePrompt(dir);
-    context.out(had ? `disarmed session ${pid}` : `session ${pid} had nothing armed`);
+    clearResumePrompt(dir);
+    context.out(
+      `session ${pid} now resumes after a swap without any prompt, so it waits for you (arm one again to undo)`,
+    );
     return 0;
   }
 
   if (text.trim() === '') {
     const read = readResumePrompt(dir);
+    const off = resumePromptOff(dir);
+    const fallback = !off && context.config.resume.auto ? context.config.resume.prompt : null;
     if (context.json) {
       context.out(
         JSON.stringify({
@@ -61,16 +66,18 @@ export function resumePromptCommand(
           armed: read.armed,
           ...(read.armed ? { prompt: read.prompt } : {}),
           ...(!read.armed && read.invalid ? { invalid: read.invalid } : {}),
+          ...(!read.armed ? { default: fallback } : {}),
         }),
       );
     } else if (read.armed) {
       context.out(`session ${pid} is armed: ${read.prompt}`);
-    } else if (read.invalid) {
-      context.out(
-        `session ${pid} has a prompt ccx will not use (${read.invalid}), so nothing is armed`,
-      );
     } else {
-      context.out(`session ${pid} has nothing armed`);
+      if (read.invalid) context.out(`session ${pid} has a prompt ccx will not use (${read.invalid})`);
+      context.out(
+        fallback
+          ? `session ${pid} carries on with the default after a swap: ${fallback}`
+          : `session ${pid} resumes after a swap without a prompt, and waits for you`,
+      );
     }
     return 0;
   }

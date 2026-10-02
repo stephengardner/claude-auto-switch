@@ -108,13 +108,32 @@ export function writeResumePrompt(sessionDir: string, raw: string): ResumePrompt
   // see the old prompt or the new one, never a truncated file that reads as
   // unarmed and sends the session back to sitting idle.
   writeSecretFile(resumePromptPath(sessionDir), `${checked.prompt}\n`);
+  // Arming again undoes a --clear.
+  rmSync(path.join(sessionDir, RESUME_PROMPT_OFF_FILE), { force: true });
   return checked;
 }
 
-/** Disarm a session. Returns whether anything was armed. */
+/**
+ * Disarm a session, and keep the default (config `resume`) off it too: a
+ * session told to resume without a prompt means exactly that. Returns whether
+ * a prompt of its own was armed.
+ */
 export function clearResumePrompt(sessionDir: string): boolean {
   const file = resumePromptPath(sessionDir);
-  if (!existsSync(file)) return false;
+  const was = existsSync(file);
   rmSync(file, { force: true });
-  return true;
+  try {
+    writeSecretFile(path.join(sessionDir, RESUME_PROMPT_OFF_FILE), 'off\n');
+  } catch {
+    /* the session folder is gone; nothing will resume it */
+  }
+  return was;
+}
+
+/** Marks a session that resumes without any prompt, its own or the default. */
+export const RESUME_PROMPT_OFF_FILE = 'resume-prompt.off';
+
+/** Whether a session was told to resume without a prompt (see clearResumePrompt). */
+export function resumePromptOff(sessionDir: string): boolean {
+  return existsSync(path.join(sessionDir, RESUME_PROMPT_OFF_FILE));
 }

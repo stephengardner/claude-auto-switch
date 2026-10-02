@@ -6,6 +6,29 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- **Whether a session hit a wall is decided by the conversation's own record,
+  never by its screen.** Claude writes every refused turn into the
+  conversation's record with its own codes (`isApiErrorMessage`, `error`,
+  `apiError`, the HTTP status), and ccx now reads those, as they are written.
+  Matching words on the screen restarted healthy sessions every few minutes
+  whenever the work itself was about limits, since their screens were full of
+  the words. The screen is only consulted for a conversation whose record does
+  not exist yet.
+- **A restarted session carries on by itself.** After any restart, usually on
+  another account, ccx tells the session to carry on where it stopped (or, if
+  its work was finished, to say so and wait). It used to come back idle at its
+  prompt unless it had armed a prompt itself, so an unattended session simply
+  stopped. `ccx resume-prompt --clear` turns it off for one session, and
+  `resume.auto` in the config for all of them.
+- **Running sessions take updates by themselves.** A session moves to a newer
+  ccx installed while it runs, in the same terminal, on the same conversation
+  and account: when Claude is being relaunched anyway, or once it has been idle
+  for twenty seconds, never mid-turn (`update.follow` in the config). On
+  Windows, sessions load node-pty from a copy of their own, so they no longer
+  hold the install and `npm install -g` works while they run.
+
 ### Added
 
 - **Claude Desktop conversations can move to a terminal that switches

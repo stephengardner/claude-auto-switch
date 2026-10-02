@@ -1,7 +1,9 @@
 import { hasCredential, removeCredential } from '../accounts/credential-storage.js';
 import { thrownReason } from '../util/thrown-reason.js';
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { newerInstall } from '../update/newer-install.js';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { sweepAbandonedTemps } from '../util/fs-json.js';
 import { listAccounts } from '../accounts/registry.js';
@@ -63,6 +65,7 @@ import {
   writeResumePrompt,
   checkResumePrompt,
   checkStartPrompt,
+  resumePromptOff,
 } from '../session/resume-prompt.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
@@ -293,6 +296,14 @@ export async function runInteractiveHotSwap(
     }
   }
   let accountChoiceSettled = false;
+  /** Set when a newer ccx is to take this session over once the run has ended. */
+  let handoverPlan: {
+    version: string;
+    cli: string;
+    account: string;
+    claudeArgs: string[];
+    startPrompt: string | null;
+  } | null = null;
   const claude = getClaude(context);
   // A directory of this session's OWN, never one shared with other sessions.
   // Starting a session copies the chosen account's login into here, so while
@@ -335,6 +346,32 @@ export async function runInteractiveHotSwap(
   clearSwitchRequest(context.ctx);
   clearSwitchRequest(context.ctx, process.pid);
   if (startPrompt !== null) writeResumePrompt(sessionDir, startPrompt);
+  /**
+   * What a relaunch carries on with: the prompt this session armed, else the
+   * default (config `resume`), unless that is off or this session was told to
+   * resume without one (`ccx resume-prompt --clear`). Without it a restarted
+   * session waits at its prompt, and an unattended one just stops.
+   */
+  const relaunchPrompt = (): { prompt: string; source: 'armed' | 'default' } | null => {
+    const armed = readResumePrompt(sessionDir);
+    if (armed.armed) return { prompt: armed.prompt, source: 'armed' };
+    if (armed.invalid) {
+      logEvent(`resume prompt ignored: ${armed.invalid}`, {
+        kind: 'resume-prompt',
+        data: { applied: false },
+      });
+    }
+    if (resumePromptOff(sessionDir) || !context.config.resume.auto) return null;
+    const checked = checkResumePrompt(context.config.resume.prompt);
+    if (!checked.ok) {
+      logEvent(`default resume prompt not used: ${checked.reason}`, {
+        kind: 'resume-prompt',
+        data: { applied: false },
+      });
+      return null;
+    }
+    return { prompt: checked.prompt, source: 'default' };
+  };
   const err = context.err ?? ((m: string) => process.stderr.write(`${m}\n`));
   const home = configHome(context.ctx);
   // Record events to the shared log so an open `ccx dashboard` shows swaps live.
@@ -1367,9 +1404,11 @@ export async function runInteractiveHotSwap(
         // the relaunch will really use it: a run launched with a prompt of its own
         // keeps that one, and relaunching it anyway would end the child, sub-agents
         // and all, for nothing. So this asks the same question the relaunch does.
-        const armed = readResumePrompt(sessionDir);
+        // The default prompt counts too: it is what keeps a session working.
+        const carryOn = relaunchPrompt();
         const armedForRelaunch =
-          armed.armed && withResumePrompt(relaunchArgs(args, conversationId()), armed.prompt).applied;
+          carryOn !== null &&
+          withResumePrompt(relaunchArgs(args, conversationId()), carryOn.prompt).applied;
         if (opts.relieve && limitedModel === undefined && !armedForRelaunch) {
           const next = reliefAccount(capName);
           if (next) {
@@ -1434,6 +1473,9 @@ export async function runInteractiveHotSwap(
         // where `conversationId()` reads first. It is what keeps a swap in the
         // conversation actually on screen after `/clear` or `/resume`, and for
         // a run started with `--continue` or the picker, where ccx never knew.
+        // A newer ccx installed meanwhile takes over once Claude is idle.
+        handoverWhenIdle: () =>
+          context.config.update.follow && (context.newerInstall ?? newerInstall)() !== null,
         onConversation: (id: string) => {
           liveConversationId = id;
           rememberReport(sessionDir, { id });
@@ -1443,6 +1485,21 @@ export async function runInteractiveHotSwap(
       // `--continue` was "the most recent one in this directory", which is a
       // different conversation entirely whenever two sessions share a project.
       const launchArgs = isContinue ? relaunchArgs(args, conversationId()) : args;
+
+      // A newer ccx installed while this one ran takes the session over HERE,
+      // where Claude is being relaunched anyway: the same conversation, on the
+      // account this relaunch chose, saying what this relaunch would have said.
+      // The run ends normally and the newer ccx is started after it (below).
+      const newer = isContinue && context.config.update.follow ? (context.newerInstall ?? newerInstall)() : null;
+      if (newer) {
+        handoverPlan = {
+          ...newer,
+          account: account.name,
+          claudeArgs: chosenModel ? withModel(launchArgs, chosenModel) : launchArgs,
+          startPrompt: relaunchPrompt()?.prompt ?? null,
+        };
+        return { kind: 'ok', exitCode: 0 };
+      }
 
       // Not printed: which account you are on shows in Claude's status line
       // (`ccx statusline`) and in the terminal title, and a line per session
@@ -1468,22 +1525,22 @@ export async function runInteractiveHotSwap(
         /** The prompt this launch was given, so a copy made again below gets it too. */
         let appliedPrompt: string | null = null;
         if (isContinue) {
-          const armed = readResumePrompt(sessionDir);
-          if (armed.armed) {
-            const placed = withResumePrompt(modelArgs, armed.prompt);
+          const carryOn = relaunchPrompt();
+          if (carryOn) {
+            const placed = withResumePrompt(modelArgs, carryOn.prompt);
             runArgs = placed.args;
-            if (placed.applied) appliedPrompt = armed.prompt;
+            if (placed.applied) appliedPrompt = carryOn.prompt;
             logEvent(
               placed.applied
-                ? 'relaunched with the resume prompt this session armed'
+                ? carryOn.source === 'armed'
+                  ? 'relaunched with the resume prompt this session armed'
+                  : 'relaunched with the default resume prompt, so it carries on'
                 : `resume prompt not used: ${placed.reason}`,
-              { kind: 'resume-prompt', data: { applied: placed.applied, chars: armed.prompt.length } },
+              {
+                kind: 'resume-prompt',
+                data: { applied: placed.applied, chars: carryOn.prompt.length, source: carryOn.source },
+              },
             );
-          } else if (armed.invalid) {
-            logEvent(`resume prompt ignored: ${armed.invalid}`, {
-              kind: 'resume-prompt',
-              data: { applied: false },
-            });
           }
         } else if (pendingStart !== null || (startPrompt !== null && startsByResuming(modelArgs))) {
           // A start prompt of its own (a message held back from Desktop) goes
@@ -1502,6 +1559,24 @@ export async function runInteractiveHotSwap(
           );
         }
         let outcome = await runPtySession({ ...base, args: runArgs });
+        // Ended idle for a newer ccx: it resumes the conversation as it was,
+        // with nothing to say, since nothing was interrupted.
+        if (outcome.handover) {
+          const ready = (context.newerInstall ?? newerInstall)();
+          if (ready) {
+            handoverPlan = {
+              ...ready,
+              account: (current ?? account).name,
+              claudeArgs: chosenModel
+                ? withModel(relaunchArgs(args, conversationId()), chosenModel)
+                : relaunchArgs(args, conversationId()),
+              startPrompt: null,
+            };
+            return outcome;
+          }
+          // Gone again between the check and now: carry on here as if relaunched.
+          return { kind: 'switch', exitCode: 0, switchTo: (current ?? account).name };
+        }
         // Taken by this launch, unless it found nothing to resume (below).
         const carried = pendingStart;
         pendingStart = null;
@@ -1620,5 +1695,46 @@ export async function runInteractiveHotSwap(
     },
     releaseLease: (name) => releaseLease(name, context.ctx),
   });
+  if (handoverPlan) {
+    const armed = readResumePrompt(sessionDir);
+    return handOverTo(handoverPlan, armed.armed ? armed.prompt : null, logEvent, err);
+  }
   return exitCode;
+}
+
+/**
+ * Start the newer ccx in this terminal, on this conversation, and wait for it.
+ * Everything here has been let go already (the terminal, the lease, the login
+ * saved back), so the newer one owns the session from its first line. It is
+ * handed the prompt this session armed, and what this relaunch would have said.
+ */
+function handOverTo(
+  plan: { version: string; cli: string; account: string; claudeArgs: string[]; startPrompt: string | null },
+  armed: string | null,
+  logEvent: (m: string, detail?: EventDetail) => void,
+  err: (m: string) => void,
+): number {
+  logEvent(`moving this session to ccx ${plan.version}, installed while it ran`, {
+    kind: 'update',
+    data: { to: plan.version, account: plan.account },
+  });
+  const result = spawnSync(
+    process.execPath,
+    [
+      plan.cli,
+      'run',
+      '--account',
+      plan.account,
+      ...(armed ? ['--resume-prompt', armed] : []),
+      ...(plan.startPrompt ? ['--start-prompt', plan.startPrompt] : []),
+      '--',
+      ...plan.claudeArgs,
+    ],
+    { stdio: 'inherit' },
+  );
+  if (result.error) {
+    err(`ccx: could not start ccx ${plan.version} (${result.error.message}); claude --resume picks this conversation up`);
+    return 1;
+  }
+  return result.status ?? 1;
 }

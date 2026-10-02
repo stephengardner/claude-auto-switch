@@ -49,3 +49,28 @@ export function readLiveConversation(configDir: string, pid: number, spawnedAt =
     return null;
   }
 }
+
+/**
+ * How long the Claude process `pid` has been idle, waiting for its next
+ * message, from the same record: Claude keeps `status` ("busy" while a turn
+ * runs, "idle" once it ends) and when it last changed. Null while busy, or
+ * when the record cannot be read, so a caller only ever acts on a definite idle.
+ */
+export function idleForMs(configDir: string, pid: number, spawnedAt = 0, now = Date.now()): number | null {
+  try {
+    const record = JSON.parse(readFileSync(path.join(configDir, 'sessions', `${pid}.json`), 'utf8')) as unknown;
+    if (typeof record !== 'object' || record === null) return null;
+    const { pid: recordedPid, startedAt, status, statusUpdatedAt } = record as {
+      pid?: unknown;
+      startedAt?: unknown;
+      status?: unknown;
+      statusUpdatedAt?: unknown;
+    };
+    if (recordedPid !== pid) return null;
+    if (typeof startedAt !== 'number' || startedAt < spawnedAt - 1000) return null;
+    if (status !== 'idle' || typeof statusUpdatedAt !== 'number') return null;
+    return Math.max(0, now - statusUpdatedAt);
+  } catch {
+    return null;
+  }
+}
