@@ -349,11 +349,15 @@ function jobPath(sessionId: string, c: PathCtx): string {
   return path.join(configHome(c), 'handoffs', `${sessionId}.job.json`);
 }
 
-/** Start a detached ccx on `job`. False when it could not even be written down. */
+/**
+ * Start a detached ccx on `job`. False when it could not be scheduled. A ccx
+ * that fails to start takes the handover record back with it, so the next
+ * attempt is not held off for a window that never opened.
+ */
 export function scheduleHandoff(
   job: HandoffJob,
   c: PathCtx = {},
-  start: (file: string) => void = (file) => {
+  start: (file: string, failed: () => void) => void = (file, failed) => {
     const ccx = thisCcx();
     const child = spawn(ccx.node, [ccx.cli, 'desktop-continue', file], {
       detached: true,
@@ -361,7 +365,7 @@ export function scheduleHandoff(
       // A node process with no window of its own; it opens the terminal itself.
       windowsHide: true,
     });
-    child.on('error', () => {});
+    child.on('error', failed);
     child.unref();
   },
   now = Date.now(),
@@ -375,7 +379,13 @@ export function scheduleHandoff(
   // Marked now, not when the window opens: a second failed turn arriving while
   // the first is still being handed over must not open a second window.
   recordHandoff(job.target.sessionId, c, now);
-  start(file);
+  const failed = (): void => forgetHandoff(job.target.sessionId, now, c);
+  try {
+    start(file, failed);
+  } catch {
+    failed();
+    return false;
+  }
   return true;
 }
 

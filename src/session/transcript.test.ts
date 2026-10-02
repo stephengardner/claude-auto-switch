@@ -111,6 +111,18 @@ describe('following a conversation record', () => {
     expect(follow.poll('99999999-8888-4777-8666-555555555555').refusals).toHaveLength(1);
   });
 
+  it('reads a new conversation whole, even when its record was written before the first look', () => {
+    const { dir, file } = config();
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, line(answered) + line(refused()));
+    const follow = createRefusalFollower(dir, true);
+    expect(follow.poll(ID)).toMatchObject({ readable: true, refusals: [{ error: 'rate_limit' }] });
+    // Only the first conversation: one moved to later brings its history along.
+    const other = path.join(path.dirname(file), '99999999-8888-4777-8666-555555555555.jsonl');
+    writeFileSync(other, line(refused()));
+    expect(follow.poll('99999999-8888-4777-8666-555555555555').refusals).toHaveLength(0);
+  });
+
   it('says it cannot read anything without a conversation to follow', () => {
     expect(createRefusalFollower(config().dir).poll(null)).toEqual({
       readable: false,

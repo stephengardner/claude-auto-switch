@@ -251,6 +251,23 @@ describe('handing over', () => {
     expect(handedOffRecently(ID, c, 9_000)).toBe(8_000);
   });
 
+  it('takes the record back when the detached ccx cannot start, so a retry is not held off', () => {
+    const c = ctx();
+    const job = {
+      target: { sessionId: ID, cwd: 'w', name: 'x' },
+      settings: { mode: 'fork' as const, prompt: 'Carry on.' },
+    };
+    // Fails later, as a spawn does.
+    expect(scheduleHandoff(job, c, (_file, failed) => failed(), 5_000)).toBe(true);
+    expect(handedOffRecently(ID, c, 6_000)).toBeNull();
+    // Fails at once.
+    const throws = (): void => {
+      throw new Error('no node');
+    };
+    expect(scheduleHandoff(job, c, throws, 7_000)).toBe(false);
+    expect(handedOffRecently(ID, c, 8_000)).toBeNull();
+  });
+
   it('clears out launchers old enough to have done their work', () => {
     const c = ctx();
     const dir = path.join(c.env.CLAUDE_AUTO_SWITCH_HOME as string, 'handoffs');

@@ -117,31 +117,46 @@ export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): bool
   for (const name of SHARED_FILES) {
     const from = path.join(sessionDir, name);
     const to = path.join(root, name);
+    if (!existsSync(from)) continue;
+    let handBack: boolean;
     try {
-      if (!existsSync(from)) continue;
-      if (existsSync(to)) {
-        const mine = statSync(from, { bigint: true });
-        const theirs = statSync(to, { bigint: true });
-        if (mine.ino === theirs.ino && mine.dev === theirs.dev) continue; // still one file
-        if (mine.mtimeMs <= theirs.mtimeMs) continue;
-        if (readFileSync(from).equals(readFileSync(to))) continue;
-      }
+      handBack = shouldHandBack(from, to);
     } catch {
-      continue; // unreadable: nothing to hand back
+      // Could not even be compared: it may hold the only copy of an edit, so
+      // it is kept aside like a write that failed, never simply dropped.
+      if (!rescue(from, name, c)) kept = false;
+      continue;
     }
+    if (!handBack) continue;
     try {
       writeFileAtomic(to, readFileSync(from, 'utf8'));
     } catch {
-      try {
-        const rescue = path.join(configHome(c), 'rescued', `${Date.now()}-${name}`);
-        mkdirSync(path.dirname(rescue), { recursive: true });
-        copyFileSync(from, rescue);
-      } catch {
-        kept = false;
-      }
+      if (!rescue(from, name, c)) kept = false;
     }
   }
   return kept;
+}
+
+/** Whether the session's `from` holds something the user's `to` does not. */
+function shouldHandBack(from: string, to: string): boolean {
+  if (!existsSync(to)) return true;
+  const mine = statSync(from, { bigint: true });
+  const theirs = statSync(to, { bigint: true });
+  if (mine.ino === theirs.ino && mine.dev === theirs.dev) return false; // still one file
+  if (mine.mtimeMs <= theirs.mtimeMs) return false;
+  return !readFileSync(from).equals(readFileSync(to));
+}
+
+/** Keep `from` in `rescued/` in the ccx folder. False when even that failed. */
+function rescue(from: string, name: string, c: PathCtx): boolean {
+  try {
+    const target = path.join(configHome(c), 'rescued', `${Date.now()}-${name}`);
+    mkdirSync(path.dirname(target), { recursive: true });
+    copyFileSync(from, target);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function ensureSharedUserConfig(sessionDir: string, c: PathCtx = {}): void {

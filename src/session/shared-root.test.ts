@@ -193,6 +193,18 @@ describe('returnSharedUserFiles', () => {
     expect(readFileSync(path.join(home, '.claude', 'CLAUDE.md'), 'utf8')).toBe('remember this');
   });
 
+  it('keeps the session folder when its file can neither be compared, handed back nor kept aside', () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    writeFileSync(path.join(home, '.claude', 'CLAUDE.md'), 'user memory', 'utf8');
+    // Not readable as a file at all: neither compared nor copied anywhere.
+    const odd = path.join(sessionDir, 'CLAUDE.md');
+    mkdirSync(odd);
+    later(odd);
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(false);
+    expect(readFileSync(path.join(home, '.claude', 'CLAUDE.md'), 'utf8')).toBe('user memory');
+  });
+
   it('leaves the user file alone when it is newer, or the session never changed it', () => {
     const { home, sessionDir, c } = setup();
     mkdirSync(path.join(home, '.claude'), { recursive: true });

@@ -179,7 +179,9 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     const RELIEF_GRACE_MS = 400;
     let noConversation = false;
     /** The conversation's own record, read as it grows (see session/transcript). */
-    const record = createRefusalFollower(options.configDir);
+    // A launch that starts a new conversation reads its record whole; one that
+    // resumes skips the history it brings with it.
+    const record = createRefusalFollower(options.configDir, !wantsExistingConversation(options.args));
     /** Whether that record can be read yet. Until it can, the screen stands in for it. */
     let recordReadable = false;
     let window = '';

@@ -98,8 +98,15 @@ export interface RefusalFollower {
   poll(id: string | null): { readable: boolean; refusals: Refusal[] };
 }
 
-export function createRefusalFollower(configDir: string): RefusalFollower {
+/**
+ * `firstFromStart`: read the FIRST conversation's record whole even when it
+ * already exists, for a launch that starts a new conversation: everything in
+ * it is this launch's, and a refusal written before the first look must not be
+ * skipped. A launch that resumes one leaves it false, so its history is not news.
+ */
+export function createRefusalFollower(configDir: string, firstFromStart = false): RefusalFollower {
   let following: string | null = null;
+  let first = true;
   let file: string | null = null;
   let offset = 0;
   /** Bytes after the last complete line: a line is only read once it is whole. */
@@ -116,13 +123,15 @@ export function createRefusalFollower(configDir: string): RefusalFollower {
         following = id;
         file = findTranscript(configDir, id);
         rest = Buffer.alloc(0);
+        const fromStart = first && firstFromStart;
+        first = false;
         try {
-          offset = file ? statSync(file).size : 0;
+          offset = file && !fromStart ? statSync(file).size : 0;
         } catch {
           file = null;
           offset = 0;
         }
-        return none(file !== null);
+        if (!fromStart) return none(file !== null);
       }
       if (!file) {
         file = findTranscript(configDir, id);
