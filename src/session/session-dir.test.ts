@@ -127,6 +127,15 @@ describe('sweeping session directories left behind', () => {
     // Nothing there is a no-op.
     expect(retireLeftoverSessionDir(dir, ctx)).toBe(false);
   });
+
+  it('will not take over a leftover folder holding an edit it could not save anywhere', () => {
+    const { ctx, root } = home();
+    const dir = seed(root, '4848');
+    // A CLAUDE.md that cannot be read as a file: neither handed back nor kept aside.
+    mkdirSync(path.join(dir, 'CLAUDE.md'));
+    expect(() => retireLeftoverSessionDir(dir, ctx)).toThrow(/could not be saved/);
+    expect(existsSync(dir)).toBe(true);
+  });
 });
 
 describe('deleting a session directory', () => {

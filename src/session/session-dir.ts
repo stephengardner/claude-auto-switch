@@ -16,6 +16,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { isLink } from '../daemon/junction.js';
 import { defaultClaudeRoot, realSettingWins, returnSharedUserFiles } from './shared-root.js';
+import { CasError } from '../util/errors.js';
 
 /**
  * A session directory per running session, instead of one shared by all of them.
@@ -248,9 +249,14 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
 export function retireLeftoverSessionDir(dir: string, c: PathCtx = {}): boolean {
   if (!existsSync(dir)) return false;
   preserveSettings(dir, c);
-  // This session needs the folder now, so it goes even if an edit could not be
-  // saved anywhere; that takes a failed write AND a failed copy, a full disk.
-  returnSharedUserFiles(dir, c);
+  // An edit that could be neither handed back nor kept aside (a failed write
+  // AND a failed copy: a full disk) exists only in here. The folder stays, and
+  // this session does not start in it, rather than take it over or clear it.
+  if (!returnSharedUserFiles(dir, c)) {
+    throw new CasError(
+      `ccx: the session that last used ${dir} left an edit to your CLAUDE.md or keybindings.json that could not be saved, and it is still in that folder. Free some disk space and start again.`,
+    );
+  }
   return removeSessionDir(dir);
 }
 
