@@ -13,7 +13,6 @@ import { isLink, readTarget } from '../daemon/junction.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { listAccounts } from '../accounts/registry.js';
-import { getActive } from '../state/active.js';
 import { liveLeases } from '../session/lease.js';
 import { verifyAccountIdentities } from '../accounts/identity-check.js';
 import { sharedLoginGroups } from '../accounts/duplicate-guard.js';
@@ -469,8 +468,6 @@ export async function runDoctor(
     auditStatusline(context),
     auditSharedHistory(context),
     auditSessionAccount({
-      sessionDir: currentSessionDir(context),
-      activeAccount: getActive(context.ctx),
       accounts: listAccounts(context.ctx),
       leases: liveLeases(context.ctx),
     }),

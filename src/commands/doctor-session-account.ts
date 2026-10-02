@@ -5,17 +5,20 @@ import { thrownReason } from '../util/thrown-reason.js';
 import type { DoctorCheck } from './doctor.js';
 
 /**
- * Is the running session using the account ccx thinks it is?
+ * Is each running session using the account ccx gave it?
  *
- * Every `ccx run` shares ONE session directory, and starting a session copies
- * that account's login into it. Two sessions at once therefore write the same
- * file, and the second one silently takes the first one's account: the first
- * terminal keeps running, on somebody else's login, while ccx still reports the
- * account it chose. A limit hit there is recorded against the wrong account.
+ * Every session has a folder of its own, and starting it, or moving it to
+ * another account, copies that account's login into the folder and records the
+ * account in the session's lease. The two can only disagree when something
+ * went wrong: a login copied into the wrong folder, or a move that changed one
+ * and not the other. A session in that state runs on somebody else's login
+ * while ccx reports the account it chose, and a limit hit there is recorded
+ * against the wrong account.
  *
- * The save-back guard already refuses to write the borrowed login into the
- * wrong profile, so nothing is corrupted by it. What was missing is any way to
- * SEE it, which is what this reports.
+ * Each session is compared with its OWN account. Comparing with the account
+ * new sessions start on (the "active" one) was right when every session shared
+ * one folder; with a folder each, sessions on different accounts are the point,
+ * and that comparison reported a problem on every second terminal.
  *
  * Deliberately local and read-only: fingerprints of files already on disk, no
  * network, no renewal. `ccx doctor` is what someone runs when a session behaved
@@ -23,15 +26,13 @@ import type { DoctorCheck } from './doctor.js';
  */
 
 export interface SessionAccountInput {
-  sessionDir: string;
-  activeAccount: string | null;
   accounts: Array<{ name: string; dir: string }>;
   /**
-   * The sessions running right now. Two of them pointed at ONE directory is the
-   * collision itself, and it is worth saying before anything else: only one
-   * login can be in that directory, so the others are running as somebody else.
+   * The sessions running right now: the account ccx gave each, and the folder
+   * it reads its login from. Two of them pointed at ONE folder is a collision of
+   * its own, and it is said before anything else: only one login can be in it.
    */
-  leases?: Array<{ account: string; pid: number; configDir: string }>;
+  leases: Array<{ account: string; pid: number; configDir: string }>;
   /**
    * Which filesystem's rules apply when comparing directories. Windows treats
    * two spellings of one path as the same directory; POSIX does not, and
@@ -50,8 +51,8 @@ export function auditSessionAccount(input: SessionAccountInput): DoctorCheck {
   const exists = input.exists ?? hasCredential;
 
   // Checked first, because it explains every other symptom: whichever account
-  // the credential comparison below reports, the other sessions are not on it.
-  const shared = sessionsSharingOneDirectory(input.leases ?? [], input.platform ?? process.platform);
+  // the comparison below reports, the other sessions are not on it.
+  const shared = sessionsSharingOneDirectory(input.leases, input.platform ?? process.platform);
   if (shared) {
     return {
       name,
@@ -64,65 +65,62 @@ export function auditSessionAccount(input: SessionAccountInput): DoctorCheck {
     };
   }
 
-  try {
-    if (!exists(path.join(input.sessionDir, '.credentials.json'))) {
-      return { name, ok: true, detail: 'no session is running' };
+  if (input.leases.length === 0) return { name, ok: true, detail: 'no session is running' };
+
+  const wrong: string[] = [];
+  for (const lease of input.leases) {
+    try {
+      // Starting, or between accounts: nothing to compare yet.
+      if (!exists(path.join(lease.configDir, '.credentials.json'))) continue;
+    } catch (error) {
+      return {
+        name,
+        ok: false,
+        detail: `could not check the login of session ${lease.pid}: ${thrownReason(error)}`,
+      };
     }
-  } catch (error) {
-    return { name, ok: false, detail: `could not check the session login: ${thrownReason(error)}` };
+    const login = fingerprintOf(lease.configDir);
+    if (!login) continue;
+    const holders = input.accounts
+      .filter((account) => fingerprintOf(account.dir) === login)
+      .map((account) => account.name);
+    // A login no profile holds is ordinary: a running Claude renews its own
+    // token, and it is newer than the stored copy until it is saved back.
+    // Saying "unrecognised" here would cry wolf every few hours. Two profiles
+    // holding one login is not this session's problem either.
+    if (holders.length === 0 || holders.includes(lease.account)) continue;
+    wrong.push(
+      `session ${lease.pid} was given "${lease.account}" but holds the login of ` +
+        holders.map((h) => `"${h}"`).join(' or '),
+    );
   }
 
-  const sessionLogin = fingerprintOf(input.sessionDir);
-  if (!sessionLogin) {
-    return { name, ok: true, detail: 'the session has no readable login (it may be starting)' };
-  }
-
-  const holders = input.accounts
-    .filter((account) => fingerprintOf(account.dir) === sessionLogin)
-    .map((account) => account.name);
-
-  if (holders.length === 0) {
-    // Ordinary and not a fault: a running Claude renews its own token, so the
-    // session's login is newer than the copy in the profile until it is saved
-    // back. Saying "unrecognised" here would cry wolf every few hours.
+  if (wrong.length === 0) {
+    const [only] = input.leases;
     return {
       name,
       ok: true,
-      detail: 'the session login is newer than any stored copy (renewed in place)',
-    };
-  }
-
-  if (input.activeAccount && holders.includes(input.activeAccount)) {
-    const alsoHeldBy = holders.filter((h) => h !== input.activeAccount);
-    return {
-      name,
-      ok: true,
-      detail: alsoHeldBy.length
-        ? `running as "${input.activeAccount}" (a login it shares with ${alsoHeldBy.join(', ')})`
-        : `running as "${input.activeAccount}"`,
+      detail:
+        input.leases.length === 1 && only
+          ? `the running session holds the login of "${only.account}", the account it was given`
+          : `each of the ${input.leases.length} running sessions holds the login of the account it was given`,
     };
   }
 
   return {
     name,
     ok: false,
-    detail:
-      `the running session is using ${holders.map((h) => `"${h}"`).join(' or ')}, ` +
-      `but the active account is "${input.activeAccount ?? 'none'}". Two sessions share one ` +
-      'session directory, so a later one took this terminal\'s account. A limit hit now would ' +
-      'be recorded against the wrong account.',
-    fix: ['end one of the running ccx sessions, then start it again'],
+    detail: `${wrong.join('; ')}. A limit hit there would be recorded against the wrong account.`,
+    fix: ['end that session and start it again: it picks its account up afresh'],
   };
 }
 
 /**
  * Are two or more running sessions pointed at the same session directory?
  *
- * Each `ccx run` records the directory it is using. They all use the same one
- * today, so this is really "is more than one session running", but it is phrased
- * as the invariant rather than the count: the day sessions get a directory each,
- * this check keeps meaning the right thing instead of firing on every second
- * terminal.
+ * Each session has a directory of its own, so this should never happen; a
+ * session started by a version of ccx from before the split still uses the one
+ * shared directory, and two of those collide.
  */
 function sessionsSharingOneDirectory(
   leases: Array<{ account: string; pid: number; configDir: string }>,
