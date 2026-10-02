@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { PathCtx } from '../config/paths.js';
 import {
+  handBackOrRescue,
   resyncSession,
   returnSettings,
   returnState,
@@ -144,6 +145,55 @@ describe('handing back settings', () => {
     expect(read(s.settings).statusLine).toEqual(mine);
   });
 
+  it('keeps a whole setting the user removed meanwhile removed, edits inside it and all', () => {
+    const s = setup();
+    settingsSession(s, { permissions: { allow: ['A'] } }, { permissions: { allow: ['A', 'B'] } });
+    write(s.settings, {});
+
+    returnSettings(s.sessionDir, s.c);
+    expect(read(s.settings)).toEqual({});
+  });
+
+  it('merges into a setting the user created meanwhile instead of losing either side', () => {
+    const s = setup();
+    settingsSession(s, {}, { permissions: { allow: ['S'] } });
+    write(s.settings, { permissions: { allow: ['U'] } });
+
+    returnSettings(s.sessionDir, s.c);
+    expect(read(s.settings)).toEqual({ permissions: { allow: ['U', 'S'] } });
+  });
+
+  it('removes a permission list the session removed, rather than leaving it empty', () => {
+    const s = setup();
+    settingsSession(s, { permissions: { allow: ['A'], deny: ['D'] } }, { permissions: { deny: ['D'] } });
+
+    returnSettings(s.sessionDir, s.c);
+    expect(read(s.settings)).toEqual({ permissions: { deny: ['D'] } });
+  });
+
+  it('lets two sessions both keep the hooks they added for one event', () => {
+    const s = setup();
+    const first = { matcher: 'Edit', hooks: [{ type: 'command', command: 'first' }] };
+    const second = { matcher: 'Bash', hooks: [{ type: 'command', command: 'second' }] };
+    settingsSession(s, { hooks: { PreToolUse: [] } }, { hooks: { PreToolUse: [second] } });
+    write(s.settings, { hooks: { PreToolUse: [first] } });
+
+    returnSettings(s.sessionDir, s.c);
+    expect(read(s.settings)).toEqual({ hooks: { PreToolUse: [first, second] } });
+  });
+
+  it("leaves ccx's own line when a session removed its status line, and nothing to restore", () => {
+    // With ccx on there is always ccx's line; the user's own, removed, is gone
+    // from the restore point too, so `ccx off` cannot bring it back unasked.
+    const s = setup();
+    write(path.join(s.ccxHome, 'statusline-backup.json'), { type: 'command', command: 'ccstatusline' });
+    settingsSession(s, { statusLine: CCX_LINE }, {});
+
+    returnSettings(s.sessionDir, s.c);
+    expect(read(s.settings).statusLine).toEqual({ type: 'command', command: 'ccx statusline' });
+    expect(existsSync(path.join(s.ccxHome, 'statusline-backup.json'))).toBe(false);
+  });
+
   it('leaves the real settings untouched when the session changed nothing', () => {
     const s = setup();
     settingsSession(s, { model: 'fable' }, { model: 'fable' });
@@ -179,14 +229,65 @@ describe("handing back Claude's state", () => {
     });
   });
 
-  it("keeps a folder's field the user's own Claude changed meanwhile", () => {
+  it("keeps what the user's own Claude set for a folder meanwhile, beside the session's", () => {
     const s = setup();
-    const start = { projects: { '/a': { lastSessionId: '1' } } };
-    stateSession(s, start, start, { projects: { '/a': { lastSessionId: '2', lastCost: 1 } } });
-    write(s.state, { projects: { '/a': { lastSessionId: '9' } } });
+    const start = { projects: { '/a': { allowedTools: ['A'], mcpServers: {} } } };
+    stateSession(s, start, start, {
+      projects: { '/a': { allowedTools: ['A', 'S'], mcpServers: { srv: { command: 'session' } } } },
+    });
+    write(s.state, { projects: { '/a': { allowedTools: ['A', 'U'], mcpServers: { srv: { command: 'user' } } } } });
 
     returnState(s.sessionDir, s.c);
-    expect(read(s.state)).toEqual({ projects: { '/a': { lastSessionId: '9', lastCost: 1 } } });
+    expect(read(s.state)).toEqual({
+      projects: { '/a': { allowedTools: ['A', 'U', 'S'], mcpServers: { srv: { command: 'user' } } } },
+    });
+  });
+
+  it('lets two sessions in one folder both keep the MCP servers they added', () => {
+    // Several terminals in one repository is the normal way to use ccx.
+    const s = setup();
+    const start = { projects: { '/p': { mcpServers: {} } } };
+    stateSession(s, start, start, { projects: { '/p': { mcpServers: { second: { command: 'b' } } } } });
+    // The first session already handed its own back.
+    write(s.state, { projects: { '/p': { mcpServers: { first: { command: 'a' } } } } });
+
+    returnState(s.sessionDir, s.c);
+    expect(read(s.state)).toEqual({
+      projects: { '/p': { mcpServers: { first: { command: 'a' }, second: { command: 'b' } } } },
+    });
+  });
+
+  it("leaves the user's state file alone when only Claude's bookkeeping changed", () => {
+    // Costs, durations and the last conversation change on every run and are
+    // nobody's choice: carrying them rewrote the user's file at every relaunch.
+    const s = setup();
+    const start = { projects: { '/a': { allowedTools: [], lastCost: 1 } } };
+    stateSession(s, start, start, { projects: { '/a': { allowedTools: [], lastCost: 9, lastSessionId: 'x' } } });
+    writeFileSync(s.state, '{"projects":{"/a":{"allowedTools":[],"lastCost":1}}}', 'utf8');
+
+    returnState(s.sessionDir, s.c);
+    expect(readFileSync(s.state, 'utf8')).toBe('{"projects":{"/a":{"allowedTools":[],"lastCost":1}}}');
+  });
+
+  it('saves only the choices of a folder first opened in the session', () => {
+    const s = setup();
+    stateSession(s, { projects: {} }, { projects: {} }, {
+      projects: { '/new': { allowedTools: ['T'], hasTrustDialogAccepted: true, lastCost: 2 } },
+    });
+
+    returnState(s.sessionDir, s.c);
+    expect(read(s.state)).toEqual({ projects: { '/new': { allowedTools: ['T'], hasTrustDialogAccepted: true } } });
+  });
+
+  it("never brings back a folder the user's own file no longer has", () => {
+    // A field the session added to it would otherwise rebuild it as a stub.
+    const s = setup();
+    const start = { projects: { '/a': { lastSessionId: '1' } } };
+    stateSession(s, start, start, { projects: { '/a': { lastSessionId: '1', lastCost: 3 } } });
+    write(s.state, { projects: {} });
+
+    returnState(s.sessionDir, s.c);
+    expect(read(s.state)).toEqual({ projects: {} });
   });
 
   it('saves an MCP server added in the session beside the ones the user has', () => {
@@ -195,6 +296,27 @@ describe("handing back Claude's state", () => {
 
     returnState(s.sessionDir, s.c);
     expect(read(s.state)).toEqual({ mcpServers: { theirs: { command: 't' }, srv: { command: 'x' } } });
+  });
+});
+
+describe('before a session folder is removed', () => {
+  it('keeps the session files aside when its changes cannot go back', () => {
+    const s = setup();
+    settingsSession(s, { model: 'fable' }, { model: 'opus' });
+    writeFileSync(s.settings, '{ "hooks": ', 'utf8');
+
+    expect(handBackOrRescue(s.sessionDir, s.c)).toBe(true);
+    const rescued = readdirSync(path.join(s.ccxHome, 'rescued'));
+    expect(rescued.some((name) => name.endsWith('-101-settings.json'))).toBe(true);
+    expect(readFileSync(s.settings, 'utf8')).toBe('{ "hooks": ');
+  });
+
+  it('keeps nothing aside when the changes went back', () => {
+    const s = setup();
+    settingsSession(s, { model: 'fable' }, { model: 'opus' });
+
+    expect(handBackOrRescue(s.sessionDir, s.c)).toBe(true);
+    expect(existsSync(path.join(s.ccxHome, 'rescued'))).toBe(false);
   });
 });
 

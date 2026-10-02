@@ -1,11 +1,11 @@
-import { copyFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { defaultClaudeJsonPath } from '../daemon/reference-config.js';
 import { keepOursOver } from '../statusline/settings-install.js';
 import { isOurs } from '../statusline/ours.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
-import { copyUserSettings, defaultClaudeRoot } from './shared-root.js';
+import { copyUserSettings, defaultClaudeRoot, rescue } from './shared-root.js';
 import type { PathCtx } from '../config/paths.js';
 
 /**
@@ -20,19 +20,32 @@ import type { PathCtx } from '../config/paths.js';
  * stay there, and was gone with the folder. Both files are remembered as the
  * session set them up, and what the session changed since is written into the
  * user's own file, unless the user changed that same thing meanwhile, which
- * wins.
+ * wins, or removed it, which it stays.
  */
 
 const SETTINGS_BASE = '.ccx-base.settings.json';
 const STATE_BASE = '.ccx-base.claude.json';
 
-/** Lists merged as sets: what a session added or removed, not the whole list. */
-const SET_LISTS = new Set(['allow', 'deny', 'ask', 'additionalDirectories']);
+/**
+ * Lists that are sets wherever they appear: what a session added or removed is
+ * carried, never the whole list, so two sessions adding to one list both land.
+ * Permission rules in settings; a folder's allowed tools and MCP choices in
+ * Claude's state. Hooks (settings `hooks.<event>`) are sets too: see isSetList.
+ */
+const SET_LISTS = new Set([
+  'allow',
+  'deny',
+  'ask',
+  'additionalDirectories',
+  'allowedTools',
+  'enabledMcpjsonServers',
+  'disabledMcpjsonServers',
+  'disabledMcpServers',
+  'mcpContextUris',
+]);
 
-/** The parts of .claude.json that are the user's own doing, merged entry by entry. */
-const STATE_MAPS = new Set(['projects', 'mcpServers']);
-/** Preferences set through Claude itself, handed back as values. */
-const STATE_PREFS = new Set([
+/** Preferences set through Claude itself, at the top of its state. */
+const STATE_PREFS = [
   'theme',
   'editorMode',
   'verbose',
@@ -41,7 +54,35 @@ const STATE_PREFS = new Set([
   'autoCompactEnabled',
   'autoConnectIde',
   'diffTool',
-]);
+];
+
+/**
+ * What of a folder's record in Claude's state is the user's choice. The rest is
+ * Claude's bookkeeping about the last conversation there (its cost, duration,
+ * tokens), which changes on every run and is nobody's decision: carrying it
+ * would rewrite the user's state file at every relaunch for nothing.
+ */
+const PROJECT_CHOICES = [
+  'allowedTools',
+  'mcpServers',
+  'enabledMcpjsonServers',
+  'disabledMcpjsonServers',
+  'disabledMcpServers',
+  'mcpContextUris',
+  'hasTrustDialogAccepted',
+  'hasClaudeMdExternalIncludesApproved',
+  'hasClaudeMdExternalIncludesWarningShown',
+];
+
+/**
+ * A folder an older ccx left has no record of how its session started. What it
+ * holds is a full copy of the user's files as they were then, plus ccx's own
+ * stamps (the folder marked trusted, its status line), so comparing it with the
+ * user's files now would bring back whatever the user removed since and turn
+ * ccx's stamps into the user's choices. Only its model goes back, and only
+ * where the user's settings name none: all ccx used to keep from such a folder.
+ */
+const LEGACY_SETTINGS = ['model'];
 
 type Json = Record<string, unknown>;
 
@@ -60,24 +101,34 @@ function readObject(file: string): Json | null {
 const isObject = (v: unknown): v is Json =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
+const pick = (from: Json, keys: readonly string[]): Json =>
+  Object.fromEntries(keys.filter((key) => key in from).map((key) => [key, from[key]]));
+
+/**
+ * The session's file as it starts, or an empty one when it has none yet:
+ * "nothing" is a start too, and everything the session then writes is its
+ * change. Without either, the folder is handed back as an older ccx's would be.
+ */
+function snapshot(sessionDir: string, own: string, baseName: string): void {
+  try {
+    const from = path.join(sessionDir, own);
+    const to = path.join(sessionDir, baseName);
+    if (existsSync(from)) copyFileSync(from, to);
+    else writeFileSync(to, '{}\n', 'utf8');
+  } catch {
+    /* see LEGACY_SETTINGS */
+  }
+}
+
 /** Remember the settings a session starts with. */
 export function snapshotSettingsBase(sessionDir: string): void {
-  try {
-    copyFileSync(path.join(sessionDir, 'settings.json'), path.join(sessionDir, SETTINGS_BASE));
-  } catch {
-    /* none to remember: whatever the session writes counts as its change */
-  }
+  snapshot(sessionDir, 'settings.json', SETTINGS_BASE);
 }
 
 /** Remember Claude's state as the session first set it up (once; later swaps keep it). */
 export function snapshotStateBase(sessionDir: string): void {
-  const base = path.join(sessionDir, STATE_BASE);
-  if (existsSync(base)) return;
-  try {
-    copyFileSync(path.join(sessionDir, '.claude.json'), base);
-  } catch {
-    /* as above */
-  }
+  if (existsSync(path.join(sessionDir, STATE_BASE))) return;
+  snapshot(sessionDir, '.claude.json', STATE_BASE);
 }
 
 /**
@@ -106,24 +157,69 @@ function carrySet(base: unknown, ours: unknown, theirs: unknown): unknown[] | nu
   return [...t.filter((v) => !has(removed, v)), ...added];
 }
 
+/** Whether the list at `key`, under `trail`, is a set (see SET_LISTS). */
+function isSetList(trail: readonly string[], key: string): boolean {
+  return SET_LISTS.has(key) || (trail.length === 1 && trail[0] === 'hooks');
+}
+
 /**
- * The session's own file, and what it started as. A session with nothing to
- * start from (no real settings when it began, or a folder an older ccx left
- * without one) counts everything it holds as its change: only what the user's
- * file does not have goes in, because everything the user's file does have
- * was never changed from anything the session knows of.
+ * Apply what the session changed from `base` to `ours` onto `theirs`, in place:
+ * objects key by key, set lists entry by entry, anything else as a value. What
+ * the user's file changed too stays theirs, and what it removed stays removed,
+ * edits inside it included. Returns whether `theirs` changed.
  */
-function sides(sessionDir: string, own: string, baseName: string): { base: Json; ours: Json } | null {
-  const ours = readObject(path.join(sessionDir, own));
-  if (!ours) return null;
-  return { base: readObject(path.join(sessionDir, baseName)) ?? {}, ours };
+function merge3(base: Json, ours: Json, theirs: Json, trail: readonly string[] = []): boolean {
+  let changed = false;
+  for (const key of new Set([...Object.keys(base), ...Object.keys(ours)])) {
+    const b = base[key];
+    const o = ours[key];
+    const t = theirs[key];
+    if (isDeepStrictEqual(b, o)) continue; // the session did not touch it
+    if (isObject(o) && isObject(t) && (b === undefined || isObject(b))) {
+      const inner: Json = { ...t };
+      if (merge3(b ?? {}, o, inner, [...trail, key])) {
+        theirs[key] = inner;
+        changed = true;
+      }
+      continue;
+    }
+    const listOrNone = (v: unknown): boolean => v === undefined || Array.isArray(v);
+    // A list the user's file removed is left removed (the value carry below).
+    if (isSetList(trail, key) && listOrNone(b) && listOrNone(o) && (Array.isArray(t) || b === undefined)) {
+      const merged = carrySet(b, o, t);
+      if (merged) {
+        // The session removed the list and nothing of the user's is left in it.
+        if (o === undefined && merged.length === 0) delete theirs[key];
+        else theirs[key] = merged;
+        changed = true;
+      }
+      continue;
+    }
+    if (carryValue(base, ours, theirs, key)) changed = true;
+  }
+  return changed;
+}
+
+type Sides = { base: Json; ours: Json; legacy: boolean } | 'nothing' | 'unreadable';
+
+/** The session's own file and what it started as (see LEGACY_SETTINGS). */
+function sides(sessionDir: string, own: string, baseName: string): Sides {
+  const file = path.join(sessionDir, own);
+  if (!existsSync(file)) return 'nothing';
+  const ours = readObject(file);
+  // It may hold the only copy of a change, so it is not passed over as empty.
+  if (!ours) return 'unreadable';
+  const baseFile = path.join(sessionDir, baseName);
+  if (!existsSync(baseFile)) return { base: {}, ours, legacy: true };
+  const base = readObject(baseFile);
+  return base ? { base, ours, legacy: false } : 'unreadable';
 }
 
 /** Hand back a session's settings changes. True when nothing is left to hand back. */
 export function returnSettings(sessionDir: string, c: PathCtx = {}): boolean {
   const found = sides(sessionDir, 'settings.json', SETTINGS_BASE);
-  if (!found) return true;
-  const { base, ours } = found;
+  if (found === 'nothing') return true;
+  if (found === 'unreadable') return false;
   let userFile: string;
   try {
     userFile = path.join(defaultClaudeRoot(c), 'settings.json');
@@ -136,43 +232,34 @@ export function returnSettings(sessionDir: string, c: PathCtx = {}): boolean {
   if (!read) return false;
   let theirs = read;
   const lineBefore = theirs.statusLine;
-  let changed = false;
-  for (const key of new Set([...Object.keys(base), ...Object.keys(ours)])) {
-    if (isObject(base[key]) && isObject(ours[key]) && (isObject(theirs[key]) || theirs[key] === undefined)) {
-      // permissions and the like: key by key, lists as sets.
-      const b = base[key] as Json;
-      const o = ours[key] as Json;
-      const t: Json = { ...((theirs[key] as Json | undefined) ?? {}) };
-      let inner = false;
-      for (const sub of new Set([...Object.keys(b), ...Object.keys(o)])) {
-        if (SET_LISTS.has(sub)) {
-          const merged = carrySet(b[sub], o[sub], t[sub]);
-          if (merged) {
-            t[sub] = merged;
-            inner = true;
-          }
-        } else if (carryValue(b, o, t, sub)) {
-          inner = true;
-        }
-      }
-      if (inner) {
-        theirs[key] = t;
-        changed = true;
-      }
-    } else if (carryValue(base, ours, theirs, key)) {
-      changed = true;
-    }
-  }
-  // A line set inside a session goes in wrapped by ccx's, never over it.
+  const ours = found.legacy ? pick(found.ours, LEGACY_SETTINGS) : found.ours;
+  const changed = merge3(found.base, ours, theirs);
+  // A line set inside a session goes in wrapped by ccx's, never over it. One
+  // removed inside a session leaves ccx's own, as `ccx on` would with no line.
   if (changed && isOurs(lineBefore) && !isOurs(theirs.statusLine)) theirs = keepOursOver(theirs, c);
   return finish(changed, userFile, theirs, sessionDir, 'settings.json', SETTINGS_BASE);
+}
+
+/** The user's own choices in Claude's state, and nothing else of it. */
+function stateChoices(state: Json): Json {
+  const view = pick(state, STATE_PREFS);
+  if (isObject(state.mcpServers)) view.mcpServers = state.mcpServers;
+  if (isObject(state.projects)) {
+    const projects: Json = {};
+    for (const [folder, record] of Object.entries(state.projects)) {
+      if (isObject(record)) projects[folder] = pick(record, PROJECT_CHOICES);
+    }
+    view.projects = projects;
+  }
+  return view;
 }
 
 /** Hand back what a session changed in Claude's own state. True when nothing is left. */
 export function returnState(sessionDir: string, c: PathCtx = {}): boolean {
   const found = sides(sessionDir, '.claude.json', STATE_BASE);
-  if (!found) return true;
-  const { base, ours } = found;
+  if (found === 'nothing') return true;
+  if (found === 'unreadable') return false;
+  if (found.legacy) return true; // see LEGACY_SETTINGS
   let userFile: string;
   try {
     userFile = defaultClaudeJsonPath(c);
@@ -181,40 +268,7 @@ export function returnState(sessionDir: string, c: PathCtx = {}): boolean {
   }
   const theirs = existsSync(userFile) ? readObject(userFile) : {};
   if (!theirs) return false;
-  let changed = false;
-  for (const key of STATE_PREFS) {
-    if (carryValue(base, ours, theirs, key)) changed = true;
-  }
-  for (const key of STATE_MAPS) {
-    const b = isObject(base[key]) ? (base[key] as Json) : {};
-    const o = isObject(ours[key]) ? (ours[key] as Json) : {};
-    if (isDeepStrictEqual(b, o)) continue;
-    const t: Json = { ...(isObject(theirs[key]) ? (theirs[key] as Json) : {}) };
-    let inner = false;
-    for (const entry of new Set([...Object.keys(b), ...Object.keys(o)])) {
-      if (key === 'projects' && isObject(o[entry]) && isObject(b[entry] ?? {})) {
-        // One folder's record, field by field: trust, allowed tools, its last
-        // conversation; a field the user's own file changed meanwhile is theirs.
-        const be = (b[entry] as Json | undefined) ?? {};
-        const oe = o[entry] as Json;
-        const te: Json = { ...(isObject(t[entry]) ? (t[entry] as Json) : {}) };
-        let fields = false;
-        for (const field of new Set([...Object.keys(be), ...Object.keys(oe)])) {
-          if (carryValue(be, oe, te, field)) fields = true;
-        }
-        if (fields) {
-          t[entry] = te;
-          inner = true;
-        }
-      } else if (carryValue(b, o, t, entry)) {
-        inner = true;
-      }
-    }
-    if (inner) {
-      theirs[key] = t;
-      changed = true;
-    }
-  }
+  const changed = merge3(stateChoices(found.base), stateChoices(found.ours), theirs);
   return finish(changed, userFile, theirs, sessionDir, '.claude.json', STATE_BASE);
 }
 
@@ -241,6 +295,23 @@ export function returnSessionChanges(sessionDir: string, c: PathCtx = {}): boole
   const settings = returnSettings(sessionDir, c);
   const state = returnState(sessionDir, c);
   return settings && state;
+}
+
+/**
+ * Before a session folder is removed: hand its changes back, or, when they
+ * cannot go back (a real file that does not parse, a write that failed), keep
+ * the session's own files aside in `rescued/` in the ccx folder. False only
+ * when even that failed: the folder holds the only copy and must stay.
+ */
+export function handBackOrRescue(sessionDir: string, c: PathCtx = {}): boolean {
+  if (returnSessionChanges(sessionDir, c)) return true;
+  const owner = path.basename(sessionDir);
+  let kept = true;
+  for (const name of ['settings.json', '.claude.json']) {
+    const file = path.join(sessionDir, name);
+    if (existsSync(file) && !rescue(file, `${owner}-${name}`, c)) kept = false;
+  }
+  return kept;
 }
 
 /**

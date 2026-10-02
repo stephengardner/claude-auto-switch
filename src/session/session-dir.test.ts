@@ -193,6 +193,15 @@ describe("retiring ccx's old store of session settings", () => {
     });
   });
 
+  it('never folds in a status line, which after `ccx off` would put one back', () => {
+    const { ctx, claudeSettings } = home();
+    writeUserSettings(claudeSettings, { model: 'fable' });
+    store(ctx, { statusLine: { type: 'command', command: 'ccx statusline --wrap "x"' } });
+
+    retireKeptSettings(ctx);
+    expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({ model: 'fable' });
+  });
+
   it('creates the real settings from it when there are none', () => {
     const { ctx, claudeSettings } = home();
     store(ctx, { model: 'opus' });
@@ -240,25 +249,49 @@ describe("handing back a dead session's changes", () => {
     expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({ model: 'opus', tui: 'default' });
   });
 
-  it('only fills what the real settings lack from a folder with no record of its start', () => {
-    // What an older ccx leaves: it laid its store over the real file, so the
-    // folder differs from the real settings in values nobody changed in it.
+  it('keeps its changes aside, never loses them, when they cannot go back', () => {
     const { ctx, root, claudeSettings } = home();
-    writeUserSettings(claudeSettings, { model: 'fable', tui: 'default' });
+    mkdirSync(path.dirname(claudeSettings), { recursive: true });
+    writeFileSync(claudeSettings, '{ "hooks": ', 'utf8'); // does not parse
+    const dir = path.join(root, '5151');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, '.ccx-base.settings.json'), JSON.stringify({ model: 'fable' }), 'utf8');
+    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ model: 'opus' }), 'utf8');
+
+    sweepDeadSessionDirs(ctx, { isAlive: () => false });
+    expect(existsSync(dir)).toBe(false);
+    const rescued = path.join(path.dirname(root), 'rescued');
+    const kept = readdirSync(rescued).find((name) => name.endsWith('-5151-settings.json'));
+    expect(kept).toBeDefined();
+    expect(JSON.parse(readFileSync(path.join(rescued, kept ?? ''), 'utf8'))).toEqual({ model: 'opus' });
+    expect(readFileSync(claudeSettings, 'utf8')).toBe('{ "hooks": ');
+  });
+
+  it('gives back only the model from a folder an older ccx left, and only where none is set', () => {
+    // An older ccx's folder holds a full copy of the user's files as they were
+    // then, plus ccx's own stamps: compared with today's files, it would bring
+    // back whatever the user removed since.
+    const { ctx, root, claudeSettings } = home();
+    writeUserSettings(claudeSettings, { tui: 'default' });
     const dir = path.join(root, '4242');
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       path.join(dir, 'settings.json'),
-      JSON.stringify({ model: 'opus', tui: 'fullscreen', switchModelsOnFlag: false }),
+      JSON.stringify({ model: 'opus', tui: 'fullscreen', hooks: { Stop: [{ command: 'removed since' }] } }),
+      'utf8',
+    );
+    const state = path.join(path.dirname(root), '.claude.json');
+    writeFileSync(state, JSON.stringify({ projects: {} }), 'utf8');
+    writeFileSync(
+      path.join(dir, '.claude.json'),
+      JSON.stringify({ projects: { [root]: { hasTrustDialogAccepted: true } }, mcpServers: { old: {} } }),
       'utf8',
     );
 
     sweepDeadSessionDirs(ctx, { isAlive: () => false });
-    expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({
-      model: 'fable',
-      tui: 'default',
-      switchModelsOnFlag: false,
-    });
+    expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({ tui: 'default', model: 'opus' });
+    // ccx's own trust stamp never becomes the user's trust, nor an old server theirs.
+    expect(JSON.parse(readFileSync(state, 'utf8'))).toEqual({ projects: {} });
   });
 });
 

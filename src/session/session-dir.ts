@@ -16,7 +16,7 @@ import { isLink } from '../daemon/junction.js';
 import { defaultClaudeRoot, returnSharedUserFiles } from './shared-root.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
 import { CasError } from '../util/errors.js';
-import { returnSessionChanges } from './write-back.js';
+import { handBackOrRescue } from './write-back.js';
 
 /**
  * A session directory per running session, instead of one shared by all of them.
@@ -110,7 +110,9 @@ export function retireKeptSettings(c: PathCtx = {}): void {
       const user = existsSync(userFile) ? readJsonObject(userFile) : {};
       // A real file that does not parse is never rewritten: the store waits.
       if (!user) return;
-      const missing = Object.entries(store).filter(([key]) => !(key in user));
+      // Never a status line: the store held one whenever the real file's was
+      // not ccx's, which after `ccx off` would put ccx's back by the side door.
+      const missing = Object.entries(store).filter(([key]) => key !== 'statusLine' && !(key in user));
       if (missing.length > 0) {
         writeFileAtomic(userFile, `${JSON.stringify({ ...user, ...Object.fromEntries(missing) }, null, 2)}\n`);
       }
@@ -178,8 +180,8 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
     const dir = path.join(root, name);
     // Before the delete, not after: a session killed before it could hand its
     // changes back still holds them, and so might an edit to the user's memory.
-    returnSessionChanges(dir, c);
-    // Kept for the next sweep when the only copy of an edit could not be saved.
+    // Kept for the next sweep when the only copy of either could not be saved.
+    if (!handBackOrRescue(dir, c)) continue;
     if (!returnSharedUserFiles(dir, c)) continue;
     if (removeSessionDir(dir)) removed.push(name);
   }
@@ -199,13 +201,14 @@ export function sweepDeadSessionDirs(c: PathCtx = {}, options: SweepOptions = {}
  */
 export function retireLeftoverSessionDir(dir: string, c: PathCtx = {}): boolean {
   if (!existsSync(dir)) return false;
-  returnSessionChanges(dir, c);
-  // An edit that could be neither handed back nor kept aside (a failed write
+  // A change that could be neither handed back nor kept aside (a failed write
   // AND a failed copy: a full disk) exists only in here. The folder stays, and
   // this session does not start in it, rather than take it over or clear it.
-  if (!returnSharedUserFiles(dir, c)) {
+  const changesKept = handBackOrRescue(dir, c);
+  const filesKept = returnSharedUserFiles(dir, c);
+  if (!changesKept || !filesKept) {
     throw new CasError(
-      `ccx: the session that last used ${dir} left an edit to your CLAUDE.md or keybindings.json that could not be saved, and it is still in that folder. Free some disk space and start again.`,
+      `ccx: the session that last used ${dir} left changes to your Claude settings or files that could not be saved, and they are still in that folder. Free some disk space and start again.`,
     );
   }
   return removeSessionDir(dir);

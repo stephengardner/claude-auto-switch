@@ -6,7 +6,9 @@ import {
   readFileSync,
   existsSync,
   lstatSync,
+  readdirSync,
   rmSync,
+  symlinkSync,
   utimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -118,6 +120,17 @@ describe('sharedDirNames', () => {
     expect(names).not.toContain('a-file');
   });
 
+  it('shares a folder that is itself a link, as a dotfiles setup makes them', () => {
+    const { home } = setup();
+    const root = path.join(home, '.claude');
+    const elsewhere = path.join(home, 'dotfiles', 'hooks');
+    mkdirSync(elsewhere, { recursive: true });
+    mkdirSync(root, { recursive: true });
+    symlinkSync(elsewhere, path.join(root, 'hooks'), 'junction');
+
+    expect(sharedDirNames(root)).toContain('hooks');
+  });
+
   it('still names the known folders when there is no ~/.claude yet', () => {
     const { home } = setup();
     expect(sharedDirNames(path.join(home, 'nowhere'))).toContain('file-history');
@@ -207,6 +220,41 @@ describe('returnSharedUserFiles', () => {
     later(theirs);
     returnSharedUserFiles(sessionDir, c);
     expect(readFileSync(theirs, 'utf8')).toBe('edited by hand since');
+  });
+
+  it("keeps both edits when the session and the user changed the same memory: the user's stays", () => {
+    // Judged by what the session started from, not by which file is newer.
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const theirs = path.join(home, '.claude', 'CLAUDE.md');
+    writeFileSync(theirs, 'start', 'utf8');
+    ensureSharedUserConfig(sessionDir, c);
+    const mine = path.join(sessionDir, 'CLAUDE.md');
+    rmSync(mine); // the link broken by a rename-save, then edited in the session
+    writeFileSync(mine, 'session edit', 'utf8');
+    rmSync(theirs);
+    writeFileSync(theirs, 'user edit', 'utf8');
+    later(theirs);
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(true);
+    expect(readFileSync(theirs, 'utf8')).toBe('user edit');
+    const rescued = path.join(home, '.claude-auto-switch', 'rescued');
+    const kept = readdirSync(rescued).find((name) => name.endsWith('-CLAUDE.md'));
+    expect(readFileSync(path.join(rescued, kept ?? ''), 'utf8')).toBe('session edit');
+  });
+
+  it('leaves a memory the user deleted deleted, when the session never touched it', () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const theirs = path.join(home, '.claude', 'CLAUDE.md');
+    writeFileSync(theirs, 'old memory', 'utf8');
+    ensureSharedUserConfig(sessionDir, c);
+    rmSync(path.join(sessionDir, 'CLAUDE.md'));
+    writeFileSync(path.join(sessionDir, 'CLAUDE.md'), 'old memory', 'utf8'); // a copy, as without links
+    rmSync(theirs);
+
+    returnSharedUserFiles(sessionDir, c);
+    expect(existsSync(theirs)).toBe(false);
   });
 
   it("adds the prompts only a session's own history holds, after the user's, once", () => {

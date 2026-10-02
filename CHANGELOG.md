@@ -20,11 +20,17 @@ semantic versioning.
 - **What Claude saves during a session is saved where plain `claude` would save
   it.** A session starts from your real `settings.json`, and when Claude stops,
   or restarts on another account, what it changed goes back to your own files:
-  a model picked with `/model`, a permission allowed for good, a theme, a
-  trusted folder, an MCP server. Each is merged into what is there, permission
-  lists entry by entry, and if you changed the same thing elsewhere meanwhile,
-  your change wins. A status line set from inside a session goes in wrapped by
-  ccx's, the way `ccx on` would have put it.
+  a model picked with `/model`, a permission allowed for good, a hook, a theme,
+  a folder's allowed tools and MCP servers. Each is merged into what is there,
+  lists entry by entry, so two sessions in one folder both keep what they
+  added. If you changed the same thing elsewhere meanwhile, your change wins;
+  what you removed stays removed. When a session and you both edited your
+  `CLAUDE.md`, yours stays and the session's is kept in
+  `~/.claude-auto-switch/rescued/`. Claude's bookkeeping about each folder
+  (costs, durations, the last conversation) is not carried, and a session
+  folder left by an older ccx gives back nothing but its model. A status line
+  set from inside a session goes in wrapped by ccx's, the way `ccx on` would
+  have put it.
 - **ccx no longer keeps a copy of your settings of its own.**
   `~/.claude-auto-switch/session-settings.json` was laid over your real
   settings in every ccx session, so a ccx session could run another model or
