@@ -12,10 +12,11 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  copyUserSettings,
   ensureSharedProjects,
   ensureSharedUserConfig,
-  mergeUserSettings,
   returnSharedUserFiles,
+  sharedDirNames,
 } from './shared-root.js';
 import type { PathCtx } from '../config/paths.js';
 
@@ -68,66 +69,58 @@ describe('ensureSharedProjects', () => {
   });
 });
 
-describe('mergeUserSettings', () => {
-  it('inherits the user settings with session keys winning on conflict', () => {
+describe('copyUserSettings', () => {
+  it('gives a session the real settings exactly, with nothing of its own laid over them', () => {
+    // A value laid over the real file is one the user cannot change from it:
+    // that is how a ccx session ran on another model than the real settings said.
     const { home, sessionDir, c } = setup();
     mkdirSync(path.join(home, '.claude'), { recursive: true });
-    writeFileSync(
-      path.join(home, '.claude', 'settings.json'),
-      JSON.stringify({ hooks: { PreToolUse: ['x'] }, model: 'user-model' }),
-      'utf8',
-    );
-    writeFileSync(path.join(sessionDir, 'settings.json'), JSON.stringify({ model: 'pinned' }), 'utf8');
+    const real = { hooks: { PreToolUse: ['x'] }, model: 'user-model' };
+    writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify(real), 'utf8');
+    writeFileSync(path.join(sessionDir, 'settings.json'), JSON.stringify({ model: 'stale', tui: 'old' }), 'utf8');
 
-    mergeUserSettings(sessionDir, c);
-    const merged = JSON.parse(readFileSync(path.join(sessionDir, 'settings.json'), 'utf8'));
-    expect(merged.hooks).toEqual({ PreToolUse: ['x'] }); // user hooks now apply
-    expect(merged.model).toBe('pinned'); // session pin wins
+    expect(copyUserSettings(sessionDir, c)).toBe(true);
+    expect(JSON.parse(readFileSync(path.join(sessionDir, 'settings.json'), 'utf8'))).toEqual(real);
   });
 
-  it('lets the real status line win, because ccx manages it there and listens to it', () => {
-    // `ccx on` wraps the user's own line in `ccx statusline`, which is how ccx
-    // hears which conversation and model a session is on. A session carrying the
-    // line from before the wrap used to override it in every later session.
-    const { home, sessionDir, c } = setup();
-    const ours = { type: 'command', command: 'ccx statusline --wrap "ccstatusline"' };
-    mkdirSync(path.join(home, '.claude'), { recursive: true });
-    writeFileSync(
-      path.join(home, '.claude', 'settings.json'),
-      JSON.stringify({ statusLine: ours }),
-      'utf8',
-    );
-    writeFileSync(
-      path.join(sessionDir, 'settings.json'),
-      JSON.stringify({
-        model: 'pinned',
-        statusLine: { type: 'command', command: 'ccstatusline', padding: 0 },
-      }),
-      'utf8',
-    );
-
-    mergeUserSettings(sessionDir, c);
-    const merged = JSON.parse(readFileSync(path.join(sessionDir, 'settings.json'), 'utf8'));
-    expect(merged.statusLine).toEqual(ours);
-    expect(merged.model).toBe('pinned'); // everything else is as it was
-  });
-
-  it('keeps a session status line when the real settings have none', () => {
+  it('leaves the session alone when the real settings do not parse', () => {
     const { home, sessionDir, c } = setup();
     mkdirSync(path.join(home, '.claude'), { recursive: true });
-    writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: {} }), 'utf8');
-    const own = { type: 'command', command: 'my-line' };
-    writeFileSync(path.join(sessionDir, 'settings.json'), JSON.stringify({ statusLine: own }), 'utf8');
+    writeFileSync(path.join(home, '.claude', 'settings.json'), '{ "hooks": ', 'utf8');
+    writeFileSync(path.join(sessionDir, 'settings.json'), '{"model":"kept"}', 'utf8');
 
-    mergeUserSettings(sessionDir, c);
-    const merged = JSON.parse(readFileSync(path.join(sessionDir, 'settings.json'), 'utf8'));
-    expect(merged.statusLine).toEqual(own);
+    expect(copyUserSettings(sessionDir, c)).toBe(false);
+    expect(readFileSync(path.join(sessionDir, 'settings.json'), 'utf8')).toBe('{"model":"kept"}');
   });
 
   it('is a no-op when the user has no settings file', () => {
     const { sessionDir, c } = setup();
-    mergeUserSettings(sessionDir, c);
+    expect(copyUserSettings(sessionDir, c)).toBe(false);
     expect(existsSync(path.join(sessionDir, 'settings.json'))).toBe(false);
+  });
+});
+
+describe('sharedDirNames', () => {
+  it('shares every folder of ~/.claude but the backups and the separately shared projects', () => {
+    const { home } = setup();
+    const root = path.join(home, '.claude');
+    for (const name of ['backups', 'projects', 'my-own-folder']) mkdirSync(path.join(root, name), { recursive: true });
+    writeFileSync(path.join(root, 'a-file'), 'x', 'utf8');
+
+    const names = sharedDirNames(root);
+    // The ones Claude is known to use, even before ~/.claude has them.
+    for (const known of ['plugins', 'file-history', 'ide', 'todos', 'skills', 'sessions']) {
+      expect(names).toContain(known);
+    }
+    expect(names).toContain('my-own-folder');
+    expect(names).not.toContain('backups');
+    expect(names).not.toContain('projects');
+    expect(names).not.toContain('a-file');
+  });
+
+  it('still names the known folders when there is no ~/.claude yet', () => {
+    const { home } = setup();
+    expect(sharedDirNames(path.join(home, 'nowhere'))).toContain('file-history');
   });
 });
 
@@ -214,5 +207,47 @@ describe('returnSharedUserFiles', () => {
     later(theirs);
     returnSharedUserFiles(sessionDir, c);
     expect(readFileSync(theirs, 'utf8')).toBe('edited by hand since');
+  });
+
+  it("adds the prompts only a session's own history holds, after the user's, once", () => {
+    // History only grows, so a session whose link broke holds the user's lines
+    // plus its own. Newer-wins would drop whichever side was older.
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const theirs = path.join(home, '.claude', 'history.jsonl');
+    writeFileSync(theirs, '{"display":"a"}\n{"display":"b"}\n', 'utf8');
+    writeFileSync(path.join(sessionDir, 'history.jsonl'), '{"display":"a"}\n{"display":"s1"}\n{"display":"s2"}\n', 'utf8');
+
+    returnSharedUserFiles(sessionDir, c);
+    expect(readFileSync(theirs, 'utf8')).toBe('{"display":"a"}\n{"display":"b"}\n{"display":"s1"}\n{"display":"s2"}\n');
+    returnSharedUserFiles(sessionDir, c);
+    expect(readFileSync(theirs, 'utf8').match(/s1/g)).toHaveLength(1);
+  });
+
+  it('leaves a history that is still one file with the user alone', () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const theirs = path.join(home, '.claude', 'history.jsonl');
+    writeFileSync(theirs, '{"display":"a"}\n', 'utf8');
+    ensureSharedUserConfig(sessionDir, c);
+
+    returnSharedUserFiles(sessionDir, c);
+    expect(readFileSync(theirs, 'utf8')).toBe('{"display":"a"}\n');
+  });
+
+  it("merges a shared folder the session had of its own into the user's, never over it", () => {
+    // /rewind checkpoints made in a session whose link could not be made.
+    const { home, sessionDir, c } = setup();
+    const real = path.join(home, '.claude', 'file-history', 'conv-1');
+    mkdirSync(real, { recursive: true });
+    writeFileSync(path.join(real, 'v1'), 'user', 'utf8');
+    const own = path.join(sessionDir, 'file-history', 'conv-1');
+    mkdirSync(own, { recursive: true });
+    writeFileSync(path.join(own, 'v1'), 'session copy', 'utf8');
+    writeFileSync(path.join(own, 'v2'), 'only in the session', 'utf8');
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(true);
+    expect(readFileSync(path.join(real, 'v1'), 'utf8')).toBe('user');
+    expect(readFileSync(path.join(real, 'v2'), 'utf8')).toBe('only in the session');
   });
 });

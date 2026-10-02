@@ -14,7 +14,6 @@ import path from 'node:path';
 import { configHome, homeDir, type PathCtx } from '../config/paths.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
 import { setTarget, isLink } from '../daemon/junction.js';
-import { isOurs } from '../statusline/ours.js';
 
 /**
  * Claude keeps transcripts, /resume history, and per-project memories under
@@ -75,21 +74,68 @@ export function ensureSharedDir(sessionDir: string, name: string, c: PathCtx = {
 }
 
 /**
- * What else of ~/.claude a session has to see to be the user's own Claude.
+ * What of ~/.claude a session shares, which is everything but its login.
  *
- * Only `projects` was shared, so a ccx session ran without the user's personal
- * skills, agents, slash commands and output styles, and without their user
- * memory and keybindings: all of it lives in the config folder, and a ccx
- * session runs on a folder of its own so its login can be swapped. Plain
- * `claude` and Claude Desktop see all of it; a ccx session now does too.
+ * A ccx session runs Claude on a config folder of its own, because that is the
+ * only place Claude reads its login from, and a login per session is what lets
+ * one session change account in place. Everything ELSE Claude keeps in that
+ * folder used to be the session's own too, and gone with it: prompt history,
+ * /rewind checkpoints, plugins (a fresh 400 MB install per session), the
+ * editor link /ide looks for, todos and plans, skills and agents. Every
+ * folder is now a link to the one in ~/.claude, so a ccx session is the
+ * user's own Claude except for which account it is on.
+ *
+ * The folders Claude is known to use are linked even before ~/.claude has
+ * them, so what a session creates lands there; anything else found in
+ * ~/.claude is linked as it is.
  */
-const SHARED_DIRS = ['skills', 'agents', 'commands', 'output-styles'];
+const KNOWN_SHARED_DIRS = [
+  'skills',
+  'agents',
+  'commands',
+  'output-styles',
+  'plugins',
+  'file-history',
+  'ide',
+  'todos',
+  'plans',
+  'paste-cache',
+  'shell-snapshots',
+  'session-env',
+  'sessions',
+];
+/**
+ * Stays the session's own: Claude's backups of this session's .claude.json
+ * (which is per session, for the account in it), and `projects`, which is
+ * shared separately (ensureSharedProjects).
+ */
+const OWN_DIRS = new Set(['backups', 'projects']);
+
+/** The folders a session links to ~/.claude: the known ones, and whatever else is there. */
+export function sharedDirNames(root: string): string[] {
+  const names = new Set(KNOWN_SHARED_DIRS);
+  try {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (entry.isDirectory()) names.add(entry.name);
+    }
+  } catch {
+    /* no ~/.claude yet: the known ones */
+  }
+  return [...names].filter((n) => !OWN_DIRS.has(n));
+}
+
 /**
  * Files are hard links where the volume allows, so an edit made inside a
- * session (`/memory`) lands in the user's own file. A copy otherwise. Either
- * way returnSharedUserFiles hands back what only the session ended up holding.
+ * session lands in the user's own file. A copy otherwise. Either way
+ * returnSharedUserFiles hands back what only the session ended up holding:
+ * the newer copy for a file edited whole, the missing lines for prompt
+ * history, which only ever grows.
  */
-const SHARED_FILES = ['CLAUDE.md', 'keybindings.json'];
+const SHARED_FILES: ReadonlyArray<{ name: string; merge: 'newer' | 'lines' }> = [
+  { name: 'CLAUDE.md', merge: 'newer' },
+  { name: 'keybindings.json', merge: 'newer' },
+  { name: 'history.jsonl', merge: 'lines' },
+];
 
 /**
  * Hand back what a session changed in the user's own files, before its folder
@@ -114,27 +160,63 @@ export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): bool
     return true;
   }
   let kept = true;
-  for (const name of SHARED_FILES) {
+  for (const { name, merge } of SHARED_FILES) {
     const from = path.join(sessionDir, name);
     const to = path.join(root, name);
     if (!existsSync(from)) continue;
-    let handBack: boolean;
+    let content: string | null;
     try {
-      handBack = shouldHandBack(from, to);
+      content = merge === 'lines' ? missingLines(from, to) : shouldHandBack(from, to) ? readFileSync(from, 'utf8') : null;
     } catch {
       // Could not even be compared: it may hold the only copy of an edit, so
       // it is kept aside like a write that failed, never simply dropped.
       if (!rescue(from, name, c)) kept = false;
       continue;
     }
-    if (!handBack) continue;
+    if (content === null) continue;
     try {
-      writeFileAtomic(to, readFileSync(from, 'utf8'));
+      writeFileAtomic(to, content);
     } catch {
       if (!rescue(from, name, c)) kept = false;
     }
   }
+  // A folder that should have been a link but is the session's own (one made
+  // before it was shared, or a link that could not be made) is merged in,
+  // never over what is there: /rewind checkpoints and todos made in it go
+  // on being found. Plugins are not: an install is the user's own to manage.
+  for (const name of sharedDirNames(root)) {
+    if (name === 'plugins' || name === 'sessions') continue;
+    const own = path.join(sessionDir, name);
+    try {
+      if (!existsSync(own) || isLink(own) || !lstatSync(own).isDirectory()) continue;
+      mkdirSync(path.join(root, name), { recursive: true });
+      mergeTree(own, path.join(root, name));
+    } catch {
+      /* best effort, as at the start */
+    }
+  }
   return kept;
+}
+
+/**
+ * The user's history with the session's lines it does not have added at the
+ * end, or null when there is nothing to add. History only grows, so a session
+ * whose link broke holds the user's lines plus its own.
+ */
+function missingLines(from: string, to: string): string | null {
+  if (existsSync(to)) {
+    const mine = statSync(from, { bigint: true });
+    const theirs = statSync(to, { bigint: true });
+    if (mine.ino === theirs.ino && mine.dev === theirs.dev) return null; // still one file
+  }
+  const theirs = existsSync(to) ? readFileSync(to, 'utf8') : '';
+  const known = new Set(theirs.split('\n'));
+  const added = readFileSync(from, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim() !== '' && !known.has(line));
+  if (added.length === 0) return null;
+  const sep = theirs === '' || theirs.endsWith('\n') ? '' : '\n';
+  return `${theirs}${sep}${added.join('\n')}\n`;
 }
 
 /** Whether the session's `from` holds something the user's `to` does not. */
@@ -160,14 +242,14 @@ function rescue(from: string, name: string, c: PathCtx): boolean {
 }
 
 export function ensureSharedUserConfig(sessionDir: string, c: PathCtx = {}): void {
-  for (const name of SHARED_DIRS) ensureSharedDir(sessionDir, name, c);
   let root: string;
   try {
     root = defaultClaudeRoot(c);
   } catch {
     return;
   }
-  for (const name of SHARED_FILES) {
+  for (const name of sharedDirNames(root)) ensureSharedDir(sessionDir, name, c);
+  for (const { name } of SHARED_FILES) {
     const from = path.join(root, name);
     const to = path.join(sessionDir, name);
     try {
@@ -223,47 +305,32 @@ function mergeTree(src: string, dest: string): void {
 }
 
 /**
- * Whether the user's REAL value for `key` wins over one a session carried.
+ * Give a session the user's REAL ~/.claude/settings.json as it is now: hooks,
+ * permissions, model, status line, all of it. Without this, ccx sessions
+ * silently ran WITHOUT the user's hooks and permission rules.
  *
- * Only ccx's own status line does. `ccx on` wraps the user's line in
- * `ccx statusline`, and that wrapper is how ccx hears which conversation and
- * which model a session is on. A session that started before the wrap still
- * held the old line, carried it out as "a change it made", and from then on it
- * overrode the real setting in every ccx session, silently taking ccx's status
- * line away from all of them. With no ccx line in the real file there is
- * nothing of ccx's to protect, so a line set inside a session is kept as before.
+ * Nothing of the session's own wins over it. What a session changes goes back
+ * to the real file (write-back), so the real file is the one place a setting
+ * lives, for ccx sessions and plain `claude` alike. ccx's own choices for a
+ * session (a model to move to) go on the command line, never in here.
+ *
+ * False when there is nothing to copy: no real settings, or a real file that
+ * does not parse, which leaves the session with what it has.
  */
-export function realSettingWins(key: string, user: Record<string, unknown>): boolean {
-  return key === 'statusLine' && isOurs(user.statusLine);
-}
-
-/**
- * Merge the user's REAL ~/.claude/settings.json (hooks, permissions, statusline)
- * into the session settings, with the session's own keys (e.g. the model pin)
- * winning on conflict, except ccx's own status line (see realSettingWins).
- * Without this, ccx sessions silently ran WITHOUT the user's hooks and
- * permission rules. Idempotent; runs each session start so settings edits are
- * picked up.
- */
-export function mergeUserSettings(sessionDir: string, c: PathCtx = {}): void {
+export function copyUserSettings(sessionDir: string, c: PathCtx = {}): boolean {
   let userFile: string;
   try {
     userFile = path.join(defaultClaudeRoot(c), 'settings.json');
   } catch {
-    return;
+    return false;
   }
-  const sessionFile = path.join(sessionDir, 'settings.json');
   const user = readJson(userFile);
-  if (!user) return; // no real settings to inherit
-  const session = readJson(sessionFile) ?? {};
-  const merged = { ...user, ...session };
-  for (const key of Object.keys(session)) {
-    if (realSettingWins(key, user)) merged[key] = user[key];
-  }
+  if (!user) return false;
   try {
-    writeFileSync(sessionFile, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+    writeFileSync(path.join(sessionDir, 'settings.json'), `${JSON.stringify(user, null, 2)}\n`, 'utf8');
+    return true;
   } catch {
-    /* best effort */
+    return false;
   }
 }
 
@@ -271,7 +338,9 @@ function readJson(file: string): Record<string, unknown> | null {
   try {
     if (!existsSync(file) || !statSync(file).isFile()) return null;
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown;
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }

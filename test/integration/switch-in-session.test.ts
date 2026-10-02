@@ -585,12 +585,11 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     await loginAccount(context, home, 'fable-free');
     setActive('fable-spent', context.ctx);
 
-    // The session is pinned to Fable, the way a real one is. The folder is made
-    // here because the run creates it, and seedSettings leaves an existing file
-    // alone, so this is the pin a real session would already have.
-    mkdirSync(path.join(home, 'session'), { recursive: true });
+    // The session runs Fable because the user's own settings say so, which is
+    // where a session's model comes from, as it does for plain `claude`.
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
     writeFileSync(
-      path.join(home, 'session', 'settings.json'),
+      path.join(home, '.claude', 'settings.json'),
       JSON.stringify({ model: 'claude-fable-5[1m]' }),
       'utf8',
     );
@@ -630,9 +629,9 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     await loginAccount(context, home, 'pinned');
     await loginAccount(context, home, 'other');
     setActive('pinned', context.ctx);
-    mkdirSync(path.join(home, 'session'), { recursive: true });
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
     writeFileSync(
-      path.join(home, 'session', 'settings.json'),
+      path.join(home, '.claude', 'settings.json'),
       JSON.stringify({ model: 'claude-fable-5[1m]' }),
       'utf8',
     );
@@ -670,9 +669,9 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     const context = makeContext(home);
     await loginAccount(context, home, 'only');
     setActive('only', context.ctx);
-    mkdirSync(path.join(home, 'session'), { recursive: true });
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
     writeFileSync(
-      path.join(home, 'session', 'settings.json'),
+      path.join(home, '.claude', 'settings.json'),
       JSON.stringify({ model: 'claude-fable-5[1m]' }),
       'utf8',
     );
@@ -717,9 +716,9 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     const context = makeContext(home);
     await loginAccount(context, home, 'only');
     setActive('only', context.ctx);
-    mkdirSync(path.join(home, 'session'), { recursive: true });
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
     writeFileSync(
-      path.join(home, 'session', 'settings.json'),
+      path.join(home, '.claude', 'settings.json'),
       JSON.stringify({ model: 'claude-fable-5[1m]' }),
       'utf8',
     );
@@ -780,9 +779,9 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     // go and the test can actually catch it.
     await loginAccount(context, home, 'spare');
     setActive('pinned', context.ctx);
-    mkdirSync(path.join(home, 'session'), { recursive: true });
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
     writeFileSync(
-      path.join(home, 'session', 'settings.json'),
+      path.join(home, '.claude', 'settings.json'),
       JSON.stringify({ model: 'claude-fable-5[1m]' }),
       'utf8',
     );
@@ -883,9 +882,9 @@ describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against 
     const context = makeContext(home);
     await loginAccount(context, home, 'only');
     setActive('only', context.ctx);
-    mkdirSync(path.join(home, 'session'), { recursive: true });
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
     writeFileSync(
-      path.join(home, 'session', 'settings.json'),
+      path.join(home, '.claude', 'settings.json'),
       JSON.stringify({ model: 'claude-fable-5[1m]' }),
       'utf8',
     );

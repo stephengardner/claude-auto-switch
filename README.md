@@ -192,13 +192,19 @@ program](docs/reading-ccx-from-another-program.md).
   before moving you. Text on screen can be a replay, or your own code talking
   about rate limits, and neither should cost you your session.
 - **Your conversation continues** on the new account, in place.
-- **Your history stays yours.** ccx sessions read and write your normal
-  `~/.claude`, so `/resume` and project memories are exactly where they always
-  were, whether you launch Claude through ccx or not. What ccx _adds_ there is
-  its own and comes back out with `ccx off`: the `statusLine` key, the `/ccx`
-  skill, and the two Claude Desktop hooks when you turn the handoff on. It also
-  creates the empty `skills`, `agents`, `commands` and `output-styles` folders
-  if you have none, so your sessions can share them.
+- **It is your own Claude, but for the account.** A ccx session runs Claude on
+  a folder of its own, because that is the only place Claude reads its login
+  from, and a login per session is what lets one session change account in
+  place. Everything else is yours: `/resume`, prompt history, `/rewind`
+  checkpoints, plugins, skills, agents, todos and memory are your normal
+  `~/.claude`, whether you launch Claude through ccx or not. A session starts
+  from your real `settings.json`, and what Claude saves during it (a model
+  picked with `/model`, a permission allowed for good, an MCP server, a
+  trusted folder, a theme) is saved back to your own files, where plain
+  `claude` reads it. If you changed the same thing elsewhere meanwhile, your
+  change wins. What ccx _adds_ to `~/.claude` is its own and comes back out
+  with `ccx off`: the `statusLine` key, the `/ccx` skill, and the two Claude
+  Desktop hooks when you turn the handoff on.
 - **Careful with your logins.** Credentials are written whole or not at all, the
   previous one is always kept, and a signed-out or damaged credential is never
   written over a good account. Before a login is copied into an account, ccx
@@ -358,7 +364,7 @@ Both ways of running follow this: an interactive session and a headless
 `ccx -p ...` request use the same planner, so the setting means one thing.
 
 This applies only when a model is actually in play, meaning you passed
-`--model` or pinned one in your session `settings.json`. With nothing pinned,
+`--model` or set one in your `settings.json` (`/model` does). With nothing set,
 Claude picks its own default, ccx has no way to read which one that is, and
 imposing a model you never asked for would be the wrong answer. Those sessions
 rotate on account capacity alone.

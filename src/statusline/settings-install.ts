@@ -15,8 +15,9 @@ import { CCX_COMMAND, isOurs } from './ours.js';
  * your account switching is on. Claude's status line is the one piece of the
  * screen ccx can write to during a session without stepping on the interface.
  *
- * This is the ONLY thing ccx writes into ~/.claude, and it writes exactly one
- * key. The planning is pure and separate from the file work because the file
+ * This is the only thing of ccx's own it puts into ~/.claude, and it is exactly
+ * one key (what else ccx writes there is what a session changed, handed back:
+ * see write-back). The planning is pure and separate from the file work because the file
  * belongs to the user: hooks, permissions and MCP servers live in it, and
  * losing them to a careless write would be far worse than having no status
  * line at all.
@@ -187,6 +188,29 @@ function clearBackup(c: PathCtx): void {
   } catch {
     /* harmless once the settings no longer point at ours */
   }
+}
+
+/**
+ * Keep ccx's line over a status line a session set for itself (write-back).
+ *
+ * With ccx's line in the real file, a line set from inside a session goes in
+ * wrapped by it, the way `ccx on` would have put it, and becomes the line
+ * `ccx off` gives back. Handing it back bare would take ccx's line away from
+ * every session after it. When the restore point cannot be saved, the
+ * session's line goes in bare: it is the user's choice, and it wins.
+ */
+export function keepOursOver(
+  settings: Record<string, unknown>,
+  c: PathCtx = {},
+): Record<string, unknown> {
+  const plan = planInstall(settings);
+  if (plan.kind === 'already') return settings;
+  if (plan.kind === 'wrapped') {
+    if (!writeBackup(c, plan.displaced)) return settings;
+  } else {
+    clearBackup(c);
+  }
+  return plan.settings;
 }
 
 export type InstallOutcome =

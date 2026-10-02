@@ -19,7 +19,7 @@ import {
   sweepDeadSessionDirs,
   removeSessionDir,
   keptSettingsPath,
-  seedFromKeptSettings,
+  retireKeptSettings,
   retireLeftoverSessionDir,
 } from './session-dir.js';
 
@@ -111,7 +111,7 @@ describe('sweeping session directories left behind', () => {
     expect(sweepDeadSessionDirs(ctx, { isAlive: () => false })).toEqual([]);
   });
 
-  it('clears out a folder a dead process with this pid left, keeping its settings changes', () => {
+  it('clears out a folder a dead process with this pid left, handing back its changes', () => {
     // The sweep cannot see it: the pid it is named for is alive again, as the
     // session starting now. What it holds belongs to that dead process.
     const { ctx, root, claudeSettings } = home();
@@ -119,11 +119,12 @@ describe('sweeping session directories left behind', () => {
     const dir = seed(root, '4747');
     writeFileSync(path.join(dir, 'claude-report.json'), JSON.stringify({ id: 'theirs' }), 'utf8');
     writeFileSync(path.join(dir, 'resume-prompt.txt'), 'their task', 'utf8');
+    writeFileSync(path.join(dir, '.ccx-base.settings.json'), JSON.stringify({ model: 'fable' }), 'utf8');
     writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ model: 'opus' }), 'utf8');
 
     expect(retireLeftoverSessionDir(dir, ctx)).toBe(true);
     expect(existsSync(dir)).toBe(false);
-    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'opus' });
+    expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({ model: 'opus' });
     // Nothing there is a no-op.
     expect(retireLeftoverSessionDir(dir, ctx)).toBe(false);
   });
@@ -160,230 +161,104 @@ describe('deleting a session directory', () => {
   });
 });
 
-describe('carrying the model pin between sessions', () => {
-  it('seeds a fresh session from what the last one ended with', () => {
-    const { ctx, root } = home();
+describe("retiring ccx's old store of session settings", () => {
+  function store(ctx: PathCtx, settings: Record<string, unknown>): void {
     mkdirSync(path.dirname(keptSettingsPath(ctx)), { recursive: true });
-    writeFileSync(keptSettingsPath(ctx), JSON.stringify({ model: 'opus' }), 'utf8');
-    const dir = path.join(root, '777');
-    mkdirSync(dir, { recursive: true });
+    writeFileSync(keptSettingsPath(ctx), JSON.stringify(settings), 'utf8');
+  }
 
-    expect(seedFromKeptSettings(dir, ctx)).toBe(true);
-    expect(JSON.parse(readFileSync(path.join(dir, 'settings.json'), 'utf8'))).toEqual({ model: 'opus' });
+  it('fills only what the real settings lack, so a value set by hand wins', () => {
+    // The store was laid over the real file in every ccx session. A machine ran
+    // opus and fullscreen in ccx while its real settings said fable and
+    // default, and editing the real file changed nothing in ccx.
+    const { ctx, claudeSettings } = home();
+    writeUserSettings(claudeSettings, { model: 'fable[1m]', tui: 'default', hooks: { Stop: [] } });
+    store(ctx, {
+      model: 'opus[1m]',
+      tui: 'fullscreen',
+      modelSettings: { opus: { effortLevel: 'xhigh' } },
+    });
+
+    retireKeptSettings(ctx);
+    expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({
+      model: 'fable[1m]',
+      tui: 'default',
+      hooks: { Stop: [] },
+      modelSettings: { opus: { effortLevel: 'xhigh' } },
+    });
+    // Renamed aside, never deleted, and never read again.
+    expect(existsSync(keptSettingsPath(ctx))).toBe(false);
+    expect(JSON.parse(readFileSync(`${keptSettingsPath(ctx)}.retired`, 'utf8'))).toMatchObject({
+      model: 'opus[1m]',
+    });
   });
 
-  it('falls back to the pre-split directory, so an upgrade does not lose the pin', () => {
-    const { ctx, root } = home();
-    const legacy = path.join(path.dirname(root), 'session');
-    mkdirSync(legacy, { recursive: true });
-    writeFileSync(path.join(legacy, 'settings.json'), JSON.stringify({ model: 'fable' }), 'utf8');
-    const dir = path.join(root, '888');
-    mkdirSync(dir, { recursive: true });
-
-    expect(seedFromKeptSettings(dir, ctx)).toBe(true);
-    expect(JSON.parse(readFileSync(path.join(dir, 'settings.json'), 'utf8'))).toEqual({ model: 'fable' });
+  it('creates the real settings from it when there are none', () => {
+    const { ctx, claudeSettings } = home();
+    store(ctx, { model: 'opus' });
+    retireKeptSettings(ctx);
+    expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({ model: 'opus' });
   });
 
-  it('never overwrites settings a session already has', () => {
-    const { ctx, root } = home();
-    mkdirSync(path.dirname(keptSettingsPath(ctx)), { recursive: true });
-    writeFileSync(keptSettingsPath(ctx), JSON.stringify({ model: 'opus' }), 'utf8');
-    const dir = path.join(root, '999');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ model: 'mine' }), 'utf8');
+  it('never rewrites real settings that do not parse, and waits for them', () => {
+    const { ctx, claudeSettings } = home();
+    mkdirSync(path.dirname(claudeSettings), { recursive: true });
+    writeFileSync(claudeSettings, '{ "hooks": ', 'utf8');
+    store(ctx, { model: 'opus' });
 
-    expect(seedFromKeptSettings(dir, ctx)).toBe(false);
-    expect(JSON.parse(readFileSync(path.join(dir, 'settings.json'), 'utf8'))).toEqual({ model: 'mine' });
+    retireKeptSettings(ctx);
+    expect(readFileSync(claudeSettings, 'utf8')).toBe('{ "hooks": ');
+    expect(existsSync(keptSettingsPath(ctx))).toBe(true);
   });
 
-  it('keeps the pin when the session directory is swept', () => {
-    const { ctx, root } = home();
+  it('does nothing without a store', () => {
+    const { ctx, claudeSettings } = home();
+    writeUserSettings(claudeSettings, { model: 'fable' });
+    retireKeptSettings(ctx);
+    expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({ model: 'fable' });
+    expect(existsSync(`${keptSettingsPath(ctx)}.retired`)).toBe(false);
+  });
+});
+
+describe("handing back a dead session's changes", () => {
+  it('puts a /model choice from a killed session into the real settings', () => {
+    // A session killed before it could hand back: the sweep does it instead.
+    const { ctx, root, claudeSettings } = home();
+    writeUserSettings(claudeSettings, { model: 'fable', tui: 'default' });
     const dir = path.join(root, '1234');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ model: 'sonnet' }), 'utf8');
+    // As the session started, then as Claude left it.
+    writeFileSync(
+      path.join(dir, '.ccx-base.settings.json'),
+      JSON.stringify({ model: 'fable', tui: 'default' }),
+      'utf8',
+    );
+    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ model: 'opus', tui: 'default' }), 'utf8');
 
     sweepDeadSessionDirs(ctx, { isAlive: () => false });
     expect(existsSync(dir)).toBe(false);
-    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'sonnet' });
+    expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({ model: 'opus', tui: 'default' });
   });
-});
 
-describe('carrying only what a session CHANGED', () => {
-  it('does not freeze the settings the user already had', () => {
-    // The bug this exists for. What is kept here overrides ~/.claude/settings.json
-    // for every session afterwards, so keeping a whole copy froze the user's
-    // settings at the moment a session last ended. Editing the real file then
-    // did nothing, and the frozen value could not be removed by any normal
-    // means: that is how `"tui": "fullscreen"` became unkillable.
+  it('only fills what the real settings lack from a folder with no record of its start', () => {
+    // What an older ccx leaves: it laid its store over the real file, so the
+    // folder differs from the real settings in values nobody changed in it.
     const { ctx, root, claudeSettings } = home();
-    writeUserSettings(claudeSettings, {
-      tui: 'fullscreen',
-      hooks: { PreToolUse: [{ command: 'mine' }] },
-      model: 'fable',
-    });
+    writeUserSettings(claudeSettings, { model: 'fable', tui: 'default' });
     const dir = path.join(root, '4242');
     mkdirSync(dir, { recursive: true });
-    // What a session holds: everything of the user's, plus the pin it set.
     writeFileSync(
       path.join(dir, 'settings.json'),
-      JSON.stringify({
-        tui: 'fullscreen',
-        hooks: { PreToolUse: [{ command: 'mine' }] },
-        model: 'fable[1m]',
-      }),
+      JSON.stringify({ model: 'opus', tui: 'fullscreen', switchModelsOnFlag: false }),
       'utf8',
     );
 
     sweepDeadSessionDirs(ctx, { isAlive: () => false });
-    // Only the pin. The user's own settings are theirs to change from now on.
-    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'fable[1m]' });
-  });
-
-  it('still carries a status line set in a session when ccx has none in the real settings', () => {
-    // Without ccx's line in the real file there is nothing of ccx's to protect,
-    // so a line set from inside a session is a change like any other.
-    const { ctx, root, claudeSettings } = home();
-    writeUserSettings(claudeSettings, { model: 'fable' });
-    const dir = path.join(root, '4646');
-    mkdirSync(dir, { recursive: true });
-    const own = { type: 'command', command: 'my-line' };
-    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ statusLine: own }), 'utf8');
-
-    sweepDeadSessionDirs(ctx, { isAlive: () => false });
-    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ statusLine: own });
-  });
-
-  it('never carries a status line over the ccx one in the real settings', () => {
-    // A session that started before `ccx on` wrapped the user's line kept the
-    // old one. It differed from the real setting forever after, so it was
-    // carried as a change and overrode ccx's own line in every later session.
-    const { ctx, root, claudeSettings } = home();
-    writeUserSettings(claudeSettings, {
-      statusLine: { type: 'command', command: 'ccx statusline --wrap "ccstatusline"' },
+    expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({
       model: 'fable',
+      tui: 'default',
+      switchModelsOnFlag: false,
     });
-    const dir = path.join(root, '4545');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      path.join(dir, 'settings.json'),
-      JSON.stringify({
-        statusLine: { type: 'command', command: 'ccstatusline', padding: 0 },
-        model: 'opus',
-      }),
-      'utf8',
-    );
-
-    sweepDeadSessionDirs(ctx, { isAlive: () => false });
-    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'opus' });
-  });
-
-  it('lets a setting the user turns OFF actually turn off', () => {
-    // The end of the story above: with the real settings changed to `default`
-    // and the session still carrying `fullscreen` from before, the next
-    // session must come up on default rather than restoring the old value.
-    const { ctx, root, claudeSettings } = home();
-    writeUserSettings(claudeSettings, { tui: 'default' });
-    const dir = path.join(root, '4343');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ tui: 'default' }), 'utf8');
-
-    sweepDeadSessionDirs(ctx, { isAlive: () => false });
-    const kept = JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8')) as Record<string, unknown>;
-    expect('tui' in kept).toBe(false);
-  });
-
-  it('still carries a change the user made DURING the session', () => {
-    // The other half: a setting changed inside a session is a real choice and
-    // has to survive, or /model would stop sticking.
-    const { ctx, root, claudeSettings } = home();
-    writeUserSettings(claudeSettings, { tui: 'default', model: 'fable' });
-    const dir = path.join(root, '4444');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      path.join(dir, 'settings.json'),
-      JSON.stringify({ tui: 'fullscreen', model: 'opus' }),
-      'utf8',
-    );
-
-    sweepDeadSessionDirs(ctx, { isAlive: () => false });
-    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({
-      tui: 'fullscreen',
-      model: 'opus',
-    });
-  });
-
-  it('keeps everything when there are no real settings to compare against', () => {
-    // A machine where Claude has never written settings. Nothing is known to be
-    // the user's, so nothing can be dropped as redundant.
-    const { ctx, root } = home();
-    const dir = path.join(root, '4545');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ model: 'opus' }), 'utf8');
-
-    sweepDeadSessionDirs(ctx, { isAlive: () => false });
-    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({ model: 'opus' });
-  });
-
-  it('does not call a setting changed just because its keys moved', () => {
-    // Claude rewrites this file, and nothing promises it writes the keys back
-    // in the order it read them. Comparing the serialised text would call an
-    // identical object a change and pin it as an override forever, which is
-    // the same bug in miniature.
-    const { ctx, root, claudeSettings } = home();
-    writeUserSettings(claudeSettings, {
-      hooks: { PreToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'x' }] }] },
-      permissions: { allow: ['Bash(ls:*)'], deny: [] },
-    });
-    const dir = path.join(root, '4747');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      path.join(dir, 'settings.json'),
-      JSON.stringify({
-        // Same content throughout, every object's keys written in a different
-        // order.
-        permissions: { deny: [], allow: ['Bash(ls:*)'] },
-        hooks: { PreToolUse: [{ hooks: [{ command: 'x', type: 'command' }], matcher: 'Edit' }] },
-      }),
-      'utf8',
-    );
-
-    sweepDeadSessionDirs(ctx, { isAlive: () => false });
-    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({});
-  });
-
-  it('DOES notice when an array is reordered, because order is meaning', () => {
-    // Hooks run in order, so two lists with the same entries in a different
-    // order are two different configurations.
-    const { ctx, root, claudeSettings } = home();
-    writeUserSettings(claudeSettings, { hooks: { Stop: [{ command: 'a' }, { command: 'b' }] } });
-    const dir = path.join(root, '4848');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      path.join(dir, 'settings.json'),
-      JSON.stringify({ hooks: { Stop: [{ command: 'b' }, { command: 'a' }] } }),
-      'utf8',
-    );
-
-    sweepDeadSessionDirs(ctx, { isAlive: () => false });
-    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({
-      hooks: { Stop: [{ command: 'b' }, { command: 'a' }] },
-    });
-  });
-
-  it('compares by VALUE, so an unchanged nested setting is not carried', () => {
-    const { ctx, root, claudeSettings } = home();
-    const hooks = { PreToolUse: [{ matcher: 'Edit', hooks: [{ command: 'x' }] }] };
-    writeUserSettings(claudeSettings, { hooks });
-    const dir = path.join(root, '4646');
-    mkdirSync(dir, { recursive: true });
-    // Same content, rebuilt object: a reference check would call this changed.
-    writeFileSync(
-      path.join(dir, 'settings.json'),
-      JSON.stringify({ hooks: JSON.parse(JSON.stringify(hooks)) as unknown }),
-      'utf8',
-    );
-
-    sweepDeadSessionDirs(ctx, { isAlive: () => false });
-    expect(JSON.parse(readFileSync(keptSettingsPath(ctx), 'utf8'))).toEqual({});
   });
 });
+
