@@ -8,6 +8,7 @@ import {
   linkSync,
   copyFileSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
@@ -125,6 +126,25 @@ export function sharedDirNames(root: string): string[] {
   }
   return [...names].filter((n) => !OWN_DIRS.has(n));
 }
+
+const lstatOrNull = (p: string): ReturnType<typeof lstatSync> | null => {
+  try {
+    return lstatSync(p);
+  } catch {
+    return null;
+  }
+};
+
+/** Whether two paths are one file (a hard link), both present. */
+const sameFile = (a: string, b: string): boolean => {
+  try {
+    const x = statSync(a, { bigint: true });
+    const y = statSync(b, { bigint: true });
+    return x.ino === y.ino && x.dev === y.dev;
+  } catch {
+    return false;
+  }
+};
 
 const isDirectoryAt = (p: string): boolean => {
   try {
@@ -303,6 +323,14 @@ export function ensureSharedUserConfig(sessionDir: string, c: PathCtx = {}): voi
   for (const { name, merge } of SHARED_FILES) {
     const from = path.join(root, name);
     const to = path.join(sessionDir, name);
+    try {
+      // A copy left by a session whose folder could not be cleared: what it held
+      // has been handed back or kept aside already (retireLeftoverSessionDir),
+      // and this session starts from the user's own, never from that.
+      if (lstatOrNull(to) && !sameFile(from, to)) unlinkSync(to);
+    } catch {
+      continue; // still there: judged as an older ccx's would be (planWhole)
+    }
     if (merge === 'whole') rememberStart(sessionDir, name, from);
     try {
       if (!existsSync(from) || existsSync(to)) continue;

@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { newerInstall } from '../update/newer-install.js';
 import {
+  forgetEarlierStart,
   resyncSession,
   returnSessionChanges,
   snapshotSettingsBase,
@@ -315,6 +316,9 @@ export async function runInteractiveHotSwap(
   // found would hand this session that process's conversation and armed prompt.
   retireLeftoverSessionDir(sessionDir, context.ctx);
   secureMkdir(sessionDir);
+  // What an earlier session here started from, if its folder could not be
+  // cleared, is not this one's start.
+  forgetEarlierStart(sessionDir);
   const sessionCreds = path.join(sessionDir, CREDS);
   // Share the user's REAL ~/.claude session/memory store (projects) so /resume
   // and project memories are complete and identical in ccx sessions and plain

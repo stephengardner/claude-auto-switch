@@ -161,13 +161,20 @@ describe('ensureSharedUserConfig', () => {
     expect(readFileSync(path.join(home, '.claude', 'skills', 'synced', 'a.md'), 'utf8')).toBe('synced');
   });
 
-  it('never replaces a file the session already has', () => {
+  it("starts from the user's file, never a copy an earlier session left in the folder", () => {
+    // A folder that could not be cleared keeps its copy, already handed back
+    // or kept aside. Kept as this session's start, it would run on stale
+    // memory, then hand that stale copy back over the user's.
     const { home, sessionDir, c } = setup();
-    writeFileSync(path.join(sessionDir, 'CLAUDE.md'), 'session copy', 'utf8');
+    writeFileSync(path.join(sessionDir, 'CLAUDE.md'), 'stale copy', 'utf8');
     mkdirSync(path.join(home, '.claude'), { recursive: true });
-    writeFileSync(path.join(home, '.claude', 'CLAUDE.md'), 'user memory', 'utf8');
+    const theirs = path.join(home, '.claude', 'CLAUDE.md');
+    writeFileSync(theirs, 'user memory', 'utf8');
+
     ensureSharedUserConfig(sessionDir, c);
-    expect(readFileSync(path.join(sessionDir, 'CLAUDE.md'), 'utf8')).toBe('session copy');
+    expect(readFileSync(path.join(sessionDir, 'CLAUDE.md'), 'utf8')).toBe('user memory');
+    returnSharedUserFiles(sessionDir, c);
+    expect(readFileSync(theirs, 'utf8')).toBe('user memory');
   });
 });
 

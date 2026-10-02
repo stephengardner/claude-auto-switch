@@ -196,17 +196,18 @@ function clearBackup(c: PathCtx): void {
  * With ccx's line in the real file, a line set from inside a session goes in
  * wrapped by it, the way `ccx on` would have put it, and becomes the line
  * `ccx off` gives back. Handing it back bare would take ccx's line away from
- * every session after it. When the restore point cannot be saved, the
- * session's line goes in bare: it is the user's choice, and it wins.
+ * every session after it. Null when the restore point cannot be saved: then
+ * nothing is written and the hand-back is tried again later, so neither the
+ * session's line nor ccx's is lost.
  */
 export function keepOursOver(
   settings: Record<string, unknown>,
   c: PathCtx = {},
-): Record<string, unknown> {
+): Record<string, unknown> | null {
   const plan = planInstall(settings);
   if (plan.kind === 'already') return settings;
   if (plan.kind === 'wrapped') {
-    if (!writeBackup(c, plan.displaced)) return settings;
+    if (!writeBackup(c, plan.displaced)) return null;
   } else {
     clearBackup(c);
   }

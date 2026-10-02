@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { defaultClaudeJsonPath } from '../daemon/reference-config.js';
@@ -120,6 +120,21 @@ function snapshot(sessionDir: string, own: string, baseName: string): void {
   }
 }
 
+/**
+ * Forget what an earlier session in this folder started from. A folder that
+ * could not be cleared when its session died keeps its records, and the next
+ * session would judge its own changes against that one's start.
+ */
+export function forgetEarlierStart(sessionDir: string): void {
+  try {
+    for (const name of readdirSync(sessionDir)) {
+      if (name.startsWith('.ccx-base.')) rmSync(path.join(sessionDir, name), { force: true });
+    }
+  } catch {
+    /* a fresh folder: nothing to forget */
+  }
+}
+
 /** Remember the settings a session starts with. */
 export function snapshotSettingsBase(sessionDir: string): void {
   snapshot(sessionDir, 'settings.json', SETTINGS_BASE);
@@ -236,7 +251,11 @@ export function returnSettings(sessionDir: string, c: PathCtx = {}): boolean {
   const changed = merge3(found.base, ours, theirs);
   // A line set inside a session goes in wrapped by ccx's, never over it. One
   // removed inside a session leaves ccx's own, as `ccx on` would with no line.
-  if (changed && isOurs(lineBefore) && !isOurs(theirs.statusLine)) theirs = keepOursOver(theirs, c);
+  if (changed && isOurs(lineBefore) && !isOurs(theirs.statusLine)) {
+    const kept = keepOursOver(theirs, c);
+    if (!kept) return false; // tried again later, or kept aside (handBackOrRescue)
+    theirs = kept;
+  }
   return finish(changed, userFile, theirs, sessionDir, 'settings.json', SETTINGS_BASE);
 }
 

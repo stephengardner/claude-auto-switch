@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { PathCtx } from '../config/paths.js';
 import {
+  forgetEarlierStart,
   handBackOrRescue,
   resyncSession,
   returnSettings,
@@ -134,6 +135,16 @@ describe('handing back settings', () => {
     returnSettings(s.sessionDir, s.c);
     expect(read(s.settings).statusLine).toEqual({ type: 'command', command: 'ccx statusline --wrap "my-line"' });
     expect(read(path.join(s.ccxHome, 'statusline-backup.json'))).toEqual(mine);
+  });
+
+  it('writes nothing, and says so, when the status line restore point cannot be saved', () => {
+    // Handed back bare, ccx's line would be lost; tried again later instead.
+    const s = setup();
+    mkdirSync(path.join(s.ccxHome, 'statusline-backup.json'), { recursive: true }); // unwritable as a file
+    settingsSession(s, { statusLine: CCX_LINE, model: 'fable' }, { statusLine: { type: 'command', command: 'mine' }, model: 'opus' });
+
+    expect(returnSettings(s.sessionDir, s.c)).toBe(false);
+    expect(read(s.settings)).toEqual({ statusLine: CCX_LINE, model: 'fable' });
   });
 
   it('hands a status line back as it is when the real settings have no ccx line', () => {
@@ -296,6 +307,19 @@ describe("handing back Claude's state", () => {
 
     returnState(s.sessionDir, s.c);
     expect(read(s.state)).toEqual({ mcpServers: { theirs: { command: 't' }, srv: { command: 'x' } } });
+  });
+});
+
+describe('a folder an earlier session could not clear', () => {
+  it("forgets that session's start, so this one is judged against its own", () => {
+    const s = setup();
+    for (const name of ['.ccx-base.settings.json', '.ccx-base.claude.json', '.ccx-base.CLAUDE.md']) {
+      writeFileSync(path.join(s.sessionDir, name), '{}', 'utf8');
+    }
+    writeFileSync(path.join(s.sessionDir, 'resume-prompt.txt'), 'kept', 'utf8');
+
+    forgetEarlierStart(s.sessionDir);
+    expect(readdirSync(s.sessionDir)).toEqual(['resume-prompt.txt']);
   });
 });
 
