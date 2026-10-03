@@ -3,12 +3,14 @@ import {
   modelPreferenceWords,
   nextModelPreference,
   nextOrder,
+  numberPicks,
   orderWords,
   pickReason,
   rankAccounts,
   reorder,
 } from './rotation-settings.js';
 import { standingOf } from '../usage/runway.js';
+import type { AccountModelUsage } from '../usage/model-preference.js';
 
 const NOW = Date.parse('2026-10-03T12:00:00Z');
 const HOUR = 60 * 60 * 1000;
@@ -127,5 +129,28 @@ describe('moving an account in the priority order', () => {
       { name: 'c', priority: 1 },
       { name: 'b', priority: 2 },
     ]);
+  });
+});
+
+describe('numbering the picks', () => {
+  const standing = () => standingOf(undefined, NOW);
+  const candidates: AccountModelUsage[] = [
+    { name: 'out', models: {}, accountWideOut: true },
+    { name: 'chain-spent', models: { opus: 1, fable: 1 } },
+    { name: 'opus-room', models: { opus: 0.4, fable: 1 } },
+    { name: 'fresh', models: {} },
+  ];
+
+  it('numbers only accounts with room on some model in the chain, as the planner picks', () => {
+    const picks = numberPicks(candidates, ['opus', 'fable'], true, standing);
+    expect([...picks.entries()].map(([name, p]) => [name, p.rank])).toEqual([
+      ['opus-room', 1],
+      ['fresh', 2],
+    ]);
+  });
+
+  it('numbers every candidate when models are switched off', () => {
+    const picks = numberPicks(candidates, ['opus', 'fable'], false, standing);
+    expect([...picks.keys()]).toEqual(['out', 'chain-spent', 'opus-room', 'fresh']);
   });
 });

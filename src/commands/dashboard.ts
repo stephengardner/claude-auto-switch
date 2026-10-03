@@ -36,6 +36,7 @@ import {
   nextModelPreference,
   nextOrder,
   orderWords,
+  numberPicks,
   pickReason,
   rankAccounts,
   reorder,
@@ -273,11 +274,6 @@ export async function dashboardCommand(
       model,
       at,
     );
-    const picks = new Map<string, NonNullable<DashboardAccount['pick']>>();
-    ordered.forEach((a, i) => {
-      const s = standing(a.name);
-      picks.set(a.name, { rank: i + 1, runway: s.runway, binding: s.binding });
-    });
     const candidates = ordered
       .map((a) => {
         const capacity = usableCapacity(usage.get(a.name), at);
@@ -296,6 +292,7 @@ export async function dashboardCommand(
           ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
         };
       });
+    const picks = numberPicks(candidates, rotation.modelPreference, model !== null, standing);
     const current = getActive(ctx.ctx);
     const nextUp = describeNextUp({
       candidates,

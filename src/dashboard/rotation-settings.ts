@@ -1,4 +1,4 @@
-import { normalizeModel } from '../usage/model-preference.js';
+import { hasRoomFor, normalizeModel, type AccountModelUsage } from '../usage/model-preference.js';
 import { humanWait } from '../usage/report.js';
 import { pickScore, standingOf, type RunwayWindows, type Standing } from '../usage/runway.js';
 import { remainingRoom, type CapacityWindows } from '../usage/usable-capacity.js';
@@ -81,6 +81,29 @@ export function rankAccounts<T extends SelectableAccount>(
       order === 'smart' ? pickScore(standingOf(usageOf(name), now, model)) : remainingRoom(usageOf(name), now),
     ),
   );
+}
+
+/**
+ * Number accounts in pick order (they come in that order), among the ones
+ * rotation could actually move to: with a model in play, one with room on some
+ * model in the chain, since the planner skips the rest. With models switched
+ * off, every one, as the planner then takes the first.
+ */
+export function numberPicks(
+  candidates: readonly AccountModelUsage[],
+  preference: readonly string[],
+  modelInPlay: boolean,
+  standing: (name: string) => Standing,
+): Map<string, { rank: number; runway: number; binding: Standing['binding'] }> {
+  const picks = new Map<string, { rank: number; runway: number; binding: Standing['binding'] }>();
+  let rank = 0;
+  for (const c of candidates) {
+    if (modelInPlay && (c.accountWideOut || !preference.some((m) => hasRoomFor(c, m)))) continue;
+    const s = standing(c.name);
+    rank += 1;
+    picks.set(c.name, { rank, runway: s.runway, binding: s.binding });
+  }
+  return picks;
 }
 
 /** Why the smart order picks an account, in words. */
