@@ -27,16 +27,17 @@ import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { describeNextUp } from '../dashboard/next-up.js';
-import { usableCapacity, remainingRoom, type CapacityWindows } from '../usage/usable-capacity.js';
+import { usableCapacity, type CapacityWindows } from '../usage/usable-capacity.js';
 import { orderComparator } from '../selector/selector.js';
 import { roomOfFromSnapshot } from '../usage/account-room.js';
-import { pickScore, standingOf } from '../usage/runway.js';
+import { standingOf, type RunwayWindows } from '../usage/runway.js';
 import {
   modelPreferenceWords,
   nextModelPreference,
   nextOrder,
   orderWords,
   pickReason,
+  rankAccounts,
   reorder,
 } from '../dashboard/rotation-settings.js';
 import { activeModelCaps } from '../ledger/ledger.js';
@@ -187,6 +188,9 @@ export async function dashboardCommand(
           fiveHourReset: u.fiveHourReset,
           sevenDayReset: u.sevenDayReset,
           ...(u.models ? { models: u.models } : {}),
+          // The learned cost of a 5-hour window, so the pick column agrees with
+          // rotation, which reads the whole entry.
+          ...(typeof u.windowCost === 'number' ? { windowCost: u.windowCost } : {}),
         },
       ]),
     );
@@ -242,7 +246,7 @@ export async function dashboardCommand(
   function nextMove(
     ctx: CliContext,
     accounts: Array<{ name: string; enabled: boolean; priority: number }>,
-    usage: Map<string, CapacityWindows>,
+    usage: Map<string, CapacityWindows & RunwayWindows>,
     capped: Map<string, number>,
     loggedIn: Set<string>,
     at: number,
@@ -258,15 +262,15 @@ export async function dashboardCommand(
     const model = rotation.preferSameModel ? rotation.modelPreference[0] : null;
     const knownSpent = activeModelCaps(loadLedger(ctx.ctx), at);
     const standing = (name: string) => standingOf(usage.get(name), at, model);
-    const ordered = accounts
-      .filter((a) => a.enabled && loggedIn.has(a.name) && (capped.get(a.name) ?? 0) <= at)
-      // Ordered the same way rotation actually chooses, so the "next up" line
-      // and the pick column predict the real move.
-      .sort(
-        orderComparator(rotation.accountOrder, (name) =>
-          rotation.accountOrder === 'smart' ? pickScore(standing(name)) : remainingRoom(usage.get(name), at),
-        ),
-      );
+    // Ordered the same way rotation actually chooses, so the "next up" line
+    // and the pick column predict the real move.
+    const ordered = rankAccounts(
+      accounts.filter((a) => a.enabled && loggedIn.has(a.name) && (capped.get(a.name) ?? 0) <= at),
+      (name) => usage.get(name),
+      rotation.accountOrder,
+      model,
+      at,
+    );
     const picks = new Map<string, NonNullable<DashboardAccount['pick']>>();
     ordered.forEach((a, i) => {
       const s = standing(a.name);

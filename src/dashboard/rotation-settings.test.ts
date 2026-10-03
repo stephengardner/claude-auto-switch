@@ -5,6 +5,7 @@ import {
   nextOrder,
   orderWords,
   pickReason,
+  rankAccounts,
   reorder,
 } from './rotation-settings.js';
 import { standingOf } from '../usage/runway.js';
@@ -43,6 +44,36 @@ describe('pick rule', () => {
     expect(pickReason(fresh, NOW)).toBe('room for a full 5-hour window, its week resets in 1d 6h');
     const thin = standingOf({ fiveHour: 0.6, sevenDay: null }, NOW);
     expect(pickReason(thin, NOW)).toBe('room for 40% of a 5-hour window');
+  });
+});
+
+describe('ranking accounts the way rotation picks them', () => {
+  const accounts = [
+    { name: 'thin', priority: 0, enabled: true },
+    { name: 'costly-week', priority: 1, enabled: true },
+  ];
+  const usage: Record<string, { fiveHour: number | null; sevenDay: number | null; windowCost?: number }> = {
+    thin: { fiveHour: 0.3, sevenDay: 0.1 }, // 0.7 of a window
+    // 20% of a week left. At the default cost that is two full windows; at a
+    // learned 0.4 it is half of one.
+    'costly-week': { fiveHour: 0, sevenDay: 0.8, windowCost: 0.4 },
+  };
+
+  it("uses each account's learned window cost, as rotation does", () => {
+    const ranked = rankAccounts(accounts, (name) => usage[name], 'smart', 'opus', NOW);
+    expect(ranked.map((a) => a.name)).toEqual(['thin', 'costly-week']);
+  });
+
+  it('ranks by priority under your order, and by remaining room under most room', () => {
+    expect(rankAccounts(accounts, (name) => usage[name], 'priority', 'opus', NOW).map((a) => a.name)).toEqual([
+      'thin',
+      'costly-week',
+    ]);
+    // most-room reads the tighter percentage: 70% left against 20% left.
+    expect(rankAccounts(accounts, (name) => usage[name], 'most-room', 'opus', NOW).map((a) => a.name)).toEqual([
+      'thin',
+      'costly-week',
+    ]);
   });
 });
 

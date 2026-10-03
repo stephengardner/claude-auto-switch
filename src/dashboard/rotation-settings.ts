@@ -1,7 +1,8 @@
 import { normalizeModel } from '../usage/model-preference.js';
 import { humanWait } from '../usage/report.js';
-import type { Standing } from '../usage/runway.js';
-import type { AccountOrder } from '../selector/selector.js';
+import { pickScore, standingOf, type RunwayWindows, type Standing } from '../usage/runway.js';
+import { remainingRoom, type CapacityWindows } from '../usage/usable-capacity.js';
+import { orderComparator, type AccountOrder, type SelectableAccount } from '../selector/selector.js';
 
 /**
  * The rotation settings the dashboard shows and changes: which model sessions
@@ -52,6 +53,25 @@ export function orderWords(order: AccountOrder): string {
 export function nextOrder(current: AccountOrder): AccountOrder {
   const at = ORDER_CHOICES.indexOf(current);
   return ORDER_CHOICES[(at + 1) % ORDER_CHOICES.length] ?? 'smart';
+}
+
+/**
+ * Accounts in the order rotation would pick them, by the same comparator and
+ * score rotation uses, from the whole usage entry (its learned window cost
+ * included, or the dashboard would rank differently from what happens).
+ */
+export function rankAccounts<T extends SelectableAccount>(
+  accounts: readonly T[],
+  usageOf: (name: string) => (RunwayWindows & CapacityWindows) | undefined,
+  order: AccountOrder,
+  model: string | null,
+  now: number,
+): T[] {
+  return [...accounts].sort(
+    orderComparator(order, (name) =>
+      order === 'smart' ? pickScore(standingOf(usageOf(name), now, model)) : remainingRoom(usageOf(name), now),
+    ),
+  );
 }
 
 /** Why the smart order picks an account, in words. */
