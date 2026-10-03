@@ -40,7 +40,7 @@ import {
   rankAccounts,
   reorder,
 } from '../dashboard/rotation-settings.js';
-import { activeModelCaps } from '../ledger/ledger.js';
+import { activeModelCaps, cappedNames } from '../ledger/ledger.js';
 import { spentKey } from '../usage/rotation-plan.js';
 import { normalizeModel } from '../usage/model-preference.js';
 
@@ -215,7 +215,9 @@ export async function dashboardCommand(
       version: ccxVersion(),
       now,
       refreshMs,
-      ...nextMove(context, accts, usage, cappedUntil, loggedIn, now),
+      // Eligible the way rotation decides it: a cap on one model (Fable) does
+      // not stop the account, so it is not excluded here either.
+      ...nextMove(context, accts, usage, cappedNames(loadLedger(context.ctx), now), loggedIn, now),
       desktop: desktopSummary(context, (name) => usage.get(name), now),
       settings: {
         model: modelPreferenceWords(context.config.rotation.modelPreference),
@@ -247,7 +249,7 @@ export async function dashboardCommand(
     ctx: CliContext,
     accounts: Array<{ name: string; enabled: boolean; priority: number }>,
     usage: Map<string, CapacityWindows & RunwayWindows>,
-    capped: Map<string, number>,
+    capped: ReadonlySet<string>,
     loggedIn: Set<string>,
     at: number,
   ): {
@@ -265,7 +267,7 @@ export async function dashboardCommand(
     // Ordered the same way rotation actually chooses, so the "next up" line
     // and the pick column predict the real move.
     const ordered = rankAccounts(
-      accounts.filter((a) => a.enabled && loggedIn.has(a.name) && (capped.get(a.name) ?? 0) <= at),
+      accounts.filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name)),
       (name) => usage.get(name),
       rotation.accountOrder,
       model,
@@ -306,12 +308,10 @@ export async function dashboardCommand(
       spentThisRun: new Set(
         current ? knownSpent.filter((c) => c.account === current).map((c) => spentKey(c.account, c.model)) : [],
       ),
+      // Why that account, in the terms the smart order decides by.
+      ...(rotation.accountOrder === 'smart' ? { reasonFor: (name: string) => pickReason(standing(name), at) } : {}),
     });
-    // Why that account, in the terms the smart order decides by.
-    const top = ordered[0];
-    const reason = rotation.accountOrder === 'smart' && top ? pickReason(standing(top.name), at) : '';
-    const said = nextUp && reason && !nextUp.startsWith('staying') ? `${nextUp} · ${reason}` : nextUp;
-    return { ...(model ? { model } : {}), ...(said ? { nextUp: said } : {}), picks };
+    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}), picks };
   }
 
   if (options.json) {
@@ -377,7 +377,11 @@ export async function dashboardCommand(
     },
     desktopPrompt: () => context.config.desktop.prompt,
     onModelPreference: () => {
-      const preference = nextModelPreference(context.config.rotation.modelPreference);
+      const current = context.config.rotation.modelPreference;
+      const preference = nextModelPreference(current);
+      if (!preference) {
+        return `your model preference is your own (${current.join(', ')}); change it with ccx models`;
+      }
       saveRotation({ modelPreference: preference });
       const said = `sessions prefer ${modelPreferenceWords(preference)}, from their next start or move`;
       pushEvent(said);
@@ -386,7 +390,7 @@ export async function dashboardCommand(
     onPickOrder: () => {
       const order = nextOrder(context.config.rotation.accountOrder);
       saveRotation({ accountOrder: order });
-      const said = `the next account is picked by ${orderWords(order)}`;
+      const said = `the next account is picked by ${orderWords(order)}, from each session's next move`;
       pushEvent(said);
       return said;
     },

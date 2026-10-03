@@ -36,9 +36,19 @@ const EntrySchema = z.object({
   at: z.number(),
   /**
    * What one full 5-hour window costs the week on this account, learned from
-   * its own readings (see learnWindowCost). Absent until two readings agree.
+   * its own readings (see learnWindowCost). Absent until the first measurement.
    */
   windowCost: z.number().nullable().optional(),
+  /** The reading the current window-cost measurement started from. */
+  costAnchor: z
+    .object({
+      fiveHour: z.number(),
+      sevenDay: z.number(),
+      fiveHourReset: z.number().nullable(),
+      sevenDayReset: z.number().nullable(),
+    })
+    .nullable()
+    .optional(),
 });
 const SnapshotSchema = z.object({ accounts: z.record(z.string(), EntrySchema) });
 
@@ -336,8 +346,12 @@ export async function refreshUsage(
           : {}),
         at: now(),
       };
-      const windowCost = learnWindowCost(previous, fresh);
-      snapshot.accounts[account.name] = windowCost === null ? fresh : { ...fresh, windowCost };
+      const learned = learnWindowCost(previous, fresh);
+      snapshot.accounts[account.name] = {
+        ...fresh,
+        ...(learned.windowCost !== null ? { windowCost: learned.windowCost } : {}),
+        ...(learned.costAnchor ? { costAnchor: learned.costAnchor } : {}),
+      };
     } else {
       // Could not read it (offline, or the endpoint asked us to slow down).
       // KEEP the last known numbers rather than replacing them with blanks, and

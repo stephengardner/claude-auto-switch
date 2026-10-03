@@ -129,31 +129,74 @@ export function standingOf(entry: RunwayWindows | undefined, now: number, model?
  * One number to sort by, higher first: worth moving at all, then runway in
  * tenths of a window, then urgency. Ties after that fall to the priority order
  * (the comparator), so the order is always fully determined.
+ *
+ * Urgency only counts where there is room to use it: an account with no
+ * runway at all is spent for now, and must not rank above one with a sliver.
  */
 export function pickScore(standing: Standing): number {
-  return (standing.worthMoving ? 100 : 0) + Math.round(standing.runway * 10) + Math.min(1, standing.urgency) * 0.99;
+  const urgency = standing.runway > 0 ? Math.min(1, standing.urgency) * 0.99 : 0;
+  return (standing.worthMoving ? 100 : 0) + Math.round(standing.runway * 10) + urgency;
+}
+
+/** Where a measurement of the window cost started: one reading, as it was. */
+export interface CostAnchor {
+  fiveHour: number;
+  sevenDay: number;
+  fiveHourReset: number | null;
+  sevenDayReset: number | null;
 }
 
 /**
- * Learn what one full 5-hour window costs the week on an account, from two
- * readings inside the same pair of windows: the weekly share used between
- * them, over the 5-hour share used between them. Kept as a running average,
- * so one odd pair cannot swing it. Returns the previous value (or null) when
- * the pair says nothing: different windows, or too little used to measure.
+ * How far the 5-hour window must move before a sample is taken. Usage comes in
+ * whole percents, so over a few points the weekly change is 0 or 1 point and
+ * the sample is noise; across a fifth of a window it is a measurement.
  */
-export function learnWindowCost(previous: RunwayWindows | undefined, next: RunwayWindows): number | null {
+const MIN_SAMPLE_SPAN = 0.2;
+
+/**
+ * Learn what one full 5-hour window costs the week on an account.
+ *
+ * A measurement runs from an ANCHOR reading to the first later reading in the
+ * same 5-hour and weekly windows whose 5-hour share has moved by at least
+ * MIN_SAMPLE_SPAN; the sample is the weekly share used over the 5-hour share
+ * used. Measuring from one reading to the next instead, a few minutes apart,
+ * only ever sees a point or two of either, and one such sample (a week that
+ * did not move) read as nearly free and hid the week from the picker.
+ *
+ * Folded into a running average that starts from the default, so the first
+ * sample moves it part of the way rather than replacing it. A reset of either
+ * window starts a new anchor. Returns the cost and the anchor to keep.
+ *
+ * A model's own weekly window (Fable) is scaled by this same cost: readings are
+ * per account, not per model, so a share of the week cannot be attributed to
+ * one model when several ran. Accounts that ran mostly Fable show its window
+ * moving within about a tenth of the week, close enough to use the same cost.
+ */
+export function learnWindowCost(
+  previous: (RunwayWindows & { costAnchor?: CostAnchor | null }) | undefined,
+  next: RunwayWindows,
+): { windowCost: number | null; costAnchor: CostAnchor | null } {
   const known = typeof previous?.windowCost === 'number' ? previous.windowCost : null;
-  if (!previous) return known;
+  const here: CostAnchor | null =
+    typeof next.fiveHour === 'number' && typeof next.sevenDay === 'number'
+      ? {
+          fiveHour: next.fiveHour,
+          sevenDay: next.sevenDay,
+          fiveHourReset: next.fiveHourReset ?? null,
+          sevenDayReset: next.sevenDayReset ?? null,
+        }
+      : null;
+  const anchor = previous?.costAnchor ?? null;
   const same = (a: number | null | undefined, b: number | null | undefined): boolean =>
     typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) < 60_000;
-  if (!same(previous.fiveHourReset, next.fiveHourReset) || !same(previous.sevenDayReset, next.sevenDayReset)) {
-    return known;
+  if (!anchor || !here) return { windowCost: known, costAnchor: here ?? anchor };
+  if (!same(anchor.fiveHourReset, here.fiveHourReset) || !same(anchor.sevenDayReset, here.sevenDayReset)) {
+    return { windowCost: known, costAnchor: here }; // a window reset: start over
   }
-  if (typeof previous.fiveHour !== 'number' || typeof next.fiveHour !== 'number') return known;
-  if (typeof previous.sevenDay !== 'number' || typeof next.sevenDay !== 'number') return known;
-  const fiveHourUsed = next.fiveHour - previous.fiveHour;
-  const weeklyUsed = next.sevenDay - previous.sevenDay;
-  if (fiveHourUsed < 0.05 || weeklyUsed < 0) return known;
+  const fiveHourUsed = here.fiveHour - anchor.fiveHour;
+  const weeklyUsed = here.sevenDay - anchor.sevenDay;
+  if (fiveHourUsed < MIN_SAMPLE_SPAN - 1e-9) return { windowCost: known, costAnchor: anchor }; // keep measuring
+  if (weeklyUsed < 0) return { windowCost: known, costAnchor: here };
   const sample = Math.min(1, Math.max(0.01, weeklyUsed / fiveHourUsed));
-  return known === null ? sample : known * 0.7 + sample * 0.3;
+  return { windowCost: (known ?? DEFAULT_WINDOW_COST) * 0.7 + sample * 0.3, costAnchor: here };
 }

@@ -12,6 +12,7 @@ import {
   snapshotStateBase,
 } from '../session/write-back.js';
 import { configHome, type PathCtx } from '../config/paths.js';
+import { loadConfig } from '../config/config.js';
 import { sweepAbandonedTemps } from '../util/fs-json.js';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
@@ -997,6 +998,20 @@ export async function runInteractiveHotSwap(
   };
 
   /**
+   * The rotation settings as they are on disk now, not as they were when this
+   * session started: a change made in the dashboard (the model preference, the
+   * pick rule) applies from this session's next move. A config that cannot be
+   * read keeps what the session had.
+   */
+  const refreshRotation = (): void => {
+    try {
+      context.config.rotation = loadConfig(context.ctx).rotation;
+    } catch {
+      /* keep the settings it started with */
+    }
+  };
+
+  /**
    * The account to move THIS session to when its current account hits an
    * account-wide limit, WITHOUT restarting.
    *
@@ -1008,6 +1023,7 @@ export async function runInteractiveHotSwap(
    * cap recorded a moment earlier.
    */
   const reliefAccount = (capName: string): Account | null => {
+    refreshRotation();
     const now = Date.now();
     const capped = cappedNames(loadLedger(context.ctx), now);
     const healthy = accounts
@@ -1127,6 +1143,7 @@ export async function runInteractiveHotSwap(
     accountsNeverSignedIn: () =>
       accounts.filter((a) => a.enabled && !hasLogin(a.dir)).map((a) => a.name),
     nextAccount: (excluding) => {
+      refreshRotation();
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
       // An account this run was told to start on outranks the active one.
       const pinned = options.account ?? getActive(context.ctx);
@@ -1138,7 +1155,7 @@ export async function runInteractiveHotSwap(
         context.ctx,
         Date.now(),
         context.config.rotation.accountOrder,
-        runningModel() ?? preferredModel(context),
+        runningModel() ?? limitedModel ?? preferredModel(context),
       );
       const eligible = accounts
         .filter(

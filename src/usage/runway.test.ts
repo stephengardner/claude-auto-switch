@@ -107,22 +107,63 @@ describe('pick order', () => {
   });
 });
 
+
+describe('a spent account against one with a sliver of room', () => {
+  it('ranks the sliver first, however urgent the spent one week is', () => {
+    // The urgency bonus used to count with no runway at all, so a spent 5-hour
+    // window with half a week left outranked an account with a little room.
+    const spent = standingOf(account({ fiveHour: 1, sevenDay: 0.5, sevenDayReset: NOW + 48 * HOUR }), NOW);
+    const sliver = standingOf(account({ fiveHour: 0.96, sevenDay: 0.1, sevenDayReset: NOW + 144 * HOUR }), NOW);
+    expect(spent.runway).toBe(0);
+    expect(pickScore(spent)).toBe(0);
+    expect(pickScore(sliver)).toBeGreaterThan(pickScore(spent));
+  });
+});
+
 describe('learning what a 5-hour window costs the week', () => {
   const reading = (fiveHour: number, sevenDay: number, over: Record<string, unknown> = {}) =>
     account({ fiveHour, sevenDay, ...over });
-
-  it('learns from two readings in the same windows', () => {
-    expect(learnWindowCost(reading(0.1, 0.4), reading(0.3, 0.43))).toBeCloseTo(0.15);
+  const anchored = (fiveHour: number, sevenDay: number, over: Record<string, unknown> = {}) => ({
+    ...reading(fiveHour, sevenDay, over),
+    costAnchor: { fiveHour, sevenDay, fiveHourReset: NOW + 3 * HOUR, sevenDayReset: NOW + 100 * HOUR },
   });
 
-  it('keeps a running average rather than jumping to the newest pair', () => {
-    expect(learnWindowCost(reading(0.1, 0.4, { windowCost: 0.1 }), reading(0.3, 0.44))).toBeCloseTo(0.1 * 0.7 + 0.2 * 0.3);
+  it('starts measuring from the first reading', () => {
+    expect(learnWindowCost(undefined, reading(0.1, 0.4))).toEqual({
+      windowCost: null,
+      costAnchor: { fiveHour: 0.1, sevenDay: 0.4, fiveHourReset: NOW + 3 * HOUR, sevenDayReset: NOW + 100 * HOUR },
+    });
   });
 
-  it('learns nothing across a reset, or from too little use to measure', () => {
+  it('keeps measuring from the same anchor until the 5-hour window has moved a fifth', () => {
+    const before = anchored(0.1, 0.4);
+    const out = learnWindowCost(before, reading(0.2, 0.41));
+    expect(out.windowCost).toBeNull();
+    expect(out.costAnchor).toEqual(before.costAnchor);
+  });
+
+  it('takes a sample across a fifth of a window, folded into the default', () => {
+    // 3 points of the week over 22 points of a 5-hour window.
+    const out = learnWindowCost(anchored(0.1, 0.4), reading(0.32, 0.43));
+    expect(out.windowCost).toBeCloseTo(DEFAULT_WINDOW_COST * 0.7 + (0.03 / 0.22) * 0.3);
+    expect(out.costAnchor?.fiveHour).toBe(0.32);
+  });
+
+  it('never lets one still week make the week invisible', () => {
+    // The week did not move at all over a fifth of a window: the sample says
+    // "nearly free". Taken whole, 97% of a week used read as a full window.
+    const out = learnWindowCost(anchored(0.1, 0.4), reading(0.35, 0.4));
+    expect(out.windowCost).toBeCloseTo(DEFAULT_WINDOW_COST * 0.7 + 0.01 * 0.3);
+    const week = standingOf(account({ sevenDay: 0.97, windowCost: out.windowCost }), NOW);
+    expect(week.runway).toBeLessThan(0.5);
+  });
+
+  it('starts over across a reset of either window', () => {
     const known = { windowCost: 0.12 };
-    expect(learnWindowCost(reading(0.8, 0.4, known), reading(0.1, 0.42, { fiveHourReset: NOW + 8 * HOUR }))).toBe(0.12);
-    expect(learnWindowCost(reading(0.1, 0.4, known), reading(0.12, 0.4))).toBe(0.12);
-    expect(learnWindowCost(undefined, reading(0.3, 0.4))).toBeNull();
+    const fiveHourReset = learnWindowCost(anchored(0.8, 0.4, known), reading(0.1, 0.42, { fiveHourReset: NOW + 8 * HOUR }));
+    expect(fiveHourReset.windowCost).toBe(0.12);
+    expect(fiveHourReset.costAnchor?.fiveHour).toBe(0.1);
+    const weekReset = learnWindowCost(anchored(0.1, 0.9, known), reading(0.4, 0.05, { sevenDayReset: NOW + 200 * HOUR }));
+    expect(weekReset.windowCost).toBe(0.12);
   });
 });

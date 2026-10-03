@@ -30,12 +30,21 @@ export function modelPreferenceWords(preference: readonly string[]): string {
   return names.join(', then ');
 }
 
-/** The next model preference after `current`; the first choice for one not in the list. */
-export function nextModelPreference(current: readonly string[]): [string, ...string[]] {
+/**
+ * The next model preference after `current`, or null when `current` is not one
+ * of the choices (a chain set with `ccx models`): the dashboard does not
+ * replace a chain it cannot give back. The user's own spelling of each model
+ * is kept (`claude-opus-5[1m]` stays that, rather than becoming `opus`).
+ */
+export function nextModelPreference(current: readonly string[]): [string, ...string[]] | null {
   const key = current.map(normalizeModel).join(',');
   const at = MODEL_CHOICES.findIndex((c) => c.join(',') === key);
-  const [first, ...rest] = MODEL_CHOICES[(at + 1) % MODEL_CHOICES.length] ?? ['opus'];
-  return [first, ...rest];
+  if (at < 0) return null;
+  const spelled = new Map(current.map((m) => [normalizeModel(m), m]));
+  const [first, ...rest] = (MODEL_CHOICES[(at + 1) % MODEL_CHOICES.length] ?? ['opus']).map(
+    (m) => spelled.get(m) ?? m,
+  );
+  return [first ?? 'opus', ...rest];
 }
 
 /** The pick rule, in words. */

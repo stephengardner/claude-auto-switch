@@ -58,7 +58,10 @@ to it by themselves.
   preference and the pick rule. `M` cycles the model preference (Opus then
   Fable, Fable then Opus, Opus only, Fable only), `o` cycles the pick rule,
   and `[` and `]` move the highlighted account up or down your priority order.
-  Changes are saved to your config and logged.
+  Changes are saved to your config and logged, and running sessions pick them
+  up at their next move (sessions now reread the rotation settings each time
+  they pick an account). A model chain set with `ccx models` that is not one
+  of the four is left alone.
 - **A record of every hand-back.** Each time a session's changes are written
   into your `settings.json` or `.claude.json`, the event log says which keys
   changed (the model by name, never other values, which can be secrets).

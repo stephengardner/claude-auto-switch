@@ -22,6 +22,11 @@ export interface NextUpInput {
   preference: readonly string[];
   strategy: RotationStrategy;
   spentThisRun?: ReadonlySet<string>;
+  /**
+   * Why an account would be picked, in words, added after a move. Asked of
+   * the account the plan names, so it always describes the one on the line.
+   */
+  reasonFor?: (account: string) => string | null;
 }
 
 export function describeNextUp(input: NextUpInput): string | null {
@@ -37,11 +42,12 @@ export function describeNextUp(input: NextUpInput): string | null {
   if (!plan.model) return `${plan.account}`;
 
   const room = roomLeft(input.candidates, plan.account, plan.model);
-  const where = plan.account === input.current ? 'staying here' : `over on ${plan.account}`;
+  const staying = plan.account === input.current;
+  const where = staying ? 'staying here' : `over on ${plan.account}`;
   const model = plan.changedModel ? `${plan.model} (changed)` : plan.model;
-  return room === null
-    ? `${where}, on ${model}`
-    : `${where}, on ${model} (${room}% left)`;
+  const line = room === null ? `${where}, on ${model}` : `${where}, on ${model} (${room}% left)`;
+  const reason = staying ? null : (input.reasonFor?.(plan.account) ?? null);
+  return reason ? `${line} · ${reason}` : line;
 }
 
 /** How much of that model is still free on that account, as a whole percent. */

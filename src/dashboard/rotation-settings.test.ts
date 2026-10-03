@@ -26,8 +26,16 @@ describe('model preference', () => {
     expect(nextModelPreference(['fable'])).toEqual(['opus', 'fable']);
   });
 
-  it('starts the cycle over from a preference it does not offer', () => {
-    expect(nextModelPreference(['sonnet', 'opus'])).toEqual(['opus', 'fable']);
+  it('leaves a chain it does not offer alone, rather than replace it', () => {
+    expect(nextModelPreference(['sonnet', 'opus'])).toBeNull();
+  });
+
+  it("keeps the user's own spelling of each model", () => {
+    expect(nextModelPreference(['claude-opus-5[1m]', 'claude-fable-5[1m]'])).toEqual([
+      'claude-fable-5[1m]',
+      'claude-opus-5[1m]',
+    ]);
+    expect(nextModelPreference(['claude-fable-5[1m]', 'claude-opus-5[1m]'])).toEqual(['claude-opus-5[1m]']);
   });
 });
 
