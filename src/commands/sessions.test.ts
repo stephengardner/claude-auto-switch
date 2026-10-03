@@ -63,10 +63,10 @@ describe('sessionsCommand', () => {
     expect(out).not.toContain('\x1b');
     expect(out).not.toContain('\x07');
     expect(out).toContain('RED'); // the visible text survives, only controls go
-    // The malformed one was dropped: no cell reads 999. A whole token, not a
-    // substring, because the live row's pid is this test's own, and a runner
-    // gave it 9996.
-    expect(out).not.toMatch(/(^|\s)999(\s|$)/m);
+    // The malformed one was dropped: its folder is not in the table. Asked by
+    // its own data, not by "999", which the live row's pid (this test's own)
+    // can contain or be: a runner gave it 9996.
+    expect(out).not.toContain('C:/x');
   });
 
   it('emits a machine-readable envelope with --json', () => {
