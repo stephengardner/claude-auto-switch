@@ -433,11 +433,9 @@ export async function dashboardCommand(
       const rotatable = listAccounts(context.ctx);
       const loggedIn = signedInAndNotRejected(healths, rotatable, context.ctx);
       const now = Date.now();
-      const capped = new Set(
-        loadLedger(context.ctx)
-          .caps.filter((c) => c.capUntil && c.capUntil > now)
-          .map((c) => c.account),
-      );
+      // Account-wide caps only, as rotation decides: a cap on one model (Fable)
+      // leaves the account for the rest of the chain, which chainRuns checks.
+      const capped = cappedNames(loadLedger(context.ctx), now);
       // The SAME order the "next up" line predicts and rotation actually uses, so
       // pressing rotate goes to the account the dashboard just said it would.
       const rotation = context.config.rotation;
