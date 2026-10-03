@@ -4,6 +4,74 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.0.0]
+
+A major version because of how much ccx changed since 1.52 in what it touches
+and how it decides. Nothing needs doing to upgrade, and running sessions move
+to it by themselves.
+
+### What changed since 1.52, in one place
+
+- **Limits are read from the conversation's own record, never the screen**
+  (1.53). Sessions no longer restart because limit-like words were on screen.
+- **A restarted session carries on by itself** (1.53), and the prompt it gets
+  no longer mentions ccx or accounts (2.0).
+- **Running sessions move to a newer ccx by themselves** when idle (1.53).
+- **A ccx session is your own Claude but for the account** (1.54): everything
+  in `~/.claude` is shared with it, and what Claude saves in a session (a
+  model picked with `/model`, a permission, a hook, an MCP server, a trusted
+  folder) goes back into your own `settings.json` and `.claude.json`, merged
+  with your own changes. ccx's private copy of your settings is gone; your
+  settings win.
+- **Opus first, and a new way of picking the next account** (2.0, below).
+
+### Changed
+
+- **The next account is the one that can run longest.** The new `smart` order,
+  now the default, measures every account in one unit: how much of a 5-hour
+  window's work it can still do before any window stops it. Weekly room is
+  converted into 5-hour windows through what one full window costs that
+  account's week, which ccx learns from the account's own readings. So an
+  account whose 5-hour window is nearly spent is a poor move however much of
+  its week is left, and so is one whose week is nearly spent however fresh its
+  5-hour window; comparing their percentages directly, as before, treated 30%
+  of a week like 30% of a 5-hour window. Between accounts that can run about
+  as long, the one whose leftover weekly budget would expire unused soonest
+  goes first, then your priority order. An account with less than a quarter
+  of a window left is used only when nothing better exists, since a move
+  rereads the conversation on the new account. `ccx order most-room` and
+  `ccx order priority` still choose the old rules, and a config that sets one
+  keeps it.
+- **Sessions prefer Opus, falling back to Fable** only when Opus room is spent
+  on every account (`modelPreference` now defaults to `["opus", "fable"]`). A
+  preference set in your config keeps.
+- **The default restart prompt** is now: "This session was restarted. If you
+  were in the middle of something, carry on exactly where you stopped. If
+  your work was already finished, say so in one line and wait."
+
+### Added
+
+- **The dashboard shows and changes how rotation decides.** A `#` column gives
+  each account's place in the pick order (1 is next), `next →` says why that
+  account, the highlighted account's line says how much of a 5-hour window it
+  has room for and which window binds, and a settings line shows the model
+  preference and the pick rule. `M` cycles the model preference (Opus then
+  Fable, Fable then Opus, Opus only, Fable only), `o` cycles the pick rule,
+  and `[` and `]` move the highlighted account up or down your priority order.
+  Changes are saved to your config and logged, and running sessions pick them
+  up at their next move (sessions now reread the rotation settings each time
+  they pick an account). A model chain set with `ccx models` that is not one
+  of the four is left alone.
+- **A record of every hand-back.** Each time a session's changes are written
+  into your `settings.json` or `.claude.json`, the event log says which keys
+  changed (the model by name, never other values, which can be secrets).
+
+### Fixed
+
+- The README documented a `priorityOrder` config key that nothing reads.
+  Priority is per account: `ccx priority <name> <n>`, or `[` and `]` in the
+  dashboard.
+
 ## [1.54.1]
 
 ### Fixed

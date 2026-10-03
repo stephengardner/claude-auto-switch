@@ -9,7 +9,7 @@ import { renderDashboard, type DashboardAccount } from '../dashboard/render.js';
 import { toSnapshot } from '../dashboard/snapshot.js';
 import { dispatchKey, confirmKey } from '../dashboard/keys.js';
 import { openPrompt, promptKey, rejectPrompt, type PromptState } from '../dashboard/prompt.js';
-import { loadConfig } from '../config/config.js';
+import { loadConfig, loadConfigFile, saveConfig } from '../config/config.js';
 import { desktopSummary } from '../desktop/summary.js';
 import { nextHandoff, setHandoff, setMode, setPrompt, moveConversation } from './desktop.js';
 import path from 'node:path';
@@ -27,12 +27,24 @@ import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { describeNextUp } from '../dashboard/next-up.js';
-import { usableCapacity, remainingRoom, type CapacityWindows } from '../usage/usable-capacity.js';
+import type { CapacityWindows } from '../usage/usable-capacity.js';
 import { orderComparator } from '../selector/selector.js';
 import { roomOfFromSnapshot } from '../usage/account-room.js';
-import { activeModelCaps } from '../ledger/ledger.js';
+import { standingOf, type RunwayWindows } from '../usage/runway.js';
+import {
+  modelPreferenceWords,
+  nextModelPreference,
+  nextOrder,
+  orderWords,
+  canRunChain,
+  modelUsageFor,
+  numberPicks,
+  pickReason,
+  rankAccounts,
+  reorder,
+} from '../dashboard/rotation-settings.js';
+import { activeModelCaps, cappedNames } from '../ledger/ledger.js';
 import { spentKey } from '../usage/rotation-plan.js';
-import { normalizeModel } from '../usage/model-preference.js';
 
 export interface DashboardOptions {
   /** Print a single frame and exit (no live loop). */
@@ -150,6 +162,13 @@ export async function dashboardCommand(
   }
   // Dashboard actions go to the same shared log that `ccx run` writes to.
   const pushEvent = (m: string): void => appendEvent(home, m, Date.now());
+  // A rotation setting changed here is saved to the FILE (never baking in a
+  // temporary environment override) and applied to this screen at once.
+  const saveRotation = (patch: Partial<CliContext['config']['rotation']>): void => {
+    const onDisk = loadConfigFile(context.ctx);
+    saveConfig({ ...onDisk, rotation: { ...onDisk.rotation, ...patch } }, context.ctx);
+    context.config.rotation = { ...context.config.rotation, ...patch };
+  };
 
   // Re-read accounts + ledger + active every tick so interactive edits show live.
   const build = () => {
@@ -171,6 +190,9 @@ export async function dashboardCommand(
           fiveHourReset: u.fiveHourReset,
           sevenDayReset: u.sevenDayReset,
           ...(u.models ? { models: u.models } : {}),
+          // The learned cost of a 5-hour window, so the pick column agrees with
+          // rotation, which reads the whole entry.
+          ...(typeof u.windowCost === 'number' ? { windowCost: u.windowCost } : {}),
         },
       ]),
     );
@@ -195,8 +217,14 @@ export async function dashboardCommand(
       version: ccxVersion(),
       now,
       refreshMs,
-      ...nextMove(context, accts, usage, cappedUntil, loggedIn, now),
+      // Eligible the way rotation decides it: a cap on one model (Fable) does
+      // not stop the account, so it is not excluded here either.
+      ...nextMove(context, accts, usage, cappedNames(loadLedger(context.ctx), now), loggedIn, now),
       desktop: desktopSummary(context, (name) => usage.get(name), now),
+      settings: {
+        model: modelPreferenceWords(context.config.rotation.modelPreference),
+        order: orderWords(context.config.rotation.accountOrder),
+      },
     });
   };
 
@@ -222,39 +250,33 @@ export async function dashboardCommand(
   function nextMove(
     ctx: CliContext,
     accounts: Array<{ name: string; enabled: boolean; priority: number }>,
-    usage: Map<string, CapacityWindows>,
-    capped: Map<string, number>,
+    usage: Map<string, CapacityWindows & RunwayWindows>,
+    capped: ReadonlySet<string>,
     loggedIn: Set<string>,
     at: number,
-  ): { model?: string; nextUp?: string } {
+  ): {
+    model?: string;
+    nextUp?: string;
+    picks: Map<string, NonNullable<DashboardAccount['pick']>>;
+  } {
     const rotation = ctx.config.rotation;
     // With models switched off, rotation still MOVES BETWEEN ACCOUNTS, and
     // that is worth predicting. Returning nothing here hid the line entirely
     // for a setting that only turns off half of what it describes.
     const model = rotation.preferSameModel ? rotation.modelPreference[0] : null;
     const knownSpent = activeModelCaps(loadLedger(ctx.ctx), at);
-    const candidates = accounts
-      .filter((a) => a.enabled && loggedIn.has(a.name) && (capped.get(a.name) ?? 0) <= at)
-      // Ordered the same way rotation actually chooses, so the "next up" line
-      // predicts the real move: `most-room` reaches for the least-used account.
-      .sort(orderComparator(rotation.accountOrder, (name) => remainingRoom(usage.get(name), at)))
-      .map((a) => {
-        const capacity = usableCapacity(usage.get(a.name), at);
-        // Both sides keyed the SAME way before they are merged. A cap can be
-        // recorded as `claude-fable-5[1m]` while the usage snapshot calls the
-        // same window `Fable`, and unmerged those are two keys: the account
-        // then reads as having room on a model it is demonstrably capped on.
-        const byModel = (entries: Array<[string, number | null]>): Record<string, number | null> =>
-          Object.fromEntries(entries.map(([name, used]) => [normalizeModel(name), used]));
-        const fromLedger = byModel(
-          knownSpent.filter((c) => c.account === a.name).map((c) => [c.model, 1]),
-        );
-        return {
-          name: a.name,
-          models: { ...byModel(Object.entries(capacity.models)), ...fromLedger },
-          ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
-        };
-      });
+    const standing = (name: string) => standingOf(usage.get(name), at, model);
+    // Ordered the same way rotation actually chooses, so the "next up" line
+    // and the pick column predict the real move.
+    const ordered = rankAccounts(
+      accounts.filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name)),
+      (name) => usage.get(name),
+      rotation.accountOrder,
+      model,
+      at,
+    );
+    const candidates = ordered.map((a) => modelUsageFor(a.name, usage.get(a.name), knownSpent, at));
+    const picks = numberPicks(candidates, rotation.modelPreference, model !== null, standing);
     const current = getActive(ctx.ctx);
     const nextUp = describeNextUp({
       candidates,
@@ -267,8 +289,10 @@ export async function dashboardCommand(
       spentThisRun: new Set(
         current ? knownSpent.filter((c) => c.account === current).map((c) => spentKey(c.account, c.model)) : [],
       ),
+      // Why that account, in the terms the smart order decides by.
+      ...(rotation.accountOrder === 'smart' ? { reasonFor: (name: string) => pickReason(standing(name), at) } : {}),
     });
-    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}) };
+    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}), picks };
   }
 
   if (options.json) {
@@ -333,6 +357,30 @@ export async function dashboardCommand(
       return `${what}? This edits the hooks in ~/.claude/settings.json.`;
     },
     desktopPrompt: () => context.config.desktop.prompt,
+    onModelPreference: () => {
+      const current = context.config.rotation.modelPreference;
+      const preference = nextModelPreference(current);
+      if (!preference) {
+        return `your model preference is your own (${current.join(', ')}); change it with ccx models`;
+      }
+      saveRotation({ modelPreference: preference });
+      const said = `sessions prefer ${modelPreferenceWords(preference)}, from their next start or move`;
+      pushEvent(said);
+      return said;
+    },
+    onPickOrder: () => {
+      const order = nextOrder(context.config.rotation.accountOrder);
+      saveRotation({ accountOrder: order });
+      const said = `the next account is picked by ${orderWords(order)}, from each session's next move`;
+      pushEvent(said);
+      return said;
+    },
+    onReorder: (account, direction) => {
+      const changes = reorder(listAccounts(context.ctx), account.name, direction);
+      if (changes.length === 0) return `"${account.name}" is already ${direction < 0 ? 'first' : 'last'} in your order`;
+      for (const change of changes) updateAccount(change.name, { priority: change.priority }, context.ctx);
+      return `"${account.name}" moved ${direction < 0 ? 'up' : 'down'} your order`;
+    },
     onDesktopText: async (kind, text) => {
       if (kind === 'desktop-prompt') {
         const said = await desktopSays((ctx) => setPrompt(ctx, [text]));
@@ -385,16 +433,27 @@ export async function dashboardCommand(
       const rotatable = listAccounts(context.ctx);
       const loggedIn = signedInAndNotRejected(healths, rotatable, context.ctx);
       const now = Date.now();
-      const capped = new Set(
-        loadLedger(context.ctx)
-          .caps.filter((c) => c.capUntil && c.capUntil > now)
-          .map((c) => c.account),
-      );
+      // Account-wide caps only, as rotation decides: a cap on one model (Fable)
+      // leaves the account for the rest of the chain, which chainRuns checks.
+      const capped = cappedNames(loadLedger(context.ctx), now);
       // The SAME order the "next up" line predicts and rotation actually uses, so
       // pressing rotate goes to the account the dashboard just said it would.
-      const roomOf = roomOfFromSnapshot(context.ctx, now);
+      const rotation = context.config.rotation;
+      const roomOf = roomOfFromSnapshot(
+        context.ctx,
+        now,
+        rotation.accountOrder,
+        rotation.preferSameModel ? rotation.modelPreference[0] : null,
+      );
+      // Only where the chain can run: an account spent on every preferred
+      // model is not somewhere to rotate to, as rotation itself would skip it.
+      const knownSpent = activeModelCaps(loadLedger(context.ctx), now);
+      const chainRuns = (name: string): boolean =>
+        !rotation.preferSameModel ||
+        canRunChain(modelUsageFor(name, usageSnap.accounts[name], knownSpent, now), rotation.modelPreference);
       const next = rotatable
         .filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name) && a.name !== active)
+        .filter((a) => chainRuns(a.name))
         .sort(orderComparator(context.config.rotation.accountOrder, roomOf))[0];
       if (next) {
         setActive(next.name, context.ctx);
@@ -432,6 +491,12 @@ interface LoopDeps {
    * to move. Rejects to keep the box open with the reason, like onName.
    */
   onDesktopText: (kind: 'desktop-prompt' | 'desktop-move', text: string) => Promise<string>;
+  /** Cycle the model preference; returns what it is now, in words. */
+  onModelPreference: () => string;
+  /** Cycle how the next account is picked; returns what it is now, in words. */
+  onPickOrder: () => string;
+  /** Move an account up (-1) or down (+1) the priority order; returns what happened. */
+  onReorder: (account: DashboardAccount, direction: -1 | 1) => string;
   /**
    * Sign an account in again, as itself or as a different account. Async and
    * INTERACTIVE: it hands the screen to a browser sign-in, so the dashboard steps
@@ -554,6 +619,22 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       selected = r.selected;
       if (r.action === 'quit') return stop();
       const target = snap.accounts[selected];
+      // The settings keys say what they changed, so they set the notice
+      // themselves rather than have it cleared below.
+      if (r.action === 'model-preference' || r.action === 'pick-order') {
+        ui.notice = r.action === 'model-preference' ? deps.onModelPreference() : deps.onPickOrder();
+        snap = build();
+        if (wake) wake();
+        return;
+      }
+      if ((r.action === 'move-up' || r.action === 'move-down') && target) {
+        ui.notice = deps.onReorder(target, r.action === 'move-up' ? -1 : 1);
+        // The rows follow the priority order, so the cursor follows the account.
+        snap = build();
+        selected = Math.max(0, snap.accounts.findIndex((a) => a.name === target.name));
+        if (wake) wake();
+        return;
+      }
       if (r.action === 'use' && target) deps.onUse(target);
       else if (r.action === 'force' && target) deps.onForce(target);
       else if (r.action === 'toggle' && target) deps.onToggle(target);

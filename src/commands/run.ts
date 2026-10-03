@@ -6,7 +6,7 @@ import { launchWatched, launchPassthrough } from '../launcher/launcher.js';
 import { claudeSubcommandIn } from '../launcher/subcommand.js';
 import { autoRotateHeadless } from '../launcher/rotating-run.js';
 import { loadLedger, saveLedger, cappedNames, markCapped } from '../ledger/ledger.js';
-import { roomOfFromSnapshot } from '../usage/account-room.js';
+import { preferredModel, roomOfFromSnapshot } from '../usage/account-room.js';
 import { getClaude, type CliContext } from '../context.js';
 import { hasAnyUsableAccount, runInteractiveHotSwap } from './session.js';
 import { advanceActiveToHealthy } from '../state/active-sync.js';
@@ -118,7 +118,7 @@ export async function runCommand(
       modelPreference: context.config.rotation.modelPreference,
       modelStrategy: context.config.rotation.modelStrategy,
       order: context.config.rotation.accountOrder,
-      roomOf: roomOfFromSnapshot(context.ctx),
+      roomOf: roomOfFromSnapshot(context.ctx, Date.now(), context.config.rotation.accountOrder, preferredModel(context)),
       defaultBackoffMinutes: context.config.rotation.defaultBackoffMinutes,
       ledger: loadLedger(context.ctx),
       out: context.out,
@@ -139,7 +139,7 @@ export async function runCommand(
     capped,
     pinned,
     order: context.config.rotation.accountOrder,
-    roomOf: roomOfFromSnapshot(context.ctx),
+    roomOf: roomOfFromSnapshot(context.ctx, Date.now(), context.config.rotation.accountOrder, preferredModel(context)),
   });
   if (!result.ok) {
     context.out(`cannot run: ${result.reason}`);

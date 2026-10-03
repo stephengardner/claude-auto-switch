@@ -12,6 +12,7 @@ import {
   snapshotStateBase,
 } from '../session/write-back.js';
 import { configHome, type PathCtx } from '../config/paths.js';
+import { loadConfig } from '../config/config.js';
 import { sweepAbandonedTemps } from '../util/fs-json.js';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
@@ -57,7 +58,7 @@ import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-s
 import { startUsageRefresher } from '../usage/usage-refresher.js';
 import { planRotation, spentKey } from '../usage/rotation-plan.js';
 import { orderComparator } from '../selector/selector.js';
-import { roomOfFromSnapshot } from '../usage/account-room.js';
+import { preferredModel, roomOfFromSnapshot } from '../usage/account-room.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
 import {
   planConversation,
@@ -997,6 +998,20 @@ export async function runInteractiveHotSwap(
   };
 
   /**
+   * The rotation settings as they are on disk now, not as they were when this
+   * session started: a change made in the dashboard (the model preference, the
+   * pick rule) applies from this session's next move. A config that cannot be
+   * read keeps what the session had.
+   */
+  const refreshRotation = (): void => {
+    try {
+      context.config.rotation = loadConfig(context.ctx).rotation;
+    } catch {
+      /* keep the settings it started with */
+    }
+  };
+
+  /**
    * The account to move THIS session to when its current account hits an
    * account-wide limit, WITHOUT restarting.
    *
@@ -1008,6 +1023,7 @@ export async function runInteractiveHotSwap(
    * cap recorded a moment earlier.
    */
   const reliefAccount = (capName: string): Account | null => {
+    refreshRotation();
     const now = Date.now();
     const capped = cappedNames(loadLedger(context.ctx), now);
     const healthy = accounts
@@ -1028,9 +1044,14 @@ export async function runInteractiveHotSwap(
             renewalDue: () => renewalIsDue(a.dir),
           }) !== 'restart',
       )
-      // Same account order as everywhere else: `most-room` relieves onto the
-      // least-used account, `priority` onto the classic first.
-      .sort(orderComparator(context.config.rotation.accountOrder, roomOfFromSnapshot(context.ctx, now)));
+      // Same account order as everywhere else, judged for the model this
+      // session is running (a model with a weekly window of its own counts it).
+      .sort(
+        orderComparator(
+          context.config.rotation.accountOrder,
+          roomOfFromSnapshot(context.ctx, now, context.config.rotation.accountOrder, runningModel()),
+        ),
+      );
     if (healthy.length === 0) return null;
     const running = runningModel();
     // No KNOWN running model: Claude is on its own default and ccx cannot read
@@ -1122,6 +1143,7 @@ export async function runInteractiveHotSwap(
     accountsNeverSignedIn: () =>
       accounts.filter((a) => a.enabled && !hasLogin(a.dir)).map((a) => a.name),
     nextAccount: (excluding) => {
+      refreshRotation();
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
       // An account this run was told to start on outranks the active one.
       const pinned = options.account ?? getActive(context.ctx);
@@ -1129,7 +1151,12 @@ export async function runInteractiveHotSwap(
       // account first (the one with the most headroom), `priority` keeps the
       // classic order. Same comparator the `select`/`rotate`/dashboard paths use,
       // so every surface agrees on which account is "next".
-      const roomOf = roomOfFromSnapshot(context.ctx);
+      const roomOf = roomOfFromSnapshot(
+        context.ctx,
+        Date.now(),
+        context.config.rotation.accountOrder,
+        runningModel() ?? limitedModel ?? preferredModel(context),
+      );
       const eligible = accounts
         .filter(
           (a) => a.enabled && !excluding.has(a.name) && !capped.has(a.name) && hasLogin(a.dir),

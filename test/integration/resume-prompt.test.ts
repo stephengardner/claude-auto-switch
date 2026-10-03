@@ -268,7 +268,7 @@ describe.skipIf(!PTY_AVAILABLE)('a resume prompt the session armed (against fake
     const relaunch = await restartedOnce();
     const i = relaunch.indexOf('--resume');
     expect(i).toBeGreaterThanOrEqual(0);
-    expect(relaunch[i + 2]).toMatch(/^ccx restarted this session/);
+    expect(relaunch[i + 2]).toMatch(/^This session was restarted/);
   });
 
   it('changes nothing when carrying on is turned off', async () => {

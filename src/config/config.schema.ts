@@ -40,7 +40,7 @@ export const ConfigSchema = z.object({
       modelPreference: z
         .array(z.string().min(1))
         .nonempty('modelPreference needs at least one model')
-        .default(['fable', 'opus']),
+        .default(['opus', 'fable']),
       /**
        * Which runs out first: the model, or the account.
        *
@@ -60,14 +60,19 @@ export const ConfigSchema = z.object({
       preferSameModel: z.boolean().default(true),
       /**
        * Which account rotation reaches for first.
-       * - `most-room` (default): the least-used account, the one with the most
+       * - `smart` (default): the account with the longest runway, the most of a
+       *   5-hour window's work it can do before any window stops it, with
+       *   weekly room converted through what a 5-hour window costs that week
+       *   (see usage/runway.ts). Between accounts that can run about as long,
+       *   the one whose leftover weekly budget would go unused soonest first.
+       * - `most-room`: the least-used account, the one with the most
        *   headroom left on its binding window (5-hour or weekly, whichever is
        *   tighter). Spreads work across accounts and delays hitting any limit.
        * - `priority`: the classic order, lowest `priority` number first.
        * Either way a manually pinned account (`ccx use`) still wins, and priority
        * is the tiebreak when two accounts are equally roomy.
        */
-      accountOrder: z.enum(['priority', 'most-room']).default('most-room'),
+      accountOrder: z.enum(['smart', 'most-room', 'priority']).default('smart'),
     })
     .default({}),
   /**
@@ -117,7 +122,7 @@ export const ConfigSchema = z.object({
         .string()
         .min(1)
         .default(
-          'ccx restarted this session, usually on another account. If you were in the middle of something, carry on exactly where you stopped. If your work was already finished, say so in one line and wait.',
+          'This session was restarted. If you were in the middle of something, carry on exactly where you stopped. If your work was already finished, say so in one line and wait.',
         ),
     })
     .default({}),
@@ -153,7 +158,7 @@ export interface PartialConfig {
     modelPreference?: string[];
     modelStrategy?: 'model-first' | 'account-first';
     preferSameModel?: boolean;
-    accountOrder?: 'priority' | 'most-room';
+    accountOrder?: 'smart' | 'most-room' | 'priority';
   };
   desktop?: {
     handoff?: 'off' | 'limit' | 'credits';

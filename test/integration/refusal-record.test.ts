@@ -167,7 +167,7 @@ describe.skipIf(!PTY_AVAILABLE)("a session's own record decides whether it hit a
       // The same conversation, and told to carry on (the default).
       const relaunch = launches[1]?.args ?? [];
       expect(relaunch[relaunch.indexOf('--resume') + 1]).toBe(CONVERSATION);
-      expect(relaunch.at(-1)).toMatch(/^ccx restarted this session/);
+      expect(relaunch.at(-1)).toMatch(/^This session was restarted/);
     },
   );
 });

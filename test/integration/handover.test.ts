@@ -151,7 +151,7 @@ describe.skipIf(!PTY_AVAILABLE)('a running session moves to a newer ccx by itsel
       expect(await run).toBe(0);
       const started = newer.started() ?? [];
       expect(started.slice(0, 3)).toEqual(['run', '--account', 'B']);
-      expect(started[started.indexOf('--start-prompt') + 1]).toMatch(/^ccx restarted this session/);
+      expect(started[started.indexOf('--start-prompt') + 1]).toMatch(/^This session was restarted/);
       expect(started.slice(started.indexOf('--'))).toEqual(['--', '--resume', CONVERSATION]);
       expect(launches(runsLog)).toBe(1);
     },

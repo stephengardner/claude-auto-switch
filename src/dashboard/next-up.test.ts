@@ -36,6 +36,35 @@ describe('saying where rotation goes next', () => {
     expect(said).toContain('80% left');
   });
 
+  it('gives the reason for the account it names, never for another', () => {
+    // The first candidate is out for every model, so the plan skips it: the
+    // reason has to be asked of the account the line names.
+    const asked: string[] = [];
+    const said = describeNextUp({
+      candidates: [account('spent', { Fable: 1 }, true), account('phx', { Fable: 0.2 })],
+      current: 'main',
+      modelInUse: 'fable',
+      ...policy,
+      reasonFor: (name) => {
+        asked.push(name);
+        return `why ${name}`;
+      },
+    });
+    expect(said).toBe('over on phx, on fable (80% left) · why phx');
+    expect(asked).toEqual(['phx']);
+  });
+
+  it('gives no reason for staying put', () => {
+    const said = describeNextUp({
+      candidates: [account('second', { Fable: 0.53 })],
+      current: 'second',
+      modelInUse: 'fable',
+      ...policy,
+      reasonFor: () => 'should not appear',
+    });
+    expect(said).not.toContain('should not appear');
+  });
+
   it('says when the MODEL is what changes, not the account', () => {
     const said = describeNextUp({
       candidates: [account('solo', { Fable: 1, Opus: 0.1 })],

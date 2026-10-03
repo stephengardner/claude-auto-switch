@@ -8,8 +8,8 @@
  *
  * Only when NO account has room on the current model is it worth changing model,
  * and then it should be the next one you would actually want rather than
- * whatever happens to be free. Hence a preference order, defaulting to Fable
- * then Opus, and configurable because that order is a matter of taste.
+ * whatever happens to be free. Hence a preference order, defaulting to Opus
+ * then Fable, and configurable because that order is a matter of taste.
  */
 
 /** How much of a window must be left for it to count as usable. */

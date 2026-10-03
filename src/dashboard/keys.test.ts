@@ -106,4 +106,12 @@ describe('the Claude Desktop keys', () => {
     expect(dispatchKey('t', 116, 2, 3).action).toBe('desktop-prompt');
     expect(dispatchKey('D', 68, 2, 3).action).toBe('desktop-move');
   });
+
+  it('maps the rotation settings keys, without moving the cursor', () => {
+    // M, not m: m is Desktop's. The brackets read as up and down the order.
+    expect(dispatchKey('M', 77, 1, 3)).toEqual({ selected: 1, action: 'model-preference' });
+    expect(dispatchKey('o', 111, 1, 3)).toEqual({ selected: 1, action: 'pick-order' });
+    expect(dispatchKey('[', 91, 1, 3)).toEqual({ selected: 1, action: 'move-up' });
+    expect(dispatchKey(']', 93, 1, 3)).toEqual({ selected: 1, action: 'move-down' });
+  });
 });

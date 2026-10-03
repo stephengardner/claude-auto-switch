@@ -11,7 +11,8 @@ import { checkResumePrompt, checkStartPrompt } from '../session/resume-prompt.js
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { hasLogin } from '../accounts/account-login.js';
 import { cappedNames, loadLedger } from '../ledger/ledger.js';
-import { roomOfFromSnapshot } from '../usage/account-room.js';
+import { preferredModel, roomOfFromSnapshot } from '../usage/account-room.js';
+import { standingOf } from '../usage/runway.js';
 import { runCommand } from './run.js';
 import {
   called,
@@ -60,7 +61,7 @@ export interface DesktopDeps extends HandoffDeps {
   /** Whether a terminal window can be opened here. Injected in tests. */
   canOpen?: () => boolean;
   /** Which account a conversation leaving Desktop goes to. Injected in tests. */
-  destination?: (context: CliContext, leaving: string | null) => string | null;
+  destination?: (context: CliContext, leaving: string | null, model?: string | null) => string | null;
   /** What a launcher's `desktop-run` runs. Injected in tests. */
   run?: typeof runCommand;
   /** Usage for one account, refreshed when stale. Injected in tests. */
@@ -254,20 +255,34 @@ export function setPrompt(context: CliContext, words: string[]): number {
 /* ------------------------------------------------------------------ */
 
 /**
- * Where a conversation leaving Desktop goes: the account with the most room
- * that is not the one it is leaving, and never one that is out. Chosen here,
- * not left to the run, which could start it on the very account it left.
- * Null when no other account has room.
+ * Where a conversation leaving Desktop goes: the best account by the
+ * configured order that is not the one it is leaving, and never one that is
+ * out. Chosen here, not left to the run, which could start it on the very
+ * account it left. Null when no other account has room.
+ *
+ * Judged for the conversation's own model when it is known (the one it will
+ * carry on with), the preferred one otherwise: an account whose Fable week is
+ * spent has no room for a conversation on Fable, however much Opus it has.
  */
-export function destinationFor(context: CliContext, leaving: string | null): string | null {
+export function destinationFor(context: CliContext, leaving: string | null, conversationModel?: string | null): string | null {
   const now = Date.now();
   const capped = cappedNames(loadLedger(context.ctx), now);
-  const roomOf = roomOfFromSnapshot(context.ctx, now);
-  let best: { name: string; room: number } | null = null;
+  const { rotation } = context.config;
+  const model = conversationModel ?? preferredModel(context);
+  // Room decides whether an account can take it at all; the order decides
+  // which of those goes first. A smart score is above zero for an account
+  // whose 5-hour window is spent (its weekly budget still counts), so it
+  // cannot be the test of "has room".
+  const roomOf = roomOfFromSnapshot(context.ctx, now, 'most-room');
+  const rankOf = roomOfFromSnapshot(context.ctx, now, rotation.accountOrder, model);
+  const usage = readUsageSnapshot(context.ctx);
+  let best: { name: string; rank: number } | null = null;
   for (const a of listAccounts(context.ctx)) {
     if (!a.enabled || a.name === leaving || capped.has(a.name) || !hasLogin(a.dir)) continue;
-    const room = roomOf(a.name);
-    if (room > 0 && (!best || room > best.room)) best = { name: a.name, room };
+    if (roomOf(a.name) <= 0) continue;
+    if (rotation.accountOrder === 'smart' && standingOf(usage.accounts[a.name], now, model).runway <= 0) continue;
+    const rank = rotation.accountOrder === 'priority' ? -a.priority : rankOf(a.name);
+    if (!best || rank > best.rank) best = { name: a.name, rank };
   }
   return best?.name ?? null;
 }
@@ -349,11 +364,13 @@ export async function moveConversation(
       return 1;
     }
   }
+  const flags = (deps.flagsOf ?? readProcessFlags)(conv.pid);
   const to =
     opts.to ??
     (deps.destination ?? destinationFor)(
       context,
       desktopAccount(listAccounts(context.ctx), context.ctx),
+      flags.model,
     );
   if (!to) {
     context.out("No account other than Desktop's own has room right now; ccx swap shows them all.");
@@ -373,7 +390,6 @@ export async function moveConversation(
     );
     return 1;
   }
-  const flags = (deps.flagsOf ?? readProcessFlags)(conv.pid);
   const target: HandoffTarget = {
     sessionId: conv.sessionId,
     cwd: conv.cwd,
@@ -549,6 +565,7 @@ export async function desktopHookCommand(
     const to = (deps.destination ?? destinationFor)(
       context,
       desktopAccount(listAccounts(context.ctx), context.ctx),
+      target.model,
     );
     if (!to) {
       log(
@@ -591,7 +608,7 @@ export async function desktopHookCommand(
     deps.canOpen ?? (() => canOpenTerminal(platform !== undefined ? { platform } : {}));
   // And only when somewhere else has room: carried to an account that is just
   // as spent, it would hit the same wall, or spend the same credits there.
-  const to = (deps.destination ?? destinationFor)(context, account.name);
+  const to = (deps.destination ?? destinationFor)(context, account.name, target.model);
   if (!carry.ok || !canOpen() || !to) {
     const why = !carry.ok
       ? `it could not be carried over (${carry.reason})`

@@ -26,6 +26,26 @@ export interface DashboardAccount {
     sevenDayReset?: number | null;
     models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
   };
+  /**
+   * Where this account stands in the order rotation picks from: 1 is the
+   * next pick. Absent for an account rotation would not pick (disabled,
+   * signed out, capped).
+   */
+  pick?: {
+    rank: number;
+    /** Work it can do before a window stops it, in full 5-hour windows (0..1). */
+    runway: number;
+    /** Which window binds. */
+    binding: '5-hour' | 'weekly' | 'model' | 'none';
+  };
+}
+
+/** The rotation settings the dashboard shows and changes, already in words. */
+export interface DashboardSettings {
+  /** The model preference, e.g. "Opus, then Fable". */
+  model: string;
+  /** The pick rule, e.g. "smart". */
+  order: string;
 }
 
 export interface DashboardSnapshot {
@@ -52,6 +72,8 @@ export interface DashboardSnapshot {
    * open conversations (`line`), and the keys that act on it (`keys`).
    */
   desktop?: { line: string; keys: string };
+  /** The rotation settings, shown with the keys that change them. */
+  settings?: DashboardSettings;
 }
 
 export interface RenderOptions {
@@ -94,6 +116,16 @@ const BAR = 10;
 /** Below this a bar says nothing useful, so the number stands on its own. */
 const BAR_MIN = 4;
 
+/** The pick-order cell before each name: two digits and a space. */
+const RANK_W = 3;
+
+/** Runway in words: how much of a 5-hour window, and which window binds. */
+function runwayWords(pick: NonNullable<DashboardAccount['pick']>): string {
+  const share = pick.runway >= 0.995 ? 'a full 5-hour window' : `${Math.round(pick.runway * 100)}% of a 5-hour window`;
+  const binds = pick.binding === 'weekly' ? ' (the week binds)' : pick.binding === 'model' ? ' (the model binds)' : '';
+  return `room for ${share}${binds}`;
+}
+
 /** Everything in a gauge that is not the bar: a space and a padded percent. */
 const GAUGE_EXTRA = 5;
 
@@ -106,7 +138,7 @@ const GAUGE_EXTRA = 5;
  */
 function barWidthFor(width: number | undefined, nameW: number, statusW: number): number {
   if (!width || width <= 0) return BAR;
-  const fixed = 3 + nameW + 2 + 2 * 2 + 2 + statusW + GAUGE_EXTRA * 3;
+  const fixed = 3 + RANK_W + nameW + 2 + 2 * 2 + 2 + statusW + GAUGE_EXTRA * 3;
   const each = Math.floor((width - fixed) / 3);
   if (each >= BAR) return BAR;
   return each >= BAR_MIN ? each : 0;
@@ -260,7 +292,9 @@ function detailLine(a: DashboardAccount, now: number): string {
   const heading = who ? `${a.name} (${who})` : a.name;
   const u = a.usage;
   if (!u) return `${heading}: no usage read yet`;
+  const picked = a.pick ? [`pick #${a.pick.rank}, ${runwayWords(a.pick)}`] : [];
   const parts = [
+    ...picked,
     `5h ${pct(effectiveUtilization(u.fiveHour, u.fiveHourReset, now))}${resetSuffix(u.fiveHourReset, now)}`,
     `week ${pct(effectiveUtilization(u.sevenDay, u.sevenDayReset, now))}${resetSuffix(u.sevenDayReset, now)}`,
   ];
@@ -313,7 +347,7 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // The NAME is elastic too, once the bars have already gone. A long account
   // name in a narrow terminal would otherwise push the row over on its own,
   // and a wrapped row is the thing all of this exists to prevent.
-  const others = 3 + 2 + colW.reduce((a, b) => a + b, 0) + 4 + 2 + statusW;
+  const others = 3 + RANK_W + 2 + colW.reduce((a, b) => a + b, 0) + 4 + 2 + statusW;
   const nameW = Math.min(
     fullNameW,
     options.width ? Math.max(3, options.width - others) : fullNameW,
@@ -351,7 +385,7 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   const titleLine = `${title}   ${paint(subtitle, codes.dim, color)}`;
 
   const header = paint(
-    `   ${fit('ACCOUNT', nameW).padEnd(nameW)}  ${labels
+    `   ${'#'.padStart(RANK_W - 1)} ${fit('ACCOUNT', nameW).padEnd(nameW)}  ${labels
       .map((l, i) => l.padEnd(colW[i] as number))
       .join('  ')}  STATUS`,
     codes.dim,
@@ -375,7 +409,10 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     const week = pad(gauge(weekNow(a, now), color, barW), 1);
     const model = pad(gauge(modelUsedNow(a, modelName, now), color, barW), 2);
     const dot = paint('●', statusColor(a, now, modelName), color);
-    return `${cursor}${marker} ${name}  ${five}  ${week}  ${model}  ${dot} ${status(a)}`;
+    // Where rotation would pick it, 1 being next; a dot when it would not.
+    const rankText = (a.pick ? String(a.pick.rank) : '·').padStart(RANK_W - 1);
+    const rank = paint(rankText, a.pick?.rank === 1 ? codes.cyan : codes.dim, color);
+    return `${cursor}${marker} ${rank} ${name}  ${five}  ${week}  ${model}  ${dot} ${status(a)}`;
   });
 
   const lines = [titleLine, rule, header, ...rows, rule];
@@ -394,6 +431,19 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // happens next before it happens.
   if (snapshot.nextUp) {
     lines.push(paint(fit(`  next → ${snapshot.nextUp}`, maxLine), codes.cyan, color));
+  }
+
+  // The settings rotation runs on, with the keys that change them, so they can
+  // be seen and changed here rather than looked up.
+  if (snapshot.settings) {
+    const keys = options.interactive ? '   (M model · o pick · [ ] move up/down)' : '';
+    lines.push(
+      paint(
+        fit(`  model: ${snapshot.settings.model}  ·  pick: ${snapshot.settings.order}${keys}`, maxLine),
+        codes.dim,
+        color,
+      ),
+    );
   }
 
   // Claude Desktop runs on its own account, which ccx cannot switch, so it gets

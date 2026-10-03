@@ -216,6 +216,42 @@ describe('handing back settings', () => {
   });
 });
 
+describe('a record of what was handed back', () => {
+  const events = (s: Sandbox): string =>
+    existsSync(path.join(s.ccxHome, 'events.jsonl')) ? readFileSync(path.join(s.ccxHome, 'events.jsonl'), 'utf8') : '';
+
+  it('logs what changed, with the model by name, so it can be found again', () => {
+    const s = setup();
+    settingsSession(
+      s,
+      { model: 'fable', permissions: { allow: [] } },
+      { model: 'opus[1m]', permissions: { allow: ['Bash(ls:*)'] } },
+    );
+
+    returnSettings(s.sessionDir, s.c);
+    const log = events(s);
+    expect(log).toContain('"kind":"write-back"');
+    expect(log).toContain('saved to your settings.json: model opus[1m], permissions.allow');
+  });
+
+  it('never logs a value that could be a secret', () => {
+    const s = setup();
+    settingsSession(s, { env: {} }, { env: { API_TOKEN: 'sk-secret-value' } });
+
+    returnSettings(s.sessionDir, s.c);
+    expect(events(s)).toContain('env.API_TOKEN');
+    expect(events(s)).not.toContain('sk-secret-value');
+  });
+
+  it('logs nothing when nothing was written', () => {
+    const s = setup();
+    settingsSession(s, { model: 'fable' }, { model: 'fable' });
+
+    returnSettings(s.sessionDir, s.c);
+    expect(events(s)).toBe('');
+  });
+});
+
 describe("handing back Claude's state", () => {
   it('saves a theme and a trusted folder from the session, never the account it was signed in as', () => {
     const s = setup();

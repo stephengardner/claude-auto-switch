@@ -59,7 +59,7 @@ describe('ccx resume-prompt', () => {
   it('shows what is armed, and the default a session carries on with when nothing is', () => {
     const { context, lines } = liveSession();
     expect(resumePromptCommand(context, [], { session: String(process.pid) })).toBe(0);
-    expect(lines.join('\n')).toMatch(/carries on with the default after a swap: ccx restarted this session/);
+    expect(lines.join('\n')).toMatch(/carries on with the default after a swap: This session was restarted/);
     resumePromptCommand(context, ['carry on'], { session: String(process.pid) });
     lines.length = 0;
     expect(resumePromptCommand(context, [], { session: String(process.pid) })).toBe(0);
