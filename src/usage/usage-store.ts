@@ -9,6 +9,7 @@ import { sessionIdentityEmail } from '../accounts/credential-vault.js';
 import { renewAndCarry } from '../accounts/shared-login.js';
 import { liveLeases, type LeaseOptions, type SessionLease } from '../session/lease.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
+import { learnWindowCost } from './runway.js';
 import { refreshCredentialIfExpired, renewalIsDue, expiredLongerThan, type RefreshOutcome } from './oauth-refresh.js';
 import { editorPointerAccount } from '../editor/junction.js';
 
@@ -33,6 +34,11 @@ const EntrySchema = z.object({
   models: z.array(ModelSchema).optional(),
   /** When this entry was fetched (epoch ms). */
   at: z.number(),
+  /**
+   * What one full 5-hour window costs the week on this account, learned from
+   * its own readings (see learnWindowCost). Absent until two readings agree.
+   */
+  windowCost: z.number().nullable().optional(),
 });
 const SnapshotSchema = z.object({ accounts: z.record(z.string(), EntrySchema) });
 
@@ -319,7 +325,8 @@ export async function refreshUsage(
 
     const known = result.fiveHour !== undefined || result.sevenDay !== undefined;
     if (known) {
-      snapshot.accounts[account.name] = {
+      const previous = snapshot.accounts[account.name];
+      const fresh = {
         fiveHour: result.fiveHour ?? null,
         sevenDay: result.sevenDay ?? null,
         fiveHourReset: result.fiveHourReset ?? null,
@@ -329,6 +336,8 @@ export async function refreshUsage(
           : {}),
         at: now(),
       };
+      const windowCost = learnWindowCost(previous, fresh);
+      snapshot.accounts[account.name] = windowCost === null ? fresh : { ...fresh, windowCost };
     } else {
       // Could not read it (offline, or the endpoint asked us to slow down).
       // KEEP the last known numbers rather than replacing them with blanks, and

@@ -11,6 +11,7 @@ import {
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { acquireLockDir, type LockHandle } from '../claude/locks.js';
+import { appendEvent } from '../events/log.js';
 import { configHome } from '../config/paths.js';
 import { defaultClaudeJsonPath } from '../daemon/reference-config.js';
 import { keepOursOver } from '../statusline/settings-install.js';
@@ -192,9 +193,16 @@ function isSetList(trail: readonly string[], key: string): boolean {
  * Apply what the session changed from `base` to `ours` onto `theirs`, in place:
  * objects key by key, set lists entry by entry, anything else as a value. What
  * the user's file changed too stays theirs, and what it removed stays removed,
- * edits inside it included. Returns whether `theirs` changed.
+ * edits inside it included. Returns whether `theirs` changed; what changed is
+ * added to `changes`, as dotted paths (`permissions.allow`).
  */
-function merge3(base: Json, ours: Json, theirs: Json, trail: readonly string[] = []): boolean {
+function merge3(
+  base: Json,
+  ours: Json,
+  theirs: Json,
+  trail: readonly string[] = [],
+  changes: string[] = [],
+): boolean {
   let changed = false;
   for (const key of new Set([...Object.keys(base), ...Object.keys(ours)])) {
     const b = base[key];
@@ -203,12 +211,13 @@ function merge3(base: Json, ours: Json, theirs: Json, trail: readonly string[] =
     if (isDeepStrictEqual(b, o)) continue; // the session did not touch it
     if (isObject(o) && isObject(t) && (b === undefined || isObject(b))) {
       const inner: Json = { ...t };
-      if (merge3(b ?? {}, o, inner, [...trail, key])) {
+      if (merge3(b ?? {}, o, inner, [...trail, key], changes)) {
         theirs[key] = inner;
         changed = true;
       }
       continue;
     }
+    const where = [...trail, key].join('.');
     const listOrNone = (v: unknown): boolean => v === undefined || Array.isArray(v);
     // A list the user's file removed is left removed (the value carry below).
     if (isSetList(trail, key) && listOrNone(b) && listOrNone(o) && (Array.isArray(t) || b === undefined)) {
@@ -218,12 +227,31 @@ function merge3(base: Json, ours: Json, theirs: Json, trail: readonly string[] =
         if (o === undefined && merged.length === 0) delete theirs[key];
         else theirs[key] = merged;
         changed = true;
+        changes.push(where);
       }
       continue;
     }
-    if (carryValue(base, ours, theirs, key)) changed = true;
+    if (carryValue(base, ours, theirs, key)) {
+      changed = true;
+      // Only the model's value is said: other values (an `env` entry) can hold
+      // a secret, and the log is a plain file.
+      changes.push(key === 'model' && trail.length === 0 && typeof o === 'string' ? `model ${o}` : where);
+    }
   }
   return changed;
+}
+
+/** Say what a hand-back wrote, so it can be found again (`ccx history`). */
+function logHandBack(c: PathCtx, file: string, changes: readonly string[]): void {
+  if (changes.length === 0) return;
+  try {
+    appendEvent(configHome(c), `saved to your ${file}: ${changes.join(', ')}`, Date.now(), {
+      kind: 'write-back',
+      data: { file, changes: [...changes] },
+    });
+  } catch {
+    /* the log is a record, never a reason to fail the hand-back */
+  }
 }
 
 type Sides = { base: Json; ours: Json; legacy: boolean } | 'nothing' | 'unreadable';
@@ -348,9 +376,11 @@ export function returnSettings(sessionDir: string, c: PathCtx = {}): boolean {
     return true;
   }
   const ours = found.legacy ? pick(found.ours, LEGACY_SETTINGS) : found.ours;
+  let changes: string[] = [];
   const outcome = mergeInto(userFile, c, (theirs) => {
+    changes = []; // each attempt merges afresh; the one written is the one said
     const lineBefore = theirs.statusLine;
-    const changed = merge3(found.base, ours, theirs);
+    const changed = merge3(found.base, ours, theirs, [], changes);
     // A line set inside a session goes in wrapped by ccx's, never over it. One
     // removed inside a session leaves ccx's own, as `ccx on` would with no line.
     if (changed && isOurs(lineBefore) && !isOurs(theirs.statusLine)) {
@@ -361,6 +391,7 @@ export function returnSettings(sessionDir: string, c: PathCtx = {}): boolean {
   });
   // Not handed back: tried again later, or kept aside (handBackOrRescue).
   if (outcome === 'failed') return false;
+  if (outcome === 'written') logHandBack(c, 'settings.json', changes);
   return advanceBase(sessionDir, 'settings.json', SETTINGS_BASE);
 }
 
@@ -392,8 +423,13 @@ export function returnState(sessionDir: string, c: PathCtx = {}): boolean {
   }
   const base = stateChoices(found.base);
   const ours = stateChoices(found.ours);
-  const outcome = mergeInto(userFile, c, (theirs) => ({ changed: merge3(base, ours, theirs), theirs }));
+  let changes: string[] = [];
+  const outcome = mergeInto(userFile, c, (theirs) => {
+    changes = [];
+    return { changed: merge3(base, ours, theirs, [], changes), theirs };
+  });
   if (outcome === 'failed') return false;
+  if (outcome === 'written') logHandBack(c, '.claude.json', changes);
   return advanceBase(sessionDir, '.claude.json', STATE_BASE);
 }
 

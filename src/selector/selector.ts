@@ -8,10 +8,12 @@ export interface SelectableAccount {
 /**
  * How eligible accounts are ordered.
  * - `priority`: lowest `priority` number first (ties by name) - the classic order.
+ * - `smart`: the highest pick score first (usage/runway.ts: runway, then
+ *   weekly budget about to expire unused). Needs `roomOf` to return that score.
  * - `most-room`: the account with the most remaining headroom first (the
  *   least-used one), ties broken by priority then name. Needs `roomOf`.
  */
-export type AccountOrder = 'priority' | 'most-room';
+export type AccountOrder = 'smart' | 'most-room' | 'priority';
 
 export interface SelectInput<T extends SelectableAccount = SelectableAccount> {
   accounts: T[];
@@ -80,7 +82,7 @@ export function orderComparator<T extends SelectableAccount>(
   roomOf: ((name: string) => number) | undefined,
 ): (a: T, b: T) => number {
   return (a, b) => {
-    if (order === 'most-room' && roomOf) {
+    if ((order === 'smart' || order === 'most-room') && roomOf) {
       const diff = roomOf(b.name) - roomOf(a.name); // more room first
       if (diff !== 0) return diff;
     }

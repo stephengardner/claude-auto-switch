@@ -57,7 +57,7 @@ import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-s
 import { startUsageRefresher } from '../usage/usage-refresher.js';
 import { planRotation, spentKey } from '../usage/rotation-plan.js';
 import { orderComparator } from '../selector/selector.js';
-import { roomOfFromSnapshot } from '../usage/account-room.js';
+import { preferredModel, roomOfFromSnapshot } from '../usage/account-room.js';
 import { withModel, modelInArgs } from '../usage/model-args.js';
 import {
   planConversation,
@@ -1028,9 +1028,14 @@ export async function runInteractiveHotSwap(
             renewalDue: () => renewalIsDue(a.dir),
           }) !== 'restart',
       )
-      // Same account order as everywhere else: `most-room` relieves onto the
-      // least-used account, `priority` onto the classic first.
-      .sort(orderComparator(context.config.rotation.accountOrder, roomOfFromSnapshot(context.ctx, now)));
+      // Same account order as everywhere else, judged for the model this
+      // session is running (a model with a weekly window of its own counts it).
+      .sort(
+        orderComparator(
+          context.config.rotation.accountOrder,
+          roomOfFromSnapshot(context.ctx, now, context.config.rotation.accountOrder, runningModel()),
+        ),
+      );
     if (healthy.length === 0) return null;
     const running = runningModel();
     // No KNOWN running model: Claude is on its own default and ccx cannot read
@@ -1129,7 +1134,12 @@ export async function runInteractiveHotSwap(
       // account first (the one with the most headroom), `priority` keeps the
       // classic order. Same comparator the `select`/`rotate`/dashboard paths use,
       // so every surface agrees on which account is "next".
-      const roomOf = roomOfFromSnapshot(context.ctx);
+      const roomOf = roomOfFromSnapshot(
+        context.ctx,
+        Date.now(),
+        context.config.rotation.accountOrder,
+        runningModel() ?? preferredModel(context),
+      );
       const eligible = accounts
         .filter(
           (a) => a.enabled && !excluding.has(a.name) && !capped.has(a.name) && hasLogin(a.dir),

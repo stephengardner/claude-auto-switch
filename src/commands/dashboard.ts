@@ -30,6 +30,7 @@ import { describeNextUp } from '../dashboard/next-up.js';
 import { usableCapacity, remainingRoom, type CapacityWindows } from '../usage/usable-capacity.js';
 import { orderComparator } from '../selector/selector.js';
 import { roomOfFromSnapshot } from '../usage/account-room.js';
+import { pickScore, standingOf } from '../usage/runway.js';
 import { activeModelCaps } from '../ledger/ledger.js';
 import { spentKey } from '../usage/rotation-plan.js';
 import { normalizeModel } from '../usage/model-preference.js';
@@ -236,8 +237,14 @@ export async function dashboardCommand(
     const candidates = accounts
       .filter((a) => a.enabled && loggedIn.has(a.name) && (capped.get(a.name) ?? 0) <= at)
       // Ordered the same way rotation actually chooses, so the "next up" line
-      // predicts the real move: `most-room` reaches for the least-used account.
-      .sort(orderComparator(rotation.accountOrder, (name) => remainingRoom(usage.get(name), at)))
+      // predicts the real move.
+      .sort(
+        orderComparator(rotation.accountOrder, (name) =>
+          rotation.accountOrder === 'smart'
+            ? pickScore(standingOf(usage.get(name), at, model))
+            : remainingRoom(usage.get(name), at),
+        ),
+      )
       .map((a) => {
         const capacity = usableCapacity(usage.get(a.name), at);
         // Both sides keyed the SAME way before they are merged. A cap can be
@@ -392,7 +399,13 @@ export async function dashboardCommand(
       );
       // The SAME order the "next up" line predicts and rotation actually uses, so
       // pressing rotate goes to the account the dashboard just said it would.
-      const roomOf = roomOfFromSnapshot(context.ctx, now);
+      const rotation = context.config.rotation;
+      const roomOf = roomOfFromSnapshot(
+        context.ctx,
+        now,
+        rotation.accountOrder,
+        rotation.preferSameModel ? rotation.modelPreference[0] : null,
+      );
       const next = rotatable
         .filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name) && a.name !== active)
         .sort(orderComparator(context.config.rotation.accountOrder, roomOf))[0];

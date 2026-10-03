@@ -11,7 +11,8 @@ import { checkResumePrompt, checkStartPrompt } from '../session/resume-prompt.js
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { hasLogin } from '../accounts/account-login.js';
 import { cappedNames, loadLedger } from '../ledger/ledger.js';
-import { roomOfFromSnapshot } from '../usage/account-room.js';
+import { preferredModel, roomOfFromSnapshot } from '../usage/account-room.js';
+import { standingOf } from '../usage/runway.js';
 import { runCommand } from './run.js';
 import {
   called,
@@ -254,20 +255,30 @@ export function setPrompt(context: CliContext, words: string[]): number {
 /* ------------------------------------------------------------------ */
 
 /**
- * Where a conversation leaving Desktop goes: the account with the most room
- * that is not the one it is leaving, and never one that is out. Chosen here,
- * not left to the run, which could start it on the very account it left.
- * Null when no other account has room.
+ * Where a conversation leaving Desktop goes: the best account by the
+ * configured order that is not the one it is leaving, and never one that is
+ * out. Chosen here, not left to the run, which could start it on the very
+ * account it left. Null when no other account has room.
  */
 export function destinationFor(context: CliContext, leaving: string | null): string | null {
   const now = Date.now();
   const capped = cappedNames(loadLedger(context.ctx), now);
-  const roomOf = roomOfFromSnapshot(context.ctx, now);
-  let best: { name: string; room: number } | null = null;
+  const { rotation } = context.config;
+  const model = preferredModel(context);
+  // Room decides whether an account can take it at all; the order decides
+  // which of those goes first. A smart score is above zero for an account
+  // whose 5-hour window is spent (its weekly budget still counts), so it
+  // cannot be the test of "has room".
+  const roomOf = roomOfFromSnapshot(context.ctx, now, 'most-room');
+  const rankOf = roomOfFromSnapshot(context.ctx, now, rotation.accountOrder, model);
+  const usage = readUsageSnapshot(context.ctx);
+  let best: { name: string; rank: number } | null = null;
   for (const a of listAccounts(context.ctx)) {
     if (!a.enabled || a.name === leaving || capped.has(a.name) || !hasLogin(a.dir)) continue;
-    const room = roomOf(a.name);
-    if (room > 0 && (!best || room > best.room)) best = { name: a.name, room };
+    if (roomOf(a.name) <= 0) continue;
+    if (rotation.accountOrder === 'smart' && standingOf(usage.accounts[a.name], now, model).runway <= 0) continue;
+    const rank = rotation.accountOrder === 'priority' ? -a.priority : rankOf(a.name);
+    if (!best || rank > best.rank) best = { name: a.name, rank };
   }
   return best?.name ?? null;
 }

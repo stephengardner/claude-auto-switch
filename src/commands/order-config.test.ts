@@ -14,17 +14,17 @@ function makeContext(): { c: CliContext; lines: string[]; home: string } {
 }
 
 describe('ccx order', () => {
-  it('defaults to most-room (least-used)', () => {
+  it('defaults to smart (longest runway, then expiring budget)', () => {
     const { c } = makeContext();
-    expect(c.config.rotation.accountOrder).toBe('most-room');
+    expect(c.config.rotation.accountOrder).toBe('smart');
   });
 
   it('status describes the current mode without changing it', () => {
     const { c, lines, home } = makeContext();
     expect(orderCommand(c)).toBe(0);
-    expect(lines.join('\n')).toContain('most-room');
+    expect(lines.join('\n')).toContain('smart');
     // Not written to disk on a status read.
-    expect(loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: home } }).rotation.accountOrder).toBe('most-room');
+    expect(loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: home } }).rotation.accountOrder).toBe('smart');
   });
 
   it('switches to priority and persists it', () => {
@@ -45,7 +45,7 @@ describe('ccx order', () => {
   it('rejects an unknown mode', () => {
     const { c, home } = makeContext();
     expect(orderCommand(c, 'sideways')).toBe(1);
-    expect(loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: home } }).rotation.accountOrder).toBe('most-room');
+    expect(loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: home } }).rotation.accountOrder).toBe('smart');
   });
 
   it('does not bake a temporary environment override into the file', () => {
