@@ -1,4 +1,4 @@
-import type { DashboardAccount, DashboardSnapshot } from './render.js';
+import type { DashboardAccount, DashboardSettings, DashboardSnapshot } from './render.js';
 
 /**
  * Pure mapping from the tool's own data (registry + health probe + ledger +
@@ -43,6 +43,10 @@ export interface SnapshotInput {
   nextUp?: string;
   /** Claude Desktop's line and keys. See desktop/summary.ts. */
   desktop?: { line: string; keys: string } | null;
+  /** Where each account stands in the pick order (see dashboard.ts nextMove). */
+  picks?: Map<string, NonNullable<DashboardAccount['pick']>>;
+  /** The rotation settings, in words. */
+  settings?: DashboardSettings;
 }
 
 export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
@@ -50,6 +54,7 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
     .map((a) => {
       const cap = input.cappedUntil.get(a.name);
       const usage = input.usage?.get(a.name);
+      const pick = input.picks?.get(a.name);
       return {
         name: a.name,
         email: input.liveEmail?.get(a.name) ?? a.email,
@@ -60,6 +65,7 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
         priority: a.priority,
         ...(cap !== undefined ? { cappedUntil: cap } : {}),
         ...(usage !== undefined ? { usage } : {}),
+        ...(pick !== undefined ? { pick } : {}),
       };
     })
     // Stable, meaningful order: preferred (lowest priority) first, ties by name.
@@ -74,5 +80,6 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
     ...(input.version ? { version: input.version } : {}),
     ...(input.nextUp ? { nextUp: input.nextUp } : {}),
     ...(input.desktop ? { desktop: input.desktop } : {}),
+    ...(input.settings ? { settings: input.settings } : {}),
   };
 }

@@ -325,7 +325,46 @@ describe('renderDashboard (plain)', () => {
   it('marks the active account and names it in the subtitle', () => {
     const out = renderDashboard(snapshot([account({ name: 'a', active: true }), account({ name: 'b' })]), opts);
     expect(out).toContain('active: a');
-    expect(out).toMatch(/\*\s+a/);
+    // Then the pick cell (a dot: nothing says rotation would pick it), then the name.
+    expect(out).toMatch(/\*\s+·\s+a/);
+  });
+
+  it("shows each account's place in the pick order, the next pick in front", () => {
+    const out = renderDashboard(
+      snapshot([
+        account({ name: 'a', pick: { rank: 2, runway: 0.4, binding: '5-hour' } }),
+        account({ name: 'b', pick: { rank: 1, runway: 1, binding: 'none' } }),
+        account({ name: 'c' }),
+      ]),
+      opts,
+    );
+    expect(out).toMatch(/2\s+a\s/);
+    expect(out).toMatch(/1\s+b\s/);
+    expect(out).toMatch(/·\s+c\s/);
+    expect(out).toMatch(/#\s+ACCOUNT/);
+  });
+
+  it('shows the rotation settings, and the keys that change them only when interactive', () => {
+    const settings = { model: 'Opus, then Fable', order: 'smart (longest run, then expiring weekly budget)' };
+    const plain = renderDashboard({ ...snapshot([account({ name: 'a' })]), settings }, opts);
+    expect(plain).toContain('model: Opus, then Fable  ·  pick: smart (longest run, then expiring weekly budget)');
+    expect(plain).not.toContain('M model');
+    const live = renderDashboard({ ...snapshot([account({ name: 'a' })]), settings }, { ...opts, interactive: true });
+    expect(live).toContain('(M model · o pick · [ ] move up/down)');
+  });
+
+  it("says the highlighted account's place and room in its detail line", () => {
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'a',
+          usage: { fiveHour: 0.6, sevenDay: 0.2 },
+          pick: { rank: 1, runway: 0.4, binding: '5-hour' },
+        }),
+      ]),
+      { ...opts, interactive: true, selected: 0 },
+    );
+    expect(out).toContain('pick #1, room for 40% of a 5-hour window');
   });
 
   it('renders each status: ready, logged out, capped, disabled', () => {

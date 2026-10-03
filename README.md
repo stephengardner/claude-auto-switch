@@ -153,6 +153,11 @@ account for the models that still work.
 **Live.** `ccx dashboard` is a running view of the same thing, with keys to act
 on it: `enter` to switch, `f` to switch instantly, `a` to add an account, `n` to
 rename one, `l` to sign one in again, `e` to enable or disable, `r` to rotate.
+The `#` column is each account's place in the order rotation picks from (1 is
+next), and a settings line shows which model sessions prefer and how the next
+account is picked, with the keys that change them: `M` cycles the model
+preference, `o` the pick rule, and `[` and `]` move the highlighted account up
+or down your priority order.
 
 It also answers the question the numbers are really being read for, on the
 `next →` line:
@@ -300,7 +305,7 @@ want them.
 | `ccx use <name>`                  | Make an account active (`--now` to switch instantly)                                                                                                                |
 | `ccx resume-prompt "<text>"`      | What a session says to itself after a restart, instead of the default (`--clear` for nothing, `--session <pid>`, `--here`)                                          |
 | `ccx rotate`                      | Switch to the next healthy account now                                                                                                                              |
-| `ccx order [most-room\|priority]` | Which account to reach for first: least-used (default) or by priority                                                                                               |
+| `ccx order [smart\|most-room\|priority]` | Which account to reach for first: longest runway (default), least-used, or by priority                                                                       |
 | `ccx proactive on` / `off`        | Move to a roomier account before running out                                                                                                                        |
 | `ccx auto`                        | Do that check once now (`--once`, `--json`, for scripts)                                                                                                            |
 | `ccx list` / `status [name]`      | Account health (email, plan, signed in, capped until)                                                                                                               |
@@ -321,9 +326,9 @@ Everything works with no config. To tune it, add an optional
 
 ```json
 {
-  "priorityOrder": ["personal", "work"],
   "rotation": {
-    "modelPreference": ["fable", "opus"],
+    "accountOrder": "smart",
+    "modelPreference": ["opus", "fable"],
     "modelStrategy": "model-first",
     "preferSameModel": true,
     "defaultBackoffMinutes": 300,
@@ -333,29 +338,51 @@ Everything works with no config. To tune it, add an optional
 }
 ```
 
+### Which account is next
+
+`ccx order` shows and sets this, and so does `o` in the dashboard.
+
+- **smart** (the default) goes where work can run longest: how much of a
+  5-hour window's work the account can still do before any window stops it.
+  The weekly window counts too, converted into 5-hour windows through what one
+  full 5-hour window costs that account's week, which ccx learns from its own
+  readings (it starts by assuming a tenth of a week). So an account whose
+  5-hour window is 90% used is a poor move however much of its week is left,
+  and so is one whose week is 99% used however fresh its 5-hour window.
+  Between accounts that can run about as long, the one whose leftover weekly
+  budget would expire unused soonest goes first, then your priority order.
+  An account with less than a quarter of a window left is used only when
+  nothing better exists: a move rereads the whole conversation on the new
+  account, and that would use up most of it.
+- **most-room** goes to the least-used account, by the tighter of its 5-hour
+  and weekly percentages.
+- **priority** follows your own order, lowest number first.
+
+A pinned account (`ccx use`) wins under all three.
+
 ### Which runs out first, the model or the account
 
-`ccx models` shows and sets this; the config keys are there if you prefer to
-edit the file.
+`ccx models` shows and sets this, and so does `M` in the dashboard; the config
+keys are there if you prefer to edit the file.
 
 ```sh
 ccx models                            what you have now
-ccx models fable opus                 use Fable, fall back to Opus
-ccx models fable                      only ever Fable, never fall back
+ccx models opus fable                 use Opus, fall back to Fable (the default)
+ccx models opus                       only ever Opus, never fall back
 ccx models --strategy account-first   use each account up instead
 ```
 
 `modelStrategy` picks the rule rotation follows:
 
 - **model-first** (the default) uses up the CURRENT MODEL everywhere before
-  changing model: Fable on every account, and only when the last one is gone
-  does it fall back to Opus and start again from your first account. This is
-  what "stay on Fable as long as possible" means.
-- **account-first** uses up each ACCOUNT before moving on: Fable then Opus on
+  changing model: Opus on every account, and only when the last one is gone
+  does it fall back to Fable and start again from your first account. This is
+  what "stay on Opus as long as possible" means.
+- **account-first** uses up each ACCOUNT before moving on: Opus then Fable on
   this account, then the same on the next one.
 
 `modelPreference` is the chain both strategies walk. A chain of one
-(`["fable"]`) means never fall back: when Fable is gone everywhere ccx says so
+(`["opus"]`) means never fall back: when Opus is gone everywhere ccx says so
 rather than moving you to a model you did not choose. `preferSameModel: false`
 ignores models entirely and rotates on account limits alone (interactive
 sessions only; headless runs always plan by model).
@@ -369,8 +396,10 @@ Claude picks its own default, ccx has no way to read which one that is, and
 imposing a model you never asked for would be the wrong answer. Those sessions
 rotate on account capacity alone.
 
-- `priorityOrder`: which accounts to prefer, in order (for example, burn the
-  personal one first and save work for last).
+- `rotation.accountOrder`: how the next account is picked (see "Which account
+  is next" above). Your own priority order is set per account, with
+  `ccx priority <name> <n>` or `[` and `]` in the dashboard (for example, burn
+  the personal one first and save work for last).
 - `rotation.defaultBackoffMinutes`: how long to treat an account as out when
   Claude does not say when it resets.
 - `rotation.proactivePercent`: move off an account once its binding limit reaches

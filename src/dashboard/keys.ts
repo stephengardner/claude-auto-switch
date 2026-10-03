@@ -16,6 +16,13 @@ export type KeyAction =
   | 'desktop-prompt'
   /** Claude Desktop: move one of its conversations to a terminal (D). */
   | 'desktop-move'
+  /** Rotation: cycle which model sessions prefer (M). */
+  | 'model-preference'
+  /** Rotation: cycle how the next account is picked (o). */
+  | 'pick-order'
+  /** Priority: move the highlighted account up or down the order ([ and ]). */
+  | 'move-up'
+  | 'move-down'
   | 'none';
 
 export interface KeyOutcome {
@@ -71,6 +78,12 @@ export function dispatchKey(
   if (key === 'm') return { selected, action: 'desktop-mode' };
   if (key === 't') return { selected, action: 'desktop-prompt' };
   if (key === 'D') return { selected, action: 'desktop-move' };
+  // Rotation settings. The model is a capital because m already belongs to
+  // Desktop; the brackets read as "up" and "down" the list.
+  if (key === 'M') return { selected, action: 'model-preference' };
+  if (key === 'o') return { selected, action: 'pick-order' };
+  if (key === '[') return { selected, action: 'move-up' };
+  if (key === ']') return { selected, action: 'move-down' };
   return { selected, action: 'none' };
 }
 
