@@ -3,6 +3,8 @@ import {
   modelPreferenceWords,
   nextModelPreference,
   nextOrder,
+  canRunChain,
+  modelUsageFor,
   numberPicks,
   orderWords,
   pickReason,
@@ -152,5 +154,29 @@ describe('numbering the picks', () => {
   it('numbers every candidate when models are switched off', () => {
     const picks = numberPicks(candidates, ['opus', 'fable'], false, standing);
     expect([...picks.keys()]).toEqual(['out', 'chain-spent', 'opus-room', 'fresh']);
+  });
+});
+
+describe('what an account can run', () => {
+  const NOW_ = Date.parse('2026-10-03T12:00:00Z');
+  const entry = {
+    fiveHour: 0.2,
+    sevenDay: 0.3,
+    fiveHourReset: NOW_ + HOUR,
+    sevenDayReset: NOW_ + 50 * HOUR,
+    models: [{ name: 'Fable', utilization: 0.3, resetsAt: NOW_ + 50 * HOUR }],
+  };
+
+  it("lays the ledger's model caps over usage, keyed the same way", () => {
+    const usage = modelUsageFor('a', entry, [{ account: 'a', model: 'claude-fable-5[1m]' }], NOW_);
+    expect(usage.models.fable).toBe(1);
+    expect(canRunChain(usage, ['fable'])).toBe(false);
+    expect(canRunChain(usage, ['fable', 'opus'])).toBe(true);
+  });
+
+  it('cannot run any of the chain when the account is out account-wide', () => {
+    const out = modelUsageFor('a', { ...entry, sevenDay: 1 }, [], NOW_);
+    expect(out.accountWideOut).toBe(true);
+    expect(canRunChain(out, ['opus', 'fable'])).toBe(false);
   });
 });

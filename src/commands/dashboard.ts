@@ -27,7 +27,7 @@ import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { describeNextUp } from '../dashboard/next-up.js';
-import { usableCapacity, type CapacityWindows } from '../usage/usable-capacity.js';
+import type { CapacityWindows } from '../usage/usable-capacity.js';
 import { orderComparator } from '../selector/selector.js';
 import { roomOfFromSnapshot } from '../usage/account-room.js';
 import { standingOf, type RunwayWindows } from '../usage/runway.js';
@@ -36,6 +36,8 @@ import {
   nextModelPreference,
   nextOrder,
   orderWords,
+  canRunChain,
+  modelUsageFor,
   numberPicks,
   pickReason,
   rankAccounts,
@@ -43,7 +45,6 @@ import {
 } from '../dashboard/rotation-settings.js';
 import { activeModelCaps, cappedNames } from '../ledger/ledger.js';
 import { spentKey } from '../usage/rotation-plan.js';
-import { normalizeModel } from '../usage/model-preference.js';
 
 export interface DashboardOptions {
   /** Print a single frame and exit (no live loop). */
@@ -274,24 +275,7 @@ export async function dashboardCommand(
       model,
       at,
     );
-    const candidates = ordered
-      .map((a) => {
-        const capacity = usableCapacity(usage.get(a.name), at);
-        // Both sides keyed the SAME way before they are merged. A cap can be
-        // recorded as `claude-fable-5[1m]` while the usage snapshot calls the
-        // same window `Fable`, and unmerged those are two keys: the account
-        // then reads as having room on a model it is demonstrably capped on.
-        const byModel = (entries: Array<[string, number | null]>): Record<string, number | null> =>
-          Object.fromEntries(entries.map(([name, used]) => [normalizeModel(name), used]));
-        const fromLedger = byModel(
-          knownSpent.filter((c) => c.account === a.name).map((c) => [c.model, 1]),
-        );
-        return {
-          name: a.name,
-          models: { ...byModel(Object.entries(capacity.models)), ...fromLedger },
-          ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
-        };
-      });
+    const candidates = ordered.map((a) => modelUsageFor(a.name, usage.get(a.name), knownSpent, at));
     const picks = numberPicks(candidates, rotation.modelPreference, model !== null, standing);
     const current = getActive(ctx.ctx);
     const nextUp = describeNextUp({
@@ -463,8 +447,15 @@ export async function dashboardCommand(
         rotation.accountOrder,
         rotation.preferSameModel ? rotation.modelPreference[0] : null,
       );
+      // Only where the chain can run: an account spent on every preferred
+      // model is not somewhere to rotate to, as rotation itself would skip it.
+      const knownSpent = activeModelCaps(loadLedger(context.ctx), now);
+      const chainRuns = (name: string): boolean =>
+        !rotation.preferSameModel ||
+        canRunChain(modelUsageFor(name, usageSnap.accounts[name], knownSpent, now), rotation.modelPreference);
       const next = rotatable
         .filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name) && a.name !== active)
+        .filter((a) => chainRuns(a.name))
         .sort(orderComparator(context.config.rotation.accountOrder, roomOf))[0];
       if (next) {
         setActive(next.name, context.ctx);

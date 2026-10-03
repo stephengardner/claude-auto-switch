@@ -1,7 +1,7 @@
 import { hasRoomFor, normalizeModel, type AccountModelUsage } from '../usage/model-preference.js';
 import { humanWait } from '../usage/report.js';
 import { pickScore, standingOf, type RunwayWindows, type Standing } from '../usage/runway.js';
-import { remainingRoom, type CapacityWindows } from '../usage/usable-capacity.js';
+import { remainingRoom, usableCapacity, type CapacityWindows } from '../usage/usable-capacity.js';
 import { orderComparator, type AccountOrder, type SelectableAccount } from '../selector/selector.js';
 
 /**
@@ -84,6 +84,36 @@ export function rankAccounts<T extends SelectableAccount>(
 }
 
 /**
+ * What an account can run, per model, as rotation's planner reads it: its
+ * usage now (a window past its reset is free), with the ledger's model caps
+ * laid over it. Both keyed the same way before they are merged: a cap can be
+ * recorded as `claude-fable-5[1m]` while the usage calls the same window
+ * `Fable`, and unmerged those are two keys, so the account would read as
+ * having room on a model it is capped on.
+ */
+export function modelUsageFor(
+  name: string,
+  entry: CapacityWindows | undefined,
+  knownSpent: ReadonlyArray<{ account: string; model: string }>,
+  now: number,
+): AccountModelUsage {
+  const capacity = usableCapacity(entry, now);
+  const byModel = (entries: Array<[string, number | null]>): Record<string, number | null> =>
+    Object.fromEntries(entries.map(([model, used]) => [normalizeModel(model), used]));
+  const fromLedger = byModel(knownSpent.filter((c) => c.account === name).map((c) => [c.model, 1]));
+  return {
+    name,
+    models: { ...byModel(Object.entries(capacity.models)), ...fromLedger },
+    ...(capacity.accountWideOut ? { accountWideOut: true } : {}),
+  };
+}
+
+/** Whether an account can run some model of the chain: not out, and room on one. */
+export function canRunChain(account: AccountModelUsage, preference: readonly string[]): boolean {
+  return !account.accountWideOut && preference.some((m) => hasRoomFor(account, m));
+}
+
+/**
  * Number accounts in pick order (they come in that order), among the ones
  * rotation could actually move to: with a model in play, one with room on some
  * model in the chain, since the planner skips the rest. With models switched
@@ -98,7 +128,7 @@ export function numberPicks(
   const picks = new Map<string, { rank: number; runway: number; binding: Standing['binding'] }>();
   let rank = 0;
   for (const c of candidates) {
-    if (modelInPlay && (c.accountWideOut || !preference.some((m) => hasRoomFor(c, m)))) continue;
+    if (modelInPlay && !canRunChain(c, preference)) continue;
     const s = standing(c.name);
     rank += 1;
     picks.set(c.name, { rank, runway: s.runway, binding: s.binding });
