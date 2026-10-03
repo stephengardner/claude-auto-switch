@@ -204,7 +204,7 @@ program
 
 program
   .command('order [mode]')
-  .description('which account rotation reaches for first: most-room (least-used) or priority')
+  .description('which account rotation reaches for first: smart (longest run, the default), most-room or priority')
   .action((mode?: string) => {
     process.exitCode = orderCommand(context(), mode);
   });
