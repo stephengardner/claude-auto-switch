@@ -52,11 +52,19 @@ describe('ranking accounts the way rotation picks them', () => {
     { name: 'thin', priority: 0, enabled: true },
     { name: 'costly-week', priority: 1, enabled: true },
   ];
-  const usage: Record<string, { fiveHour: number | null; sevenDay: number | null; windowCost?: number }> = {
-    thin: { fiveHour: 0.3, sevenDay: 0.1 }, // 0.7 of a window
+  type Entry = {
+    fiveHour: number | null;
+    sevenDay: number | null;
+    fiveHourReset: number | null;
+    sevenDayReset: number | null;
+    windowCost?: number;
+  };
+  const open = { fiveHourReset: null, sevenDayReset: null };
+  const usage: Record<string, Entry> = {
+    thin: { fiveHour: 0.3, sevenDay: 0.1, ...open }, // 0.7 of a window
     // 20% of a week left. At the default cost that is two full windows; at a
     // learned 0.4 it is half of one.
-    'costly-week': { fiveHour: 0, sevenDay: 0.8, windowCost: 0.4 },
+    'costly-week': { fiveHour: 0, sevenDay: 0.8, windowCost: 0.4, ...open },
   };
 
   it("uses each account's learned window cost, as rotation does", () => {
