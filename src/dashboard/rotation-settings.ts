@@ -51,7 +51,7 @@ export function nextModelPreference(current: readonly string[]): [string, ...str
 export function orderWords(order: AccountOrder): string {
   switch (order) {
     case 'smart':
-      return 'smart (longest run, then expiring weekly budget)';
+      return 'longest run first';
     case 'most-room':
       return 'most room';
     default:

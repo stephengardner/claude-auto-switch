@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.0.1]
+
+### Changed
+
+- **The README is rewritten for 2.0**: what ccx does and how it works, the pick
+  rule and models, the dashboard keys, every command and config key with its
+  default, and every file ccx writes, in half the length. The screenshots are
+  redrawn from the 2.0 dashboard.
+- The dashboard names the smart rule "longest run first", so its settings line
+  fits a normal terminal.
+- `ccx order --help` names `smart`, the default.
+
 ## [2.0.0]
 
 A major version because of how much ccx changed since 1.52 in what it touches

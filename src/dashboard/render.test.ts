@@ -345,9 +345,9 @@ describe('renderDashboard (plain)', () => {
   });
 
   it('shows the rotation settings, and the keys that change them only when interactive', () => {
-    const settings = { model: 'Opus, then Fable', order: 'smart (longest run, then expiring weekly budget)' };
+    const settings = { model: 'Opus, then Fable', order: 'longest run first' };
     const plain = renderDashboard({ ...snapshot([account({ name: 'a' })]), settings }, opts);
-    expect(plain).toContain('model: Opus, then Fable  ·  pick: smart (longest run, then expiring weekly budget)');
+    expect(plain).toContain('model: Opus, then Fable  ·  pick: longest run first');
     expect(plain).not.toContain('M model');
     const live = renderDashboard({ ...snapshot([account({ name: 'a' })]), settings }, { ...opts, interactive: true });
     expect(live).toContain('(M model · o pick · [ ] move up/down)');

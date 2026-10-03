@@ -22,9 +22,18 @@ import path from 'node:path';
 import { renderUsageReport } from '../dist/usage/report.js';
 import { renderDashboard } from '../dist/dashboard/render.js';
 import { describeNextUp } from '../dist/dashboard/next-up.js';
+import {
+  modelPreferenceWords,
+  modelUsageFor,
+  numberPicks,
+  orderWords,
+  pickReason,
+  rankAccounts,
+} from '../dist/dashboard/rotation-settings.js';
+import { standingOf } from '../dist/usage/runway.js';
 
 const OUT_DIR = path.join('docs', 'img');
-const COLS = 92;
+const COLS = 116;
 const NOW = Date.UTC(2026, 0, 15, 9, 30);
 const mins = (n) => NOW + n * 60_000;
 
@@ -35,8 +44,9 @@ const ACCOUNTS = [
     email: 'work@example.com',
     plan: 'max',
     active: true,
-    five: 0.34,
-    week: 0.22,
+    // In use, and its 5-hour window is spent: the next line shows the move.
+    five: 1,
+    week: 0.41,
     fable: 0.05,
   },
   {
@@ -54,7 +64,7 @@ const ACCOUNTS = [
     email: 'spare@example.com',
     plan: 'max',
     active: false,
-    five: 0,
+    five: 0.12,
     week: 0.03,
     fable: 0,
   },
@@ -78,6 +88,31 @@ const usageAnsi = renderUsageReport(
   { color: true, width: COLS },
 );
 
+// Ranked, numbered and explained by the same functions the dashboard uses, over
+// these same invented numbers, so the picture cannot drift from the tool.
+const PREFERENCE = ['opus', 'fable'];
+const usageOf = (name) => {
+  const a = ACCOUNTS.find((x) => x.name === name);
+  return {
+    fiveHour: a.five,
+    sevenDay: a.week,
+    fiveHourReset: mins(88),
+    sevenDayReset: mins(60 * 86),
+    models: [{ name: 'Fable', utilization: a.fable, resetsAt: mins(60 * 48) }],
+  };
+};
+const ranked = rankAccounts(
+  ACCOUNTS.map((a, i) => ({ name: a.name, priority: i, enabled: true })),
+  usageOf,
+  'smart',
+  'opus',
+  NOW,
+);
+const candidates = ranked.map((a) => modelUsageFor(a.name, usageOf(a.name), [], NOW));
+const picks = numberPicks(candidates, PREFERENCE, true, (name) =>
+  standingOf(usageOf(name), NOW, 'opus'),
+);
+
 const dashboardAnsi = renderDashboard(
   {
     accounts: ACCOUNTS.map((a, i) => ({
@@ -88,31 +123,26 @@ const dashboardAnsi = renderDashboard(
       active: a.active,
       enabled: true,
       priority: i,
-      usage: {
-        fiveHour: a.five,
-        sevenDay: a.week,
-        fiveHourReset: mins(88),
-        sevenDayReset: mins(60 * 86),
-        models: [{ name: 'Fable', utilization: a.fable, resetsAt: mins(60 * 48) }],
-      },
+      usage: usageOf(a.name),
+      ...(picks.has(a.name) ? { pick: picks.get(a.name) } : {}),
     })),
     events: [
-      '09:04  session on work',
-      '09:12  switching to "personal" (no restart; takes effect within ~30s)',
-      '09:26  session on work',
+      '08:41  session on work',
+      '09:12  saved to your settings.json: permissions.allow',
+      '09:26  sessions prefer Opus, then Fable, from their next start or move',
     ],
     now: NOW,
     refreshMs: 3000,
-    model: 'fable',
-    // Computed by the real planner over these same invented numbers, so the
-    // picture cannot drift from what the tool would actually say.
+    model: 'opus',
     nextUp: describeNextUp({
-      candidates: ACCOUNTS.map((a) => ({ name: a.name, models: { fable: a.fable } })),
+      candidates,
       current: ACCOUNTS.find((a) => a.active)?.name ?? null,
-      modelInUse: 'fable',
-      preference: ['fable', 'opus'],
+      modelInUse: 'opus',
+      preference: PREFERENCE,
       strategy: 'model-first',
+      reasonFor: (name) => pickReason(standingOf(usageOf(name), NOW, 'opus'), NOW),
     }),
+    settings: { model: modelPreferenceWords(PREFERENCE), order: orderWords('smart') },
   },
   { color: true, interactive: true, selected: 0, width: COLS },
 );
@@ -122,10 +152,19 @@ const dashboardAnsi = renderDashboard(
 // is no dependency to keep current.
 
 const PALETTE = {
-  31: '#e06c75', 32: '#98c379', 33: '#e5c07b', 34: '#61afef',
-  35: '#c678dd', 36: '#56b6c2', 37: '#dcdfe4',
-  91: '#ff7b86', 92: '#b6e3a1', 93: '#f5d98b', 94: '#82c6ff',
-  95: '#dd9bf0', 96: '#79d4dd',
+  31: '#e06c75',
+  32: '#98c379',
+  33: '#e5c07b',
+  34: '#61afef',
+  35: '#c678dd',
+  36: '#56b6c2',
+  37: '#dcdfe4',
+  91: '#ff7b86',
+  92: '#b6e3a1',
+  93: '#f5d98b',
+  94: '#82c6ff',
+  95: '#dd9bf0',
+  96: '#79d4dd',
 };
 const FG = '#dcdfe4';
 const BG = '#1b1e24';
@@ -172,10 +211,14 @@ function parseAnsi(text) {
 
 const escapeXml = (s) =>
   s
-    .split('&').join('&amp;')
-    .split('<').join('&lt;')
-    .split('>').join('&gt;')
-    .split('"').join('&quot;');
+    .split('&')
+    .join('&amp;')
+    .split('<')
+    .join('&lt;')
+    .split('>')
+    .join('&gt;')
+    .split('"')
+    .join('&quot;');
 
 /** A terminal window, drawn as SVG. */
 function toSvg(ansi, title) {
@@ -189,7 +232,11 @@ function toSvg(ansi, title) {
   // given: the dashboard's key hints are longer than its table, and a fixed
   // width left them hanging outside the window frame.
   const widest = lines.reduce(
-    (max, runs) => Math.max(max, runs.reduce((n, r) => n + [...r.text].length, 0)),
+    (max, runs) =>
+      Math.max(
+        max,
+        runs.reduce((n, r) => n + [...r.text].length, 0),
+      ),
     0,
   );
   const width = Math.ceil(PAD_X * 2 + widest * CHAR_W) + 4; // a few px so nothing clips
