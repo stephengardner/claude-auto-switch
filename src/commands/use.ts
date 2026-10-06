@@ -1,6 +1,6 @@
 import { getAccount } from '../accounts/registry.js';
 import { setActive } from '../state/active.js';
-import { writeSwitchRequest } from '../state/switch-request.js';
+import { requestMoves, writeSwitchRequest } from '../state/switch-request.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { liveLeases, type SessionLease } from '../session/lease.js';
 import { resolveTarget } from '../session/session-target.js';
@@ -80,9 +80,7 @@ export function useCommand(
     context.out(`move one with: ccx use ${name} --session <pid>   (or --here in its folder, or --all)`);
     return 0;
   }
-  for (const s of running) {
-    if (s.account === name) continue;
-    writeSwitchRequest(name, Date.now(), mode, context.ctx, s.pid);
+  for (const s of requestMoves(name, running, mode, context.ctx)) {
     context.out(`asked session ${s.pid} (${s.where}) to switch${mode === 'seamless' ? ' (in place, within ~30s)' : ' now'}`);
   }
   return 0;

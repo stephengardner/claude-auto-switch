@@ -63,7 +63,7 @@ describe('pick rule', () => {
   it('says a held-back pick is the fallback, not the choice', () => {
     const held = standingOf({ fiveHour: 0, sevenDay: 0.89, sevenDayReset: NOW + 24 * HOUR }, NOW);
     expect(pickReason(held, NOW)).toBe(
-      'room for 73% of a 5-hour window, 11% of its week left (held back; nothing healthier has room)',
+      'room for 73% of a 5-hour window, 11% of its week left (held back; no healthy account can run half a window)',
     );
   });
 
@@ -127,6 +127,7 @@ describe('ranking accounts the way rotation picks them', () => {
     // window, more than thin's 0.6, so it goes first.
     expect(ranked({ accountOrder: 'smart', holdBackAtPercent: 90 })).toEqual(['costly-week', 'thin']);
     expect(holdBackOf({ accountOrder: 'smart' })).toBe(80);
+    expect(holdBackOf({ accountOrder: 'smart', holdBackAtPercent: 100 })).toBeNull();
     expect(holdBackOf({ accountOrder: 'most-room', holdBackAtPercent: 70 })).toBeNull();
   });
 

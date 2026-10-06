@@ -73,8 +73,9 @@ export const ConfigSchema = z.object({
       accountOrder: z.enum(['smart', 'most-room', 'priority']).default('smart'),
       /**
        * Under `smart`, an account whose week (or the model's own week) is at
-       * least this full goes after every account whose week is not, among
-       * those worth moving to (see usage/runway.ts). 100 turns it off.
+       * least this full goes after every healthy account that can run half a
+       * 5-hour window, and competes on runway with the rest (see
+       * usage/runway.ts). 100 turns it off.
        */
       holdBackAtPercent: z.number().int().min(50).max(100).default(80),
     })

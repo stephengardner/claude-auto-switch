@@ -75,12 +75,14 @@ when Claude is next relaunched or has been idle for 20 seconds, never mid-turn.
   week, learned from its own readings (15% until measured). So a 5-hour window
   90% used, or a week 99% used, both mean almost no runway.
   - A week 80% or more used (the account's, or the model's own) is **held
-    back**: that account comes after every healthy one worth moving to, however
-    fresh its 5-hour window, and is still used when nothing healthier has room.
-    What is left of a nearly spent week is the least certain number on screen,
-    a second session can drain it twice as fast, and kept for last it bridges
-    the hours when every healthy account is waiting on its 5-hour window. Set
-    the line with `ccx config holdBackAtPercent <50-95|off>`.
+    back**: that account comes after every healthy account that can run at
+    least half a 5-hour window, however fresh its own window. What is left of a
+    nearly spent week is the least certain number on screen, a second session
+    can drain it twice as fast, and kept for last it bridges the hours when
+    every healthy account is waiting on its 5-hour window. Against a healthy
+    account with less than half a window, it competes on runway: holding back a
+    full window for 40% of one would only mean another move within two hours.
+    Set the line with `ccx config holdBackAtPercent <50-99|off>`.
   - Among accounts within a tenth of a window of each other, the one whose
     leftover weekly budget would expire unused soonest goes first, then your
     priority order.
@@ -207,27 +209,27 @@ conversation in a terminal. From a shell, `ccx swap [name]` does the same.
 value first; running sessions pick a change up at their next move, restart or
 usage check, as `ccx config <key>` says.
 
-| Key                                    | Default                         | Meaning                                                         |
-| -------------------------------------- | ------------------------------- | --------------------------------------------------------------- |
-| `rotation.accountOrder`                | `"smart"`                       | `smart`, `most-room` or `priority`                              |
-| `rotation.holdBackAtPercent`           | `80`                            | smart: a week this full goes last (`100` is off)                |
-| `rotation.modelPreference`             | `["opus", "fable"]`             | the model chain                                                 |
-| `rotation.modelStrategy`               | `"model-first"`                 | or `account-first`                                              |
-| `rotation.preferSameModel`             | `true`                          | `false` ignores models and rotates on account capacity alone    |
-| `rotation.proactivePercent`            | `0`                             | move once the tightest window reaches this percent (`0` is off) |
-| `rotation.proactiveHysteresisPercent`  | `10`                            | the target needs this many points more room                     |
-| `rotation.usageCheckSeconds`           | `300`                           | how often a session reads its own usage                         |
-| `rotation.defaultBackoffMinutes`       | `300`                           | how long an account counts as out when no reset time is known   |
-| `rotation.autoRotateHeadless`          | `true`                          | headless runs (`claude -p`) rotate too                          |
-| `rotation.capThresholdPercent`         | `95`                            | the daemon's threshold for treating an account as out           |
-| `resume.auto`                          | `true`                          | send the carry-on prompt after a relaunch                       |
-| `resume.prompt`                        | "This session was restarted..." | the carry-on prompt                                             |
-| `update.follow`                        | `true`                          | running sessions move to a newer installed ccx                  |
-| `desktop.handoff`                      | `"off"`                         | `off`, `limit` or `credits`                                     |
-| `desktop.mode`                         | `"fork"`                        | `fork` or `same`                                                |
-| `desktop.prompt`                       | "Carry on where you stopped."   | what a moved Desktop conversation continues with                |
-| `realClaudePath`                       | found on `PATH`                 | the real `claude` binary, when finding it fails                 |
-| `browser.debugPort`, `browser.channel` | `9222`, `"chrome"`              | the browser `ccx add` and `ccx login` use                       |
+| Key                                    | Default                         | Meaning                                                           |
+| -------------------------------------- | ------------------------------- | ----------------------------------------------------------------- |
+| `rotation.accountOrder`                | `"smart"`                       | `smart`, `most-room` or `priority`                                |
+| `rotation.holdBackAtPercent`           | `80`                            | smart: a week this full waits behind healthy accounts (`100` off) |
+| `rotation.modelPreference`             | `["opus", "fable"]`             | the model chain                                                   |
+| `rotation.modelStrategy`               | `"model-first"`                 | or `account-first`                                                |
+| `rotation.preferSameModel`             | `true`                          | `false` ignores models and rotates on account capacity alone      |
+| `rotation.proactivePercent`            | `0`                             | move once the tightest window reaches this percent (`0` is off)   |
+| `rotation.proactiveHysteresisPercent`  | `10`                            | the target needs this many points more room                       |
+| `rotation.usageCheckSeconds`           | `300`                           | how often a session reads its own usage                           |
+| `rotation.defaultBackoffMinutes`       | `300`                           | how long an account counts as out when no reset time is known     |
+| `rotation.autoRotateHeadless`          | `true`                          | headless runs (`claude -p`) rotate too                            |
+| `rotation.capThresholdPercent`         | `95`                            | the daemon's threshold for treating an account as out             |
+| `resume.auto`                          | `true`                          | send the carry-on prompt after a relaunch                         |
+| `resume.prompt`                        | "This session was restarted..." | the carry-on prompt                                               |
+| `update.follow`                        | `true`                          | running sessions move to a newer installed ccx                    |
+| `desktop.handoff`                      | `"off"`                         | `off`, `limit` or `credits`                                       |
+| `desktop.mode`                         | `"fork"`                        | `fork` or `same`                                                  |
+| `desktop.prompt`                       | "Carry on where you stopped."   | what a moved Desktop conversation continues with                  |
+| `realClaudePath`                       | found on `PATH`                 | the real `claude` binary, when finding it fails                   |
+| `browser.debugPort`, `browser.channel` | `9222`, `"chrome"`              | the browser `ccx add` and `ccx login` use                         |
 
 ## What ccx writes
 

@@ -101,14 +101,16 @@ export function loadConfigFile(c: PathCtx = {}): PartialConfig {
 }
 
 /**
- * A cheap fingerprint of config.json, when it last changed and how big it is,
- * so a long-running session can re-read the file only when it has changed.
- * Null when there is no file.
+ * A cheap fingerprint of config.json, so a long-running session can re-read the
+ * file only when it has changed. The file is replaced whole on every save
+ * (written aside, then renamed over), so its identity (inode) and change time
+ * move even when an edit leaves the size and, on a coarse filesystem, the
+ * modified time as they were. Null when there is no file.
  */
 export function configStamp(c: PathCtx = {}): string | null {
   try {
     const stat = statSync(configFilePath(c));
-    return `${stat.mtimeMs}:${stat.size}`;
+    return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino}`;
   } catch {
     return null;
   }

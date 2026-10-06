@@ -1,11 +1,13 @@
 import { getActive, setActive } from '../state/active.js';
-import { writeSwitchRequest } from '../state/switch-request.js';
+import { requestMoves } from '../state/switch-request.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import { proactiveTick, type TickResult } from '../usage/proactive.js';
 import { DEFAULT_PROACTIVE_PERCENT } from './proactive-config.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
 import { appendEvent } from '../events/log.js';
 import { configHome } from '../config/paths.js';
+import { liveLeases } from '../session/lease.js';
+import { numberSessions } from '../dashboard/session-choice.js';
 import type { CliContext } from '../context.js';
 
 export interface AutoOptions {
@@ -66,11 +68,15 @@ export async function autoCommand(context: CliContext, options: AutoOptions = {}
     current: () => getActive(context.ctx),
     requestSwitch: (account, reason) => {
       if (options.dryRun) return;
+      const leaving = getActive(context.ctx);
       setActive(account, context.ctx);
       syncEditorPointerIfEnabled(context);
-      // A running session picks this up and moves in place; with no session it
-      // simply decides which account the next one starts on.
-      writeSwitchRequest(account, Date.now(), 'seamless', context.ctx);
+      // Each running session on the account being left is asked by a request
+      // of its own and moves in place. A shared request was taken by whichever
+      // session looked first, which need not be one on that account at all.
+      // With none running, this only decides where the next session starts.
+      const onLeaving = numberSessions(liveLeases(context.ctx)).filter((s) => s.account === leaving);
+      requestMoves(account, onLeaving, 'seamless', context.ctx);
       appendEvent(home, `proactive switch to ${account} (${reason})`, Date.now());
     },
     ...(options.model ? { model: options.model } : {}),

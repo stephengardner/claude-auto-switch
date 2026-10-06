@@ -7,6 +7,7 @@ import {
   defaultOf,
   findSetting,
   parseSetting,
+  typedRange,
   valueOf,
   type Setting,
 } from '../dashboard/settings-catalog.js';
@@ -143,8 +144,10 @@ function takes(setting: Setting): string {
       return 'on or off';
     case 'choice':
       return (setting.choices ?? []).join(', ');
-    case 'number':
-      return `${setting.min ?? 0} to ${setting.max ?? '...'} ${setting.unit ?? ''}`.trim() + (setting.off !== undefined ? ', or off' : '');
+    case 'number': {
+      const [min, max] = typedRange(setting);
+      return `${min} to ${max} ${setting.unit ?? ''}`.trim() + (setting.off !== undefined ? ', or off' : '');
+    }
     case 'models':
       return 'model names in order, such as: opus fable';
     default:

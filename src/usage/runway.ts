@@ -28,15 +28,20 @@ import { windowIsOpen } from './window-open.js';
  * more, used only when nothing better exists.
  *
  * An account whose week is nearly spent is HELD BACK: it comes after every
- * account that is not, among those worth moving to, however fresh its 5-hour
- * window. Runway alone tops out at one window, so a fresh window on a week with
- * 11% left scored the same as a fresh window on an untouched week, and the
- * nearly spent one could be picked second. Holding it back is right for three
- * reasons: what is left of it is the least certain number on the screen (the
- * window cost is an estimate, and a small remainder magnifies its error), a
- * second session landing on it drains it twice as fast, and kept for last it is
- * still there to bridge the hours when every healthy account is waiting on its
- * 5-hour window.
+ * healthy account that can run at least half a window (HEALTHY_RUN), however
+ * fresh its own 5-hour window. Runway alone tops out at one window, so a fresh
+ * window on a week with 11% left scored the same as a fresh window on an
+ * untouched week, and the nearly spent one could be picked second. Holding it
+ * back is right for three reasons: what is left of it is the least certain
+ * number on the screen (the window cost is an estimate, and a small remainder
+ * magnifies its error), a second session landing on it drains it twice as
+ * fast, and kept for last it is still there to bridge the hours when every
+ * healthy account is waiting on its 5-hour window.
+ *
+ * Only behind half a window, not behind every healthy account: a healthy
+ * account with 40% of its 5-hour window left beating a full window on a week
+ * one point past the line means another move within two hours, for a
+ * difference of one point. Below half a window the two compete on runway.
  *
  * Between accounts that can run about as long (the same tenth of a window),
  * the one whose leftover weekly budget is most at risk of expiring unused goes
@@ -52,8 +57,10 @@ import { windowIsOpen } from './window-open.js';
 export const DEFAULT_WINDOW_COST = 0.15;
 /** Less runway than this is not worth a move (see above). */
 export const MIN_RUNWAY = 0.25;
-/** A week at least this full holds an account back (rotation.holdBackAtPercent). */
+/** A week at least this full holds an account back (rotation.holdBackAtPercent; 100 is off). */
 export const DEFAULT_HOLD_BACK_PERCENT = 80;
+/** A healthy account goes ahead of a held-back one when it can run at least this much. */
+export const HEALTHY_RUN = 0.5;
 
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 
@@ -138,8 +145,13 @@ export function standingOf(
   const weekLeft = weekShares.length > 0 ? Math.min(...weekShares) : null;
   // Compared in whole points, as the usage arrives and the screen shows it, so
   // a week reading 80% is held back at 80 rather than escaping on a rounding.
+  // 100 is off: a spent week has no runway to rank by anyway, and calling it
+  // held back would contradict a screen that says nothing is.
   const heldBack =
-    holdBackAtPercent !== null && weekLeft !== null && Math.round((1 - weekLeft) * 100) >= holdBackAtPercent;
+    holdBackAtPercent !== null &&
+    holdBackAtPercent < 100 &&
+    weekLeft !== null &&
+    Math.round((1 - weekLeft) * 100) >= holdBackAtPercent;
 
   const tightest = candidates.reduce((a, b) => (b.windows < a.windows ? b : a));
   const runway = Math.max(0, Math.min(1, tightest.windows));
@@ -169,13 +181,13 @@ export function standingOf(
 }
 
 /**
- * One number to sort by, higher first: worth moving at all, then not held
- * back, then runway in tenths of a window, then urgency. Each step outweighs
- * everything after it (runway adds at most 10, urgency under 1). Ties after
- * that fall to the priority order (the comparator), so the order is always
- * fully determined.
+ * One number to sort by, higher first: worth moving at all, then healthy with
+ * at least half a window to run, then runway in tenths of a window, then
+ * urgency. Each step outweighs everything after it (runway adds at most 10,
+ * urgency under 1). Ties after that fall to the priority order (the
+ * comparator), so the order is always fully determined.
  *
- * Worth moving outranks held back: a nearly spent week with a fresh 5-hour
+ * Worth moving outranks everything: a nearly spent week with a fresh 5-hour
  * window still beats a healthy week whose 5-hour window has minutes left.
  *
  * Urgency only counts where there is room to use it: an account with no
@@ -183,12 +195,8 @@ export function standingOf(
  */
 export function pickScore(standing: Standing): number {
   const urgency = standing.runway > 0 ? Math.min(1, standing.urgency) * 0.99 : 0;
-  return (
-    (standing.worthMoving ? 100 : 0) +
-    (standing.heldBack ? 0 : 50) +
-    Math.round(standing.runway * 10) +
-    urgency
-  );
+  const ahead = !standing.heldBack && standing.runway >= HEALTHY_RUN;
+  return (standing.worthMoving ? 100 : 0) + (ahead ? 50 : 0) + Math.round(standing.runway * 10) + urgency;
 }
 
 /** Where a measurement of the window cost started: one reading, as it was. */

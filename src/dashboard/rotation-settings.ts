@@ -73,7 +73,7 @@ export function settingsWords(rotation: {
   return {
     model: modelPreferenceWords(rotation.modelPreference),
     order: orderWords(rotation.accountOrder),
-    ...(holdBack !== null && holdBack < 100 ? { holdBack: `weeks ${holdBack}%+ used` } : {}),
+    ...(holdBack !== null ? { holdBack: `weeks ${holdBack}%+ used` } : {}),
   };
 }
 
@@ -87,7 +87,9 @@ export function nextOrder(current: AccountOrder): AccountOrder {
  * order holds nothing back (only the smart order does).
  */
 export function holdBackOf(policy: PickPolicy): number | null {
-  return policy.accountOrder === 'smart' ? (policy.holdBackAtPercent ?? DEFAULT_HOLD_BACK_PERCENT) : null;
+  if (policy.accountOrder !== 'smart') return null;
+  const percent = policy.holdBackAtPercent ?? DEFAULT_HOLD_BACK_PERCENT;
+  return percent >= 100 ? null : percent;
 }
 
 /**
@@ -179,11 +181,6 @@ export interface Pick {
   heldBack?: { weekLeft: number };
 }
 
-/** "held back, 11% of its week left". */
-export function heldBackWords(weekLeft: number): string {
-  return `held back, ${Math.round(weekLeft * 100)}% of its week left`;
-}
-
 /** Why the smart order picks an account, in words. */
 export function pickReason(standing: Standing, now: number): string {
   const room =
@@ -193,7 +190,7 @@ export function pickReason(standing: Standing, now: number): string {
   // A held-back account is only ever next when nothing healthier is worth a
   // move, which is the part worth saying: it is the fallback, not the choice.
   if (standing.heldBack && standing.weekLeft !== null) {
-    return `${room}, ${Math.round(standing.weekLeft * 100)}% of its week left (held back; nothing healthier has room)`;
+    return `${room}, ${Math.round(standing.weekLeft * 100)}% of its week left (held back; no healthy account can run half a window)`;
   }
   const wait = humanWait(standing.weeklyResetAt, now);
   return wait ? `${room}, its week resets in ${wait}` : room;

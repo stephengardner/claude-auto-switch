@@ -135,7 +135,7 @@ describe('holding back a nearly spent week', () => {
   const alvi = account({ fiveHour: 0.13, sevenDay: 0.03, windowCost: 0.145, sevenDayReset: NOW + 166 * HOUR });
   const ad911 = account({ fiveHour: 0.45, sevenDay: 0.68, windowCost: 0.214, sevenDayReset: NOW + 106 * HOUR });
 
-  it('puts it after every healthy account worth moving to, however fresh its 5-hour window', () => {
+  it('puts it after every healthy account that can run half a window, however fresh its 5-hour window', () => {
     const held = standingOf(phx1, NOW);
     expect(held.heldBack).toBe(true);
     expect(held.weekLeft).toBeCloseTo(0.11);
@@ -153,6 +153,19 @@ describe('holding back a nearly spent week', () => {
       pickScore(standingOf(alvi, NOW, null, 100)),
     );
     expect(pickScore(standingOf(optimistic, NOW))).toBeLessThan(pickScore(standingOf(alvi, NOW)));
+  });
+
+  it('goes ahead of a healthy account with under half a window, when it can run longer', () => {
+    // One point of week apart: holding the full window back for the 40% one
+    // would mean another move within two hours.
+    const fullWindowHeld = standingOf(account({ fiveHour: 0, sevenDay: 0.8 }), NOW);
+    const shortHealthy = standingOf(account({ fiveHour: 0.6, sevenDay: 0.79 }), NOW);
+    expect(fullWindowHeld.heldBack).toBe(true);
+    expect(shortHealthy.heldBack).toBe(false);
+    expect(pickScore(fullWindowHeld)).toBeGreaterThan(pickScore(shortHealthy));
+    // A healthy account with half a window or more still goes first.
+    const halfHealthy = standingOf(account({ fiveHour: 0.5, sevenDay: 0.79 }), NOW);
+    expect(pickScore(halfHealthy)).toBeGreaterThan(pickScore(fullWindowHeld));
   });
 
   it('still beats a healthy week whose 5-hour window has minutes left', () => {
@@ -177,6 +190,8 @@ describe('holding back a nearly spent week', () => {
 
   it('holds nothing back when off, for an order that does not, or for a week never measured', () => {
     expect(standingOf(phx1, NOW, null, 100).heldBack).toBe(false);
+    // Off means off, a week read as 100% included.
+    expect(standingOf(account({ sevenDay: 1 }), NOW, null, 100).heldBack).toBe(false);
     expect(standingOf(phx1, NOW, null, null).heldBack).toBe(false);
     expect(standingOf(account({ sevenDay: null }), NOW).heldBack).toBe(false);
     expect(standingOf(undefined, NOW).weekLeft).toBeNull();

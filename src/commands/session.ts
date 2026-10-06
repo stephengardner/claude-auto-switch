@@ -360,15 +360,17 @@ export async function runInteractiveHotSwap(
   const refreshSettings = (): void => {
     const stamp = configStamp(context.ctx);
     if (stamp === settingsStamp) return;
+    // Remembered whether or not it loads: a file that does not is read once
+    // per change, not on every check (some run every second or so).
+    settingsStamp = stamp;
     try {
       const fresh = loadConfig(context.ctx);
       context.config.rotation = fresh.rotation;
       context.config.resume = fresh.resume;
       context.config.update = fresh.update;
       context.config.desktop = fresh.desktop;
-      settingsStamp = stamp;
     } catch {
-      /* keep the settings it started with */
+      /* keep the settings it had */
     }
   };
 

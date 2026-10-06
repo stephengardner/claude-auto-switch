@@ -43,6 +43,12 @@ export interface Setting {
   step?: number;
   /** number: the value that means off, which sits just past one end of the range. */
   off?: number;
+  /**
+   * number: what typing it accepts, when that is wider than the range the
+   * arrows step through: the schema's own bounds, so a value set from the
+   * command line (`ccx proactive on --percent 30`) can be typed here too.
+   */
+  typed?: readonly [number, number];
   /** number: what it counts, for the box that asks for one. */
   unit?: string;
   /** The value as the screen says it. */
@@ -93,11 +99,12 @@ export const SETTINGS: readonly Setting[] = [
     max: 95,
     step: 5,
     off: 100,
+    typed: [50, 99],
     unit: 'percent',
     words: (value) => (value === 100 ? 'off' : `${String(value)}%`),
     help:
-      'Under longest run first, an account whose week is this full goes after every healthier ' +
-      'one, and is still used when nothing healthier has room.',
+      'Under longest run first, an account whose week is this full goes after every healthy ' +
+      'account that can run half a 5-hour window, and competes on runway with the rest.',
     applies: 'next-move',
   },
   {
@@ -108,6 +115,7 @@ export const SETTINGS: readonly Setting[] = [
     min: 15,
     max: 1440,
     step: 15,
+    typed: [1, 10080],
     unit: 'minutes',
     words: minutesWords,
     help: 'How long an account that ran out is left alone when the reset time is unknown.',
@@ -181,6 +189,7 @@ export const SETTINGS: readonly Setting[] = [
     max: 95,
     step: 5,
     off: 0,
+    typed: [1, 100],
     unit: 'percent',
     words: (value) => (value === 0 ? 'off' : `${String(value)}% used`),
     help: 'Moves a running session to another account before its own runs out. Off: only after a turn is refused.',
@@ -194,6 +203,7 @@ export const SETTINGS: readonly Setting[] = [
     min: 0,
     max: 50,
     step: 5,
+    typed: [0, 100],
     unit: 'points',
     words: (value) => `${String(value)} points more room`,
     help: 'An early move only goes to an account with at least this much more room, so sessions do not bounce.',
@@ -207,6 +217,7 @@ export const SETTINGS: readonly Setting[] = [
     min: 30,
     max: 3600,
     step: 30,
+    typed: [30, 86400],
     unit: 'seconds',
     words: secondsWords,
     help: 'How often a running session reads its usage, which early moves and the pick order work from.',
@@ -276,6 +287,7 @@ export const SETTINGS: readonly Setting[] = [
     min: 50,
     max: 100,
     step: 5,
+    typed: [1, 100],
     unit: 'percent',
     words: (value) => `${String(value)}% used`,
     help: 'Only for ccx daemon: it moves its shared link off an account this full.',
@@ -380,10 +392,14 @@ function stepNumber(setting: Setting, value: unknown, direction: 1 | -1): number
   }
   // Onto the step grid, so a typed 87 steps to 90 or 85 rather than 92 or 82.
   const next = direction > 0 ? Math.floor(current / step) * step + step : Math.ceil(current / step) * step - step;
-  if (off !== undefined && next < min && off < min) return off;
-  if (off !== undefined && next > max && off > max) return off;
+  // Only stepping out of the range at off's own end turns it off: up from a
+  // value typed below the range (30, for "move early") enters the range.
+  if (off !== undefined && direction < 0 && off < min && next < min) return off;
+  if (off !== undefined && direction > 0 && off > max && next > max) return off;
   const clamped = Math.min(max, Math.max(min, next));
-  return clamped === current ? null : clamped;
+  // A step never moves against its own direction, as clamping a value from
+  // outside the range back into it would.
+  return (direction > 0 ? clamped > current : clamped < current) ? clamped : null;
 }
 
 /** The model preference before `current` in the dashboard's cycle; null for a chain of the user's own. */
@@ -396,6 +412,11 @@ function previousModelPreference(current: readonly string[]): [string, ...string
     chain = next;
   }
   return chain.length > 0 ? (chain as [string, ...string[]]) : null;
+}
+
+/** The whole numbers typing accepts: the schema's bounds where set, else the arrows' range. */
+export function typedRange(setting: Setting): readonly [number, number] {
+  return setting.typed ?? [setting.min ?? 0, setting.max ?? Number.MAX_SAFE_INTEGER];
 }
 
 /** What the box opens with when the setting is typed rather than stepped. */
@@ -432,8 +453,7 @@ export function parseSetting(setting: Setting, text: string): unknown {
     }
     case 'number': {
       if (setting.off !== undefined && /^off$/i.test(typed)) return setting.off;
-      const min = setting.min ?? 0;
-      const max = setting.max ?? Number.MAX_SAFE_INTEGER;
+      const [min, max] = typedRange(setting);
       const n = Number(typed);
       const range = `a whole number from ${min} to ${max}${setting.off !== undefined ? ', or off' : ''}`;
       if (typed === '' || !Number.isInteger(n)) throw new Error(range);

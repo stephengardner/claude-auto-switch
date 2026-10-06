@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1023" height="681" viewBox="0 0 1023 681" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
-  <rect width="1023" height="681" rx="10" fill="#1b1e24"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1023" height="702" viewBox="0 0 1023 702" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
+  <rect width="1023" height="702" rx="10" fill="#1b1e24"/>
   <rect width="1023" height="32" rx="10" fill="#22262e"/>
   <rect y="22" width="1023" height="10" fill="#22262e"/>
   <circle cx="21" cy="16" r="5.5" fill="#ec6a5f"/>
@@ -32,7 +32,8 @@
   <text x="22.0" y="535" fill="#dcdfe4" xml:space="preserve">     ccx run -p moves by itself     on</text>
   <text x="22.0" y="556" fill="#dcdfe4" xml:space="preserve">     ccx daemon moves at            95% used</text>
   <text x="22.0" y="577" fill="#dcdfe4" opacity="0.6" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────────</text>
-  <text x="22.0" y="598" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  Under longest run first, an account whose week is this full goes after every healthier one, and is still used whe…</text>
-  <text x="22.0" y="619" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  Takes effect at each session's next move.</text>
-  <text x="22.0" y="640" fill="#dcdfe4" opacity="0.6" xml:space="preserve">s/esc back  ·  j/k move  ·  ←/→ change  ·  enter edit  ·  d default  ·  q quit</text>
+  <text x="22.0" y="598" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  Under longest run first, an account whose week is this full goes after every healthy account that can run half a</text>
+  <text x="22.0" y="619" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  5-hour window, and competes on runway with the rest.</text>
+  <text x="22.0" y="640" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  Takes effect at each session's next move.</text>
+  <text x="22.0" y="661" fill="#dcdfe4" opacity="0.6" xml:space="preserve">s/esc back  ·  j/k move  ·  ←/→ change  ·  enter edit  ·  d default  ·  q quit</text>
 </svg>

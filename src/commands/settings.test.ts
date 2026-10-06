@@ -71,7 +71,7 @@ describe('ccx config', () => {
     expect(await configCommand(context, 'holdBackAtPercent')).toBe(0);
     expect(said[0]).toBe('rotation.holdBackAtPercent: 80%');
     expect(said.join('\n')).toContain("Takes effect at each session's next move.");
-    expect(said.join('\n')).toContain('takes: 50 to 95 percent, or off; default: 80%');
+    expect(said.join('\n')).toContain('takes: 50 to 99 percent, or off; default: 80%');
   });
 
   it('changes a setting from typed words, and puts the default back on "default"', async () => {

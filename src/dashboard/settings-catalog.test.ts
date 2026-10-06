@@ -99,6 +99,20 @@ describe('stepping a setting with the arrows', () => {
     expect(early.words(0)).toBe('off');
   });
 
+  it('steps a value set outside the arrows range back into it, never the wrong way', () => {
+    // 30 came from `ccx proactive on --percent 30`: right is up, into the
+    // range, not off; left is further down, past the bottom, which is off.
+    const early = setting('rotation.proactivePercent');
+    expect(stepSetting(early, 30, 1)).toBe(50);
+    expect(stepSetting(early, 30, -1)).toBe(0);
+    const daemon = setting('rotation.capThresholdPercent');
+    expect(stepSetting(daemon, 30, 1)).toBe(50);
+    expect(stepSetting(daemon, 30, -1)).toBeNull();
+    const holdBack = setting('rotation.holdBackAtPercent');
+    expect(stepSetting(holdBack, 97, 1)).toBe(100);
+    expect(stepSetting(holdBack, 97, -1)).toBe(95);
+  });
+
   it('cycles the usual model preferences both ways, and leaves a chain of your own alone', () => {
     const models = setting('rotation.modelPreference');
     expect(stepSetting(models, ['opus', 'fable'], 1)).toEqual(['fable', 'opus']);
@@ -134,9 +148,16 @@ describe('typing a value', () => {
     expect(parseSetting(holdBack, ' 85 ')).toBe(85);
     expect(parseSetting(holdBack, 'off')).toBe(100);
     expect(parseSetting(holdBack, '100')).toBe(100);
-    expect(() => parseSetting(holdBack, '40')).toThrow('a whole number from 50 to 95, or off');
+    expect(parseSetting(holdBack, '97')).toBe(97);
+    expect(() => parseSetting(holdBack, '40')).toThrow('a whole number from 50 to 99, or off');
     expect(() => parseSetting(holdBack, '82.5')).toThrow('a whole number');
-    expect(() => parseSetting(setting('rotation.usageCheckSeconds'), 'off')).toThrow('from 30 to 3600');
+    expect(() => parseSetting(setting('rotation.usageCheckSeconds'), 'off')).toThrow('from 30 to 86400');
+  });
+
+  it('takes what the command line takes, even outside the range the arrows step through', () => {
+    // `ccx proactive on --percent 30` sets 30; it can be typed here too.
+    expect(parseSetting(setting('rotation.proactivePercent'), '30')).toBe(30);
+    expect(parseSetting(setting('rotation.capThresholdPercent'), '20')).toBe(20);
   });
 
   it('takes a model chain separated by commas or spaces', () => {

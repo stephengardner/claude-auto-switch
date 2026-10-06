@@ -1,6 +1,6 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
-import { writeSwitchRequest } from '../state/switch-request.js';
+import { requestMoves, type SwitchMode } from '../state/switch-request.js';
 import { refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
 import { probeAll, type ProbeResult } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
@@ -28,7 +28,6 @@ import {
 } from '../dashboard/session-choice.js';
 import { liveLeases } from '../session/lease.js';
 import { applySetting } from './settings.js';
-import type { SwitchMode } from '../state/switch-request.js';
 import { openPrompt, promptKey, rejectPrompt, type PromptState } from '../dashboard/prompt.js';
 import { loadConfig, loadConfigFile, saveConfig } from '../config/config.js';
 import { desktopSummary } from '../desktop/summary.js';
@@ -360,8 +359,7 @@ export async function dashboardCommand(
       // sessions move; then each chosen session by its own request.
       setActive(a.name, context.ctx);
       syncEditorPointerIfEnabled(context);
-      const moving = chosen.filter((s) => s.account !== a.name);
-      for (const s of moving) writeSwitchRequest(a.name, Date.now(), mode, context.ctx, s.pid);
+      const moving = requestMoves(a.name, chosen, mode, context.ctx);
       const how = mode === 'restart' ? 'now, restarting' : 'in place, within ~30s';
       const said =
         moving.length > 0
