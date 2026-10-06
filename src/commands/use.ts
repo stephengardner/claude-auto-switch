@@ -2,8 +2,9 @@ import { getAccount } from '../accounts/registry.js';
 import { setActive } from '../state/active.js';
 import { writeSwitchRequest } from '../state/switch-request.js';
 import { syncEditorPointerIfEnabled } from '../editor/junction.js';
-import { liveLeases } from '../session/lease.js';
+import { liveLeases, type SessionLease } from '../session/lease.js';
 import { resolveTarget } from '../session/session-target.js';
+import { numberSessions } from '../dashboard/session-choice.js';
 import type { CliContext } from '../context.js';
 
 export interface UseOptions {
@@ -13,15 +14,24 @@ export interface UseOptions {
   here?: boolean;
   /** Target a specific ccx-run pid (from `ccx sessions`). */
   session?: string;
+  /** Move every running session, each by its own request. */
+  all?: boolean;
 }
 
 /**
- * Set the active account. A live session moves to it (seamless, or --now
- * restart). With `--here` or `--session <pid>` the switch is aimed at ONE running
- * session, leaving the others on their own accounts; without either it broadcasts
- * to whichever session is running and sets the account new sessions start on.
+ * Set the active account, the one new sessions start on, and move running
+ * sessions to it (seamless, or --now restart). With `--here` or `--session
+ * <pid>` the switch is aimed at ONE running session, leaving the others on
+ * their own accounts. Without either, the only running session moves; with
+ * several, none does unless `--all` says every one, because a shared request
+ * would be taken by whichever session looked first.
  */
-export function useCommand(context: CliContext, name: string, opts: UseOptions = {}): number {
+export function useCommand(
+  context: CliContext,
+  name: string,
+  opts: UseOptions = {},
+  leases: () => SessionLease[] = () => liveLeases(context.ctx),
+): number {
   if (!getAccount(name, context.ctx)) {
     context.out(`account "${name}" not found`);
     return 1;
@@ -38,7 +48,7 @@ export function useCommand(context: CliContext, name: string, opts: UseOptions =
         return 1;
       }
     }
-    const resolved = resolveTarget(liveLeases(context.ctx), {
+    const resolved = resolveTarget(leases(), {
       ...(sessionPid !== undefined ? { session: sessionPid } : {}),
       ...(opts.here ? { here: true, cwd: safeCwd() } : {}),
     });
@@ -61,10 +71,20 @@ export function useCommand(context: CliContext, name: string, opts: UseOptions =
 
   setActive(name, context.ctx);
   syncEditorPointerIfEnabled(context); // keep the editor in sync if it is on
-  // Ask a running session to switch; seamless by default, instant restart with
-  // --now. A no-op when nothing is running.
-  writeSwitchRequest(name, Date.now(), mode, context.ctx);
   context.out(`active account: ${name}`);
+  // Each session is asked by its own request, never by one they all race for.
+  const running = numberSessions(leases());
+  if (running.length > 1 && !opts.all) {
+    context.out(`${running.length} sessions are running, so none was moved:`);
+    for (const s of running) context.out(`  ${s.pid}  ${s.where} (on ${s.account})`);
+    context.out(`move one with: ccx use ${name} --session <pid>   (or --here in its folder, or --all)`);
+    return 0;
+  }
+  for (const s of running) {
+    if (s.account === name) continue;
+    writeSwitchRequest(name, Date.now(), mode, context.ctx, s.pid);
+    context.out(`asked session ${s.pid} (${s.where}) to switch${mode === 'seamless' ? ' (in place, within ~30s)' : ' now'}`);
+  }
   return 0;
 }
 

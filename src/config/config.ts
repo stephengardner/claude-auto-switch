@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { ConfigSchema, type Config, type PartialConfig } from './config.schema.js';
 import { configHome, type PathCtx } from './paths.js';
@@ -98,6 +98,20 @@ export function loadConfigFile(c: PathCtx = {}): PartialConfig {
     throw new ConfigError(`could not parse ${file}: ${(err as Error).message}`);
   }
   return isPlainObject(parsed) ? (parsed as PartialConfig) : {};
+}
+
+/**
+ * A cheap fingerprint of config.json, when it last changed and how big it is,
+ * so a long-running session can re-read the file only when it has changed.
+ * Null when there is no file.
+ */
+export function configStamp(c: PathCtx = {}): string | null {
+  try {
+    const stat = statSync(configFilePath(c));
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return null;
+  }
 }
 
 /** Persist config (partial allowed; missing keys fall back to defaults on load). */

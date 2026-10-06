@@ -4,12 +4,14 @@ import {
   nextModelPreference,
   nextOrder,
   canRunChain,
+  holdBackOf,
   modelUsageFor,
   numberPicks,
   orderWords,
   pickReason,
   rankAccounts,
   reorder,
+  settingsWords,
 } from './rotation-settings.js';
 import { standingOf } from '../usage/runway.js';
 import type { AccountModelUsage } from '../usage/model-preference.js';
@@ -57,6 +59,26 @@ describe('pick rule', () => {
     const thin = standingOf({ fiveHour: 0.6, sevenDay: null }, NOW);
     expect(pickReason(thin, NOW)).toBe('room for 40% of a 5-hour window');
   });
+
+  it('says a held-back pick is the fallback, not the choice', () => {
+    const held = standingOf({ fiveHour: 0, sevenDay: 0.89, sevenDayReset: NOW + 24 * HOUR }, NOW);
+    expect(pickReason(held, NOW)).toBe(
+      'room for 73% of a 5-hour window, 11% of its week left (held back; nothing healthier has room)',
+    );
+  });
+
+  it('puts the settings line in words, the hold-back only where it applies', () => {
+    expect(settingsWords({ modelPreference: ['opus', 'fable'], accountOrder: 'smart', holdBackAtPercent: 80 })).toEqual({
+      model: 'Opus, then Fable',
+      order: 'longest run first',
+      holdBack: 'weeks 80%+ used',
+    });
+    expect(settingsWords({ modelPreference: ['opus'], accountOrder: 'smart', holdBackAtPercent: 100 })).toEqual({
+      model: 'Opus only',
+      order: 'longest run first',
+    });
+    expect(settingsWords({ modelPreference: ['opus'], accountOrder: 'priority' }).holdBack).toBeUndefined();
+  });
 });
 
 describe('ranking accounts the way rotation picks them', () => {
@@ -74,23 +96,47 @@ describe('ranking accounts the way rotation picks them', () => {
   const open = { fiveHourReset: null, sevenDayReset: null };
   const usage: Record<string, Entry> = {
     thin: { fiveHour: 0.3, sevenDay: 0.1, ...open }, // 0.7 of a window
-    // 20% of a week left. At the default cost that is two full windows; at a
-    // learned 0.4 it is half of one.
-    'costly-week': { fiveHour: 0, sevenDay: 0.8, windowCost: 0.4, ...open },
+    // 30% of a week left, short of being held back. At the default cost that
+    // is two full windows; at a learned 0.6 it is half of one.
+    'costly-week': { fiveHour: 0, sevenDay: 0.7, windowCost: 0.6, ...open },
   };
 
   it("uses each account's learned window cost, as rotation does", () => {
-    const ranked = rankAccounts(accounts, (name) => usage[name], 'smart', 'opus', NOW);
+    const ranked = rankAccounts(accounts, (name) => usage[name], { accountOrder: 'smart' }, 'opus', NOW);
     expect(ranked.map((a) => a.name)).toEqual(['thin', 'costly-week']);
+    // The same week at the default cost: two windows, so it comes first.
+    const unlearned: Record<string, Entry> = {
+      thin: usage.thin!,
+      'costly-week': { fiveHour: 0, sevenDay: 0.7, ...open },
+    };
+    expect(
+      rankAccounts(accounts, (name) => unlearned[name], { accountOrder: 'smart' }, 'opus', NOW).map((a) => a.name),
+    ).toEqual(['costly-week', 'thin']);
+  });
+
+  it('holds a nearly spent week back under the smart order, and only there', () => {
+    const fresh: Record<string, Entry> = {
+      thin: { fiveHour: 0.4, sevenDay: 0.1, ...open }, // 0.6 of a window
+      // A fresh 5-hour window on a week 89% used.
+      'costly-week': { fiveHour: 0, sevenDay: 0.89, ...open },
+    };
+    const ranked = (policy: Parameters<typeof rankAccounts>[2]) =>
+      rankAccounts(accounts, (name) => fresh[name], policy, 'opus', NOW).map((a) => a.name);
+    expect(ranked({ accountOrder: 'smart' })).toEqual(['thin', 'costly-week']);
+    // Held back from 90% instead: its 11% is about three quarters of a
+    // window, more than thin's 0.6, so it goes first.
+    expect(ranked({ accountOrder: 'smart', holdBackAtPercent: 90 })).toEqual(['costly-week', 'thin']);
+    expect(holdBackOf({ accountOrder: 'smart' })).toBe(80);
+    expect(holdBackOf({ accountOrder: 'most-room', holdBackAtPercent: 70 })).toBeNull();
   });
 
   it('ranks by priority under your order, and by remaining room under most room', () => {
-    expect(rankAccounts(accounts, (name) => usage[name], 'priority', 'opus', NOW).map((a) => a.name)).toEqual([
+    expect(rankAccounts(accounts, (name) => usage[name], { accountOrder: 'priority' }, 'opus', NOW).map((a) => a.name)).toEqual([
       'thin',
       'costly-week',
     ]);
-    // most-room reads the tighter percentage: 70% left against 20% left.
-    expect(rankAccounts(accounts, (name) => usage[name], 'most-room', 'opus', NOW).map((a) => a.name)).toEqual([
+    // most-room reads the tighter percentage: 70% left against 30% left.
+    expect(rankAccounts(accounts, (name) => usage[name], { accountOrder: 'most-room' }, 'opus', NOW).map((a) => a.name)).toEqual([
       'thin',
       'costly-week',
     ]);
@@ -154,6 +200,13 @@ describe('numbering the picks', () => {
   it('numbers every candidate when models are switched off', () => {
     const picks = numberPicks(candidates, ['opus', 'fable'], false, standing);
     expect([...picks.keys()]).toEqual(['out', 'chain-spent', 'opus-room', 'fresh']);
+  });
+
+  it('marks a held-back pick with how much of its week is left', () => {
+    const nearlySpent = () => standingOf({ fiveHour: 0, sevenDay: 0.89 }, NOW);
+    const picks = numberPicks([{ name: 'fresh', models: {} }], ['opus'], true, nearlySpent);
+    expect(picks.get('fresh')?.heldBack?.weekLeft).toBeCloseTo(0.11);
+    expect(numberPicks([{ name: 'fresh', models: {} }], ['opus'], true, standing).get('fresh')?.heldBack).toBeUndefined();
   });
 });
 

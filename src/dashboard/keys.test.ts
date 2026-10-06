@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { dispatchKey, confirmKey } from './keys.js';
+import { dispatchKey, dispatchSettingsKey, confirmKey } from './keys.js';
 
 describe('dispatchKey', () => {
   it('quits on q, Ctrl-C, Ctrl-D', () => {
@@ -113,5 +113,40 @@ describe('the Claude Desktop keys', () => {
     expect(dispatchKey('o', 111, 1, 3)).toEqual({ selected: 1, action: 'pick-order' });
     expect(dispatchKey('[', 91, 1, 3)).toEqual({ selected: 1, action: 'move-up' });
     expect(dispatchKey(']', 93, 1, 3)).toEqual({ selected: 1, action: 'move-down' });
+  });
+
+  it('opens the settings with s, without moving the cursor', () => {
+    expect(dispatchKey('s', 115, 1, 3)).toEqual({ selected: 1, action: 'settings' });
+  });
+});
+
+describe('dispatchSettingsKey', () => {
+  it('steps back to the accounts on s or a bare Escape, rather than quitting', () => {
+    expect(dispatchSettingsKey('s', 115, 2, 5).action).toBe('close');
+    expect(dispatchSettingsKey('\x1b', 27, 2, 5).action).toBe('close');
+  });
+
+  it('still quits on q, Ctrl-C and Ctrl-D', () => {
+    expect(dispatchSettingsKey('q', 113, 0, 5).action).toBe('quit');
+    expect(dispatchSettingsKey('\x03', 3, 0, 5).action).toBe('quit');
+    expect(dispatchSettingsKey('\x04', 4, 0, 5).action).toBe('quit');
+  });
+
+  it('moves between settings with j/k and the up/down arrows, clamped', () => {
+    expect(dispatchSettingsKey('j', 106, 0, 5)).toEqual({ selected: 1, action: 'move' });
+    expect(dispatchSettingsKey('\x1b[B', 27, 4, 5)).toEqual({ selected: 4, action: 'move' });
+    expect(dispatchSettingsKey('k', 107, 0, 5)).toEqual({ selected: 0, action: 'move' });
+    expect(dispatchSettingsKey('\x1b[A', 27, 3, 5)).toEqual({ selected: 2, action: 'move' });
+  });
+
+  it('steps a value on with the right arrow, space or +, and back with the left arrow or -', () => {
+    for (const key of ['\x1b[C', ' ', '+', '=']) expect(dispatchSettingsKey(key, key.charCodeAt(0), 1, 5).action).toBe('next');
+    for (const key of ['\x1b[D', '-']) expect(dispatchSettingsKey(key, key.charCodeAt(0), 1, 5).action).toBe('previous');
+  });
+
+  it('edits on Enter, resets on d, and ignores the rest', () => {
+    expect(dispatchSettingsKey('\r', 13, 1, 5).action).toBe('edit');
+    expect(dispatchSettingsKey('d', 100, 1, 5).action).toBe('default');
+    expect(dispatchSettingsKey('z', 122, 1, 5)).toEqual({ selected: 1, action: 'none' });
   });
 });

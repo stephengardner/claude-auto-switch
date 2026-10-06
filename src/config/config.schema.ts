@@ -6,7 +6,6 @@ import { z } from 'zod';
  */
 export const ConfigSchema = z.object({
   profilesDir: z.string().optional(),
-  priorityOrder: z.array(z.string()).default([]),
   browser: z
     .object({
       debugPort: z.number().int().positive().default(9222),
@@ -16,7 +15,6 @@ export const ConfigSchema = z.object({
   rotation: z
     .object({
       autoRotateHeadless: z.boolean().default(true),
-      autoRelaunchInteractive: z.boolean().default(true),
       defaultBackoffMinutes: z.number().int().positive().default(300),
       capThresholdPercent: z.number().int().min(1).max(100).default(95),
       /**
@@ -73,6 +71,12 @@ export const ConfigSchema = z.object({
        * is the tiebreak when two accounts are equally roomy.
        */
       accountOrder: z.enum(['smart', 'most-room', 'priority']).default('smart'),
+      /**
+       * Under `smart`, an account whose week (or the model's own week) is at
+       * least this full goes after every account whose week is not, among
+       * those worth moving to (see usage/runway.ts). 100 turns it off.
+       */
+      holdBackAtPercent: z.number().int().min(50).max(100).default(80),
     })
     .default({}),
   /**
@@ -145,11 +149,9 @@ export type Config = z.infer<typeof ConfigSchema>;
 /** Deep-partial shape for file input, env overrides, and saveConfig. */
 export interface PartialConfig {
   profilesDir?: string;
-  priorityOrder?: string[];
   browser?: { debugPort?: number; channel?: string };
   rotation?: {
     autoRotateHeadless?: boolean;
-    autoRelaunchInteractive?: boolean;
     defaultBackoffMinutes?: number;
     capThresholdPercent?: number;
     proactivePercent?: number;
@@ -159,6 +161,7 @@ export interface PartialConfig {
     modelStrategy?: 'model-first' | 'account-first';
     preferSameModel?: boolean;
     accountOrder?: 'smart' | 'most-room' | 'priority';
+    holdBackAtPercent?: number;
   };
   desktop?: {
     handoff?: 'off' | 'limit' | 'credits';

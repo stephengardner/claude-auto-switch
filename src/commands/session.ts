@@ -12,7 +12,7 @@ import {
   snapshotStateBase,
 } from '../session/write-back.js';
 import { configHome, type PathCtx } from '../config/paths.js';
-import { loadConfig } from '../config/config.js';
+import { configStamp, loadConfig } from '../config/config.js';
 import { sweepAbandonedTemps } from '../util/fs-json.js';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
@@ -346,6 +346,32 @@ export async function runInteractiveHotSwap(
   clearSwitchRequest(context.ctx);
   clearSwitchRequest(context.ctx, process.pid);
   if (startPrompt !== null) writeResumePrompt(sessionDir, startPrompt);
+
+  /**
+   * The settings as they are on disk now, not as they were when this session
+   * started: a change made in the dashboard or with `ccx config` applies from
+   * this session's next decision that reads it (a move, a restart, an early-move
+   * check, an update). Re-read only when the file has changed since the
+   * session started, since some of those are asked every few seconds, and so
+   * the settings it was started with stand until someone changes them. A
+   * config that cannot be read keeps what the session had.
+   */
+  let settingsStamp = configStamp(context.ctx);
+  const refreshSettings = (): void => {
+    const stamp = configStamp(context.ctx);
+    if (stamp === settingsStamp) return;
+    try {
+      const fresh = loadConfig(context.ctx);
+      context.config.rotation = fresh.rotation;
+      context.config.resume = fresh.resume;
+      context.config.update = fresh.update;
+      context.config.desktop = fresh.desktop;
+      settingsStamp = stamp;
+    } catch {
+      /* keep the settings it started with */
+    }
+  };
+
   /**
    * What a relaunch carries on with: the prompt this session armed, else the
    * default (config `resume`), unless that is off or this session was told to
@@ -353,6 +379,7 @@ export async function runInteractiveHotSwap(
    * session waits at its prompt, and an unattended one just stops.
    */
   const relaunchPrompt = (): { prompt: string; source: 'armed' | 'default' } | null => {
+    refreshSettings();
     const armed = readResumePrompt(sessionDir);
     if (armed.armed) return { prompt: armed.prompt, source: 'armed' };
     if (armed.invalid) {
@@ -954,6 +981,7 @@ export async function runInteractiveHotSwap(
       capUnregisteredEmail = null;
       return;
     }
+    refreshSettings(); // how long to skip it, as set now
     saveLedger(
       markCapped(loadLedger(context.ctx), {
         account: accountName,
@@ -998,20 +1026,6 @@ export async function runInteractiveHotSwap(
   };
 
   /**
-   * The rotation settings as they are on disk now, not as they were when this
-   * session started: a change made in the dashboard (the model preference, the
-   * pick rule) applies from this session's next move. A config that cannot be
-   * read keeps what the session had.
-   */
-  const refreshRotation = (): void => {
-    try {
-      context.config.rotation = loadConfig(context.ctx).rotation;
-    } catch {
-      /* keep the settings it started with */
-    }
-  };
-
-  /**
    * The account to move THIS session to when its current account hits an
    * account-wide limit, WITHOUT restarting.
    *
@@ -1023,7 +1037,7 @@ export async function runInteractiveHotSwap(
    * cap recorded a moment earlier.
    */
   const reliefAccount = (capName: string): Account | null => {
-    refreshRotation();
+    refreshSettings();
     const now = Date.now();
     const capped = cappedNames(loadLedger(context.ctx), now);
     const healthy = accounts
@@ -1049,7 +1063,7 @@ export async function runInteractiveHotSwap(
       .sort(
         orderComparator(
           context.config.rotation.accountOrder,
-          roomOfFromSnapshot(context.ctx, now, context.config.rotation.accountOrder, runningModel()),
+          roomOfFromSnapshot(context.ctx, now, context.config.rotation, runningModel()),
         ),
       );
     if (healthy.length === 0) return null;
@@ -1121,11 +1135,16 @@ export async function runInteractiveHotSwap(
   const proactive = startProactiveRotation(
     buildProactiveDeps(context, {
       current: () => current?.name ?? null,
+      // Turning early moves on or off in the dashboard reaches this session
+      // at its next check, not only the sessions started after.
+      refresh: refreshSettings,
       requestSwitch: (account, reason) => {
         notice(`${reason}; moving to "${account}" before this account runs out`);
         setActive(account, context.ctx);
         syncEditorPointerIfEnabled(context);
-        writeSwitchRequest(account, Date.now(), 'seamless', context.ctx);
+        // Addressed to THIS session. A shared request is taken by whichever
+        // session looks first, so this one's early move could move another.
+        writeSwitchRequest(account, Date.now(), 'seamless', context.ctx, process.pid);
       },
     }),
     Math.max(30, context.config.rotation.usageCheckSeconds) * 1000,
@@ -1143,7 +1162,7 @@ export async function runInteractiveHotSwap(
     accountsNeverSignedIn: () =>
       accounts.filter((a) => a.enabled && !hasLogin(a.dir)).map((a) => a.name),
     nextAccount: (excluding) => {
-      refreshRotation();
+      refreshSettings();
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
       // An account this run was told to start on outranks the active one.
       const pinned = options.account ?? getActive(context.ctx);
@@ -1154,7 +1173,7 @@ export async function runInteractiveHotSwap(
       const roomOf = roomOfFromSnapshot(
         context.ctx,
         Date.now(),
-        context.config.rotation.accountOrder,
+        context.config.rotation,
         runningModel() ?? limitedModel ?? preferredModel(context),
       );
       const eligible = accounts
@@ -1502,8 +1521,10 @@ export async function runInteractiveHotSwap(
         // conversation actually on screen after `/clear` or `/resume`, and for
         // a run started with `--continue` or the picker, where ccx never knew.
         // A newer ccx installed meanwhile takes over once Claude is idle.
-        handoverWhenIdle: () =>
-          context.config.update.follow && (context.newerInstall ?? newerInstall)() !== null,
+        handoverWhenIdle: () => {
+          refreshSettings();
+          return context.config.update.follow && (context.newerInstall ?? newerInstall)() !== null;
+        },
         onConversation: (id: string) => {
           liveConversationId = id;
           rememberReport(sessionDir, { id });
@@ -1522,6 +1543,7 @@ export async function runInteractiveHotSwap(
       // where Claude is being relaunched anyway: the same conversation, on the
       // account this relaunch chose, saying what this relaunch would have said.
       // The run ends normally and the newer ccx is started after it (below).
+      refreshSettings();
       const newer = isContinue && context.config.update.follow ? (context.newerInstall ?? newerInstall)() : null;
       if (newer) {
         handoverPlan = {

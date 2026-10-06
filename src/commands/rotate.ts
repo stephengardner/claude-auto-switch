@@ -21,7 +21,7 @@ export async function rotateCommand(context: CliContext): Promise<number> {
     loggedIn,
     capped: new Set(),
     order: context.config.rotation.accountOrder,
-    roomOf: roomOfFromSnapshot(context.ctx, Date.now(), context.config.rotation.accountOrder, preferredModel(context)),
+    roomOf: roomOfFromSnapshot(context.ctx, Date.now(), context.config.rotation, preferredModel(context)),
   });
   if (!result.ok) {
     context.out(`cannot rotate: ${result.reason}`);

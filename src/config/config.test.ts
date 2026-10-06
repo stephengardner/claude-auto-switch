@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { loadConfig, saveConfig } from './config.js';
+import { configStamp, loadConfig, saveConfig } from './config.js';
 import { ConfigError } from '../util/errors.js';
 
 /** Make a throwaway config home, optionally seeding a config.json. */
@@ -23,7 +23,7 @@ describe('loadConfig', () => {
     expect(cfg.rotation.autoRotateHeadless).toBe(true);
     expect(cfg.rotation.defaultBackoffMinutes).toBe(300);
     expect(cfg.realClaudePath).toBeNull();
-    expect(cfg.priorityOrder).toEqual([]);
+    expect(cfg.rotation.holdBackAtPercent).toBe(80);
   });
 
   it('lets file values override defaults while keeping sibling defaults', () => {
@@ -54,5 +54,18 @@ describe('saveConfig / loadConfig round trip', () => {
     saveConfig({ browser: { debugPort: 9555, channel: 'chrome' } }, ctx);
     const cfg = loadConfig(ctx);
     expect(cfg.browser.debugPort).toBe(9555);
+  });
+});
+
+describe('configStamp', () => {
+  it('is null with no file, and changes when the file does', () => {
+    const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: seedHome(null) } };
+    expect(configStamp(ctx)).toBeNull();
+    saveConfig({ rotation: { holdBackAtPercent: 90 } }, ctx);
+    const first = configStamp(ctx);
+    expect(first).not.toBeNull();
+    expect(configStamp(ctx)).toBe(first);
+    saveConfig({ rotation: { holdBackAtPercent: 85, accountOrder: 'most-room' } }, ctx);
+    expect(configStamp(ctx)).not.toBe(first);
   });
 });

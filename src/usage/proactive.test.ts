@@ -74,4 +74,29 @@ describe('proactiveTick', () => {
     const { deps: d } = deps({ current: () => null });
     expect((await proactiveTick(d)).outcome).toBe('no-switch');
   });
+
+  it('refreshes its settings before deciding, so turning it on reaches a running session', async () => {
+    let percent = 0;
+    const { deps: base, switched } = deps();
+    const d: ProactiveDeps = {
+      ...base,
+      refresh: () => {
+        percent = 90; // what the dashboard just saved
+      },
+      get thresholdPercent() {
+        return percent;
+      },
+    };
+    expect((await proactiveTick(d)).outcome).toBe('switched');
+    expect(switched).toEqual(['b']);
+  });
+
+  it('decides on the settings it holds when refreshing them fails', async () => {
+    const { deps: d } = deps({
+      refresh: () => {
+        throw new Error('config unreadable');
+      },
+    });
+    expect((await proactiveTick(d)).outcome).toBe('switched');
+  });
 });

@@ -23,6 +23,8 @@ export type KeyAction =
   /** Priority: move the highlighted account up or down the order ([ and ]). */
   | 'move-up'
   | 'move-down'
+  /** Open the settings panel (s). */
+  | 'settings'
   | 'none';
 
 export interface KeyOutcome {
@@ -51,10 +53,10 @@ export function dispatchKey(
   // Esc quits too, matched on the KEY rather than on its first byte, because
   // byte0 is optional and a caller that omits it would otherwise not quit. A
   // chunk that IS a bare Escape is the key itself; one that merely STARTS with
-  // it is an arrow or function key (`[A`), a different string, which still
+  // it is an arrow or function key (`\x1b[A`), a different string, which still
   // reaches navigation and keeps moving the selection.
   if (key === 'q' || byte0 === 3 || byte0 === 4) return { selected, action: 'quit' };
-  if (key === '') return { selected, action: 'quit' };
+  if (key === '\x1b') return { selected, action: 'quit' };
   if (key === 'j' || key === '\x1b[B') return { selected: clamp(selected + 1, count), action: 'move' };
   if (key === 'k' || key === '\x1b[A') return { selected: clamp(selected - 1, count), action: 'move' };
   // Enter (also u / p) activates the highlighted account: it becomes the one
@@ -84,6 +86,43 @@ export function dispatchKey(
   if (key === 'o') return { selected, action: 'pick-order' };
   if (key === '[') return { selected, action: 'move-up' };
   if (key === ']') return { selected, action: 'move-down' };
+  if (key === 's') return { selected, action: 'settings' };
+  return { selected, action: 'none' };
+}
+
+export type SettingsKeyAction =
+  | 'quit'
+  /** Back to the accounts (s, or Escape: in here Escape steps back, it does not quit). */
+  | 'close'
+  | 'move'
+  /** Step the highlighted setting on (right arrow, space, +) or back (left arrow, -). */
+  | 'next'
+  | 'previous'
+  /** Enter: type a value for a typed setting, step a toggle or a choice. */
+  | 'edit'
+  /** Put the highlighted setting back to its default (d). */
+  | 'default'
+  | 'none';
+
+/**
+ * Key dispatch while the settings panel is open. Pure, like dispatchKey. The
+ * panel takes the arrows and space for itself, so these keys mean something
+ * different in here than on the account list, and the footer says so.
+ */
+export function dispatchSettingsKey(
+  key: string,
+  byte0: number | undefined,
+  selected: number,
+  count: number,
+): { selected: number; action: SettingsKeyAction } {
+  if (key === 'q' || byte0 === 3 || byte0 === 4) return { selected, action: 'quit' };
+  if (key === '\x1b' || key === 's') return { selected, action: 'close' };
+  if (key === 'j' || key === '\x1b[B') return { selected: clamp(selected + 1, count), action: 'move' };
+  if (key === 'k' || key === '\x1b[A') return { selected: clamp(selected - 1, count), action: 'move' };
+  if (key === '\x1b[C' || key === ' ' || key === '+' || key === '=') return { selected, action: 'next' };
+  if (key === '\x1b[D' || key === '-') return { selected, action: 'previous' };
+  if (byte0 === 13 || byte0 === 10) return { selected, action: 'edit' };
+  if (key === 'd') return { selected, action: 'default' };
   return { selected, action: 'none' };
 }
 

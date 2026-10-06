@@ -23,13 +23,14 @@ import { renderUsageReport } from '../dist/usage/report.js';
 import { renderDashboard } from '../dist/dashboard/render.js';
 import { describeNextUp } from '../dist/dashboard/next-up.js';
 import {
-  modelPreferenceWords,
   modelUsageFor,
   numberPicks,
-  orderWords,
   pickReason,
   rankAccounts,
+  settingsWords,
 } from '../dist/dashboard/rotation-settings.js';
+import { SETTINGS, appliesWords, valueOf } from '../dist/dashboard/settings-catalog.js';
+import { ConfigSchema } from '../dist/config/config.schema.js';
 import { standingOf } from '../dist/usage/runway.js';
 
 const OUT_DIR = path.join('docs', 'img');
@@ -68,6 +69,17 @@ const ACCOUNTS = [
     week: 0.03,
     fable: 0,
   },
+  {
+    // A fresh 5-hour window on a week nearly spent: held back, so it comes
+    // after every healthy account, however fresh that window is.
+    name: 'old',
+    email: 'old@example.com',
+    plan: 'pro',
+    active: false,
+    five: 0,
+    week: 0.89,
+    fable: 0.2,
+  },
 ];
 
 const windowsFor = (a) => [
@@ -101,17 +113,17 @@ const usageOf = (name) => {
     models: [{ name: 'Fable', utilization: a.fable, resetsAt: mins(60 * 48) }],
   };
 };
+const POLICY = { accountOrder: 'smart', holdBackAtPercent: 80 };
 const ranked = rankAccounts(
   ACCOUNTS.map((a, i) => ({ name: a.name, priority: i, enabled: true })),
   usageOf,
-  'smart',
+  POLICY,
   'opus',
   NOW,
 );
 const candidates = ranked.map((a) => modelUsageFor(a.name, usageOf(a.name), [], NOW));
-const picks = numberPicks(candidates, PREFERENCE, true, (name) =>
-  standingOf(usageOf(name), NOW, 'opus'),
-);
+const standing = (name) => standingOf(usageOf(name), NOW, 'opus', POLICY.holdBackAtPercent);
+const picks = numberPicks(candidates, PREFERENCE, true, standing);
 
 const dashboardAnsi = renderDashboard(
   {
@@ -140,11 +152,33 @@ const dashboardAnsi = renderDashboard(
       modelInUse: 'opus',
       preference: PREFERENCE,
       strategy: 'model-first',
-      reasonFor: (name) => pickReason(standingOf(usageOf(name), NOW, 'opus'), NOW),
+      reasonFor: (name) => pickReason(standing(name), NOW),
     }),
-    settings: { model: modelPreferenceWords(PREFERENCE), order: orderWords('smart') },
+    settings: settingsWords({ modelPreference: PREFERENCE, ...POLICY }),
+    sessions: [
+      { number: 1, where: 'api', account: 'work' },
+      { number: 2, where: 'web', account: 'spare' },
+    ],
   },
-  { color: true, interactive: true, selected: 0, width: COLS },
+  { color: true, interactive: true, selected: 3, width: COLS },
+);
+
+// The settings panel over the defaults, with the hold-back highlighted.
+const DEFAULTS = ConfigSchema.parse({});
+const HIGHLIGHT = SETTINGS.findIndex((s) => s.key === 'rotation.holdBackAtPercent');
+const settingsAnsi = renderDashboard(
+  { accounts: [], events: [], now: NOW, refreshMs: 3000 },
+  {
+    color: true,
+    interactive: true,
+    width: COLS,
+    panel: {
+      rows: SETTINGS.map((s) => ({ group: s.group, label: s.label, value: s.words(valueOf(DEFAULTS, s.key)) })),
+      selected: HIGHLIGHT,
+      help: SETTINGS[HIGHLIGHT].help,
+      applies: appliesWords(SETTINGS[HIGHLIGHT].applies),
+    },
+  },
 );
 
 // --- ANSI to SVG ----------------------------------------------------------
@@ -276,6 +310,7 @@ mkdirSync(OUT_DIR, { recursive: true });
 for (const [file, ansi, title] of [
   ['usage.svg', usageAnsi, 'ccx usage'],
   ['dashboard.svg', dashboardAnsi, 'ccx dashboard'],
+  ['settings.svg', settingsAnsi, 'ccx dashboard: settings (s)'],
 ]) {
   writeFileSync(path.join(OUT_DIR, file), toSvg(ansi, title), 'utf8');
   console.log(`${file.padEnd(15)} ${String(parseAnsi(ansi).length).padStart(3)} lines`);

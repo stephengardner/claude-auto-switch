@@ -46,7 +46,7 @@ describe('runway: how much of a 5-hour window an account can still do', () => {
 
   it("counts the model's own weekly window only for that model", () => {
     const entry = account({ models: [{ name: 'Fable', utilization: 0.97, resetsAt: NOW + 50 * HOUR }] });
-    expect(standingOf(entry, NOW, 'claude-fable-5[1m]').runway).toBeCloseTo(0.3);
+    expect(standingOf(entry, NOW, 'claude-fable-5[1m]').runway).toBeCloseTo(0.03 / DEFAULT_WINDOW_COST);
     expect(standingOf(entry, NOW, 'claude-fable-5[1m]').binding).toBe('model');
     expect(standingOf(entry, NOW, 'opus[1m]').runway).toBe(1);
     expect(standingOf(entry, NOW).runway).toBe(1);
@@ -65,15 +65,15 @@ describe('runway: how much of a 5-hour window an account can still do', () => {
 
 describe('urgency: leftover weekly budget at risk of expiring unused', () => {
   it('is full when more is left than could be used before the reset', () => {
-    // 10 windows of budget, 50 hours (10 windows of time) to use them in.
-    const s = standingOf(account({ sevenDay: 0, sevenDayReset: NOW + 50 * HOUR }), NOW);
+    // About 6.7 windows of budget, 30 hours (6 windows of time) to use them in.
+    const s = standingOf(account({ sevenDay: 0, sevenDayReset: NOW + 30 * HOUR }), NOW);
     expect(s.urgency).toBe(1);
   });
 
   it('is low when the reset is far off', () => {
-    // 5 windows of budget, 150 hours (30 windows of time).
+    // About 3.3 windows of budget, 150 hours (30 windows of time).
     const s = standingOf(account({ sevenDay: 0.5, sevenDayReset: NOW + 150 * HOUR }), NOW);
-    expect(s.urgency).toBeCloseTo(5 / 30);
+    expect(s.urgency).toBeCloseTo(0.5 / DEFAULT_WINDOW_COST / 30);
   });
 
   it('is nothing when the week was never measured', () => {
@@ -83,17 +83,25 @@ describe('urgency: leftover weekly budget at risk of expiring unused', () => {
 
 describe('pick order', () => {
   it('puts longer runway first, and urgency only breaks ties within a tenth of a window', () => {
-    const longRunway = standingOf(account({ sevenDay: 0.5, sevenDayReset: NOW + 160 * HOUR }), NOW);
+    // With no week held back (null), so this is runway and urgency alone.
+    const longRunway = standingOf(account({ sevenDay: 0.5, sevenDayReset: NOW + 160 * HOUR }), NOW, null, null);
     const shorterButUrgent = standingOf(
       account({ fiveHour: 0.3, sevenDay: 0.9, sevenDayReset: NOW + 6 * HOUR }),
       NOW,
+      null,
+      null,
     );
     expect(longRunway.runway).toBe(1);
-    expect(shorterButUrgent.runway).toBeCloseTo(0.7);
+    expect(shorterButUrgent.runway).toBeCloseTo(0.1 / DEFAULT_WINDOW_COST);
     expect(shorterButUrgent.urgency).toBeGreaterThan(longRunway.urgency);
     expect(pickScore(longRunway)).toBeGreaterThan(pickScore(shorterButUrgent));
 
-    const sameRunwayExpiringSoon = standingOf(account({ sevenDay: 0.8, sevenDayReset: NOW + 10 * HOUR }), NOW);
+    const sameRunwayExpiringSoon = standingOf(
+      account({ sevenDay: 0.8, sevenDayReset: NOW + 10 * HOUR }),
+      NOW,
+      null,
+      null,
+    );
     expect(sameRunwayExpiringSoon.runway).toBe(1);
     expect(pickScore(sameRunwayExpiringSoon)).toBeGreaterThan(pickScore(longRunway));
   });
@@ -115,8 +123,63 @@ describe('a spent account against one with a sliver of room', () => {
     const spent = standingOf(account({ fiveHour: 1, sevenDay: 0.5, sevenDayReset: NOW + 48 * HOUR }), NOW);
     const sliver = standingOf(account({ fiveHour: 0.96, sevenDay: 0.1, sevenDayReset: NOW + 144 * HOUR }), NOW);
     expect(spent.runway).toBe(0);
-    expect(pickScore(spent)).toBe(0);
+    // No urgency bonus at all without runway to use it in.
+    expect(pickScore(spent)).toBe(pickScore({ ...spent, urgency: 0 }));
     expect(pickScore(sliver)).toBeGreaterThan(pickScore(spent));
+  });
+});
+
+describe('holding back a nearly spent week', () => {
+  // The accounts as they stood when a week 89% used was picked second.
+  const phx1 = account({ fiveHour: 0, sevenDay: 0.89, sevenDayReset: NOW + 24 * HOUR });
+  const alvi = account({ fiveHour: 0.13, sevenDay: 0.03, windowCost: 0.145, sevenDayReset: NOW + 166 * HOUR });
+  const ad911 = account({ fiveHour: 0.45, sevenDay: 0.68, windowCost: 0.214, sevenDayReset: NOW + 106 * HOUR });
+
+  it('puts it after every healthy account worth moving to, however fresh its 5-hour window', () => {
+    const held = standingOf(phx1, NOW);
+    expect(held.heldBack).toBe(true);
+    expect(held.weekLeft).toBeCloseTo(0.11);
+    expect(standingOf(alvi, NOW).heldBack).toBe(false);
+    expect(pickScore(standingOf(alvi, NOW))).toBeGreaterThan(pickScore(held));
+    // Even an account about half a window from its 5-hour wall.
+    expect(pickScore(standingOf(ad911, NOW))).toBeGreaterThan(pickScore(held));
+  });
+
+  it('stays behind healthy accounts even when its window cost is underestimated', () => {
+    // At the old default cost of 0.1 its 11% read as a full window, and with
+    // nothing held back (100) that outscored an account 13% into its 5-hour.
+    const optimistic = account({ ...phx1, windowCost: 0.1 });
+    expect(pickScore(standingOf(optimistic, NOW, null, 100))).toBeGreaterThan(
+      pickScore(standingOf(alvi, NOW, null, 100)),
+    );
+    expect(pickScore(standingOf(optimistic, NOW))).toBeLessThan(pickScore(standingOf(alvi, NOW)));
+  });
+
+  it('still beats a healthy week whose 5-hour window has minutes left', () => {
+    const minutesLeft = standingOf(account({ fiveHour: 0.9, sevenDay: 0.1 }), NOW);
+    expect(minutesLeft.worthMoving).toBe(false);
+    expect(pickScore(standingOf(phx1, NOW))).toBeGreaterThan(pickScore(minutesLeft));
+  });
+
+  it("counts the model's own week, only for that model", () => {
+    const entry = account({ sevenDay: 0.3, models: [{ name: 'Fable', utilization: 0.85, resetsAt: NOW + 50 * HOUR }] });
+    expect(standingOf(entry, NOW, 'claude-fable-5').heldBack).toBe(true);
+    expect(standingOf(entry, NOW, 'claude-fable-5').weekLeft).toBeCloseTo(0.15);
+    expect(standingOf(entry, NOW, 'opus').heldBack).toBe(false);
+    expect(standingOf(entry, NOW, 'opus').weekLeft).toBeCloseTo(0.7);
+  });
+
+  it('holds back at the whole percent the screen shows, and not below it', () => {
+    expect(standingOf(account({ sevenDay: 0.8 }), NOW).heldBack).toBe(true);
+    expect(standingOf(account({ sevenDay: 0.79 }), NOW).heldBack).toBe(false);
+    expect(standingOf(account({ sevenDay: 0.79 }), NOW, null, 75).heldBack).toBe(true);
+  });
+
+  it('holds nothing back when off, for an order that does not, or for a week never measured', () => {
+    expect(standingOf(phx1, NOW, null, 100).heldBack).toBe(false);
+    expect(standingOf(phx1, NOW, null, null).heldBack).toBe(false);
+    expect(standingOf(account({ sevenDay: null }), NOW).heldBack).toBe(false);
+    expect(standingOf(undefined, NOW).weekLeft).toBeNull();
   });
 });
 

@@ -350,7 +350,37 @@ describe('renderDashboard (plain)', () => {
     expect(plain).toContain('model: Opus, then Fable  ·  pick: longest run first');
     expect(plain).not.toContain('M model');
     const live = renderDashboard({ ...snapshot([account({ name: 'a' })]), settings }, { ...opts, interactive: true });
-    expect(live).toContain('(M model · o pick · [ ] move up/down)');
+    expect(live).toContain('(s settings · [ ] order)');
+    expect(live).toContain('s settings');
+  });
+
+  it('says from how full a week accounts are held back, when they are', () => {
+    const settings = { model: 'Opus only', order: 'longest run first', holdBack: 'weeks 80%+ used' };
+    const out = renderDashboard({ ...snapshot([account({ name: 'a' })]), settings }, opts);
+    expect(out).toContain('pick: longest run first  ·  held back: weeks 80%+ used');
+  });
+
+  it('lists the running sessions with the account each is on', () => {
+    const sessions = [
+      { number: 1, where: 'api', account: 'a' },
+      { number: 2, where: 'web', account: 'b' },
+    ];
+    const out = renderDashboard({ ...snapshot([account({ name: 'a' })]), sessions }, opts);
+    expect(out).toContain('sessions: 1 api on a  ·  2 web on b');
+  });
+
+  it('says a held-back account is held back in its detail line', () => {
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'a',
+          usage: { fiveHour: 0, sevenDay: 0.89 },
+          pick: { rank: 5, runway: 0.73, binding: 'weekly', heldBack: { weekLeft: 0.11 } },
+        }),
+      ]),
+      { ...opts, interactive: true, selected: 0 },
+    );
+    expect(out).toContain('pick #5 (held back: 11% of its week left), room for 73% of a 5-hour window (the week binds)');
   });
 
   it("says the highlighted account's place and room in its detail line", () => {
@@ -689,5 +719,82 @@ describe('the Claude Desktop line', () => {
 
   it('is not there at all when Desktop is not in use', () => {
     expect(renderDashboard(snapshot([account()]), { color: false })).not.toContain('Desktop');
+  });
+});
+
+describe('the settings panel', () => {
+  const rows = [
+    { group: 'Picking accounts', label: 'Pick the next account by', value: 'longest run first' },
+    { group: 'Picking accounts', label: 'Hold back weeks used past', value: '80%' },
+    { group: 'Models', label: 'Model preference', value: 'Opus, then Fable' },
+    { group: 'Restarts', label: 'Restart prompt', value: 'This session was restarted.' },
+  ];
+  const panel = (selected: number) => ({
+    rows,
+    selected,
+    help: 'What it does.',
+    applies: "Takes effect at each session's next move.",
+  });
+
+  it('is drawn in place of the accounts, grouped, with the highlighted setting explained', () => {
+    const out = renderDashboard(snapshot([account({ name: 'acct' })]), {
+      color: false,
+      interactive: true,
+      panel: panel(1),
+    });
+    expect(out).not.toContain('ACCOUNT');
+    expect(out).toContain('  Picking accounts');
+    expect(out).toContain('   ▸ Hold back weeks used past   80%');
+    expect(out).toContain('     Pick the next account by    longest run first');
+    expect(out).toContain('  What it does.');
+    expect(out).toContain("  Takes effect at each session's next move.");
+    expect(out).toContain('s/esc back  ·  j/k move  ·  ←/→ change  ·  enter edit  ·  d default  ·  q quit');
+  });
+
+  it('never draws wider than the terminal, wrapping the explanation instead of cutting it', () => {
+    const long = { ...panel(0), help: 'word '.repeat(40).trim() };
+    for (const width of [100, 64, 40]) {
+      const out = renderDashboard(snapshot([]), { color: false, interactive: true, panel: long, width });
+      for (const line of out.split('\n')) expect(line.length, `at ${width}: ${line}`).toBeLessThanOrEqual(width);
+    }
+    const at64 = renderDashboard(snapshot([]), { color: false, interactive: true, panel: long, width: 64 });
+    expect(at64.split('\n').filter((l) => l.startsWith('  word')).length).toBe(3);
+  });
+
+  it('scrolls to keep the highlighted setting on a short screen, rather than grow past it', () => {
+    const out = renderDashboard(snapshot([]), { color: false, interactive: true, panel: panel(3), height: 12 });
+    expect(out.split('\n').length).toBeLessThanOrEqual(12);
+    expect(out).toContain('▸ Restart prompt');
+    expect(out).not.toContain('Pick the next account by');
+  });
+
+  it('keeps the end of a long value being typed in view', () => {
+    const typed = 'carry on with the migration and then run every test in the whole repository';
+    const out = renderDashboard(snapshot([]), {
+      color: false,
+      interactive: true,
+      panel: panel(3),
+      width: 50,
+      prompt: { label: 'Restart prompt:', text: typed },
+    });
+    const line = out.split('\n').find((l) => l.startsWith('  Restart prompt:')) ?? '';
+    expect(line.endsWith('whole repository█')).toBe(true);
+    expect(line.length).toBeLessThanOrEqual(50);
+  });
+
+  it('gives a question wider than half the screen lines of its own, above the box', () => {
+    const question = 'move which to "b"? 1 api (on a), 2 web (on a), 3 cli (on c); a for all; enter alone for none:';
+    const out = renderDashboard(snapshot([account()]), {
+      color: false,
+      interactive: true,
+      width: 60,
+      prompt: { label: question, text: '1 3' },
+    });
+    const lines = out.split('\n');
+    const box = lines.findIndex((l) => l === '  › 1 3█');
+    expect(box).toBeGreaterThan(0);
+    expect(lines[box - 2]).toBe('  move which to "b"? 1 api (on a), 2 web (on a), 3 cli (on');
+    expect(lines[box - 1]).toBe('  c); a for all; enter alone for none:');
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(60);
   });
 });

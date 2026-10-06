@@ -1,4 +1,4 @@
-import type { DashboardAccount, DashboardSettings, DashboardSnapshot } from './render.js';
+import type { DashboardAccount, DashboardSession, DashboardSettings, DashboardSnapshot } from './render.js';
 
 /**
  * Pure mapping from the tool's own data (registry + health probe + ledger +
@@ -47,6 +47,8 @@ export interface SnapshotInput {
   picks?: Map<string, NonNullable<DashboardAccount['pick']>>;
   /** The rotation settings, in words. */
   settings?: DashboardSettings;
+  /** The ccx sessions running now. */
+  sessions?: DashboardSession[];
 }
 
 export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
@@ -81,5 +83,6 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
     ...(input.nextUp ? { nextUp: input.nextUp } : {}),
     ...(input.desktop ? { desktop: input.desktop } : {}),
     ...(input.settings ? { settings: input.settings } : {}),
+    ...(input.sessions && input.sessions.length > 0 ? { sessions: input.sessions } : {}),
   };
 }

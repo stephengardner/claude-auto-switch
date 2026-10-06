@@ -273,8 +273,8 @@ export function destinationFor(context: CliContext, leaving: string | null, conv
   // which of those goes first. A smart score is above zero for an account
   // whose 5-hour window is spent (its weekly budget still counts), so it
   // cannot be the test of "has room".
-  const roomOf = roomOfFromSnapshot(context.ctx, now, 'most-room');
-  const rankOf = roomOfFromSnapshot(context.ctx, now, rotation.accountOrder, model);
+  const roomOf = roomOfFromSnapshot(context.ctx, now, { accountOrder: 'most-room' });
+  const rankOf = roomOfFromSnapshot(context.ctx, now, rotation, model);
   const usage = readUsageSnapshot(context.ctx);
   let best: { name: string; rank: number } | null = null;
   for (const a of listAccounts(context.ctx)) {

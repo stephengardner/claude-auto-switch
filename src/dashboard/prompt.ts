@@ -14,7 +14,7 @@
 export type PromptStatus = 'editing' | 'submit' | 'cancel';
 
 /** What the box is being used for, which decides what submitting it does. */
-export type PromptKind = 'add' | 'rename' | 'desktop-prompt' | 'desktop-move';
+export type PromptKind = 'add' | 'rename' | 'desktop-prompt' | 'desktop-move' | 'setting' | 'sessions';
 
 export interface PromptState {
   kind: PromptKind;

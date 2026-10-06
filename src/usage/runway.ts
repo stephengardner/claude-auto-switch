@@ -27,16 +27,33 @@ import { windowIsOpen } from './window-open.js';
  * would spend most of it on that, so it comes after every account that has
  * more, used only when nothing better exists.
  *
+ * An account whose week is nearly spent is HELD BACK: it comes after every
+ * account that is not, among those worth moving to, however fresh its 5-hour
+ * window. Runway alone tops out at one window, so a fresh window on a week with
+ * 11% left scored the same as a fresh window on an untouched week, and the
+ * nearly spent one could be picked second. Holding it back is right for three
+ * reasons: what is left of it is the least certain number on the screen (the
+ * window cost is an estimate, and a small remainder magnifies its error), a
+ * second session landing on it drains it twice as fast, and kept for last it is
+ * still there to bridge the hours when every healthy account is waiting on its
+ * 5-hour window.
+ *
  * Between accounts that can run about as long (the same tenth of a window),
  * the one whose leftover weekly budget is most at risk of expiring unused goes
  * first (URGENCY): budget left at the weekly reset is gone, budget elsewhere
  * keeps.
  */
 
-/** What one full 5-hour window costs the week, until an account's own readings say. */
-export const DEFAULT_WINDOW_COST = 0.1;
+/**
+ * What one full 5-hour window costs the week, until an account's own readings
+ * say. Measured accounts cost 0.145 to 0.21 of a week per window; 0.1 read a
+ * nearly spent week as a full window more often than it held one.
+ */
+export const DEFAULT_WINDOW_COST = 0.15;
 /** Less runway than this is not worth a move (see above). */
 export const MIN_RUNWAY = 0.25;
+/** A week at least this full holds an account back (rotation.holdBackAtPercent). */
+export const DEFAULT_HOLD_BACK_PERCENT = 80;
 
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 
@@ -64,6 +81,13 @@ export interface Standing {
   urgency: number;
   /** Enough runway to be worth a move. */
   worthMoving: boolean;
+  /**
+   * Share of the week left (0..1): the tighter of the account's week and the
+   * model's own week; null when neither was measured.
+   */
+  weekLeft: number | null;
+  /** Its week is nearly spent, so it goes after every account whose week is not. */
+  heldBack: boolean;
 }
 
 /** The cost of a full 5-hour window, kept within sense for a reading gone odd. */
@@ -81,8 +105,16 @@ function used(utilization: number | null | undefined, resetsAt: number | null | 
 /**
  * Where an account stands for the next move, for `model` when one is known (a
  * model with a weekly window of its own is limited by that too).
+ *
+ * `holdBackAtPercent` is how full a week holds the account back; null for an
+ * order that does not hold accounts back (only the smart order does).
  */
-export function standingOf(entry: RunwayWindows | undefined, now: number, model?: string | null): Standing {
+export function standingOf(
+  entry: RunwayWindows | undefined,
+  now: number,
+  model?: string | null,
+  holdBackAtPercent: number | null = DEFAULT_HOLD_BACK_PERCENT,
+): Standing {
   const cost = windowCostOf(entry);
   const candidates: Array<{ binding: Standing['binding']; windows: number }> = [];
 
@@ -92,13 +124,22 @@ export function standingOf(entry: RunwayWindows | undefined, now: number, model?
   const weekly = used(entry?.sevenDay, entry?.sevenDayReset, now);
   const weeklyWindowsLeft = weekly === null ? null : (1 - weekly) / cost;
   if (weeklyWindowsLeft !== null) candidates.push({ binding: 'weekly', windows: weeklyWindowsLeft });
+  const weekShares: number[] = weekly === null ? [] : [1 - weekly];
 
   if (model) {
     const key = normalizeModel(model);
     const own = (entry?.models ?? []).find((m) => normalizeModel(m.name) === key);
     const modelUsed = own ? used(own.utilization, own.resetsAt, now) : null;
-    if (modelUsed !== null) candidates.push({ binding: 'model', windows: (1 - modelUsed) / cost });
+    if (modelUsed !== null) {
+      candidates.push({ binding: 'model', windows: (1 - modelUsed) / cost });
+      weekShares.push(1 - modelUsed);
+    }
   }
+  const weekLeft = weekShares.length > 0 ? Math.min(...weekShares) : null;
+  // Compared in whole points, as the usage arrives and the screen shows it, so
+  // a week reading 80% is held back at 80 rather than escaping on a rounding.
+  const heldBack =
+    holdBackAtPercent !== null && weekLeft !== null && Math.round((1 - weekLeft) * 100) >= holdBackAtPercent;
 
   const tightest = candidates.reduce((a, b) => (b.windows < a.windows ? b : a));
   const runway = Math.max(0, Math.min(1, tightest.windows));
@@ -122,20 +163,32 @@ export function standingOf(entry: RunwayWindows | undefined, now: number, model?
     weeklyResetAt,
     urgency,
     worthMoving: runway >= MIN_RUNWAY,
+    weekLeft,
+    heldBack,
   };
 }
 
 /**
- * One number to sort by, higher first: worth moving at all, then runway in
- * tenths of a window, then urgency. Ties after that fall to the priority order
- * (the comparator), so the order is always fully determined.
+ * One number to sort by, higher first: worth moving at all, then not held
+ * back, then runway in tenths of a window, then urgency. Each step outweighs
+ * everything after it (runway adds at most 10, urgency under 1). Ties after
+ * that fall to the priority order (the comparator), so the order is always
+ * fully determined.
+ *
+ * Worth moving outranks held back: a nearly spent week with a fresh 5-hour
+ * window still beats a healthy week whose 5-hour window has minutes left.
  *
  * Urgency only counts where there is room to use it: an account with no
  * runway at all is spent for now, and must not rank above one with a sliver.
  */
 export function pickScore(standing: Standing): number {
   const urgency = standing.runway > 0 ? Math.min(1, standing.urgency) * 0.99 : 0;
-  return (standing.worthMoving ? 100 : 0) + Math.round(standing.runway * 10) + urgency;
+  return (
+    (standing.worthMoving ? 100 : 0) +
+    (standing.heldBack ? 0 : 50) +
+    Math.round(standing.runway * 10) +
+    urgency
+  );
 }
 
 /** Where a measurement of the window cost started: one reading, as it was. */
