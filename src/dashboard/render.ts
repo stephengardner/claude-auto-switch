@@ -513,17 +513,20 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // The settings rotation runs on, with the keys that change them, so they can
   // be seen and changed here rather than looked up.
   if (snapshot.settings) {
-    // M and o still change the model and the pick rule from here; the hint
-    // names the panel, where those and everything else are, and fits.
-    const keys = options.interactive ? '   (s settings · [ ] order)' : '';
     const held = snapshot.settings.holdBack ? `  ·  held back: ${snapshot.settings.holdBack}` : '';
-    lines.push(
-      paint(
-        fit(`  model: ${snapshot.settings.model}  ·  pick: ${snapshot.settings.order}${held}${keys}`, maxLine),
-        codes.dim,
-        color,
-      ),
-    );
+    const now = `model: ${snapshot.settings.model}  ·  pick: ${snapshot.settings.order}${held}`;
+    if (options.interactive) {
+      // Led by the key that opens every setting, in bright, where a narrow
+      // terminal cannot cut it off: at the end of the line, in grey like the
+      // rest, it was there and nobody saw it. (M and o still change the model
+      // and the pick rule from here.)
+      const line = fit(`  s settings  ·  ${now}`, maxLine);
+      lines.push(
+        line.length > 3 ? `  ${paint('s', codes.bold, color)}${paint(line.slice(3), codes.dim, color)}` : line,
+      );
+    } else {
+      lines.push(paint(fit(`  ${now}`, maxLine), codes.dim, color));
+    }
   }
 
   // Which session is on which account, numbered the way Enter and f ask
@@ -570,27 +573,57 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
  * so it is no longer allowed to be the one that drops. Settings comes early:
  * it is where everything else that can be changed lives.
  */
-const MAIN_HINTS = [
-  'q/esc quit',
-  'j/k move',
-  'enter use',
-  's settings',
-  'r rotate',
-  'f now',
-  'a add',
-  'l sign in',
-  'n rename',
-  'e enable',
+const MAIN_HINTS: ReadonlyArray<readonly [string, string]> = [
+  ['q/esc', 'quit'],
+  ['j/k', 'move'],
+  ['enter', 'use'],
+  ['s', 'settings'],
+  ['r', 'rotate'],
+  ['f', 'now'],
+  ['a', 'add'],
+  ['l', 'sign in'],
+  ['n', 'rename'],
+  ['e', 'enable'],
+  ['[ ]', 'order'],
 ];
 
 /** The settings panel's key hints, in the same order of need. */
-const PANEL_HINTS = ['s/esc back', 'j/k move', '←/→ change', 'enter edit', 'd default', 'q quit'];
+const PANEL_HINTS: ReadonlyArray<readonly [string, string]> = [
+  ['s/esc', 'back'],
+  ['j/k', 'move'],
+  ['←/→', 'change'],
+  ['enter', 'edit'],
+  ['d', 'default'],
+  ['q', 'quit'],
+];
+
+/**
+ * A row of key hints that fits, the key bright and what it does dim: in a line
+ * that is mostly words, the keys are what the eye looks for. All dim, the one
+ * key that opens every setting read as one more grey word.
+ */
+function hintLine(hints: ReadonlyArray<readonly [string, string]>, maxLine: number, color: boolean): string {
+  const shown: Array<readonly [string, string]> = [];
+  for (const hint of hints) {
+    const next = [...shown, hint].map(([key, does]) => `${key} ${does}`).join('  ·  ');
+    if (next.length > maxLine) break;
+    shown.push(hint);
+  }
+  return shown
+    .map(([key, does]) => `${paint(key, codes.bold, color)}${paint(` ${does}`, codes.dim, color)}`)
+    .join(paint('  ·  ', codes.dim, color));
+}
 
 /**
  * The bottom of the screen, shared by the accounts and the settings panel: a
  * question, a notice, the box being typed in, or the key hints.
  */
-function footer(options: RenderOptions, maxLine: number, color: boolean, hints: readonly string[]): string[] {
+function footer(
+  options: RenderOptions,
+  maxLine: number,
+  color: boolean,
+  hints: ReadonlyArray<readonly [string, string]>,
+): string[] {
   const lines: string[] = [];
   // The question replaces the key hints while it is up, because those keys do
   // not apply until it is answered.
@@ -628,13 +661,7 @@ function footer(options: RenderOptions, maxLine: number, color: boolean, hints: 
     // it should not sign anyone in.
     lines.push(paint(fit('  enter or y confirm  ·  any other key cancels', maxLine), codes.dim, color));
   } else if (options.interactive) {
-    const shown: string[] = [];
-    for (const hint of hints) {
-      const next = [...shown, hint].join('  ·  ');
-      if (next.length > maxLine) break;
-      shown.push(hint);
-    }
-    lines.push(paint(shown.join('  ·  '), codes.dim, color));
+    lines.push(hintLine(hints, maxLine, color));
   }
   return lines;
 }
