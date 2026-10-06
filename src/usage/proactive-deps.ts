@@ -36,10 +36,30 @@ export function buildProactiveDeps(
     requestSwitch: (account: string, reason: string) => void;
     model?: string;
     onError?: (error: Error) => void;
+    /** Re-read the settings before each decision (a running session passes its own). */
+    refresh?: () => void;
   },
 ): ProactiveDeps {
-  const rotation = context.config.rotation;
+  // Set only by a caller that overrides the setting (`ccx auto --threshold`).
+  let threshold: number | undefined;
+  let hysteresis: number | undefined;
   return {
+    ...(options.refresh ? { refresh: options.refresh } : {}),
+    // Read at each decision rather than captured here: a refresh replaces
+    // the rotation settings, and a captured copy would keep the old percent
+    // for as long as the session ran.
+    get thresholdPercent() {
+      return threshold ?? context.config.rotation.proactivePercent;
+    },
+    set thresholdPercent(value: number) {
+      threshold = value;
+    },
+    get hysteresisPercent() {
+      return hysteresis ?? context.config.rotation.proactiveHysteresisPercent;
+    },
+    set hysteresisPercent(value: number) {
+      hysteresis = value;
+    },
     candidates: () => {
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
       return listAccounts(context.ctx).map((a) => ({
@@ -62,8 +82,6 @@ export function buildProactiveDeps(
       return map;
     },
     requestSwitch: options.requestSwitch,
-    thresholdPercent: rotation.proactivePercent,
-    hysteresisPercent: rotation.proactiveHysteresisPercent,
     ...(options.model ? { model: options.model } : {}),
     ...(options.onError ? { onError: options.onError } : {}),
   };

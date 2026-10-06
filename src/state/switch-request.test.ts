@@ -7,6 +7,7 @@ import {
   readSwitchRequest,
   clearSwitchRequest,
   decideSwitch,
+  requestMoves,
 } from './switch-request.js';
 
 function ctx() {
@@ -78,5 +79,22 @@ describe('decideSwitch (pure lifecycle)', () => {
       switchTo: 'phx',
       consume: true,
     });
+  });
+});
+
+describe('requestMoves', () => {
+  it('asks each session not already there by its own request, never the shared one', () => {
+    const c = ctx();
+    const sessions = [
+      { pid: 11, account: 'a' },
+      { pid: 12, account: 'b' },
+      { pid: 13, account: 'a' },
+    ];
+    const asked = requestMoves('b', sessions, 'restart', c, 5);
+    expect(asked.map((s) => s.pid)).toEqual([11, 13]);
+    expect(readSwitchRequest(c, 11)).toEqual({ account: 'b', at: 5, mode: 'restart' });
+    expect(readSwitchRequest(c, 13)).toEqual({ account: 'b', at: 5, mode: 'restart' });
+    expect(readSwitchRequest(c, 12)).toBeNull();
+    expect(readSwitchRequest(c)).toBeNull();
   });
 });

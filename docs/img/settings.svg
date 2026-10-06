@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1023" height="702" viewBox="0 0 1023 702" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
+  <rect width="1023" height="702" rx="10" fill="#1b1e24"/>
+  <rect width="1023" height="32" rx="10" fill="#22262e"/>
+  <rect y="22" width="1023" height="10" fill="#22262e"/>
+  <circle cx="21" cy="16" r="5.5" fill="#ec6a5f"/>
+  <circle cx="40" cy="16" r="5.5" fill="#f4bf50"/>
+  <circle cx="59" cy="16" r="5.5" fill="#61c454"/>
+  <text x="511.5" y="20.5" fill="#8b93a1" font-size="12" text-anchor="middle">ccx dashboard: settings (s)</text>
+  <text x="22.0" y="52" fill="#dcdfe4" font-weight="600" xml:space="preserve">claude-auto-switch</text><text x="198.4" y="52" fill="#dcdfe4" opacity="0.6" xml:space="preserve">settings</text>
+  <text x="22.0" y="73" fill="#dcdfe4" opacity="0.6" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────────</text>
+  <text x="22.0" y="94" fill="#dcdfe4" font-weight="600" xml:space="preserve">  Picking accounts</text>
+  <text x="22.0" y="115" fill="#dcdfe4" xml:space="preserve">     Pick the next account by       longest run first</text>
+  <text x="47.2" y="136" fill="#56b6c2" xml:space="preserve">▸</text><text x="55.6" y="136" fill="#dcdfe4" xml:space="preserve"> Hold back weeks used past      </text><text x="324.4" y="136" fill="#56b6c2" xml:space="preserve">80%</text>
+  <text x="22.0" y="157" fill="#dcdfe4" xml:space="preserve">     Skip a spent account for       5h</text>
+  <text x="22.0" y="178" fill="#dcdfe4" font-weight="600" xml:space="preserve">  Models</text>
+  <text x="22.0" y="199" fill="#dcdfe4" xml:space="preserve">     Model preference               Opus, then Fable</text>
+  <text x="22.0" y="220" fill="#dcdfe4" xml:space="preserve">     When a model runs out          keep the model, change account</text>
+  <text x="22.0" y="241" fill="#dcdfe4" xml:space="preserve">     Follow models                  on</text>
+  <text x="22.0" y="262" fill="#dcdfe4" font-weight="600" xml:space="preserve">  Restarts</text>
+  <text x="22.0" y="283" fill="#dcdfe4" xml:space="preserve">     Carry on after a restart       on</text>
+  <text x="22.0" y="304" fill="#dcdfe4" xml:space="preserve">     Restart prompt                 This session was restarted. If you were in the middle of something, carry on ex…</text>
+  <text x="22.0" y="325" fill="#dcdfe4" xml:space="preserve">     Follow ccx updates             on</text>
+  <text x="22.0" y="346" fill="#dcdfe4" font-weight="600" xml:space="preserve">  Moving early</text>
+  <text x="22.0" y="367" fill="#dcdfe4" xml:space="preserve">     Move a session early at        off</text>
+  <text x="22.0" y="388" fill="#dcdfe4" xml:space="preserve">     Only to an account with        10 points more room</text>
+  <text x="22.0" y="409" fill="#dcdfe4" xml:space="preserve">     Check usage every              5 min</text>
+  <text x="22.0" y="430" fill="#dcdfe4" font-weight="600" xml:space="preserve">  Claude Desktop</text>
+  <text x="22.0" y="451" fill="#dcdfe4" xml:space="preserve">     Move Desktop conversations     off, by hand only</text>
+  <text x="22.0" y="472" fill="#dcdfe4" xml:space="preserve">     A moved conversation goes on   as a copy</text>
+  <text x="22.0" y="493" fill="#dcdfe4" xml:space="preserve">     A moved conversation is told   Carry on where you stopped.</text>
+  <text x="22.0" y="514" fill="#dcdfe4" font-weight="600" xml:space="preserve">  Other</text>
+  <text x="22.0" y="535" fill="#dcdfe4" xml:space="preserve">     ccx run -p moves by itself     on</text>
+  <text x="22.0" y="556" fill="#dcdfe4" xml:space="preserve">     ccx daemon moves at            95% used</text>
+  <text x="22.0" y="577" fill="#dcdfe4" opacity="0.6" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────────</text>
+  <text x="22.0" y="598" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  Under longest run first, an account whose week is this full goes after every healthy account that can run half a</text>
+  <text x="22.0" y="619" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  5-hour window, and competes on runway with the rest.</text>
+  <text x="22.0" y="640" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  Takes effect at each session's next move.</text>
+  <text x="22.0" y="661" fill="#dcdfe4" opacity="0.6" xml:space="preserve">s/esc back  ·  j/k move  ·  ←/→ change  ·  enter edit  ·  d default  ·  q quit</text>
+</svg>

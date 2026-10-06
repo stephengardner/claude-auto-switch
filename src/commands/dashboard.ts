@@ -1,13 +1,33 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
-import { writeSwitchRequest } from '../state/switch-request.js';
+import { requestMoves, type SwitchMode } from '../state/switch-request.js';
 import { refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
 import { probeAll, type ProbeResult } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { signInFailureNotice } from '../dashboard/sign-in-failure.js';
-import { renderDashboard, type DashboardAccount } from '../dashboard/render.js';
+import { renderDashboard, type DashboardAccount, type SettingsPanel } from '../dashboard/render.js';
 import { toSnapshot } from '../dashboard/snapshot.js';
-import { dispatchKey, confirmKey } from '../dashboard/keys.js';
+import { dispatchKey, dispatchSettingsKey, confirmKey } from '../dashboard/keys.js';
+import {
+  SETTINGS,
+  appliesWords,
+  defaultOf,
+  editText,
+  isTyped,
+  parseSetting,
+  sameValue,
+  stepSetting,
+  valueOf,
+  type Setting,
+} from '../dashboard/settings-catalog.js';
+import {
+  numberSessions,
+  parseSessionChoice,
+  sessionQuestion,
+  type NumberedSession,
+} from '../dashboard/session-choice.js';
+import { liveLeases } from '../session/lease.js';
+import { applySetting } from './settings.js';
 import { openPrompt, promptKey, rejectPrompt, type PromptState } from '../dashboard/prompt.js';
 import { loadConfig, loadConfigFile, saveConfig } from '../config/config.js';
 import { desktopSummary } from '../desktop/summary.js';
@@ -37,11 +57,13 @@ import {
   nextOrder,
   orderWords,
   canRunChain,
+  holdBackOf,
   modelUsageFor,
   numberPicks,
   pickReason,
   rankAccounts,
   reorder,
+  settingsWords,
 } from '../dashboard/rotation-settings.js';
 import { activeModelCaps, cappedNames } from '../ledger/ledger.js';
 import { spentKey } from '../usage/rotation-plan.js';
@@ -170,8 +192,23 @@ export async function dashboardCommand(
     context.config.rotation = { ...context.config.rotation, ...patch };
   };
 
+  /**
+   * The settings as they are on disk now. Read every tick, like the accounts,
+   * so a change made elsewhere (`ccx config`, another dashboard) shows here
+   * rather than this screen going on describing what it read at start. A file
+   * that will not load keeps what was shown.
+   */
+  const refreshConfig = (): void => {
+    try {
+      Object.assign(context.config, loadConfig(context.ctx));
+    } catch {
+      /* keep the last good settings */
+    }
+  };
+
   // Re-read accounts + ledger + active every tick so interactive edits show live.
   const build = () => {
+    refreshConfig();
     const accts = listAccounts(context.ctx);
     const loggedIn = signedInAndNotRejected(healths, accts, context.ctx);
     const liveEmail = new Map(healths.filter((h) => h.email).map((h) => [h.name, h.email!]));
@@ -221,10 +258,8 @@ export async function dashboardCommand(
       // not stop the account, so it is not excluded here either.
       ...nextMove(context, accts, usage, cappedNames(loadLedger(context.ctx), now), loggedIn, now),
       desktop: desktopSummary(context, (name) => usage.get(name), now),
-      settings: {
-        model: modelPreferenceWords(context.config.rotation.modelPreference),
-        order: orderWords(context.config.rotation.accountOrder),
-      },
+      settings: settingsWords(context.config.rotation),
+      sessions: numberSessions(liveLeases(context.ctx)),
     });
   };
 
@@ -265,13 +300,14 @@ export async function dashboardCommand(
     // for a setting that only turns off half of what it describes.
     const model = rotation.preferSameModel ? rotation.modelPreference[0] : null;
     const knownSpent = activeModelCaps(loadLedger(ctx.ctx), at);
-    const standing = (name: string) => standingOf(usage.get(name), at, model);
+    const holdBack = holdBackOf(rotation);
+    const standing = (name: string) => standingOf(usage.get(name), at, model, holdBack);
     // Ordered the same way rotation actually chooses, so the "next up" line
     // and the pick column predict the real move.
     const ordered = rankAccounts(
       accounts.filter((a) => a.enabled && loggedIn.has(a.name) && !capped.has(a.name)),
       (name) => usage.get(name),
-      rotation.accountOrder,
+      rotation,
       model,
       at,
     );
@@ -317,17 +353,29 @@ export async function dashboardCommand(
         /* keep showing the cached usage */
       }
     },
-    onUse: (a) => {
+    sessions: () => numberSessions(liveLeases(context.ctx)),
+    onUse: (a, mode, chosen) => {
+      // The account new sessions start on, and the editor's, whichever
+      // sessions move; then each chosen session by its own request.
       setActive(a.name, context.ctx);
       syncEditorPointerIfEnabled(context);
-      writeSwitchRequest(a.name, Date.now(), 'seamless', context.ctx); // in-place, no restart
-      pushEvent(`switched to ${a.name}`);
+      const moving = requestMoves(a.name, chosen, mode, context.ctx);
+      const how = mode === 'restart' ? 'now, restarting' : 'in place, within ~30s';
+      const said =
+        moving.length > 0
+          ? `moving ${moving.map((s) => s.where).join(', ')} to ${a.name} (${how}); new sessions start there too`
+          : chosen.length > 0
+            ? `already on ${a.name}; new sessions start there too`
+            : `new sessions start on ${a.name}`;
+      pushEvent(said);
+      return said;
     },
-    onForce: (a) => {
-      setActive(a.name, context.ctx);
-      syncEditorPointerIfEnabled(context);
-      writeSwitchRequest(a.name, Date.now(), 'restart', context.ctx); // instant, restarts session
-      pushEvent(`switching to ${a.name} now`);
+    panel: (selected) => settingsPanel(context.config, selected),
+    settingValue: (setting) => valueOf(context.config, setting.key),
+    onSetting: async (setting, value) => {
+      const said = await applySetting(context, setting, value);
+      pushEvent(said);
+      return `${said}. ${appliesWords(setting.applies)}`;
     },
     onToggle: (a) => {
       updateAccount(a.name, { enabled: !a.enabled }, context.ctx);
@@ -442,7 +490,7 @@ export async function dashboardCommand(
       const roomOf = roomOfFromSnapshot(
         context.ctx,
         now,
-        rotation.accountOrder,
+        rotation,
         rotation.preferSameModel ? rotation.modelPreference[0] : null,
       );
       // Only where the chain can run: an account spent on every preferred
@@ -467,12 +515,43 @@ export async function dashboardCommand(
   return 0;
 }
 
+/** The settings panel for `config`, every setting in words, `selected` explained. */
+function settingsPanel(config: CliContext['config'], selected: number): SettingsPanel {
+  const chosen = SETTINGS[selected] ?? SETTINGS[0];
+  return {
+    rows: SETTINGS.map((s) => ({ group: s.group, label: s.label, value: s.words(valueOf(config, s.key)) })),
+    selected,
+    help: chosen?.help ?? '',
+    applies: chosen ? appliesWords(chosen.applies) : '',
+  };
+}
+
+/** Why a step left a setting as it was, said instead of doing nothing silently. */
+function stepRefused(setting: Setting): string {
+  if (setting.kind === 'text') return `${setting.label}: enter edits it`;
+  if (setting.kind === 'models') {
+    return 'that model chain is your own, so the arrows leave it alone; enter types a new one';
+  }
+  return `${setting.label} is already at that end`;
+}
+
 interface LoopDeps {
   refreshMs: number;
   color: boolean;
   reprobe: () => Promise<void>;
-  onUse: (a: DashboardAccount) => void;
-  onForce: (a: DashboardAccount) => void;
+  /** The ccx sessions running now, numbered as the screen shows them. */
+  sessions: () => NumberedSession[];
+  /**
+   * Make an account the one new sessions start on, and move the chosen running
+   * sessions to it (in place, or by restarting). Returns what happened.
+   */
+  onUse: (a: DashboardAccount, mode: SwitchMode, chosen: NumberedSession[]) => string;
+  /** The settings panel as it stands, with `selected` highlighted. */
+  panel: (selected: number) => SettingsPanel;
+  /** A setting's current value. */
+  settingValue: (setting: Setting) => unknown;
+  /** Change a setting; resolves to what it is now, rejects with why not. */
+  onSetting: (setting: Setting, value: unknown) => Promise<string>;
   onToggle: (a: DashboardAccount) => void;
   onRotate: () => void;
   /**
@@ -553,7 +632,94 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
      * keys, so they ask first.
      */
     confirm: { question: string; yes: () => void } | null;
-  } = { notice: null, prompt: null, promptTarget: null, pendingLogin: null, confirm: null };
+    /** The settings panel, while it is open, and which setting is highlighted. */
+    panel: { selected: number } | null;
+    /** The setting the open box is typing a value for. */
+    promptSetting: Setting | null;
+    /**
+     * The sessions the open "move which" question listed, captured with it so
+     * a number means the session the question showed, even if one has since
+     * started or ended; and how they are to move.
+     */
+    promptSessions: NumberedSession[] | null;
+    promptMode: SwitchMode;
+  } = {
+    notice: null,
+    prompt: null,
+    promptTarget: null,
+    pendingLogin: null,
+    confirm: null,
+    panel: null,
+    promptSetting: null,
+    promptSessions: null,
+    promptMode: 'seamless',
+  };
+
+  /**
+   * Change a setting, asking first when it edits files outside ccx. Saving is
+   * asynchronous (a Desktop setting runs `ccx desktop`), so the footer says
+   * "saving" and then what it is now, or why it was refused.
+   */
+  const changeSetting = (setting: Setting, next: unknown): void => {
+    const run = (): void => {
+      ui.notice = 'saving...';
+      void deps.onSetting(setting, next).then(
+        (said) => {
+          ui.notice = said;
+          if (wake) wake();
+        },
+        (err: unknown) => {
+          ui.notice = (err as Error).message;
+          if (wake) wake();
+        },
+      );
+    };
+    if (setting.confirm) ui.confirm = { question: setting.confirm(next), yes: run };
+    else run();
+  };
+
+  /** One key while the settings panel is open. */
+  const panelKey = (text: string, byte0: number | undefined): void => {
+    const panel = ui.panel;
+    if (!panel) return;
+    const r = dispatchSettingsKey(text, byte0, panel.selected, SETTINGS.length);
+    panel.selected = r.selected;
+    if (r.action === 'quit') return stop();
+    if (r.action === 'close') {
+      ui.panel = null;
+      ui.notice = null;
+      return;
+    }
+    if (r.action === 'none') return;
+    if (r.action === 'move') {
+      ui.notice = null;
+      return;
+    }
+    const setting = SETTINGS[panel.selected];
+    if (!setting) return;
+    const current = deps.settingValue(setting);
+    if (r.action === 'edit' && isTyped(setting)) {
+      const unit = setting.unit ? ` (${setting.unit})` : '';
+      ui.prompt = openPrompt('setting', `${setting.label}${unit}:`, editText(setting, current));
+      ui.promptSetting = setting;
+      return;
+    }
+    if (r.action === 'default') {
+      const fallback = defaultOf(setting);
+      if (sameValue(fallback, current)) {
+        ui.notice = `${setting.label} is already the default`;
+        return;
+      }
+      changeSetting(setting, fallback);
+      return;
+    }
+    const next = stepSetting(setting, current, r.action === 'previous' ? -1 : 1);
+    if (next === null) {
+      ui.notice = stepRefused(setting);
+      return;
+    }
+    changeSetting(setting, next);
+  };
 
   /**
    * One keypress into the name box. Returns the box's next state, or null when it
@@ -566,10 +732,58 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     target: DashboardAccount | null,
   ): PromptState | null => {
     const next = promptKey(state, text, byte0);
-    if (next.status === 'cancel') return null;
+    if (next.status === 'cancel') {
+      ui.promptSetting = null;
+      ui.promptSessions = null;
+      return null;
+    }
     if (next.status !== 'submit') return next;
+    if (next.kind === 'sessions') {
+      // Answered before the empty check below: an empty answer here is a
+      // real one (move none, only make it the account new sessions start on).
+      let chosen: NumberedSession[];
+      try {
+        chosen = parseSessionChoice(next.text, ui.promptSessions ?? []);
+      } catch (err) {
+        return rejectPrompt(next, (err as Error).message);
+      }
+      if (target) ui.notice = deps.onUse(target, ui.promptMode, chosen);
+      ui.promptSessions = null;
+      return null;
+    }
     const typed = next.text.trim();
     if (typed.length === 0) return null; // confirming an empty box just closes it
+    if (next.kind === 'setting') {
+      const setting = ui.promptSetting;
+      if (!setting) return null;
+      let value: unknown;
+      try {
+        value = parseSetting(setting, typed);
+      } catch (err) {
+        return rejectPrompt(next, (err as Error).message);
+      }
+      if (sameValue(value, deps.settingValue(setting))) {
+        ui.promptSetting = null;
+        ui.notice = `${setting.label} is unchanged`;
+        return null;
+      }
+      ui.notice = 'saving...';
+      // Reopened with the reason if the save is refused, like the Desktop box,
+      // so a typo can be fixed without typing it all again.
+      void deps.onSetting(setting, value).then(
+        (said) => {
+          ui.notice = said;
+          ui.promptSetting = null;
+          if (wake) wake();
+        },
+        (err: unknown) => {
+          ui.notice = null;
+          ui.prompt = rejectPrompt(next, (err as Error).message);
+          if (wake) wake();
+        },
+      );
+      return null;
+    }
     if (next.kind === 'desktop-prompt' || next.kind === 'desktop-move') {
       // Async: answered when it is done, and reopened with the reason if refused.
       const kind = next.kind;
@@ -615,10 +829,39 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         if (wake) wake();
         return;
       }
+      // The settings panel takes every key while it is open: the arrows and
+      // space mean something different in there.
+      if (ui.panel) {
+        panelKey(text, d[0]);
+        if (wake) wake();
+        return;
+      }
       const r = dispatchKey(text, d[0], selected, snap.accounts.length);
       selected = r.selected;
       if (r.action === 'quit') return stop();
       const target = snap.accounts[selected];
+      if (r.action === 'settings') {
+        ui.panel = { selected: 0 };
+        ui.notice = null;
+        if (wake) wake();
+        return;
+      }
+      // Use (Enter) and now (f): with one session running it moves; with
+      // several, the question says which, rather than whichever looks first.
+      if ((r.action === 'use' || r.action === 'force') && target) {
+        const mode: SwitchMode = r.action === 'use' ? 'seamless' : 'restart';
+        const running = deps.sessions();
+        if (running.length > 1) {
+          ui.prompt = openPrompt('sessions', sessionQuestion(target.name, running));
+          ui.promptTarget = target;
+          ui.promptSessions = running;
+          ui.promptMode = mode;
+        } else {
+          ui.notice = deps.onUse(target, mode, running);
+        }
+        if (wake) wake();
+        return;
+      }
       // The settings keys say what they changed, so they set the notice
       // themselves rather than have it cleared below.
       if (r.action === 'model-preference' || r.action === 'pick-order') {
@@ -635,9 +878,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         if (wake) wake();
         return;
       }
-      if (r.action === 'use' && target) deps.onUse(target);
-      else if (r.action === 'force' && target) deps.onForce(target);
-      else if (r.action === 'toggle' && target) deps.onToggle(target);
+      if (r.action === 'toggle' && target) deps.onToggle(target);
       else if (r.action === 'rotate') deps.onRotate();
       else if (r.action === 'login' && target) {
         ui.confirm = {
@@ -798,6 +1039,8 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         // Read every frame, not once at start: a window resized mid-session is
         // exactly when a fixed-width table starts wrapping.
         ...(process.stdout.columns ? { width: process.stdout.columns } : {}),
+        ...(process.stdout.rows ? { height: process.stdout.rows } : {}),
+        ...(ui.panel ? { panel: deps.panel(ui.panel.selected) } : {}),
         ...(ui.confirm ? { confirm: ui.confirm.question } : {}),
         ...(ui.notice ? { notice: ui.notice } : {}),
         ...(ui.prompt

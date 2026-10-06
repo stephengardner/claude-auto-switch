@@ -2,7 +2,14 @@ import type { PathCtx } from '../config/paths.js';
 import type { AccountOrder } from '../selector/selector.js';
 import { readUsageSnapshot } from './usage-store.js';
 import { remainingRoom } from './usable-capacity.js';
-import { pickScore, standingOf } from './runway.js';
+import { DEFAULT_HOLD_BACK_PERCENT, pickScore, standingOf } from './runway.js';
+
+/** The settings that decide the pick order, as `config.rotation` holds them. */
+export interface PickPolicy {
+  accountOrder: AccountOrder;
+  /** Under `smart`, how full a week holds an account back (see usage/runway.ts). */
+  holdBackAtPercent?: number;
+}
 
 /**
  * A `roomOf(name)` for the selector's order, built from the cached usage
@@ -10,20 +17,25 @@ import { pickScore, standingOf } from './runway.js';
  * comparison.
  *
  * For `smart` it is the pick score (usage/runway.ts), for `model` when one is
- * known, since a model with a weekly window of its own is limited by that too.
- * Otherwise it is the plain remaining room the `most-room` order sorts by. An
- * account absent from the snapshot reads as fully open either way, so a
- * brand-new account sorts as the least-used, which is what it is.
+ * known, since a model with a weekly window of its own counts that too, with
+ * nearly spent weeks held back. Otherwise it is the plain remaining room the
+ * `most-room` order sorts by. An account absent from the snapshot reads as
+ * fully open either way, so a brand-new account sorts as the least-used, which
+ * is what it is.
+ *
+ * Takes the whole policy rather than the order alone, so a setting added to it
+ * reaches every caller without each one having to pass it on.
  */
 export function roomOfFromSnapshot(
   ctx: PathCtx,
   now: number = Date.now(),
-  order: AccountOrder = 'most-room',
+  policy: PickPolicy = { accountOrder: 'most-room' },
   model?: string | null,
 ): (name: string) => number {
   const snapshot = readUsageSnapshot(ctx);
-  if (order === 'smart') {
-    return (name: string) => pickScore(standingOf(snapshot.accounts[name], now, model));
+  if (policy.accountOrder === 'smart') {
+    const holdBack = policy.holdBackAtPercent ?? DEFAULT_HOLD_BACK_PERCENT;
+    return (name: string) => pickScore(standingOf(snapshot.accounts[name], now, model, holdBack));
   }
   return (name: string) => remainingRoom(snapshot.accounts[name], now);
 }

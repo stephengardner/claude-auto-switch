@@ -1,8 +1,9 @@
 import { hasRoomFor, normalizeModel, type AccountModelUsage } from '../usage/model-preference.js';
 import { humanWait } from '../usage/report.js';
-import { pickScore, standingOf, type RunwayWindows, type Standing } from '../usage/runway.js';
+import { DEFAULT_HOLD_BACK_PERCENT, pickScore, standingOf, type RunwayWindows, type Standing } from '../usage/runway.js';
 import { remainingRoom, usableCapacity, type CapacityWindows } from '../usage/usable-capacity.js';
 import { orderComparator, type AccountOrder, type SelectableAccount } from '../selector/selector.js';
+import type { PickPolicy } from '../usage/account-room.js';
 
 /**
  * The rotation settings the dashboard shows and changes: which model sessions
@@ -59,9 +60,36 @@ export function orderWords(order: AccountOrder): string {
   }
 }
 
+/**
+ * The settings line's words: the model preference, the pick rule, and, when
+ * the pick rule holds accounts back, from how full a week.
+ */
+export function settingsWords(rotation: {
+  modelPreference: readonly string[];
+  accountOrder: AccountOrder;
+  holdBackAtPercent?: number;
+}): { model: string; order: string; holdBack?: string } {
+  const holdBack = holdBackOf(rotation);
+  return {
+    model: modelPreferenceWords(rotation.modelPreference),
+    order: orderWords(rotation.accountOrder),
+    ...(holdBack !== null ? { holdBack: `weeks ${holdBack}%+ used` } : {}),
+  };
+}
+
 export function nextOrder(current: AccountOrder): AccountOrder {
   const at = ORDER_CHOICES.indexOf(current);
   return ORDER_CHOICES[(at + 1) % ORDER_CHOICES.length] ?? 'smart';
+}
+
+/**
+ * How full a week holds an account back under `policy`, or null when its
+ * order holds nothing back (only the smart order does).
+ */
+export function holdBackOf(policy: PickPolicy): number | null {
+  if (policy.accountOrder !== 'smart') return null;
+  const percent = policy.holdBackAtPercent ?? DEFAULT_HOLD_BACK_PERCENT;
+  return percent >= 100 ? null : percent;
 }
 
 /**
@@ -72,13 +100,16 @@ export function nextOrder(current: AccountOrder): AccountOrder {
 export function rankAccounts<T extends SelectableAccount>(
   accounts: readonly T[],
   usageOf: (name: string) => (RunwayWindows & CapacityWindows) | undefined,
-  order: AccountOrder,
+  policy: PickPolicy,
   model: string | null,
   now: number,
 ): T[] {
+  const holdBack = holdBackOf(policy);
   return [...accounts].sort(
-    orderComparator(order, (name) =>
-      order === 'smart' ? pickScore(standingOf(usageOf(name), now, model)) : remainingRoom(usageOf(name), now),
+    orderComparator(policy.accountOrder, (name) =>
+      policy.accountOrder === 'smart'
+        ? pickScore(standingOf(usageOf(name), now, model, holdBack))
+        : remainingRoom(usageOf(name), now),
     ),
   );
 }
@@ -124,16 +155,30 @@ export function numberPicks(
   preference: readonly string[],
   modelInPlay: boolean,
   standing: (name: string) => Standing,
-): Map<string, { rank: number; runway: number; binding: Standing['binding'] }> {
-  const picks = new Map<string, { rank: number; runway: number; binding: Standing['binding'] }>();
+): Map<string, Pick> {
+  const picks = new Map<string, Pick>();
   let rank = 0;
   for (const c of candidates) {
     if (modelInPlay && !canRunChain(c, preference)) continue;
     const s = standing(c.name);
     rank += 1;
-    picks.set(c.name, { rank, runway: s.runway, binding: s.binding });
+    picks.set(c.name, {
+      rank,
+      runway: s.runway,
+      binding: s.binding,
+      ...(s.heldBack && s.weekLeft !== null ? { heldBack: { weekLeft: s.weekLeft } } : {}),
+    });
   }
   return picks;
+}
+
+/** Where an account stands in the pick order, as the dashboard shows it. */
+export interface Pick {
+  rank: number;
+  runway: number;
+  binding: Standing['binding'];
+  /** Present when its week is nearly spent, so it waits behind healthier accounts. */
+  heldBack?: { weekLeft: number };
 }
 
 /** Why the smart order picks an account, in words. */
@@ -142,6 +187,11 @@ export function pickReason(standing: Standing, now: number): string {
     standing.runway >= 0.995
       ? 'room for a full 5-hour window'
       : `room for ${Math.round(standing.runway * 100)}% of a 5-hour window`;
+  // A held-back account is only ever next when nothing healthier is worth a
+  // move, which is the part worth saying: it is the fallback, not the choice.
+  if (standing.heldBack && standing.weekLeft !== null) {
+    return `${room}, ${Math.round(standing.weekLeft * 100)}% of its week left (held back; no healthy account can run half a window)`;
+  }
   const wait = humanWait(standing.weeklyResetAt, now);
   return wait ? `${room}, its week resets in ${wait}` : room;
 }

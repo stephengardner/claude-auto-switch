@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { toUsageLike } from './proactive-deps.js';
+import { buildProactiveDeps, toUsageLike } from './proactive-deps.js';
+import type { CliContext } from '../context.js';
 import { bindingUtilization } from './headroom.js';
 import type { UsageEntry } from './usage-store.js';
 
@@ -59,5 +60,31 @@ describe('toUsageLike', () => {
 
   it('omits models entirely when the entry has none', () => {
     expect(toUsageLike(entry()).models).toBeUndefined();
+  });
+});
+
+describe('buildProactiveDeps', () => {
+  const context = (proactivePercent: number) =>
+    ({
+      ctx: {},
+      config: { rotation: { proactivePercent, proactiveHysteresisPercent: 10 } },
+    }) as unknown as CliContext;
+  const options = { current: () => null, requestSwitch: () => {} };
+
+  it('reads the percent at each decision, not once at start', () => {
+    const live = context(0);
+    const deps = buildProactiveDeps(live, options);
+    expect(deps.thresholdPercent).toBe(0);
+    // What a session's refresh does: the rotation settings are replaced whole.
+    live.config.rotation = { ...live.config.rotation, proactivePercent: 85 };
+    expect(deps.thresholdPercent).toBe(85);
+  });
+
+  it('lets a caller override the percent, as ccx auto --threshold does', () => {
+    const deps = buildProactiveDeps(context(0), options);
+    deps.thresholdPercent = 70;
+    deps.hysteresisPercent = 5;
+    expect(deps.thresholdPercent).toBe(70);
+    expect(deps.hysteresisPercent).toBe(5);
   });
 });

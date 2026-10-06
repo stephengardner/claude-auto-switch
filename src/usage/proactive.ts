@@ -24,6 +24,8 @@ export interface ProactiveDeps {
   hysteresisPercent?: number;
   /** Do not switch again within this window. */
   cooldownMs?: number;
+  /** Called first on every decision, so the settings it reads are current. */
+  refresh?: () => void;
   /** Restrict the decision to one model's window (e.g. "Fable"). */
   model?: string;
   now?: () => number;
@@ -45,6 +47,11 @@ export async function proactiveTick(
   deps: ProactiveDeps,
   state: { lastSwitchAt?: number } = {},
 ): Promise<TickResult> {
+  try {
+    deps.refresh?.();
+  } catch {
+    /* decide on the settings already held */
+  }
   const now = deps.now ?? (() => Date.now());
   if (!deps.thresholdPercent || deps.thresholdPercent <= 0) {
     return { outcome: 'disabled', reason: 'proactive rotation is off' };

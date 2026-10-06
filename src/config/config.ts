@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { ConfigSchema, type Config, type PartialConfig } from './config.schema.js';
 import { configHome, type PathCtx } from './paths.js';
@@ -98,6 +98,22 @@ export function loadConfigFile(c: PathCtx = {}): PartialConfig {
     throw new ConfigError(`could not parse ${file}: ${(err as Error).message}`);
   }
   return isPlainObject(parsed) ? (parsed as PartialConfig) : {};
+}
+
+/**
+ * A cheap fingerprint of config.json, so a long-running session can re-read the
+ * file only when it has changed. The file is replaced whole on every save
+ * (written aside, then renamed over), so its identity (inode) and change time
+ * move even when an edit leaves the size and, on a coarse filesystem, the
+ * modified time as they were. Null when there is no file.
+ */
+export function configStamp(c: PathCtx = {}): string | null {
+  try {
+    const stat = statSync(configFilePath(c));
+    return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino}`;
+  } catch {
+    return null;
+  }
 }
 
 /** Persist config (partial allowed; missing keys fall back to defaults on load). */

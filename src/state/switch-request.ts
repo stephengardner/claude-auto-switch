@@ -64,6 +64,25 @@ export function writeSwitchRequest(
 }
 
 /**
+ * Ask each of `sessions` that is not already on `account` to move to it, each
+ * by a request of its own, and return the ones asked. Never the broadcast: one
+ * shared request is taken by whichever session looks first, so with two
+ * running, which one moved was a coin flip, and a session already on the
+ * account would take the request and drop it.
+ */
+export function requestMoves<T extends { pid: number; account: string }>(
+  account: string,
+  sessions: readonly T[],
+  mode: SwitchMode,
+  c: PathCtx = {},
+  at: number = Date.now(),
+): T[] {
+  const moving = sessions.filter((s) => s.account !== account);
+  for (const s of moving) writeSwitchRequest(account, at, mode, c, s.pid);
+  return moving;
+}
+
+/**
  * The pending request for this session, or null. Pass the session's own `pid` to
  * read its per-session request; omit it for the broadcast one. A malformed file
  * is ignored (never crashes a live session).

@@ -118,7 +118,7 @@ export async function runCommand(
       modelPreference: context.config.rotation.modelPreference,
       modelStrategy: context.config.rotation.modelStrategy,
       order: context.config.rotation.accountOrder,
-      roomOf: roomOfFromSnapshot(context.ctx, Date.now(), context.config.rotation.accountOrder, preferredModel(context)),
+      roomOf: roomOfFromSnapshot(context.ctx, Date.now(), context.config.rotation, preferredModel(context)),
       defaultBackoffMinutes: context.config.rotation.defaultBackoffMinutes,
       ledger: loadLedger(context.ctx),
       out: context.out,
@@ -139,7 +139,7 @@ export async function runCommand(
     capped,
     pinned,
     order: context.config.rotation.accountOrder,
-    roomOf: roomOfFromSnapshot(context.ctx, Date.now(), context.config.rotation.accountOrder, preferredModel(context)),
+    roomOf: roomOfFromSnapshot(context.ctx, Date.now(), context.config.rotation, preferredModel(context)),
   });
   if (!result.ok) {
     context.out(`cannot run: ${result.reason}`);

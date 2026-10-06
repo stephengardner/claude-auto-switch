@@ -55,19 +55,34 @@ next account with `--resume <conversation>` and a short carry-on prompt (set it
 with `ccx resume-prompt`, or `resume` in the config). A switch you make yourself
 (`ccx use`, `/ccx`) happens in place.
 
+**One session at a time.** Each session moves on its own: a refused turn moves
+that session and no other. A switch you make from the dashboard or with
+`ccx use` moves the only running session, or, with several running, the ones
+you name (`ccx use <name> --session <pid>`, `--here`, `--all`; the dashboard
+asks).
+
 **Updates.** When a newer ccx is installed, each running session moves to it
 when Claude is next relaunched or has been idle for 20 seconds, never mid-turn.
 
 ## Which account is next
 
-`ccx order`, or `o` in the dashboard, picks the rule:
+`ccx order`, `o` in the dashboard, or its settings (`s`) pick the rule:
 
 - **smart** (default): the account that can run longest before any window stops
   it. An account has a 5-hour window, a weekly window, and a weekly window per
   model (Fable). ccx measures them in one unit, full 5-hour windows of work:
   weekly room is converted using what one 5-hour window costs that account's
-  week, learned from its own readings (10% until measured). So a 5-hour window
+  week, learned from its own readings (15% until measured). So a 5-hour window
   90% used, or a week 99% used, both mean almost no runway.
+  - A week 80% or more used (the account's, or the model's own) is **held
+    back**: that account comes after every healthy account that can run at
+    least half a 5-hour window, however fresh its own window. What is left of a
+    nearly spent week is the least certain number on screen, a second session
+    can drain it twice as fast, and kept for last it bridges the hours when
+    every healthy account is waiting on its 5-hour window. Against a healthy
+    account with less than half a window, it competes on runway: holding back a
+    full window for 40% of one would only mean another move within two hours.
+    Set the line with `ccx config holdBackAtPercent <50-99|off>`.
   - Among accounts within a tenth of a window of each other, the one whose
     leftover weekly budget would expire unused soonest goes first, then your
     priority order.
@@ -92,31 +107,40 @@ ccx models opus                       # Opus only, never fall back
 ccx models --strategy account-first   # use each account up across the chain instead
 ```
 
-`M` in the dashboard cycles the common chains. This applies when a model is in
-play (`--model`, or `model` in your settings); otherwise ccx rotates on account
-capacity alone.
+`M` in the dashboard cycles the common chains, and its settings (`s`) take a
+chain of your own. This applies when a model is in play (`--model`, or `model`
+in your settings); otherwise ccx rotates on account capacity alone.
 
 ## Seeing where you stand
 
 - **Status line**: the account and its tightest window, e.g. `work 5h 64% left`
   or `! work week spent resets 2d`.
 - **`ccx usage`**: every window on every account, with reset times.
-- **`ccx dashboard`**: a live view. `#` is the pick order, and `next →` says where
-  the session goes next and why.
+- **`ccx dashboard`**: a live view. `#` is the pick order, `next →` says where
+  the session goes next and why, and `sessions:` which session is on which
+  account.
 
 ![ccx usage: every window per account, with a bar, a percentage and when it comes back](docs/img/usage.svg)
 
-| Dashboard key   | Action                                                            |
-| --------------- | ----------------------------------------------------------------- |
-| `enter`         | make the highlighted account active (sessions move in place)      |
-| `f`             | switch now (restarts the session on it)                           |
-| `r`             | rotate to the next pick                                           |
-| `M` / `o`       | cycle the model preference / the pick rule                        |
-| `[` / `]`       | move the highlighted account up / down your priority order        |
-| `e`             | enable or disable the highlighted account                         |
-| `a` `n` `l`     | add an account, rename one, sign one in again                     |
-| `d` `m` `t` `D` | Claude Desktop: handoff, mode, carry-on text, move a conversation |
-| `q` / `esc`     | quit                                                              |
+`s` in the dashboard opens the settings: every setting with its value, what it
+does, and when a change reaches running sessions. The arrows step a value, enter
+types one, `d` puts the default back. `ccx config` shows and sets the same
+settings from a shell.
+
+![The dashboard's settings: every setting under its group, the highlighted one explained](docs/img/settings.svg)
+
+| Dashboard key   | Action                                                                                                |
+| --------------- | ----------------------------------------------------------------------------------------------------- |
+| `enter`         | make the highlighted account the one new sessions start on, and move a running session to it in place |
+| `f`             | the same, restarting the session on it instead                                                        |
+| `s`             | settings                                                                                              |
+| `r`             | rotate to the next pick                                                                               |
+| `M` / `o`       | cycle the model preference / the pick rule                                                            |
+| `[` / `]`       | move the highlighted account up / down your priority order                                            |
+| `e`             | enable or disable the highlighted account                                                             |
+| `a` `n` `l`     | add an account, rename one, sign one in again                                                         |
+| `d` `m` `t` `D` | Claude Desktop: handoff, mode, carry-on text, move a conversation                                     |
+| `q` / `esc`     | quit                                                                                                  |
 
 ## Claude Desktop
 
@@ -144,63 +168,68 @@ conversation in a terminal. From a shell, `ccx swap [name]` does the same.
 
 ## Commands
 
-| Command                                  | What it does                                                           |
-| ---------------------------------------- | ---------------------------------------------------------------------- |
-| `ccx add <name>`                         | add an account and sign it in through the browser                      |
-| `ccx on` / `ccx off`                     | set up / remove ccx in your shell, editors, status line and `/ccx`     |
-| `ccx`                                    | status at a glance (a setup guide when nothing is set up)              |
-| `ccx dashboard`                          | live view with keys (alias `watch`)                                    |
-| `ccx usage`                              | every window on every account                                          |
-| `ccx use <name>`                         | make an account active (`--now` restarts; `--session <pid>`, `--here`) |
-| `ccx sessions`                           | the ccx sessions running now: pid, account, folder                     |
-| `ccx swap [name]`                        | the room on every account; swap this session                           |
-| `ccx rotate`                             | switch to the next pick now                                            |
-| `ccx order [smart\|most-room\|priority]` | the pick rule                                                          |
-| `ccx models [models...]`                 | the model chain (`--strategy model-first\|account-first`)              |
-| `ccx priority <name> <n>`                | an account's place in your order (lower first)                         |
-| `ccx enable` / `disable <name>`          | include / exclude an account                                           |
-| `ccx proactive on\|off`                  | move before an account runs out (off by default)                       |
-| `ccx auto`                               | run that check once (`--once`, `--json`)                               |
-| `ccx resume-prompt "<text>"`             | what a session is told after a relaunch (`--clear`)                    |
-| `ccx run -- <args>`                      | run one Claude session through ccx without `ccx on`                    |
-| `ccx desktop [...]`                      | Claude Desktop: status, `move`, `handoff`, `mode`, `prompt`            |
-| `ccx login <name>` / `--all`             | sign a stale account back in                                           |
-| `ccx list` / `status [name]`             | account health: email, plan, signed in, capped until                   |
-| `ccx doctor`                             | check the setup and who each profile really is                         |
-| `ccx history`                            | what ccx did to logins, sessions and your settings                     |
-| `ccx state`                              | everything ccx knows, as JSON                                          |
-| `ccx cap <name>`                         | mark an account out by hand (`--clear`)                                |
-| `ccx token <name>`                       | mint a long-lived token for headless use                               |
-| `ccx statusline`                         | the status line itself (`--install` prints the snippet, `--compact`)   |
-| `ccx setup`                              | the next setup step, wherever you are                                  |
-| `ccx editor on\|off`                     | set up / remove just the editor                                        |
-| `ccx daemon install`                     | always-on rotation outside a terminal                                  |
-| `ccx remove <name>`                      | remove an account (`--purge` also deletes its folder)                  |
+| Command                                  | What it does                                                                                                      |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `ccx add <name>`                         | add an account and sign it in through the browser                                                                 |
+| `ccx on` / `ccx off`                     | set up / remove ccx in your shell, editors, status line and `/ccx`                                                |
+| `ccx`                                    | status at a glance (a setup guide when nothing is set up)                                                         |
+| `ccx dashboard`                          | live view with keys (alias `watch`)                                                                               |
+| `ccx usage`                              | every window on every account                                                                                     |
+| `ccx use <name>`                         | make an account active and move the only running session (`--now` restarts; `--session <pid>`, `--here`, `--all`) |
+| `ccx config [key] [value]`               | every setting; one explained; one changed (`default` resets it)                                                   |
+| `ccx sessions`                           | the ccx sessions running now: pid, account, folder                                                                |
+| `ccx swap [name]`                        | the room on every account; swap this session                                                                      |
+| `ccx rotate`                             | switch to the next pick now                                                                                       |
+| `ccx order [smart\|most-room\|priority]` | the pick rule                                                                                                     |
+| `ccx models [models...]`                 | the model chain (`--strategy model-first\|account-first`)                                                         |
+| `ccx priority <name> <n>`                | an account's place in your order (lower first)                                                                    |
+| `ccx enable` / `disable <name>`          | include / exclude an account                                                                                      |
+| `ccx proactive on\|off`                  | move before an account runs out (off by default)                                                                  |
+| `ccx auto`                               | run that check once (`--once`, `--json`)                                                                          |
+| `ccx resume-prompt "<text>"`             | what a session is told after a relaunch (`--clear`)                                                               |
+| `ccx run -- <args>`                      | run one Claude session through ccx without `ccx on`                                                               |
+| `ccx desktop [...]`                      | Claude Desktop: status, `move`, `handoff`, `mode`, `prompt`                                                       |
+| `ccx login <name>` / `--all`             | sign a stale account back in                                                                                      |
+| `ccx list` / `status [name]`             | account health: email, plan, signed in, capped until                                                              |
+| `ccx doctor`                             | check the setup and who each profile really is                                                                    |
+| `ccx history`                            | what ccx did to logins, sessions and your settings                                                                |
+| `ccx state`                              | everything ccx knows, as JSON                                                                                     |
+| `ccx cap <name>`                         | mark an account out by hand (`--clear`)                                                                           |
+| `ccx token <name>`                       | mint a long-lived token for headless use                                                                          |
+| `ccx statusline`                         | the status line itself (`--install` prints the snippet, `--compact`)                                              |
+| `ccx setup`                              | the next setup step, wherever you are                                                                             |
+| `ccx editor on\|off`                     | set up / remove just the editor                                                                                   |
+| `ccx daemon install`                     | always-on rotation outside a terminal                                                                             |
+| `ccx remove <name>`                      | remove an account (`--purge` also deletes its folder)                                                             |
 
 ## Configuration
 
-`~/.claude-auto-switch/config.json`. Every key is optional.
+`~/.claude-auto-switch/config.json`. Every key is optional. Change one with
+`ccx config <key> <value>` or the dashboard's settings (`s`), which check the
+value first; running sessions pick a change up at their next move, restart or
+usage check, as `ccx config <key>` says.
 
-| Key                                    | Default                         | Meaning                                                         |
-| -------------------------------------- | ------------------------------- | --------------------------------------------------------------- |
-| `rotation.accountOrder`                | `"smart"`                       | `smart`, `most-room` or `priority`                              |
-| `rotation.modelPreference`             | `["opus", "fable"]`             | the model chain                                                 |
-| `rotation.modelStrategy`               | `"model-first"`                 | or `account-first`                                              |
-| `rotation.preferSameModel`             | `true`                          | `false` ignores models and rotates on account capacity alone    |
-| `rotation.proactivePercent`            | `0`                             | move once the tightest window reaches this percent (`0` is off) |
-| `rotation.proactiveHysteresisPercent`  | `10`                            | the target needs this many points more room                     |
-| `rotation.usageCheckSeconds`           | `300`                           | how often a session reads its own usage                         |
-| `rotation.defaultBackoffMinutes`       | `300`                           | how long an account counts as out when no reset time is known   |
-| `rotation.autoRotateHeadless`          | `true`                          | headless runs (`claude -p`) rotate too                          |
-| `rotation.capThresholdPercent`         | `95`                            | the daemon's threshold for treating an account as out           |
-| `resume.auto`                          | `true`                          | send the carry-on prompt after a relaunch                       |
-| `resume.prompt`                        | "This session was restarted..." | the carry-on prompt                                             |
-| `update.follow`                        | `true`                          | running sessions move to a newer installed ccx                  |
-| `desktop.handoff`                      | `"off"`                         | `off`, `limit` or `credits`                                     |
-| `desktop.mode`                         | `"fork"`                        | `fork` or `same`                                                |
-| `desktop.prompt`                       | "Carry on where you stopped."   | what a moved Desktop conversation continues with                |
-| `realClaudePath`                       | found on `PATH`                 | the real `claude` binary, when finding it fails                 |
-| `browser.debugPort`, `browser.channel` | `9222`, `"chrome"`              | the browser `ccx add` and `ccx login` use                       |
+| Key                                    | Default                         | Meaning                                                           |
+| -------------------------------------- | ------------------------------- | ----------------------------------------------------------------- |
+| `rotation.accountOrder`                | `"smart"`                       | `smart`, `most-room` or `priority`                                |
+| `rotation.holdBackAtPercent`           | `80`                            | smart: a week this full waits behind healthy accounts (`100` off) |
+| `rotation.modelPreference`             | `["opus", "fable"]`             | the model chain                                                   |
+| `rotation.modelStrategy`               | `"model-first"`                 | or `account-first`                                                |
+| `rotation.preferSameModel`             | `true`                          | `false` ignores models and rotates on account capacity alone      |
+| `rotation.proactivePercent`            | `0`                             | move once the tightest window reaches this percent (`0` is off)   |
+| `rotation.proactiveHysteresisPercent`  | `10`                            | the target needs this many points more room                       |
+| `rotation.usageCheckSeconds`           | `300`                           | how often a session reads its own usage                           |
+| `rotation.defaultBackoffMinutes`       | `300`                           | how long an account counts as out when no reset time is known     |
+| `rotation.autoRotateHeadless`          | `true`                          | headless runs (`claude -p`) rotate too                            |
+| `rotation.capThresholdPercent`         | `95`                            | the daemon's threshold for treating an account as out             |
+| `resume.auto`                          | `true`                          | send the carry-on prompt after a relaunch                         |
+| `resume.prompt`                        | "This session was restarted..." | the carry-on prompt                                               |
+| `update.follow`                        | `true`                          | running sessions move to a newer installed ccx                    |
+| `desktop.handoff`                      | `"off"`                         | `off`, `limit` or `credits`                                       |
+| `desktop.mode`                         | `"fork"`                        | `fork` or `same`                                                  |
+| `desktop.prompt`                       | "Carry on where you stopped."   | what a moved Desktop conversation continues with                  |
+| `realClaudePath`                       | found on `PATH`                 | the real `claude` binary, when finding it fails                   |
+| `browser.debugPort`, `browser.channel` | `9222`, `"chrome"`              | the browser `ccx add` and `ccx login` use                         |
 
 ## What ccx writes
 

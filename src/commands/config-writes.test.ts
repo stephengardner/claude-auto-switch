@@ -45,10 +45,10 @@ describe('changing one setting', () => {
 
   it('ccx proactive keeps what was already in the file', () => {
     const { context, file } = setup();
-    saveConfig({ priorityOrder: ['work'], rotation: { capThresholdPercent: 90 } }, context.ctx);
+    saveConfig({ browser: { channel: 'msedge' }, rotation: { capThresholdPercent: 90 } }, context.ctx);
     expect(proactiveCommand(context, 'off')).toBe(0);
     expect(written(file)).toEqual({
-      priorityOrder: ['work'],
+      browser: { channel: 'msedge' },
       rotation: { capThresholdPercent: 90, proactivePercent: 0 },
     });
   });

@@ -37,6 +37,8 @@ export interface DashboardAccount {
     runway: number;
     /** Which window binds. */
     binding: '5-hour' | 'weekly' | 'model' | 'none';
+    /** Present when its week is nearly spent, so it waits behind healthier accounts. */
+    heldBack?: { weekLeft: number };
   };
 }
 
@@ -44,8 +46,35 @@ export interface DashboardAccount {
 export interface DashboardSettings {
   /** The model preference, e.g. "Opus, then Fable". */
   model: string;
-  /** The pick rule, e.g. "smart". */
+  /** The pick rule, e.g. "longest run first". */
   order: string;
+  /** How full a week holds an account back, e.g. "weeks 80%+ used"; absent when off. */
+  holdBack?: string;
+}
+
+/** A ccx session running now, numbered the way the dashboard asks about them. */
+export interface DashboardSession {
+  number: number;
+  /** Its folder's name, or the pid when its folder is unknown. */
+  where: string;
+  account: string;
+}
+
+/** One row of the settings panel, already in words. */
+export interface PanelRow {
+  group: string;
+  label: string;
+  value: string;
+}
+
+/** The settings panel, while it is open in place of the accounts. */
+export interface SettingsPanel {
+  rows: PanelRow[];
+  selected: number;
+  /** What the highlighted setting does. */
+  help: string;
+  /** When a change to it takes effect. */
+  applies: string;
 }
 
 export interface DashboardSnapshot {
@@ -74,6 +103,8 @@ export interface DashboardSnapshot {
   desktop?: { line: string; keys: string };
   /** The rotation settings, shown with the keys that change them. */
   settings?: DashboardSettings;
+  /** The ccx sessions running now, and the account each is on. */
+  sessions?: DashboardSession[];
 }
 
 export interface RenderOptions {
@@ -88,6 +119,14 @@ export interface RenderOptions {
   confirm?: string;
   /** The name prompt, when the dashboard is asking for one. */
   prompt?: { label: string; text: string; error?: string };
+  /** The settings panel, drawn instead of the accounts while it is open. */
+  panel?: SettingsPanel;
+  /**
+   * How many rows there are to draw in. The settings panel scrolls to keep the
+   * highlighted setting on screen rather than grow past the bottom, where a
+   * frame repainted from the top would tear.
+   */
+  height?: number;
   /**
    * How many columns there are to draw in.
    *
@@ -126,6 +165,16 @@ function runwayWords(pick: NonNullable<DashboardAccount['pick']>): string {
   return `room for ${share}${binds}`;
 }
 
+/**
+ * The account's place in the pick order, with why it is held back when it is.
+ * Said beside the number rather than after the room, where a long line cut it
+ * off: it is the answer to "why is this one so far down".
+ */
+function pickWords(pick: NonNullable<DashboardAccount['pick']>): string {
+  const held = pick.heldBack ? ` (held back: ${Math.round(pick.heldBack.weekLeft * 100)}% of its week left)` : '';
+  return `pick #${pick.rank}${held}, ${runwayWords(pick)}`;
+}
+
 /** Everything in a gauge that is not the bar: a space and a padded percent. */
 const GAUGE_EXTRA = 5;
 
@@ -148,6 +197,33 @@ function barWidthFor(width: number | undefined, nameW: number, statusW: number):
 function fit(text: string, width: number): string {
   if (width <= 0) return '';
   return text.length <= width ? text : `${text.slice(0, Math.max(1, width - 1))}…`;
+}
+
+/** Text broken into lines of at most `width`, at spaces; a word too long for one is cut. */
+function wrap(text: string, width: number): string[] {
+  if (width <= 0) return [];
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    if (line !== '' && line.length + 1 + word.length > width) {
+      lines.push(line);
+      line = '';
+    }
+    line = line === '' ? fit(word, width) : `${line} ${word}`;
+  }
+  if (line !== '') lines.push(line);
+  return lines;
+}
+
+/**
+ * Shorten text being typed from the FRONT, so the end, where the typing is,
+ * stays in view. Cutting the end, as fit does, hid every character typed past
+ * the edge of the screen.
+ */
+function fitTail(head: string, text: string, width: number): string {
+  if (head.length + text.length <= width) return head + text;
+  const room = width - head.length - 1;
+  return room > 0 ? `${head}…${text.slice(text.length - room)}` : fit(head + text, width);
 }
 
 /**
@@ -292,7 +368,7 @@ function detailLine(a: DashboardAccount, now: number): string {
   const heading = who ? `${a.name} (${who})` : a.name;
   const u = a.usage;
   if (!u) return `${heading}: no usage read yet`;
-  const picked = a.pick ? [`pick #${a.pick.rank}, ${runwayWords(a.pick)}`] : [];
+  const picked = a.pick ? [pickWords(a.pick)] : [];
   const parts = [
     ...picked,
     `5h ${pct(effectiveUtilization(u.fiveHour, u.fiveHourReset, now))}${resetSuffix(u.fiveHourReset, now)}`,
@@ -314,6 +390,7 @@ function resetSuffix(resetsAt: number | null | undefined, now: number): string {
 
 /** Render the full dashboard frame for the given snapshot. */
 export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOptions = {}): string {
+  if (options.panel) return renderPanel(snapshot, options.panel, options);
   const color = options.color ?? true;
   const { accounts, events, now } = snapshot;
 
@@ -436,14 +513,24 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // The settings rotation runs on, with the keys that change them, so they can
   // be seen and changed here rather than looked up.
   if (snapshot.settings) {
-    const keys = options.interactive ? '   (M model · o pick · [ ] move up/down)' : '';
+    // M and o still change the model and the pick rule from here; the hint
+    // names the panel, where those and everything else are, and fits.
+    const keys = options.interactive ? '   (s settings · [ ] order)' : '';
+    const held = snapshot.settings.holdBack ? `  ·  held back: ${snapshot.settings.holdBack}` : '';
     lines.push(
       paint(
-        fit(`  model: ${snapshot.settings.model}  ·  pick: ${snapshot.settings.order}${keys}`, maxLine),
+        fit(`  model: ${snapshot.settings.model}  ·  pick: ${snapshot.settings.order}${held}${keys}`, maxLine),
         codes.dim,
         color,
       ),
     );
+  }
+
+  // Which session is on which account, numbered the way Enter and f ask
+  // about them when more than one is running.
+  if (snapshot.sessions && snapshot.sessions.length > 0) {
+    const each = snapshot.sessions.map((s) => `${s.number} ${s.where} on ${s.account}`).join('  ·  ');
+    lines.push(paint(fit(`  sessions: ${each}`, maxLine), codes.dim, color));
   }
 
   // Claude Desktop runs on its own account, which ccx cannot switch, so it gets
@@ -468,6 +555,43 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     lines.push(rule);
   }
 
+  lines.push(...footer(options, maxLine, color, MAIN_HINTS));
+  return lines.join('\n');
+}
+
+/**
+ * The account list's key hints. They drop off the end rather than wrapping, so
+ * they are ordered by how badly you need them: a narrow terminal loses the
+ * rarely-used keys instead of losing the shape of the screen. LEAVING comes
+ * first: a narrow window that hid the quit hint would take away the one key
+ * someone stuck here has to know, and every other key can be found by trying.
+ * It used to sit third, which was fine while it read `q quit`; naming esc as
+ * well made it four columns longer and moved it closer to falling off the end,
+ * so it is no longer allowed to be the one that drops. Settings comes early:
+ * it is where everything else that can be changed lives.
+ */
+const MAIN_HINTS = [
+  'q/esc quit',
+  'j/k move',
+  'enter use',
+  's settings',
+  'r rotate',
+  'f now',
+  'a add',
+  'l sign in',
+  'n rename',
+  'e enable',
+];
+
+/** The settings panel's key hints, in the same order of need. */
+const PANEL_HINTS = ['s/esc back', 'j/k move', '←/→ change', 'enter edit', 'd default', 'q quit'];
+
+/**
+ * The bottom of the screen, shared by the accounts and the settings panel: a
+ * question, a notice, the box being typed in, or the key hints.
+ */
+function footer(options: RenderOptions, maxLine: number, color: boolean, hints: readonly string[]): string[] {
+  const lines: string[] = [];
   // The question replaces the key hints while it is up, because those keys do
   // not apply until it is answered.
   //
@@ -485,7 +609,15 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
   // While a name is being typed, the footer explains that box instead of the
   // normal keys, because the normal keys do not apply until it is finished.
   if (options.prompt) {
-    lines.push(`${fit(`  ${options.prompt.label} ${options.prompt.text}`, Math.max(0, maxLine - 1))}█`);
+    const head = `  ${options.prompt.label} `;
+    if (head.length > maxLine / 2) {
+      // A long question (which sessions to move) gets lines of its own, so
+      // the box under it keeps the whole width for what is typed.
+      for (const line of wrap(options.prompt.label, maxLine - 2)) lines.push(`  ${line}`);
+      lines.push(`${fitTail('  › ', options.prompt.text, Math.max(0, maxLine - 1))}█`);
+    } else {
+      lines.push(`${fitTail(head, options.prompt.text, Math.max(0, maxLine - 1))}█`);
+    }
     if (options.prompt.error) {
       lines.push(paint(fit(`  ${options.prompt.error}`, maxLine), codes.yellow, color));
     }
@@ -496,27 +628,6 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     // it should not sign anyone in.
     lines.push(paint(fit('  enter or y confirm  ·  any other key cancels', maxLine), codes.dim, color));
   } else if (options.interactive) {
-    // The hints drop off the end rather than wrapping. The ones that survive
-    // are the ones you need most, in that order, so a narrow terminal loses
-    // the rarely-used keys instead of losing the shape of the screen.
-    // Ordered by how badly you need them, because the tail is what gets
-    // dropped. LEAVING comes first: a narrow window that hid the quit hint
-    // would take away the one key someone stuck here has to know, and every
-    // other key can be found by trying. It used to sit third, which was fine
-    // while it read `q quit`; naming esc as well made it four columns longer
-    // and moved it closer to falling off the end, so it is no longer allowed to
-    // be the one that drops. The occasional ones go last.
-    const hints = [
-      'q/esc quit',
-      'j/k move',
-      'enter use',
-      'r rotate',
-      'f now',
-      'a add',
-      'l sign in',
-      'n rename',
-      'e enable',
-    ];
     const shown: string[] = [];
     for (const hint of hints) {
       const next = [...shown, hint].join('  ·  ');
@@ -525,6 +636,66 @@ export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOpti
     }
     lines.push(paint(shown.join('  ·  '), codes.dim, color));
   }
+  return lines;
+}
 
-  return lines.join('\n');
+/**
+ * The settings panel: every setting under its group, the highlighted one
+ * explained underneath, drawn in place of the accounts.
+ *
+ * Scrolls rather than grows. The dashboard repaints from the top of the
+ * screen, and a frame taller than the terminal pushes its own top off, so the
+ * list keeps to the rows there are and moves to keep the highlighted setting
+ * in view.
+ */
+function renderPanel(snapshot: DashboardSnapshot, panel: SettingsPanel, options: RenderOptions): string {
+  const color = options.color ?? true;
+  const maxLine = options.width ?? Number.MAX_SAFE_INTEGER;
+  const rule = paint('─'.repeat(Math.min(maxLine, 100)), codes.dim, color);
+  const named = snapshot.version ? `claude-auto-switch ${snapshot.version}` : 'claude-auto-switch';
+  const title = `${paint(fit(named, maxLine), codes.bold, color)}   ${paint(fit('settings', Math.max(0, maxLine - named.length - 3)), codes.dim, color)}`;
+
+  // The labels give up width only on a terminal too narrow for them and a
+  // few characters of value, so a row never runs past the edge.
+  const labelW = Math.max(4, Math.min(Math.max(...panel.rows.map((r) => r.label.length), 0), maxLine - 14));
+  const list: Array<{ text: string; row: number | null }> = [];
+  let group = '';
+  panel.rows.forEach((r, i) => {
+    if (r.group !== group) {
+      group = r.group;
+      list.push({ text: paint(fit(`  ${r.group}`, maxLine), codes.bold, color), row: null });
+    }
+    const chosen = i === panel.selected;
+    const cursor = chosen ? paint('▸', codes.cyan, color) : ' ';
+    // The value gets what the row has left, counted in visible columns: the
+    // cursor carries colour codes, which take no room on screen.
+    const value = fit(r.value, Math.max(0, maxLine - (labelW + 8)));
+    list.push({
+      text: `   ${cursor} ${fit(r.label, labelW).padEnd(labelW)}   ${chosen ? paint(value, codes.cyan, color) : value}`,
+      row: i,
+    });
+  });
+
+  const bottom = footer(options, maxLine, color, PANEL_HINTS);
+  // The explanation is the point of the panel, so it wraps (to three lines at
+  // most) rather than being cut off mid-sentence like the table's lines.
+  const explained = [
+    ...wrap(panel.help, Math.max(1, maxLine - 2))
+      .slice(0, 3)
+      .map((l) => paint(`  ${l}`, codes.dim, color)),
+    paint(fit(`  ${panel.applies}`, maxLine), codes.dim, color),
+  ];
+  // Title, two rules, the explanation and the footer are always shown; the
+  // list gets what is left, and at least a few rows.
+  const fixed = 3 + explained.length + bottom.length;
+  const room = options.height ? Math.max(4, options.height - fixed - 1) : list.length;
+  let shown = list;
+  if (list.length > room) {
+    // Centred on the highlighted setting, and never past either end.
+    const at = Math.max(0, list.findIndex((l) => l.row === panel.selected));
+    const from = Math.min(Math.max(0, at - Math.floor(room / 2)), list.length - room);
+    shown = list.slice(from, from + room);
+  }
+
+  return [title, rule, ...shown.map((l) => l.text), rule, ...explained, ...bottom].join('\n');
 }

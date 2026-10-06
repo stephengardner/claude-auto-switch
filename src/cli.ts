@@ -14,6 +14,7 @@ import { autoCommand, type AutoOptions } from './commands/auto.js';
 import { proactiveCommand } from './commands/proactive-config.js';
 import { modelsCommand } from './commands/models-config.js';
 import { orderCommand } from './commands/order-config.js';
+import { configCommand } from './commands/settings.js';
 import { statuslineCommand } from './commands/statusline.js';
 import { historyCommand } from './commands/history.js';
 import { runCommand } from './commands/run.js';
@@ -120,11 +121,12 @@ program
 
 program
   .command('use <name>')
-  .description('switch the active account (a running session moves to it seamlessly)')
+  .description('switch the active account; the only running session moves to it (with several, pick one or --all)')
   .option('--now', 'switch instantly by restarting the session (--continue) instead of the seamless in-place swap')
-  .option('--here', 'move only the session running in this folder, not every session')
+  .option('--here', 'move only the session running in this folder')
   .option('--session <pid>', 'move only the session with this pid (see: ccx sessions)')
-  .action((name: string, opts: { now?: boolean; here?: boolean; session?: string }) => {
+  .option('--all', 'move every running session')
+  .action((name: string, opts: { now?: boolean; here?: boolean; session?: string; all?: boolean }) => {
     process.exitCode = useCommand(context(), name, opts);
   });
 
@@ -207,6 +209,13 @@ program
   .description('which account rotation reaches for first: smart (longest run, the default), most-room or priority')
   .action((mode?: string) => {
     process.exitCode = orderCommand(context(), mode);
+  });
+
+program
+  .command('config [key] [value...]')
+  .description('every setting and its value; with a key, what it does; with a value, change it ("default" resets it)')
+  .action(async (key: string | undefined, value: string[] | undefined) => {
+    process.exitCode = await configCommand(context(), key, value ?? []);
   });
 
 program

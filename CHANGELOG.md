@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.1.0]
+
+### Changed
+
+- **A nearly spent week is held back.** Under the smart order, an account whose
+  week (or the model's own week) is 80% or more used now comes after every
+  healthy account that can run at least half a 5-hour window, however fresh its
+  own window; against one with less, the two compete on runway. Runway alone
+  tops out at one window, so a fresh window on a week with 11% left scored as
+  well as one on an untouched week, and was picked second. Set the line with
+  `ccx config holdBackAtPercent` (50 to 99, or off); the dashboard says why an
+  account is held back.
+- **An unmeasured account's window cost is 15% of its week**, up from 10%.
+  Measured accounts cost 14.5% to 21%, so 10% read a nearly spent week as a
+  full window more often than it held one.
+- **Enter and f in the dashboard move the session you mean.** They posted one
+  shared request that whichever session looked first took, so with two sessions
+  running, which one moved was a coin flip, and a session already on that
+  account could take the request and drop it. Now the only running session
+  moves, and with several the dashboard asks which (`a` for all, enter alone
+  for none). `ccx use` does the same and takes `--all`; with several sessions
+  and none named it sets the account new sessions start on, says that none was
+  moved, and still exits 0.
+- **An early move only moves its own session**, and `ccx auto` moves the
+  sessions on the account it leaves, each by a request addressed to it.
+- Sessions started on a ccx older than 1.47 read only the shared request, so a
+  move from the dashboard or `ccx use` no longer reaches them. They move to a
+  newer ccx by themselves when idle; restarting one does it at once.
+- **Running sessions pick up a changed setting** at their next move, restart,
+  usage check or update, not only the pick settings: the restart prompt,
+  following updates, how long a spent account is skipped, and moving early.
+
+### Added
+
+- **Every setting in the dashboard.** `s` opens a panel with every setting, its
+  value, what it does and when a change takes effect. The arrows step a value,
+  enter types one (numbers, a model chain of your own, the restart prompt), `d`
+  puts the default back. Values are checked before they are saved; a Desktop
+  setting asks first, as it edits Claude's hooks.
+- **`ccx config`** lists the same settings, explains one (`ccx config <key>`),
+  or changes one (`ccx config <key> <value>`, `default` to reset).
+- The dashboard shows which session is on which account.
+
+### Removed
+
+- The `rotation.autoRelaunchInteractive` and `priorityOrder` config keys, which
+  nothing read.
+
 ## [2.0.1]
 
 ### Changed
