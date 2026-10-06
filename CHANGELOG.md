@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.1.1]
+
+### Changed
+
+- **The settings key is easy to find.** The dashboard's settings line now
+  starts with `s settings`, where a narrow terminal cannot cut it off; it used
+  to end the line, in grey, and was missed. Every key hint draws its key
+  bright and what it does dim, so the keys stand out in a line of words, and
+  `[ ] order` joins the hints.
+
 ## [2.1.0]
 
 ### Changed

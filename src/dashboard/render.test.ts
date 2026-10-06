@@ -350,8 +350,25 @@ describe('renderDashboard (plain)', () => {
     expect(plain).toContain('model: Opus, then Fable  ·  pick: longest run first');
     expect(plain).not.toContain('M model');
     const live = renderDashboard({ ...snapshot([account({ name: 'a' })]), settings }, { ...opts, interactive: true });
-    expect(live).toContain('(s settings · [ ] order)');
-    expect(live).toContain('s settings');
+    expect(live).toContain('  s settings  ·  model: Opus, then Fable  ·  pick: longest run first');
+  });
+
+  it('leads the settings line with its key, so a narrow terminal cannot cut it off', () => {
+    const settings = { model: 'Opus, then Fable', order: 'longest run first', holdBack: 'weeks 80%+ used' };
+    const out = renderDashboard(
+      { ...snapshot([account({ name: 'a' })]), settings },
+      { ...opts, interactive: true, width: 60 },
+    );
+    const line = out.split('\n').find((l) => l.includes('model:')) ?? '';
+    expect(line.startsWith('  s settings  ·  model:')).toBe(true);
+    expect(line.length).toBeLessThanOrEqual(60);
+  });
+
+  it('draws each hint key bright and what it does dim, so the keys stand out', () => {
+    const out = renderDashboard(snapshot([account({ name: 'a' })]), { color: true, interactive: true });
+    // ESC[1m is bold, ESC[2m dim: the key, then its action.
+    expect(out).toContain('\u001b[1ms\u001b[0m\u001b[2m settings\u001b[0m');
+    expect(out).toContain('\u001b[1mq/esc\u001b[0m\u001b[2m quit\u001b[0m');
   });
 
   it('says from how full a week accounts are held back, when they are', () => {
