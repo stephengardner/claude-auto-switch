@@ -20,31 +20,36 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-
-      # node-pty starts a terminal by running a small helper program that ships
-      # prebuilt. On macOS that helper can arrive without permission to run,
-      # and every attempt to open a terminal then fails with "posix_spawnp
-      # failed", which took out the terminal tests here. Restoring the
-      # permission is the actual fix; the diagnostic prints the truth if it is
-      # ever something else.
-      - name: Let node-pty run its terminal helper (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          for helper in node_modules/node-pty/prebuilds/*/spawn-helper node_modules/node-pty/build/Release/spawn-helper; do
-            [ -e "$helper" ] || continue
-            chmod +x "$helper"
-            ls -l "$helper"
-          done
-          node -e "
-            const { spawn } = require('node-pty');
-            try {
-              const p = spawn(process.execPath, ['-e', 'process.exit(0)'], { cwd: process.cwd(), env: process.env });
-              p.kill();
-              console.log('terminal check: a pseudo-terminal can be opened');
-            } catch (e) {
-              console.log('terminal check FAILED: ' + e.message);
-              process.exitCode = 0; // report, do not fail the build here
-            }
-          "
-
+      # No repair of the install before the tests. node-pty ships its macOS
+      # terminal helper without permission to run, and a step here once
+      # restored it, so every test passed while a user's fresh install could
+      # not start `claude` at all. ccx restores it itself now; the tests run on
+      # the install exactly as npm laid it down.
       - run: npm run verify
+
+  installed:
+    # The package as a user gets it: packed, installed globally into a fresh
+    # folder, then asked to run and to open a terminal. What the test suite
+    # cannot see, because it runs from the repository.
+    name: installed package (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm pack
+      - name: Install it the way a user does
+        shell: bash
+        run: npm install -g --prefix "$RUNNER_TEMP/global" ./claude-auto-switch-*.tgz
+      - name: Run it and open a terminal through it
+        shell: bash
+        run: node scripts/smoke-installed.mjs "$(npm root -g --prefix "$RUNNER_TEMP/global")/claude-auto-switch"
