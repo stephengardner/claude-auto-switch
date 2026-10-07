@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nodePty } from '../../src/util/native-pty.js';
 import { addCommand } from '../../src/commands/add.js';
+import { updateAccount } from '../../src/accounts/registry.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive } from '../../src/state/active.js';
 import { loadConfig } from '../../src/config/config.js';
@@ -174,6 +175,46 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)("a session's own record decid
       const relaunch = launches[1]?.args ?? [];
       expect(relaunch[relaunch.indexOf('--resume') + 1]).toBe(CONVERSATION);
       expect(relaunch.at(-1)).toMatch(/^This session was restarted/);
+    },
+  );
+
+  it(
+    'never moves onto an account disabled after the session started',
+    { timeout: 60_000 },
+    async () => {
+      // A session read its accounts once, at start, and hours later moved onto
+      // one the operator had disabled since; handing over to a newer ccx on it
+      // then ended the session. B is next in line here until it is disabled.
+      const home = mkdtempSync(path.join(tmpdir(), 'cas-record-disabled-'));
+      const runsLog = path.join(home, 'runs.jsonl');
+      Object.assign(process.env, {
+        FAKE_CLAUDE_RUNS_LOG: runsLog,
+        FAKE_CLAUDE_IDLE_MS: '6000',
+        FAKE_CLAUDE_SESSION_RECORD: '1',
+        FAKE_CLAUDE_TRANSCRIPT: '1',
+        FAKE_CLAUDE_REFUSE_AFTER_MS: '2500',
+      });
+      let probes = 0;
+      const context = makeContext(home, () => {
+        probes += 1;
+        return Promise.resolve(probes === 1 ? 'limited' : 'allowed');
+      });
+      await loginAccount(context, home, 'A');
+      await loginAccount(context, home, 'B');
+      await loginAccount(context, home, 'C');
+      setActive('A', context.ctx);
+
+      // Disabled while the session runs, before A is refused.
+      const disable = setTimeout(() => updateAccount('B', { enabled: false }, context.ctx), 1000);
+      try {
+        expect(await runCommand(context, ['--resume', CONVERSATION])).toBe(0);
+      } finally {
+        clearTimeout(disable);
+      }
+      const launches = launchesIn(runsLog);
+      expect(launches[0]?.marker).toBe('A');
+      expect(launches[1]?.marker).toBe('C');
+      expect(launches.map((l) => l.marker)).not.toContain('B');
     },
   );
 });

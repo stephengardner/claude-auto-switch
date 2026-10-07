@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nodePty } from '../../src/util/native-pty.js';
 import { addCommand } from '../../src/commands/add.js';
+import { updateAccount } from '../../src/accounts/registry.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive } from '../../src/state/active.js';
 import { loadConfig } from '../../src/config/config.js';
@@ -167,27 +168,43 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)(
       expect(launches(runsLog)[0]?.marker).toBe('B');
     });
 
+    // An account given to start on that cannot take the run is never a reason
+    // to end it: a newer ccx taking over a session is started this way, on an
+    // account the older one chose, and refusing ended the session for good. It
+    // starts on the account with the most room instead, and says why.
     it(
-      'refuses an account that does not exist before starting anything',
+      'starts elsewhere, saying why, when the account it was given does not exist',
       { timeout: 60_000 },
       async () => {
         const { context, runsLog, said } = await setup();
-        expect(await runCommand(context, [], { account: 'nobody' })).toBe(1);
-        expect(launches(runsLog)).toHaveLength(0);
-        expect(said.join(' ')).toMatch(/no enabled account named "nobody"/);
+        expect(await runCommand(context, [], { account: 'nobody' })).toBe(0);
+        expect(launches(runsLog)[0]?.marker).toBe('A');
+        expect(said.join(' ')).toMatch(/"nobody" cannot take this run \(there is no account by that name\)/);
       },
     );
 
     it(
-      'refuses an account that is not signed in, rather than start on another unsaid',
+      'starts elsewhere, saying why, when the account it was given is not signed in',
       { timeout: 60_000 },
       async () => {
         const { context, runsLog, said } = await setup();
         const dir = path.join(context.ctx.env?.HOME as string, 'profiles', 'B');
         writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({}), 'utf8');
-        expect(await runCommand(context, [], { account: 'B' })).toBe(1);
-        expect(launches(runsLog)).toHaveLength(0);
-        expect(said.join(' ')).toMatch(/"B" is not signed in/);
+        expect(await runCommand(context, [], { account: 'B' })).toBe(0);
+        expect(launches(runsLog)[0]?.marker).toBe('A');
+        expect(said.join(' ')).toMatch(/"B" cannot take this run \(it is not signed in\)/);
+      },
+    );
+
+    it(
+      'starts elsewhere, saying why, when the account it was given has been disabled',
+      { timeout: 60_000 },
+      async () => {
+        const { context, runsLog, said } = await setup();
+        updateAccount('B', { enabled: false }, context.ctx);
+        expect(await runCommand(context, [], { account: 'B' })).toBe(0);
+        expect(launches(runsLog)[0]?.marker).toBe('A');
+        expect(said.join(' ')).toMatch(/"B" cannot take this run \(it is disabled\)/);
       },
     );
   },

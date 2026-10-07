@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.1.3]
+
+### Fixed
+
+- **A session could move onto an account you had disabled.** A session read
+  its accounts once, when it started, so an account disabled, added or
+  removed while it ran was invisible to it: hours later it moved onto the
+  disabled one. Sessions now re-read the account list whenever it changes, at
+  every decision that uses it.
+- **Handing a session to a newer ccx on an account that can no longer be used
+  ended the session** ("no enabled account named ..."). A run told to start on
+  an account that is disabled, signed out or gone now says why and starts on
+  the account with the most room instead. Sessions still running an older ccx
+  can hand over with such an account, so this matters even after updating.
+
 ## [2.1.2]
 
 ### Fixed
