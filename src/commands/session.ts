@@ -289,11 +289,14 @@ export async function runInteractiveHotSwap(
   const refreshAccounts = (): void => {
     const stamp = fileStamp(registryFilePath(context.ctx));
     if (stamp === accountsStamp) return;
-    accountsStamp = stamp;
     try {
       accounts = listAccounts(context.ctx);
+      // Only once read: a read that failed (the file caught mid-replace) is
+      // tried again at the next decision, rather than leaving the session on
+      // the list it had until the registry happens to change again.
+      accountsStamp = stamp;
     } catch {
-      /* keep the accounts it had */
+      /* keep the accounts it had, and try again next time */
     }
   };
   // An account this run was told to start on that cannot take it now (disabled,
