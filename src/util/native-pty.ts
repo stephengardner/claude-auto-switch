@@ -1,27 +1,20 @@
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type * as NodePty from 'node-pty';
 
 /**
- * node-pty, ready to open a terminal on every platform.
+ * node-pty, loaded on Windows from a copy of its own rather than from the
+ * install.
  *
- * On Windows it is loaded from a copy of its own rather than from the install.
  * Windows will not replace a native file a process has loaded, and every ccx
  * session loads node-pty's for as long as it runs. Loaded from the install, it
  * made `npm install -g` fail until every session had been closed, so an update
  * could never reach a running session. Loaded from a copy kept per version
  * under the user's temp folder, the install is never held: an update lands
- * while sessions run, and they move to it on their own.
- *
- * On macOS, node-pty opens every terminal by running a small helper program,
- * spawn-helper, that it ships prebuilt, and its npm package ships that helper
- * without permission to run (node-pty 1.1.0; nothing in its install restores
- * it). Every terminal then failed to open with "posix_spawnp failed", so on a
- * fresh install `claude` did not start at all. The permission is restored here
- * before node-pty is used. Where the install cannot be changed (one owned by
- * root), node-pty is loaded from a copy of ccx's own, with the permission set.
+ * while sessions run, and they move to it on their own. Elsewhere a loaded
+ * file can be replaced, so the install is used directly.
  */
 
 const requireHere = createRequire(import.meta.url);
@@ -36,50 +29,9 @@ export function nodePty(): typeof NodePty {
     } catch {
       /* the install's own, as before: works, but holds the install while running */
     }
-    loaded = requireHere('node-pty') as typeof NodePty;
-    return loaded;
-  }
-  const installed = path.dirname(requireHere.resolve('node-pty/package.json'));
-  if (!helpersRunnable(installed)) {
-    try {
-      const copy = copyOfNodePty();
-      if (helpersRunnable(copy)) {
-        loaded = requireHere(copy) as typeof NodePty;
-        return loaded;
-      }
-    } catch {
-      /* the install's own, which fails with node-pty's own message */
-    }
   }
   loaded = requireHere('node-pty') as typeof NodePty;
   return loaded;
-}
-
-/** The file operations helpersRunnable needs, replaceable in tests. */
-export interface ModeOps {
-  statSync: (file: string) => { mode: number };
-  chmodSync: (file: string, mode: number) => void;
-}
-
-/**
- * Make every spawn-helper node-pty may run under `dir` runnable by everyone:
- * whichever of its build folders node-pty loads from (a local build, or the
- * prebuilt one for this machine). False when one cannot be changed. True when
- * there is none, which is every platform but macOS.
- */
-export function helpersRunnable(dir: string, ops: ModeOps = { statSync, chmodSync }): boolean {
-  for (const folder of ['build/Release', 'build/Debug', `prebuilds/${process.platform}-${process.arch}`]) {
-    const helper = path.join(dir, folder, 'spawn-helper');
-    if (!existsSync(helper)) continue;
-    const { mode } = ops.statSync(helper);
-    if ((mode & 0o111) === 0o111) continue;
-    try {
-      ops.chmodSync(helper, (mode & 0o7777) | 0o111);
-    } catch {
-      return false;
-    }
-  }
-  return true;
 }
 
 /** Make sure the copy for this node-pty version exists, and return its folder. */
