@@ -144,7 +144,7 @@ const PTY_AVAILABLE = canSpawnPty();
 // Skipped only on a developer machine without a terminal. In CI a terminal
 // that cannot open is a failure: skipping is how an install that could not
 // start `claude` at all on macOS still passed.
-if (!PTY_AVAILABLE) {
+if (!PTY_AVAILABLE && !process.env.CI) {
   console.warn(
     `[skipped] real-terminal switch tests: this machine would not open one (${ptyProblem}). ` +
       'The in-session switch paths are NOT covered here.',
