@@ -108,8 +108,13 @@ export function loadConfigFile(c: PathCtx = {}): PartialConfig {
  * modified time as they were. Null when there is no file.
  */
 export function configStamp(c: PathCtx = {}): string | null {
+  return fileStamp(configFilePath(c));
+}
+
+/** The same fingerprint, for any file ccx keeps (the account registry too). */
+export function fileStamp(file: string): string | null {
   try {
-    const stat = statSync(configFilePath(c));
+    const stat = statSync(file);
     return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino}`;
   } catch {
     return null;

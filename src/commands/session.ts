@@ -12,9 +12,9 @@ import {
   snapshotStateBase,
 } from '../session/write-back.js';
 import { configHome, type PathCtx } from '../config/paths.js';
-import { configStamp, loadConfig } from '../config/config.js';
+import { configStamp, fileStamp, loadConfig } from '../config/config.js';
 import { sweepAbandonedTemps } from '../util/fs-json.js';
-import { listAccounts } from '../accounts/registry.js';
+import { listAccounts, registryFilePath } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import {
   readSwitchRequest,
@@ -278,18 +278,32 @@ export async function runInteractiveHotSwap(
   // Delivered once: on the first launch, or in the fresh conversation started
   // when that launch finds nothing to resume.
   let pendingStart: string | null = options.startPrompt ?? null;
-  const accounts = listAccounts(context.ctx);
-  if (options.account !== undefined) {
-    const chosen = accounts.find((a) => a.name === options.account);
-    if (!chosen || !chosen.enabled) {
-      say(`no enabled account named "${options.account}" (see: ccx list)`);
-      return 1;
+  /**
+   * The accounts as they are now. Read again whenever the registry changes,
+   * at every decision that uses them (refreshAccounts, below): a session holds
+   * them for hours, and one that read them only at start went on choosing an
+   * account disabled after it began, and moved onto it.
+   */
+  let accounts = listAccounts(context.ctx);
+  let accountsStamp = fileStamp(registryFilePath(context.ctx));
+  const refreshAccounts = (): void => {
+    const stamp = fileStamp(registryFilePath(context.ctx));
+    if (stamp === accountsStamp) return;
+    try {
+      accounts = listAccounts(context.ctx);
+      // Only once read: a read that failed (the file caught mid-replace) is
+      // tried again at the next decision, rather than leaving the session on
+      // the list it had until the registry happens to change again.
+      accountsStamp = stamp;
+    } catch {
+      /* keep the accounts it had, and try again next time */
     }
-    if (!hasLogin(chosen.dir)) {
-      say(`"${chosen.name}" is not signed in (ccx login ${chosen.name})`);
-      return 1;
-    }
-  }
+  };
+  // An account this run was told to start on that cannot take it now (disabled,
+  // signed out, removed) is not a reason to end the run: it may have been
+  // chosen minutes ago by an older session handing itself over, and refusing
+  // here ended that session for good. The first pick says why and starts on
+  // the account with the most room instead (nextAccount).
   let accountChoiceSettled = false;
   /** Set when a newer ccx is to take this session over once the run has ended. */
   let handoverPlan: {
@@ -358,6 +372,9 @@ export async function runInteractiveHotSwap(
    */
   let settingsStamp = configStamp(context.ctx);
   const refreshSettings = (): void => {
+    // The accounts too: every decision that reads the settings also reads
+    // which accounts exist and which are enabled.
+    refreshAccounts();
     const stamp = configStamp(context.ctx);
     if (stamp === settingsStamp) return;
     // Remembered whether or not it loads: a file that does not is read once
@@ -1189,9 +1206,17 @@ export async function runInteractiveHotSwap(
       if (options.account !== undefined && !accountChoiceSettled) {
         accountChoiceSettled = true;
         if (!eligible.some((a) => a.name === options.account)) {
-          notice(
-            `"${options.account}" cannot take this run (${capped.has(options.account) ? 'it is out of usage' : 'it cannot be used right now'}); starting on the account with the most room instead`,
-          );
+          const asked = accounts.find((a) => a.name === options.account);
+          const why = !asked
+            ? 'there is no account by that name'
+            : !asked.enabled
+              ? 'it is disabled'
+              : capped.has(asked.name)
+                ? 'it is out of usage'
+                : !hasLogin(asked.dir)
+                  ? 'it is not signed in'
+                  : 'it cannot be used right now';
+          notice(`"${options.account}" cannot take this run (${why}); starting on the account with the most room instead`);
         }
       }
       // Start on the pinned account if it is still eligible, else the chosen order.
@@ -1374,6 +1399,8 @@ export async function runInteractiveHotSwap(
         pullRenewedLogin(current);
       };
       const switchWatch = (): string | null => {
+        // A request can name an account added since this session started.
+        refreshAccounts();
         // This session's OWN request (written by `ccx use --session <pid>` or
         // `--here`) wins over the broadcast one, so a targeted switch moves
         // exactly this session and leaves the others alone. Falls back to the
