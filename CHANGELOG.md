@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.1.2]
+
+### Fixed
+
+- **`claude` would not start on a Mac after a fresh install** ("posix_spawnp
+  failed"). node-pty, which ccx opens every terminal with, ships its macOS
+  terminal helper without permission to run, and its install does not restore
+  it. ccx now restores it before opening a terminal; where the install cannot
+  be changed (one owned by root), it uses a copy of its own with the
+  permission set.
+- **Why the tests passed anyway, and what changed.** CI restored that
+  permission before the tests ran, and the terminal tests skipped themselves on
+  a machine that could not open a terminal. Both are gone: the tests run on the
+  install exactly as npm lays it down, and in CI a terminal that cannot open
+  fails them. A new CI job packs the release, installs it the way a user does
+  on macOS, Linux and Windows under Node 20 and 22, and checks that it runs and
+  opens a terminal.
+
 ## [2.1.1]
 
 ### Changed

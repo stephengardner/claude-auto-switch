@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node-pty';
+import { nodePty } from '../../src/util/native-pty.js';
 import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive } from '../../src/state/active.js';
@@ -66,6 +66,9 @@ const launches = (runsLog: string): number =>
         .filter((l) => l.includes('"type":"launch"')).length
     : 0;
 
+// Through the loader every part of ccx uses, so these tests open terminals
+// exactly as ccx does, including what it does to make that possible.
+const { spawn } = nodePty();
 let ptyProblem = '';
 function canSpawnPty(): boolean {
   try {
@@ -88,7 +91,10 @@ function canSpawnPty(): boolean {
   }
 }
 const PTY_AVAILABLE = canSpawnPty();
-if (!PTY_AVAILABLE)
+// Skipped only on a developer machine without a terminal. In CI a terminal
+// that cannot open is a failure: skipping is how an install that could not
+// start `claude` at all on macOS still passed.
+if (!PTY_AVAILABLE && !process.env.CI)
   console.warn(`[skipped] handover tests: no pseudo-terminal here (${ptyProblem}).`);
 
 const FAKE_ENV = [
@@ -98,7 +104,7 @@ const FAKE_ENV = [
   'FAKE_CLAUDE_IDLE_STATUS',
 ];
 
-describe.skipIf(!PTY_AVAILABLE)('a running session moves to a newer ccx by itself', () => {
+describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a running session moves to a newer ccx by itself', () => {
   afterEach(() => {
     for (const name of FAKE_ENV) delete process.env[name];
   });

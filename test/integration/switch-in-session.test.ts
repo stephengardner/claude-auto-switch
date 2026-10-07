@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node-pty';
+import { nodePty } from '../../src/util/native-pty.js';
 import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive, getActive } from '../../src/state/active.js';
@@ -113,6 +113,9 @@ async function firstLaunch(runsLog: string, timeoutMs = 20_000): Promise<RunEntr
  *
  * Deliberately noisy about it: a silently skipped test reads as a passing one.
  */
+// Through the loader every part of ccx uses, so these tests open terminals
+// exactly as ccx does, including what it does to make that possible.
+const { spawn } = nodePty();
 let ptyProblem = '';
 function canSpawnPty(): boolean {
   try {
@@ -138,7 +141,10 @@ function canSpawnPty(): boolean {
 }
 
 const PTY_AVAILABLE = canSpawnPty();
-if (!PTY_AVAILABLE) {
+// Skipped only on a developer machine without a terminal. In CI a terminal
+// that cannot open is a failure: skipping is how an install that could not
+// start `claude` at all on macOS still passed.
+if (!PTY_AVAILABLE && !process.env.CI) {
   console.warn(
     `[skipped] real-terminal switch tests: this machine would not open one (${ptyProblem}). ` +
       'The in-session switch paths are NOT covered here.',
@@ -162,7 +168,7 @@ function conversationOf(args: string[] | undefined): string | null {
   return null;
 }
 
-describe.skipIf(!PTY_AVAILABLE)('on-demand switch in a running session (against fake-claude)', () => {
+describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a running session (against fake-claude)', () => {
   afterEach(() => {
     delete process.env.FAKE_CLAUDE_IDLE_MS;
     delete process.env.FAKE_CLAUDE_RUNS_LOG;
