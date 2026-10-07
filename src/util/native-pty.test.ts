@@ -51,6 +51,19 @@ describe("node-pty's terminal helper, which its package ships without permission
     expect(helpersRunnable(dir, fakeModes(0o100644, true))).toBe(false);
   });
 
+  it('says so, rather than throwing, when the helper cannot even be read', () => {
+    // Gone between finding it and reading its mode: the caller falls back to
+    // its own copy instead of failing to load node-pty at all.
+    const { dir } = withHelper();
+    const unreadable: ModeOps = {
+      statSync: () => {
+        throw Object.assign(new Error('no such file'), { code: 'ENOENT' });
+      },
+      chmodSync: () => {},
+    };
+    expect(helpersRunnable(dir, unreadable)).toBe(false);
+  });
+
   it('needs nothing where there is no helper, as on Linux and Windows', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'cas-pty-helper-'));
     const modes = fakeModes(0o100644);

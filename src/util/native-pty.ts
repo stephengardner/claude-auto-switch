@@ -71,9 +71,11 @@ export function helpersRunnable(dir: string, ops: ModeOps = { statSync, chmodSyn
   for (const folder of ['build/Release', 'build/Debug', `prebuilds/${process.platform}-${process.arch}`]) {
     const helper = path.join(dir, folder, 'spawn-helper');
     if (!existsSync(helper)) continue;
-    const { mode } = ops.statSync(helper);
-    if ((mode & 0o111) === 0o111) continue;
+    // Reading the mode is inside the guard too: a file gone between the two
+    // calls must send the caller to its copy, not throw past it.
     try {
+      const { mode } = ops.statSync(helper);
+      if ((mode & 0o111) === 0o111) continue;
       ops.chmodSync(helper, (mode & 0o7777) | 0o111);
     } catch {
       return false;
