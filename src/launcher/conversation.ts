@@ -289,6 +289,26 @@ export function hasOwnPrompt(args: string[]): boolean {
 }
 
 /**
+ * Whether an operand added at the end of `args` would be read as one more value
+ * of the last option there, because that option takes every operand after it:
+ * `--add-dir ../shared` or `--allowedTools "Bash(npm test:*)"`.
+ */
+export function endsInManyValues(args: string[]): boolean {
+  let taking = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    // Everything after `--` is an operand, and so is anything added after it.
+    if (arg === '--') return false;
+    if (isOperand(arg)) continue;
+    // `--add-dir=../shared` carries its value inside itself and takes no more.
+    const inline = arg.includes('=');
+    taking = !inline && MANY_VALUE_FLAGS.has(arg);
+    if (!inline && ONE_VALUE_FLAGS.has(arg) && isOperand(args[i + 1])) i += 1;
+  }
+  return taking;
+}
+
+/**
  * Hand a relaunch the prompt its session armed for coming back.
  *
  * Claude takes one prompt: `claude [options] [prompt]`, and a resumed
@@ -309,6 +329,13 @@ export function withResumePrompt(relaunch: string[], prompt: string): ResumeProm
       applied: false,
       args: relaunch,
       reason: 'this run was launched with a prompt of its own, and Claude takes only one',
+    };
+  }
+  if (endsInManyValues(relaunch)) {
+    return {
+      applied: false,
+      args: relaunch,
+      reason: 'the last option takes every value after it, so a prompt there would be read as one of them',
     };
   }
   return { applied: true, args: [...relaunch, promptOperand(prompt)] };

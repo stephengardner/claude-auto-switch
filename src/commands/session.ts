@@ -68,6 +68,7 @@ import {
   withResumePrompt,
   forksConversation,
   startsByResuming,
+  conversationIdIn,
 } from '../launcher/conversation.js';
 import {
   readResumePrompt,
@@ -111,6 +112,7 @@ import {
 } from '../session/mirror-state.js';
 import { fetchTokenOwner } from '../accounts/identity-check.js';
 import { takeLease, touchLease, releaseLease, liveLeases } from '../session/lease.js';
+import { claimedElsewhere, pickAndClaim, releaseClaim } from '../session/worker-claim.js';
 import { spreadWorkers } from '../usage/spread.js';
 import { HEALTHY_RUN, standingOf } from '../usage/runway.js';
 import { holdBackOf } from '../dashboard/rotation-settings.js';
@@ -267,8 +269,13 @@ export interface HotSwapOptions {
 export interface WorkerHooks {
   /** The task, sent on the first launch only; by standard input when it is too long for a command line. */
   brief: string;
-  /** Called as each launch starts, with the account it runs on. */
-  onLaunch: (account: string) => void;
+  /** Called as each launch starts, with the conversation it runs. */
+  onLaunch: (conversation: string | null) => void;
+  /**
+   * Called whenever the worker is put on an account: before each launch, and
+   * when it is moved under a running launch (a requested or early move).
+   */
+  onAccount: (account: string) => void;
   onStdout: (chunk: string) => void;
   onStderr: (chunk: string) => void;
 }
@@ -312,9 +319,12 @@ export async function runInteractiveHotSwap(
    */
   let accounts = listAccounts(context.ctx);
   let accountsStamp = fileStamp(registryFilePath(context.ctx));
-  /** Whether another running session (or worker) is on this account now. */
-  const inUseElsewhere = (name: string): boolean =>
-    liveLeases(context.ctx).some((lease) => lease.account === name && lease.pid !== process.pid);
+  /** The accounts another running session or worker is on now, or another worker has just picked. */
+  const inUseElsewhere = (): Set<string> => {
+    const busy = claimedElsewhere(context.ctx);
+    for (const lease of liveLeases(context.ctx)) if (lease.pid !== process.pid) busy.add(lease.account);
+    return busy;
+  };
   /**
    * Whether an account is healthy by the pick order's own measure: worth a
    * move, its week not held back, and room for half a 5-hour window.
@@ -1019,6 +1029,9 @@ export async function runInteractiveHotSwap(
       },
     });
     current = account;
+    // Every account a worker works on goes in its report, including one it
+    // was moved to under a running launch, where no new launch says so.
+    worker?.onAccount(account.name);
   };
 
   /**
@@ -1214,6 +1227,99 @@ export async function runInteractiveHotSwap(
     Math.max(30, context.config.rotation.usageCheckSeconds) * 1000,
   );
 
+  /** The next account to run on, by the pick order; null when none can. */
+  const pickAccount = (excluding: Set<string>): { name: string; dir: string } | null => {
+    refreshSettings();
+    const capped = cappedNames(loadLedger(context.ctx), Date.now());
+    // An account this run was told to start on outranks the active one.
+    // A worker is not "the" session: it starts where it was told, or where
+    // the pick order says, never on the account others start on by default.
+    const pinned = options.account ?? (worker ? null : getActive(context.ctx));
+    // Ordered by the operator's policy: `most-room` reaches for the least-used
+    // account first (the one with the most headroom), `priority` keeps the
+    // classic order. Same comparator the `select`/`rotate`/dashboard paths use,
+    // so every surface agrees on which account is "next".
+    const roomOf = roomOfFromSnapshot(
+      context.ctx,
+      Date.now(),
+      context.config.rotation,
+      runningModel() ?? limitedModel ?? preferredModel(context),
+    );
+    const eligible = accounts
+      .filter(
+        (a) => a.enabled && !excluding.has(a.name) && !capped.has(a.name) && hasLogin(a.dir),
+      )
+      .sort(orderComparator(context.config.rotation.accountOrder, roomOf));
+    // A run told to start on an account that cannot take it is not put
+    // somewhere else in silence. Said once, at the start; moving off it later
+    // is ordinary rotation and says so itself.
+    if (options.account !== undefined && !accountChoiceSettled) {
+      accountChoiceSettled = true;
+      if (!eligible.some((a) => a.name === options.account)) {
+        const asked = accounts.find((a) => a.name === options.account);
+        const why = !asked
+          ? 'there is no account by that name'
+          : !asked.enabled
+            ? 'it is disabled'
+            : capped.has(asked.name)
+              ? 'it is out of usage'
+              : !hasLogin(asked.dir)
+                ? 'it is not signed in'
+                : 'it cannot be used right now';
+        notice(`"${options.account}" cannot take this run (${why}); starting on the account with the most room instead`);
+      }
+    }
+    // Start on the pinned account if it is still eligible, else the chosen
+    // order. A worker's order is spread first, so once its pinned account
+    // runs out it moves where no other worker is, not where they all would.
+    const busy = worker ? inUseElsewhere() : null;
+    const spread = busy ? spreadWorkers(eligible, (name) => busy.has(name), healthyToStart) : eligible;
+    const ordered = pinned
+      ? [...spread.filter((a) => a.name === pinned), ...spread.filter((a) => a.name !== pinned)]
+      : spread;
+
+    // ONE decision, made by the planner: which account, on which model. The
+    // model half used to be decided separately, inside the session, and it
+    // fired first: one account running out of Fable moved the whole run to
+    // Opus even though another account had most of its Fable week left, and
+    // it was never reconsidered afterwards. See usage/rotation-plan.ts.
+    const rotation = context.config.rotation;
+    if (!rotation.preferSameModel || ordered.length === 0) {
+      const pick = ordered[0];
+      return pick ? { name: pick.name, dir: pick.dir } : null;
+    }
+
+    const now = Date.now();
+    // Candidates read as CURRENT capacity, not history (a cached number past
+    // its own reset says "spent" about a limit that has lifted), plus limits
+    // the ledger has confirmed. Same builder the in-place cap relief uses.
+    const plan = planRotation({
+      candidates: planCandidates(ordered, now),
+      // The model in use, or the one a confirmed cap just told us was in
+      // use. Without that second source the first rotation is blind: nothing
+      // pins a model, so ccx could not tell it was on Fable and rotated by
+      // priority alone, straight through two accounts whose Fable was also
+      // spent before reaching the one with room.
+      modelInUse: runningModel() ?? limitedModel ?? null,
+      preference: rotation.modelPreference,
+      strategy: rotation.modelStrategy,
+      spentThisRun,
+    });
+
+    if (plan.kind === 'exhausted') return null;
+    const picked = ordered.find((a) => a.name === plan.account);
+    if (!picked) return null;
+    // ONLY on a change. Remembering it is what makes the session actually
+    // start on it, but writing it down when nothing moved would impose
+    // `--model` on a session that never asked for one, overriding the
+    // operator's own pin with a value ccx picked.
+    if (plan.changedModel && plan.model) {
+      notice(plan.reason, { kind: 'model-change', data: { to: plan.model } });
+      chosenModel = plan.model;
+    }
+    return { name: picked.name, dir: picked.dir };
+  };
+
   const exitCode = await runHotSwapSession({
     // Skipped up front rather than launched and rejected. These go into the same
     // set a runtime rejection goes into, so the closing message still says to
@@ -1225,95 +1331,11 @@ export async function runInteractiveHotSwap(
     // wait for a reset that cannot produce a login.
     accountsNeverSignedIn: () =>
       accounts.filter((a) => a.enabled && !hasLogin(a.dir)).map((a) => a.name),
-    nextAccount: (excluding) => {
-      refreshSettings();
-      const capped = cappedNames(loadLedger(context.ctx), Date.now());
-      // An account this run was told to start on outranks the active one.
-      // A worker is not "the" session: it starts where it was told, or where
-      // the pick order says, never on the account others start on by default.
-      const pinned = options.account ?? (worker ? null : getActive(context.ctx));
-      // Ordered by the operator's policy: `most-room` reaches for the least-used
-      // account first (the one with the most headroom), `priority` keeps the
-      // classic order. Same comparator the `select`/`rotate`/dashboard paths use,
-      // so every surface agrees on which account is "next".
-      const roomOf = roomOfFromSnapshot(
-        context.ctx,
-        Date.now(),
-        context.config.rotation,
-        runningModel() ?? limitedModel ?? preferredModel(context),
-      );
-      const eligible = accounts
-        .filter(
-          (a) => a.enabled && !excluding.has(a.name) && !capped.has(a.name) && hasLogin(a.dir),
-        )
-        .sort(orderComparator(context.config.rotation.accountOrder, roomOf));
-      // A run told to start on an account that cannot take it is not put
-      // somewhere else in silence. Said once, at the start; moving off it later
-      // is ordinary rotation and says so itself.
-      if (options.account !== undefined && !accountChoiceSettled) {
-        accountChoiceSettled = true;
-        if (!eligible.some((a) => a.name === options.account)) {
-          const asked = accounts.find((a) => a.name === options.account);
-          const why = !asked
-            ? 'there is no account by that name'
-            : !asked.enabled
-              ? 'it is disabled'
-              : capped.has(asked.name)
-                ? 'it is out of usage'
-                : !hasLogin(asked.dir)
-                  ? 'it is not signed in'
-                  : 'it cannot be used right now';
-          notice(`"${options.account}" cannot take this run (${why}); starting on the account with the most room instead`);
-        }
-      }
-      // Start on the pinned account if it is still eligible, else the chosen order.
-      const ordered = pinned
-        ? [...eligible.filter((a) => a.name === pinned), ...eligible.filter((a) => a.name !== pinned)]
-        : worker
-          ? spreadWorkers(eligible, inUseElsewhere, healthyToStart)
-          : eligible;
-
-      // ONE decision, made by the planner: which account, on which model. The
-      // model half used to be decided separately, inside the session, and it
-      // fired first: one account running out of Fable moved the whole run to
-      // Opus even though another account had most of its Fable week left, and
-      // it was never reconsidered afterwards. See usage/rotation-plan.ts.
-      const rotation = context.config.rotation;
-      if (!rotation.preferSameModel || ordered.length === 0) {
-        const pick = ordered[0];
-        return pick ? { name: pick.name, dir: pick.dir } : null;
-      }
-
-      const now = Date.now();
-      // Candidates read as CURRENT capacity, not history (a cached number past
-      // its own reset says "spent" about a limit that has lifted), plus limits
-      // the ledger has confirmed. Same builder the in-place cap relief uses.
-      const plan = planRotation({
-        candidates: planCandidates(ordered, now),
-        // The model in use, or the one a confirmed cap just told us was in
-        // use. Without that second source the first rotation is blind: nothing
-        // pins a model, so ccx could not tell it was on Fable and rotated by
-        // priority alone, straight through two accounts whose Fable was also
-        // spent before reaching the one with room.
-        modelInUse: runningModel() ?? limitedModel ?? null,
-        preference: rotation.modelPreference,
-        strategy: rotation.modelStrategy,
-        spentThisRun,
-      });
-
-      if (plan.kind === 'exhausted') return null;
-      const picked = ordered.find((a) => a.name === plan.account);
-      if (!picked) return null;
-      // ONLY on a change. Remembering it is what makes the session actually
-      // start on it, but writing it down when nothing moved would impose
-      // `--model` on a session that never asked for one, overriding the
-      // operator's own pin with a value ccx picked.
-      if (plan.changedModel && plan.model) {
-        notice(plan.reason, { kind: 'model-change', data: { to: plan.model } });
-        chosenModel = plan.model;
-      }
-      return { name: picked.name, dir: picked.dir };
-    },
+    // A worker picks and says so in one step, so workers started together see
+    // each other's picks and spread out, rather than each reading the leases
+    // before any has written one and all picking the same account.
+    nextAccount: (excluding) =>
+      worker ? pickAndClaim(() => pickAccount(excluding), context.ctx) : pickAccount(excluding),
     resolveAccount: (name) => {
       const a = accounts.find((x) => x.name === name);
       return a && hasLogin(a.dir) ? { name: a.name, dir: a.dir } : null;
@@ -1333,7 +1355,9 @@ export async function runInteractiveHotSwap(
         usable: accounts
           .filter((a) => a.enabled && !excluding.has(a.name) && hasWorkingLogin(a.dir, context.ctx))
           .map((a) => ({ name: a.name, dir: a.dir })),
-        active: getActive(context.ctx),
+        // A worker is not the session others start from, so the account they
+        // start on is no reason for it to land there.
+        active: worker ? null : getActive(context.ctx),
         modelOnly: modelOnlyLimit(loadLedger(context.ctx), Date.now()),
       }),
     runSession: async (hotAccount, isContinue, runOptions) => {
@@ -1617,7 +1641,7 @@ export async function runInteractiveHotSwap(
        */
       const runChild = (childArgs: string[], stdin?: string): Promise<SessionOutcome> => {
         if (!worker) return runPtySession({ ...base, args: childArgs });
-        worker.onLaunch(account.name);
+        worker.onLaunch(conversationIdIn(childArgs));
         return runHeadlessSession({
           claude,
           args: childArgs,
@@ -1843,6 +1867,7 @@ export async function runInteractiveHotSwap(
   // run and be read by a later session that reuses this pid. Startup clears it
   // too; this just keeps the folder from collecting files between runs.
   clearSwitchRequest(context.ctx, process.pid);
+  if (worker) releaseClaim(context.ctx);
   terminalInput?.close();
   // Claude has stopped: what it changed in this session's settings and state
   // goes back to the user's own files, where plain `claude` reads them. What

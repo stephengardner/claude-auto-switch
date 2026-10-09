@@ -13,6 +13,7 @@ import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
 import { wantsExistingConversation, conversationIdIn } from './conversation.js';
 import { idleForMs, readLiveConversation } from '../session/live-conversation.js';
+import { ACCOUNT_ENV, withoutEnv } from './child-env.js';
 
 export interface PtySessionOptions {
   claude: ClaudeInvoker;
@@ -106,12 +107,13 @@ export interface PtySessionOptions {
   onConversation?: (id: string) => void;
 }
 
-function cleanEnv(extra: Record<string, string>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) env[key] = value;
-  }
-  return { ...env, ...extra };
+/**
+ * The operator's environment, less the variables that choose an account: the
+ * session runs as the account ccx installed (or the token ccx passes in
+ * `extra`), never as one a login variable inherited from elsewhere names.
+ */
+export function cleanEnv(extra: Record<string, string>, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  return { ...withoutEnv(env, ACCOUNT_ENV), ...extra };
 }
 
 /**

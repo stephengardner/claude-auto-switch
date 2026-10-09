@@ -21,13 +21,18 @@ ccx worker --agent coder --cwd ../wt-billing --permission-mode acceptEdits \
 - **The account pick.** `--account best` (the default) takes the pick order
   (`ccx order`), held-back weeks and disabled accounts included. Workers spread
   out: each prefers a healthy account that no other session or worker is using,
-  so five workers started together do not all land on the best one.
+  so five workers started together do not all land on the best one. A worker
+  started on a named account spreads out the same way once that one runs out.
 - **Running out mid-task is not the end of the task.** When the account runs
   out, ccx confirms it against the account's usage, moves to the next account
   and resumes the same conversation with a note to carry on. The task is not
   started over, so a coder that has edited files keeps its place.
 - **Nothing global moves.** The account your sessions start on, the editor's
   link and your terminal are left alone.
+- **A clean start from inside Claude.** Started by a Claude session's Bash tool,
+  a worker takes none of that session's own variables: not its login token,
+  which would put the worker on the orchestrator's account, and not the ones
+  that tie it to Claude Desktop or to the session that started it.
 - **It shows up while it runs**, in `ccx sessions` and the dashboard, and can be
   moved like a session (`ccx use <account> --session <pid>`).
 
@@ -44,8 +49,11 @@ ccx worker --agent coder --cwd ../wt-billing --permission-mode acceptEdits \
 | `--brief-file <path>`      | read the brief from a file, or `-` for standard input                        |
 | `-- <claude flags>`        | anything else goes to Claude as is (`--allowedTools`, `--max-turns`, ...)    |
 
-The brief is the words after the options, or `--brief-file`. Any length works:
-one too long for a command line goes to Claude by standard input.
+The brief is the words after the options, best quoted as one argument, or
+`--brief-file` (not both). Any length works: one too long for a command line
+goes to Claude by standard input. A brief that starts with a dash, or whose
+words look like a worker option, goes in a file, since ccx would read it as
+an option.
 
 ## What it prints
 
@@ -53,7 +61,8 @@ Claude's answer is the worker's standard output, exactly as `claude -p` prints
 it, with a report of which accounts did the work. ccx's own messages go to
 standard error, prefixed `[ccx]`.
 
-- **json**: Claude's result object, with a `ccx` field added:
+- **json**: Claude's result object, with a `ccx` field added. Always one
+  object, so a program can always parse it:
 
   ```json
   {
@@ -67,15 +76,34 @@ standard error, prefixed `[ccx]`.
   ```
 
   Only the launch that finished is printed. One that ended because its account
-  ran out printed a failure the task has since recovered from.
+  ran out printed a failure the task has since recovered from. When Claude gave
+  no result at all (no account could run it, or it ended without one), the
+  object is ccx's own, in the same shape: `"subtype": "error_ccx"`,
+  `"is_error": true`, and the reason as `result` and as `ccx.error`.
 
-- **stream-json**: Claude's events as they arrive (from every launch, so a move
-  is visible), then a last line `{"type":"ccx","accounts":[...],"moves":1,...}`.
+- **stream-json**: Claude's events as they arrive, whole lines only (from every
+  launch, so a move is visible; a line cut off when a launch was ended is
+  dropped), then a last line `{"type":"ccx","accounts":[...],"moves":1,...}`,
+  with an `error` field when Claude gave no result.
 - **text**: the answer, and a line on standard error:
-  `[ccx] worker ran on spare, moved from work when it ran out (session ...)`.
+  `[ccx] worker ran on work, then spare (session ...)`.
 
-The exit code is Claude's (0 on success), 1 when no account could run it, and 2
-for a worker refused before it started (no brief, unknown account or output).
+`accounts` names every account the worker ran on, in order, including one it
+was moved to while running (`ccx use <account> --session <pid>`).
+
+The exit code is Claude's (0 on success), 1 when no account could run it or
+Claude gave no result, 2 for a worker refused before it started (no brief,
+unknown account or output, no accounts added), and 128 plus the signal when
+it was stopped.
+
+## Stopping a worker
+
+Ending `ccx worker` (Ctrl+C, or a program stopping it, as `execFile` does at
+its `timeout`) ends Claude and everything Claude started, such as a test run or
+a dev server, rather than leaving them working in the folder unwatched. The
+same happens when a worker moves to another account. On Windows, ending the
+worker's process outright (Task Manager) cannot be caught; stop it the
+ordinary way.
 
 ## Agent definitions
 

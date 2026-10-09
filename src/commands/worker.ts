@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import type { Command } from 'commander';
 import { listAccounts } from '../accounts/registry.js';
 import type { CliContext } from '../context.js';
 import { runInteractiveHotSwap } from './session.js';
@@ -50,45 +51,65 @@ export interface WorkerReport {
   accounts: string[];
   /** How many times it moved to another account. */
   moves: number;
-  sessionId: string;
+  /** The conversation the work is in; null when none was started. */
+  sessionId: string | null;
+  /** Why Claude gave no answer, when it gave none. */
+  error?: string;
+}
+
+/** Claude's result object in a json run's output, or null when it gave none. */
+export function resultObject(stdout: string): Record<string, unknown> | null {
+  const whole = stdout.trim();
+  // The whole output, else its last line: Claude's result is one line, and
+  // anything printed before it is not the answer.
+  const lastLine = whole.split('\n').filter((line) => line.trim() !== '').pop() ?? '';
+  for (const text of [whole, lastLine]) {
+    if (text === '') continue;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* not one object */
+    }
+  }
+  return null;
 }
 
 /**
- * A worker's standard output: what Claude printed on the launch that
- * finished, with the report. Earlier launches ended on a spent account, and
- * what they printed was a failure the task has since recovered from, so it is
- * not passed on, except as stream-json, which is passed on as it arrives.
+ * What a worker writes once the work is over. json is always one object:
+ * Claude's result with the report added, or, when Claude gave none, ccx's own
+ * in the same shape saying why, so a program can always parse it. stream-json
+ * gets the report as its last line (Claude's lines went out as they came).
+ * text gets the report on standard error.
  */
 export function workerOutput(output: Output, finalStdout: string, report: WorkerReport): { stdout: string; stderr: string } {
-  const summary = reportLine(report);
-  if (output === 'stream-json') {
-    return { stdout: `${JSON.stringify({ type: 'ccx', ...report })}\n`, stderr: '' };
-  }
+  const summary = `${reportLine(report)}\n${report.error !== undefined && report.accounts.length > 0 ? `[ccx] ${report.error}\n` : ''}`;
+  if (output === 'stream-json') return { stdout: `${JSON.stringify({ type: 'ccx', ...report })}\n`, stderr: '' };
   if (output === 'json') {
-    try {
-      const parsed: unknown = JSON.parse(finalStdout.trim());
-      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return { stdout: `${JSON.stringify({ ...(parsed as Record<string, unknown>), ccx: report })}\n`, stderr: '' };
-      }
-    } catch {
-      /* not one object: passed on as it was, the report beside it */
-    }
+    const result = report.error === undefined ? resultObject(finalStdout) : null;
+    if (result) return { stdout: `${JSON.stringify({ ...result, ccx: report })}\n`, stderr: '' };
+    return {
+      stdout: `${JSON.stringify({
+        type: 'result',
+        subtype: 'error_ccx',
+        is_error: true,
+        result: report.error ?? 'Claude gave no result',
+        session_id: report.sessionId,
+        ccx: report,
+      })}\n`,
+      stderr: '',
+    };
   }
-  return { stdout: finalStdout, stderr: `${summary}\n` };
+  return { stdout: finalStdout, stderr: summary };
 }
 
-/** "[ccx] worker ran on b, moved from a when it ran out (session …)". */
+/** "[ccx] worker ran on a, then b (session ...)". */
 export function reportLine(report: WorkerReport): string {
-  const last = report.accounts[report.accounts.length - 1] ?? 'no account';
-  const earlier = report.accounts.slice(0, -1);
-  const moved = earlier.length > 0 ? `, moved from ${earlier.join(', then ')} when it ran out` : '';
-  return `[ccx] worker ran on ${last}${moved} (session ${report.sessionId})`;
-}
-
-function readBrief(words: string[], briefFile: string | undefined): string {
-  if (briefFile === undefined) return words.join(' ');
-  if (briefFile === '-') return readFileSync(0, 'utf8');
-  return readFileSync(briefFile, 'utf8');
+  if (report.accounts.length === 0) return `[ccx] worker did not run${report.error ? `: ${report.error}` : ''}`;
+  const session = report.sessionId ? ` (session ${report.sessionId})` : '';
+  return `[ccx] worker ran on ${report.accounts.join(', then ')}${session}`;
 }
 
 /** Where a worker writes: the process's own streams, or a test's. */
@@ -106,6 +127,46 @@ const processIo: WorkerIo = {
   },
 };
 
+/**
+ * The brief's words and Claude's own flags. Everything after `--` is Claude's,
+ * and commander hands it over as the tail of the brief, so it is taken back
+ * off there.
+ */
+export function splitPassthrough(argv: readonly string[], operands: string[]): { words: string[]; passthrough: string[] } {
+  const dash = argv.indexOf('--');
+  const passthrough = dash >= 0 ? argv.slice(dash + 1) : [];
+  return { words: operands.slice(0, Math.max(0, operands.length - passthrough.length)), passthrough };
+}
+
+/** `ccx worker` on `program`. Here rather than in cli.ts so a test can drive the real parser. */
+export function registerWorkerCommand(
+  program: Command,
+  argv: () => readonly string[],
+  run: (words: string[], options: WorkerOptions, passthrough: string[]) => Promise<void>,
+): void {
+  program
+    .command('worker')
+    .description(
+      'run one task headless on an account, for an orchestrator; when the account runs out it resumes on the next (claude flags after --)',
+    )
+    .option('--agent <name>', 'run as this agent definition (.claude/agents/<name>.md)')
+    .option('--account <name>', 'start on this account, or "best" (the default): the pick order, spread across workers')
+    .option('--model <model>', 'the model to run')
+    .option('--output <format>', 'json (the default), stream-json or text, as claude -p --output-format')
+    .option('--permission-mode <mode>', "Claude's permission mode, e.g. acceptEdits; a worker cannot stop to ask")
+    .option('--cwd <dir>', 'work in this folder (one git worktree per coder keeps them out of each other)')
+    .option('--brief-file <path>', 'read the brief from a file, or - for standard input')
+    .argument('[brief...]', 'the task, best quoted as one argument')
+    .action(async (brief: string[], opts: WorkerOptions) => {
+      const { words, passthrough } = splitPassthrough(argv(), brief);
+      await run(words, opts, passthrough);
+    });
+}
+
+function readBrief(briefFile: string): string {
+  return briefFile === '-' ? readFileSync(0, 'utf8') : readFileSync(briefFile, 'utf8');
+}
+
 export async function workerCommand(
   context: CliContext,
   words: string[],
@@ -119,41 +180,45 @@ export async function workerCommand(
     say(`ccx worker: --output is one of ${OUTPUTS.join(', ')}`);
     return 2;
   }
+  /** Refused before anything started: said, and in the output's own shape too, so a program reads why. */
+  const refuse = (why: string): number => {
+    say(`ccx worker: ${why}`);
+    if (output !== 'text') io.stdout(workerOutput(output, '', { accounts: [], moves: 0, sessionId: null, error: why }).stdout);
+    return 2;
+  };
 
+  if (options.briefFile !== undefined && words.length > 0) {
+    return refuse('give the brief as words or with --brief-file, not both');
+  }
   let brief: string;
   try {
-    brief = readBrief(words, options.briefFile);
+    brief = options.briefFile !== undefined ? readBrief(options.briefFile) : words.join(' ');
   } catch (err) {
-    say(`ccx worker: could not read the brief: ${(err as Error).message}`);
-    return 2;
+    return refuse(`could not read the brief: ${(err as Error).message}`);
   }
   if (brief.trim() === '') {
-    say('ccx worker: no brief given (as words, --brief-file <path>, or --brief-file - for standard input)');
-    return 2;
+    return refuse('no brief given (as words, --brief-file <path>, or --brief-file - for standard input)');
   }
-  if (brief.includes('\0')) {
-    say('ccx worker: the brief contains a NUL character');
-    return 2;
-  }
+  if (brief.includes('\0')) return refuse('the brief contains a NUL character');
 
   if (options.cwd !== undefined) {
-    if (!existsSync(options.cwd) || !statSync(options.cwd).isDirectory()) {
-      say(`ccx worker: no folder at ${options.cwd}`);
-      return 2;
-    }
+    if (!existsSync(options.cwd) || !statSync(options.cwd).isDirectory()) return refuse(`no folder at ${options.cwd}`);
     // Claude works where it is started, and the session says where it runs.
     process.chdir(options.cwd);
   }
 
+  const registered = listAccounts(context.ctx);
+  if (registered.length === 0) return refuse('no accounts registered (run: ccx add <name>)');
   const account = options.account === undefined || options.account === 'best' ? undefined : options.account;
-  if (account !== undefined && !listAccounts(context.ctx).some((a) => a.name === account)) {
-    say(`ccx worker: no account named "${account}" (ccx list shows them, or use --account best)`);
-    return 2;
+  if (account !== undefined && !registered.some((a) => a.name === account)) {
+    return refuse(`no account named "${account}" (ccx list shows them, or use --account best)`);
   }
 
   // Named here rather than by the session, so the report can say which
-  // conversation to look in, and so a move resumes exactly this one.
-  const sessionId = randomUUID();
+  // conversation to look in, and so a move resumes exactly this one. Last, so
+  // it also ends any option among Claude's flags that takes every value after
+  // it, and the brief after it is read as the brief.
+  let sessionId: string | null = randomUUID();
   const args = [
     '-p',
     '--output-format',
@@ -163,38 +228,101 @@ export async function workerCommand(
     ...(options.agent ? ['--agent', options.agent] : []),
     ...(options.model ? ['--model', options.model] : []),
     ...(options.permissionMode ? ['--permission-mode', options.permissionMode] : []),
+    ...passthrough,
     '--session-id',
     sessionId,
-    ...passthrough,
   ];
 
   const accountsRun: string[] = [];
+  /** What the launch running now printed: only the one that finished is the answer. */
   let launchStdout = '';
-  const exitCode = await runInteractiveHotSwap(context, args, {
+  /** The last of Claude's error lines on the launch running now, to say why there is no answer. */
+  let launchStderr = '';
+  /** stream-json: the part of a line not yet ended, and whether the launch running now gave a result. */
+  let partial = '';
+  let sawResult = false;
+  /** The last thing ccx said, which is the reason when no launch happened at all. */
+  let lastSaid: string | null = null;
+  const workerContext: CliContext = {
+    ...context,
+    err: (message: string) => {
+      lastSaid = message.replace(/^\[?ccx\]?:?\s*/, '');
+      say(message);
+    },
+  };
+
+  const exitCode = await runInteractiveHotSwap(workerContext, args, {
     ...(account !== undefined ? { account } : {}),
     resumePrompt: WORKER_CARRY_ON,
     worker: {
       brief,
-      onLaunch: (name) => {
+      onAccount: (name) => {
         accountsRun.push(name);
+      },
+      onLaunch: (conversation) => {
+        if (conversation) sessionId = conversation;
         launchStdout = '';
+        launchStderr = '';
+        // A line cut off when its launch was ended is no event: dropped.
+        partial = '';
+        sawResult = false;
       },
       onStdout: (chunk) => {
-        if (output === 'stream-json') io.stdout(chunk);
-        else launchStdout += chunk;
+        if (output !== 'stream-json') {
+          launchStdout += chunk;
+          return;
+        }
+        // Whole lines only, so a launch ended mid-line cannot glue half an
+        // event onto the next launch's first.
+        partial += chunk;
+        const end = partial.lastIndexOf('\n');
+        if (end < 0) return;
+        const lines = partial.slice(0, end + 1);
+        partial = partial.slice(end + 1);
+        for (const line of lines.split('\n')) {
+          if (line.trim() === '') continue;
+          const event = resultObject(line);
+          if (event?.type === 'result') sawResult = true;
+        }
+        io.stdout(lines);
       },
       onStderr: (chunk) => {
+        launchStderr = (launchStderr + chunk).slice(-2000);
         io.stderr(chunk);
       },
     },
   });
+  if (output === 'stream-json' && partial.trim() !== '') {
+    io.stdout(`${partial}\n`);
+    if (resultObject(partial)?.type === 'result') sawResult = true;
+  }
 
-  // Consecutive launches on one account (a fresh start after a resume that
-  // found nothing) are one stay there, not a move.
+  // Consecutive stays on one account (a fresh start after a resume that found
+  // nothing) are one stay there, not a move.
   const accounts = accountsRun.filter((name, i) => i === 0 || accountsRun[i - 1] !== name);
-  const report: WorkerReport = { accounts, moves: Math.max(0, accounts.length - 1), sessionId };
+  const answered =
+    output === 'json'
+      ? resultObject(launchStdout) !== null
+      : output === 'stream-json'
+        ? sawResult
+        : exitCode === 0 || launchStdout.trim() !== '';
+  let error: string | undefined;
+  if (!answered) {
+    const lastError = launchStderr.split('\n').filter((line) => line.trim() !== '').pop();
+    error =
+      accounts.length === 0
+        ? (lastSaid ?? 'no account could run it')
+        : `Claude ended (exit code ${exitCode}) without a result${lastError ? `: ${lastError.trim()}` : ''}`;
+  }
+  const report: WorkerReport = {
+    accounts,
+    moves: Math.max(0, accounts.length - 1),
+    sessionId: accounts.length > 0 ? sessionId : null,
+    ...(error !== undefined ? { error } : {}),
+  };
   const shaped = workerOutput(output, launchStdout, report);
   if (shaped.stdout) io.stdout(shaped.stdout);
   if (shaped.stderr) io.stderr(shaped.stderr);
-  return exitCode;
+  // No answer is a failure even when Claude's own exit said otherwise.
+  return error !== undefined && exitCode === 0 ? 1 : exitCode;
 }

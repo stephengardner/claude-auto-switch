@@ -19,20 +19,37 @@ semantic versioning.
     conversation resumes on the next account with a note to carry on, rather
     than the task starting over.
   - Workers spread out: each prefers a healthy account no other session or
-    worker is using.
+    worker is using, including workers started at the same moment (the pick
+    and a claim on it are one step under a shared lock).
   - Prints Claude's answer as `json` (default, with a `ccx` field naming the
     accounts that did the work), `stream-json` (with a closing `ccx` line) or
-    `text` (with a report on standard error).
+    `text` (with a report on standard error). In `json`, standard output is
+    always one object, an error result saying why when Claude gave none.
   - A brief of any length: one too long for a command line goes in by standard
     input. `--cwd` for a git worktree per coder, `--permission-mode`, and
     Claude flags after `--`.
   - Nothing global moves: the active account, the editor's link and the
-    terminal are left alone. See docs/workers.md.
+    terminal are left alone. Started from inside a Claude session, a worker
+    takes none of that session's login or host variables.
+  - Ending a worker (Ctrl+C, or a program stopping it) ends Claude and
+    everything Claude started; so does a move to another account. See
+    docs/workers.md.
 
 ### Changed
 
 - `ccx run --account <name> -- -p ...` starts a headless run on that account;
   `--account` was ignored for headless runs.
+- A login variable inherited from wherever ccx was started
+  (`CLAUDE_CODE_OAUTH_TOKEN` and its companions) no longer reaches the Claude
+  ccx starts. Claude reads it before the session's own credential, so it put a
+  session on an account other than the one ccx chose, and usage and refusals
+  were then counted against the wrong account.
+
+### Fixed
+
+- A character split between two reads of Claude's output (the error output of
+  a headless `ccx run`, a status line command's output) came out as two
+  replacement marks; it is now decoded whole.
 
 ## [2.1.3]
 

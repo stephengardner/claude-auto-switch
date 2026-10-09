@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { runInherit, runCapture, type RunOptions, type RunResult } from '../util/exec.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { classifyRun, type CapClassification } from './cap-detect.js';
+import { ACCOUNT_ENV, withoutEnv } from './child-env.js';
 
 export interface LaunchTarget {
   name: string;
@@ -131,13 +132,16 @@ export async function spawnWatched(
   extraEnv: Record<string, string> = {},
 ): Promise<WatchedResult> {
   const child = spawn(bin, args, {
-    env: { ...process.env, ...extraEnv },
+    // On the account ccx chose: a login variable inherited from wherever ccx
+    // was started would otherwise outrank the account's own credential.
+    env: { ...withoutEnv(process.env, ACCOUNT_ENV), ...extraEnv },
     stdio: ['inherit', 'inherit', 'pipe'],
   });
 
   let stderr = '';
-  child.stderr?.on('data', (chunk: Buffer) => {
-    const text = chunk.toString();
+  // Decoded as a stream, so a character split between two reads stays whole.
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (text: string) => {
     stderr += text;
     process.stderr.write(text);
   });
