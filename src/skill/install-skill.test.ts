@@ -27,6 +27,18 @@ describe('the /ccx skill', () => {
     expect(SKILL_TEXT).toContain('AskUserQuestion');
   });
 
+  it('knows how accounts get signed in here and on a server, and never to copy a login', () => {
+    // The instinct is to copy a working login to the other machine, which ends
+    // one of the two copies at the next renewal.
+    const description = SKILL_TEXT.split('\n')[2] ?? '';
+    expect(description).toMatch(/sign/i);
+    expect(description).toMatch(/server|SSH/);
+    expect(SKILL_TEXT).toContain('Never copy a login');
+    expect(SKILL_TEXT).toContain('ccx login --host <ssh-host> --all');
+    expect(SKILL_TEXT).toContain('ccx keepalive on');
+    expect(SKILL_TEXT).toContain("user's own terminal");
+  });
+
   it('brings an older copy of its own up to date, but never one the user took over', () => {
     const ctx = home();
     mkdirSync(path.dirname(skillPath(ctx)), { recursive: true });
