@@ -162,6 +162,64 @@ describe('settleNewLogin', () => {
     expect(listAccounts(c.ctx)).toHaveLength(1);
   });
 
+  it('REFUSES a sign-in that belongs to a different account than the one registered', async () => {
+    // One browser approving several accounts in a row approves them all as
+    // whoever it is signed in to. Accepting that relabeled the profile, and the
+    // account it was meant to hold was later refused as a duplicate of it.
+    const lines: string[] = [];
+    const c = context(lines);
+    const dir = signIn(c, 'second', { refresh: 'rt-new' }, 'two@example.com');
+    writeFileSync(
+      previousCredentialPath(dir),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'at-old', refreshToken: 'rt-old' } }),
+      'utf8',
+    );
+
+    const r = await settleNewLogin(c, { name: 'second', dir }, {
+      lookupOwner: () => Promise.resolve('one@example.com'),
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.owner).toBe('one@example.com');
+    expect(getAccount('second', c.ctx)?.email).toBe('two@example.com');
+    const live = JSON.parse(readFileSync(path.join(dir, '.credentials.json'), 'utf8')) as {
+      claudeAiOauth: { refreshToken: string };
+    };
+    expect(live.claudeAiOauth.refreshToken).toBe('rt-old');
+    const said = lines.join('\n');
+    expect(said).toContain('REFUSED');
+    expect(said).toContain('one@example.com');
+    expect(said).toContain('two@example.com');
+    expect(said).toContain('ccx login second');
+  });
+
+  it('accepts the registered account whatever the case of the address', async () => {
+    const c = context();
+    const dir = signIn(c, 'second', { refresh: 'rt-new' }, 'Two@Example.com');
+
+    const r = await settleNewLogin(c, { name: 'second', dir }, {
+      lookupOwner: () => Promise.resolve('two@example.com'),
+    });
+
+    expect(r.ok).toBe(true);
+  });
+
+  it('names the account the sign-in belonged to before calling it a duplicate', async () => {
+    // Both are true here, and the wrong account is the cause: the fix is to
+    // switch the browser, not to sign the other profile out.
+    const lines: string[] = [];
+    const c = context(lines);
+    signIn(c, 'first', { refresh: 'rt-first' }, 'one@example.com');
+    const dir = signIn(c, 'second', { refresh: 'rt-new' }, 'two@example.com');
+
+    const r = await settleNewLogin(c, { name: 'second', dir }, {
+      lookupOwner: () => Promise.resolve('one@example.com'),
+    });
+
+    expect(r.ok).toBe(false);
+    expect(lines.join('\n')).toContain('registered as two@example.com');
+  });
+
   it('never prints a token', async () => {
     const lines: string[] = [];
     const c = context(lines);

@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loginCommand } from './login.js';
 import { rememberDeadLogin } from '../usage/dead-login-store.js';
-import { credentialFileFingerprint } from '../accounts/credential-vault.js';
+import { credentialFileFingerprint, previousCredentialPath } from '../accounts/credential-vault.js';
+import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
 
@@ -16,7 +17,9 @@ import type { CliContext } from '../context.js';
  */
 function setup(names: string[]) {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-login-'));
-  const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home } };
+  // A display, so these tests drive the browser path on every platform; a Linux
+  // runner with none would otherwise count as a machine nobody is at.
+  const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, DISPLAY: ':0' } as NodeJS.ProcessEnv };
   const accounts = names.map((name, i) => {
     const dir = path.join(home, 'profiles', name);
     mkdirSync(dir, { recursive: true });
@@ -102,5 +105,219 @@ describe('ccx login --all', () => {
     });
 
     expect(attempted).toEqual(['out']);
+  });
+});
+
+describe('ccx login on a machine nobody is at', () => {
+  const signedOut = (accts: Array<{ name: string }>) =>
+    Promise.resolve(accts.map((a) => ({ name: a.name, loggedIn: false }))) as never;
+
+  function quietSetup(names: string[]) {
+    const s = setup(names);
+    (s.context as { lookupOwner?: unknown }).lookupOwner = () => Promise.resolve(null);
+    return s;
+  }
+
+  it('hands the sign-in to the terminal when there is no browser to drive', async () => {
+    const { context, lines } = quietSetup(['a']);
+    const viaTerminal: string[] = [];
+    const viaBrowser: string[] = [];
+    const code = await loginCommand(context, 'a', {}, {
+      headless: true,
+      browserReachable: () => Promise.resolve(false),
+      terminalLogin: (account) => {
+        viaTerminal.push(account.name);
+        return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (in the terminal)' });
+      },
+      login: (account) => {
+        viaBrowser.push(account.name);
+        return Promise.resolve({ ok: true }) as never;
+      },
+    });
+    expect(code).toBe(0);
+    expect(viaTerminal).toEqual(['a']);
+    expect(viaBrowser).toEqual([]);
+    expect(lines.join('\n')).toContain('no browser on this machine');
+  });
+
+  it('still drives the browser when one is reachable, even over SSH', async () => {
+    const { context } = quietSetup(['a']);
+    const viaBrowser: string[] = [];
+    await loginCommand(context, undefined, { all: true }, {
+      probe: signedOut,
+      headless: true,
+      browserReachable: () => Promise.resolve(true),
+      terminalLogin: () => Promise.reject(new Error('should not be used')),
+      login: (account) => {
+        viaBrowser.push(account.name);
+        return Promise.resolve({ ok: true }) as never;
+      },
+    });
+    expect(viaBrowser).toEqual(['a']);
+  });
+
+  it('leaves a desktop with no debug port on the browser path, as before', async () => {
+    const { context } = quietSetup(['a']);
+    const viaBrowser: string[] = [];
+    await loginCommand(context, 'a', {}, {
+      headless: false,
+      browserReachable: () => Promise.resolve(false),
+      terminalLogin: () => Promise.reject(new Error('should not be used')),
+      login: (account) => {
+        viaBrowser.push(account.name);
+        return Promise.resolve({ ok: true }) as never;
+      },
+    });
+    expect(viaBrowser).toEqual(['a']);
+  });
+});
+
+describe('ccx login --relay', () => {
+  it('relays the named account and then checks who signed in', async () => {
+    const { context } = setup(['a']);
+    const owners: string[] = [];
+    (context as { lookupOwner?: unknown }).lookupOwner = (dir: string) => {
+      owners.push(dir);
+      return Promise.resolve(null);
+    };
+    const relayed: string[] = [];
+    const code = await loginCommand(context, 'a', { relay: true }, {
+      relay: (account) => {
+        relayed.push(account.name);
+        return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (relayed)' });
+      },
+    });
+    expect(code).toBe(0);
+    expect(relayed).toEqual(['a']);
+    expect(owners).toHaveLength(1);
+  });
+
+  it('signs in exactly one named account', async () => {
+    const { context, lines } = setup(['a', 'b']);
+    expect(await loginCommand(context, undefined, { relay: true, all: true })).toBe(1);
+    expect(lines.join('\n')).toContain('one named account');
+  });
+
+  it('fails without checking anything when the relay did not produce a login', async () => {
+    const { context } = setup(['a']);
+    let looked = false;
+    (context as { lookupOwner?: unknown }).lookupOwner = () => {
+      looked = true;
+      return Promise.resolve(null);
+    };
+    const code = await loginCommand(context, 'a', { relay: true }, {
+      relay: (account) => Promise.resolve({ account: account.name, ok: false, detail: 'no code arrived' }),
+    });
+    expect(code).toBe(1);
+    expect(looked).toBe(false);
+  });
+});
+
+describe('ccx login --host', () => {
+  it('hands the whole job to the remote sign-in, with its options', async () => {
+    const { context } = setup(['a']);
+    const calls: unknown[] = [];
+    const code = await loginCommand(context, undefined, { host: 'beast', all: true, remoteCcx: '/opt/ccx' }, {
+      remote: (_c, host, name, options) => {
+        calls.push({ host, name, options });
+        return Promise.resolve(0);
+      },
+    });
+    expect(code).toBe(0);
+    expect(calls).toEqual([{ host: 'beast', name: undefined, options: { all: true, remoteCcx: '/opt/ccx' } }]);
+  });
+});
+
+describe('a refused sign-in puts back the login it replaced', () => {
+  it('restores the working login, not an older one a renewal already spent', async () => {
+    const { context, accounts } = setup(['work']);
+    const dir = accounts[0]!.dir;
+    const write = (file: string, refresh: string) =>
+      writeFileSync(file, JSON.stringify({ claudeAiOauth: { accessToken: `at-${refresh}`, refreshToken: refresh } }));
+    write(path.join(dir, '.credentials.json'), 'rt-working');
+    write(previousCredentialPath(dir), 'rt-spent-by-last-renewal');
+    writeFileSync(
+      path.join(path.dirname(dir), '..', 'accounts.json'),
+      JSON.stringify({ accounts: [{ ...accounts[0], email: 'work@example.com' }] }),
+    );
+    (context as { lookupOwner?: unknown }).lookupOwner = () => Promise.resolve('personal@example.com');
+
+    const code = await loginCommand(context, 'work', {}, {
+      headless: false,
+      login: (account) => {
+        // What claude auth login does when the browser is signed in to another account.
+        write(path.join(account.dir, '.credentials.json'), 'rt-wrong-account');
+        return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (authorized)' });
+      },
+    });
+
+    expect(code).toBe(1);
+    const live = JSON.parse(readFileSync(path.join(dir, '.credentials.json'), 'utf8')) as {
+      claudeAiOauth: { refreshToken: string };
+    };
+    expect(live.claudeAiOauth.refreshToken).toBe('rt-working');
+  });
+
+  it('never puts back a login another profile also holds', async () => {
+    // b holds a's token, which doctor flags with "ccx login b" as the fix. A
+    // refused sign-in on b must not restore the shared token: the next renewal
+    // of either would end the other.
+    const { context, accounts, home } = setup(['a', 'b']);
+    const write = (dir: string, refresh: string) =>
+      writeFileSync(
+        path.join(dir, '.credentials.json'),
+        JSON.stringify({ claudeAiOauth: { accessToken: `at-${refresh}`, refreshToken: refresh } }),
+      );
+    write(accounts[0]!.dir, 'rt-A');
+    write(accounts[1]!.dir, 'rt-A');
+    writeFileSync(
+      path.join(home, 'accounts.json'),
+      JSON.stringify({
+        accounts: [
+          { ...accounts[0], email: 'a@example.com' },
+          { ...accounts[1], email: 'b@example.com' },
+        ],
+      }),
+    );
+    (context as { lookupOwner?: unknown }).lookupOwner = () => Promise.resolve('a@example.com');
+
+    const code = await loginCommand(context, 'b', {}, {
+      headless: false,
+      login: (account) => {
+        write(account.dir, 'rt-A-fresh'); // the browser was still on a@example.com
+        return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (authorized)' });
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(renewalWouldBreakOthers({ name: 'b', dir: accounts[1]!.dir }, accounts)).toEqual([]);
+    expect(credentialFileFingerprint(accounts[1]!.dir)).toBeNull();
+  });
+
+  it('puts back the working login when a relayed sign-in is refused', async () => {
+    const { context, accounts, home } = setup(['work']);
+    const dir = accounts[0]!.dir;
+    const write = (file: string, refresh: string) =>
+      writeFileSync(file, JSON.stringify({ claudeAiOauth: { accessToken: `at-${refresh}`, refreshToken: refresh } }));
+    write(path.join(dir, '.credentials.json'), 'rt-working');
+    write(previousCredentialPath(dir), 'rt-spent-by-last-renewal');
+    writeFileSync(
+      path.join(home, 'accounts.json'),
+      JSON.stringify({ accounts: [{ ...accounts[0], email: 'work@example.com' }] }),
+    );
+    (context as { lookupOwner?: unknown }).lookupOwner = () => Promise.resolve('personal@example.com');
+
+    const code = await loginCommand(context, 'work', { relay: true }, {
+      relay: (account) => {
+        write(path.join(account.dir, '.credentials.json'), 'rt-wrong-account');
+        return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (relayed)' });
+      },
+    });
+
+    expect(code).toBe(1);
+    const live = JSON.parse(readFileSync(path.join(dir, '.credentials.json'), 'utf8')) as {
+      claudeAiOauth: { refreshToken: string };
+    };
+    expect(live.claudeAiOauth.refreshToken).toBe('rt-working');
   });
 });

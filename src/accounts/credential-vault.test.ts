@@ -10,6 +10,7 @@ import {
   credentialPath,
   previousCredentialPath,
   clearCredential,
+  keepForRollback,
 } from './credential-vault.js';
 
 function dir(): string {
@@ -164,5 +165,32 @@ describe('clearCredential', () => {
     clearCredential(d);
     expect(existsSync(credentialPath(d))).toBe(false);
     expect(() => clearCredential(d)).not.toThrow();
+  });
+});
+
+describe('keepForRollback', () => {
+  it('makes the login a sign-in is about to replace the one a refusal puts back', () => {
+    // The backup otherwise holds whatever a renewal last retired, which the
+    // server has invalidated: "putting it back" left a dead login.
+    const d = dir();
+    writeCred(credentialPath(d), 'working');
+    writeCred(previousCredentialPath(d), 'spent-by-last-renewal');
+
+    keepForRollback(d);
+    writeCred(credentialPath(d), 'wrong-account'); // what the sign-in wrote
+    expect(rollbackCredential(d)).toBe(true);
+
+    expect(readFileSync(credentialPath(d), 'utf8')).toContain('tok-working');
+  });
+
+  it('leaves nothing to put back when there was no login before the sign-in', () => {
+    const d = dir();
+    writeCred(previousCredentialPath(d), 'spent-by-last-renewal');
+
+    keepForRollback(d);
+    writeCred(credentialPath(d), 'wrong-account');
+
+    expect(rollbackCredential(d)).toBe(false);
+    expect(existsSync(previousCredentialPath(d))).toBe(false);
   });
 });

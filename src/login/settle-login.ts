@@ -1,7 +1,12 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { fetchTokenOwner } from '../accounts/identity-check.js';
 import { profileAlreadyHolding, renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
-import { rollbackCredential, clearCredential } from '../accounts/credential-vault.js';
+import {
+  rollbackCredential,
+  clearCredential,
+  keepForRollback,
+  forgetRollback,
+} from '../accounts/credential-vault.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -60,6 +65,13 @@ export async function settleNewLogin(
   }
   context.out(`  signed in as ${owner}`);
 
+  // Checked before the duplicate rule because it is the cause when both apply:
+  // a browser signed in to another account approves every sign-in as that one.
+  const registered = accounts.find((a) => a.name === account.name)?.email;
+  if (registered && registered.trim().toLowerCase() !== owner.trim().toLowerCase()) {
+    return { ...refuseOtherAccount(context, account, registered, owner), owner };
+  }
+
   const twin = profileAlreadyHolding(owner, accounts, account.name);
   if (twin) return { ...refuse(context, account, twin), owner };
 
@@ -67,6 +79,50 @@ export async function settleNewLogin(
   // known rather than against whatever a local file claims about itself.
   updateAccount(account.name, { email: owner }, context.ctx);
   return { ok: true, owner };
+}
+
+/**
+ * Mark what a refused sign-in may put back, just before the sign-in starts. A
+ * login that another profile also holds is never kept: putting it back would
+ * leave the two sharing one token, the state the refusal exists to end.
+ */
+export function keepRollbackPoint(context: CliContext, account: { name: string; dir: string }): void {
+  if (renewalWouldBreakOthers(account, listAccounts(context.ctx)).length > 0) forgetRollback(account.dir);
+  else keepForRollback(account.dir);
+}
+
+/**
+ * Refuse a sign-in that came back as a different account than the profile is
+ * registered for, putting the profile back as `refuse` does.
+ */
+function refuseOtherAccount(
+  context: CliContext,
+  account: { name: string; dir: string },
+  registered: string,
+  owner: string,
+): SettleResult {
+  const restored = restoreOrClear(account.dir);
+  context.out(`  REFUSED: "${account.name}" is registered as ${registered}, but this sign-in is ${owner}.`);
+  context.out(`  The browser that approved it is signed in to ${owner}.`);
+  context.out(
+    `  Switch it to ${registered} (or use a separate browser profile), then: ccx login ${account.name}`,
+  );
+  context.out(
+    `  If "${account.name}" should hold ${owner} instead: ccx remove ${account.name}, then ccx add ${account.name} --email ${owner}`,
+  );
+  context.out(
+    restored
+      ? `  "${account.name}" was put back to its previous login.`
+      : `  "${account.name}" has no login now.`,
+  );
+  return { ok: false };
+}
+
+/** Put the previous login back, or clear the refused one when there is none. */
+function restoreOrClear(dir: string): boolean {
+  const restored = rollbackCredential(dir);
+  if (!restored) clearCredential(dir);
+  return restored;
 }
 
 /**
@@ -81,8 +137,7 @@ function refuse(
   account: { name: string; dir: string },
   twin: string,
 ): SettleResult {
-  const restored = rollbackCredential(account.dir);
-  if (!restored) clearCredential(account.dir);
+  const restored = restoreOrClear(account.dir);
   context.out(`  REFUSED: this is the same account as "${twin}".`);
   context.out(
     '  Two profiles on one account cannot both survive: renewing either one ends the other.',

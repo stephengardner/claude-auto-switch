@@ -5,6 +5,7 @@ import path from 'node:path';
 import { addCommand } from './add.js';
 import { addAccount, listAccounts, getAccount } from '../accounts/registry.js';
 import { loadConfig } from '../config/config.js';
+import { previousCredentialPath } from '../accounts/credential-vault.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -77,6 +78,23 @@ describe('addCommand', () => {
       'personal',
     );
     expect(existsSync(path.join(personalDir, '.credentials.json'))).toBe(false);
+  });
+
+  it('does not revive a stale backup left in a reused profile folder', async () => {
+    // A folder from an earlier, removed profile of the same name can still
+    // hold a backup login that a renewal retired long ago.
+    const lines: string[] = [];
+    const c = fakeLoginContext(lines, 'other@example.com');
+    const dir = path.join(c.ctx.env?.CLAUDE_AUTO_SWITCH_HOME as string, 'profiles', 'again');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      previousCredentialPath(dir),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'at-stale', refreshToken: 'rt-stale' } }),
+      'utf8',
+    );
+
+    expect(await addCommand(c, 'again', { email: 'again@example.com' })).toBe(1);
+    expect(existsSync(path.join(dir, '.credentials.json'))).toBe(false);
   });
 
   it('skips the whole check when there is no login to check (--no-login)', async () => {

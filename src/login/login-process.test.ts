@@ -55,6 +55,46 @@ describe('spawnAuthLogin', () => {
     proc.cancel?.();
   }, 20000);
 
+  it('hands a pasted code to a process started to accept one', async () => {
+    // Stands in for `claude auth login` reading "code#state" at its paste prompt.
+    const pasteReader = [
+      '-e',
+      "console.log('https://claude.com/cai/oauth/authorize?x=1');" +
+        "require('readline').createInterface({ input: process.stdin }).once('line', (l) =>" +
+        " process.exit(l === 'the-code#the-state' ? 0 : 7));",
+    ];
+    const proc = spawnAuthLogin(nodeInvoker, pasteReader, {}, { acceptsCode: true });
+    expect(await proc.urlHint()).toBe('https://claude.com/cai/oauth/authorize?x=1');
+    proc.submitCode?.('the-code#the-state');
+    expect(await proc.done()).toBe(0);
+  }, 20000);
+
+  it('offers no way to submit a code unless asked to accept one', () => {
+    const proc = spawnAuthLogin(nodeInvoker, longRunning, {});
+    expect(proc.submitCode).toBeUndefined();
+    proc.cancel?.();
+  });
+
+  it('waits as long as it is told for the link', async () => {
+    const quiet = ['-e', 'setTimeout(() => {}, 30000);'];
+    const started = Date.now();
+    const proc = spawnAuthLogin(nodeInvoker, quiet, {}, { urlWaitMs: 50 });
+    expect(await proc.urlHint()).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(2500);
+    proc.cancel?.();
+  }, 20000);
+
+  it('never reports a link that arrived only partly written', async () => {
+    const split = [
+      '-e',
+      "process.stdout.write('visit: https://claude.com/cai/oauth/auth');" +
+        "setTimeout(() => process.stdout.write('orize?x=1\\n'), 150); setTimeout(() => {}, 30000);",
+    ];
+    const proc = spawnAuthLogin(nodeInvoker, split, {}, { urlWaitMs: 10000 });
+    expect(await proc.urlHint()).toBe('https://claude.com/cai/oauth/authorize?x=1');
+    proc.cancel?.();
+  }, 20000);
+
   it('survives being cancelled twice', async () => {
     const proc = spawnAuthLogin(nodeInvoker, longRunning, {});
     await proc.urlHint();

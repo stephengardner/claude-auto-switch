@@ -16,11 +16,15 @@ import { installShim } from '../shell/install-shim.js';
 import { loadConfig } from '../config/config.js';
 import { credentialFileFingerprint } from '../accounts/credential-vault.js';
 import { loadLedger, markCapped, saveLedger } from '../ledger/ledger.js';
+import { expectedKeepalive } from './keepalive.js';
 import type { CliContext } from '../context.js';
 
 function context(lines: string[] = []): CliContext {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-doc-'));
-  const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home } };
+  // A display, so a Linux runner is not taken for a machine nobody is at.
+  const ctx = {
+    env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home, DISPLAY: ':0' } as NodeJS.ProcessEnv,
+  };
   return {
     ctx,
     config: loadConfig(ctx),
@@ -337,5 +341,91 @@ describe('auditSharedLogins', () => {
     signIn(c, 'two', 'super-secret-refresh');
     const r = auditSharedLogins(c);
     expect(JSON.stringify(r)).not.toContain('super-secret-refresh');
+  });
+});
+
+describe('doctor on a machine nobody is at', () => {
+  const serverDeps = {
+    gitTrackedFiles: () => ['src/cli.ts'],
+    resolveClaude: () => ({ bin: '/real/claude' }),
+    checkBrowserPort: () => Promise.resolve(false),
+    resolveShimProfile: () => null,
+    headless: true,
+  };
+
+  it('explains how to sign in without a browser instead of offering to open one', async () => {
+    const lines: string[] = [];
+    const c = context(lines);
+    c.json = true;
+    await doctorCommand(c, { ...serverDeps, readCrontab: () => Promise.resolve('') });
+    const report = JSON.parse(lines.join('\n')) as { checks: Array<{ name: string; detail: string }> };
+    const browser = report.checks.find((check) => check.name === 'browser-debug-port');
+    expect(browser?.detail).toContain('ccx login --host');
+    expect(browser?.detail).not.toContain('opens a browser');
+  });
+
+  // Keepalive is cron's, so doctor brings it up only where cron exists.
+  it.skipIf(process.platform === 'win32')('suggests keepalive when nothing renews idle logins', async () => {
+    const lines: string[] = [];
+    const c = context(lines);
+    c.json = true;
+    await doctorCommand(c, { ...serverDeps, readCrontab: () => Promise.resolve('0 3 * * * backup\n') });
+    const report = JSON.parse(lines.join('\n')) as {
+      checks: Array<{ name: string; ok: boolean; note?: boolean; fix?: string[] }>;
+    };
+    const keepalive = report.checks.find((check) => check.name === 'keepalive');
+    expect(keepalive).toMatchObject({ ok: true, note: true, fix: ['ccx keepalive on'] });
+  });
+
+  const programs = { nodePath: '/usr/bin/node', cliPath: '/opt/ccx/dist/cli.js' };
+  const keepaliveReport = async (crontab: string, exists: (file: string) => boolean = () => true) => {
+    const lines: string[] = [];
+    const c = context(lines);
+    c.json = true;
+    const installed = expectedKeepalive(c, programs).line;
+    await doctorCommand(c, {
+      ...serverDeps,
+      keepalive: { ...programs, exists },
+      readCrontab: () => Promise.resolve(crontab.replace('INSTALLED', installed)),
+    });
+    const report = JSON.parse(lines.join('\n')) as {
+      checks: Array<{ name: string; note?: boolean; detail: string; fix?: string[] }>;
+    };
+    return report.checks.find((check) => check.name === 'keepalive');
+  };
+
+  it.skipIf(process.platform === 'win32')('is satisfied once keepalive runs this ccx', async () => {
+    expect((await keepaliveReport('INSTALLED\n'))?.note).toBeUndefined();
+  });
+
+  it.skipIf(process.platform === 'win32')('flags a keepalive line whose node or ccx has moved', async () => {
+    const moved = await keepaliveReport('INSTALLED\n', (file) => file !== '/usr/bin/node');
+    expect(moved).toMatchObject({ note: true, fix: ['ccx keepalive on'] });
+    expect(moved?.detail).toContain('renews nothing');
+    const other = await keepaliveReport("17 */4 * * * '/old/node' '/old/cli.js' usage >/dev/null 2>&1 # ccx keepalive\n");
+    expect(other).toMatchObject({ note: true, fix: ['ccx keepalive on'] });
+  });
+
+  it.skipIf(process.platform === 'win32')('does not count a keepalive line that is commented out', async () => {
+    const off = await keepaliveReport('# INSTALLED\n');
+    expect(off?.detail).toContain('nothing renews idle logins');
+  });
+
+  it('does not bring up keepalive on a desktop', async () => {
+    const lines: string[] = [];
+    const c = context(lines);
+    c.json = true;
+    let asked = false;
+    await doctorCommand(c, {
+      ...serverDeps,
+      headless: false,
+      readCrontab: () => {
+        asked = true;
+        return Promise.resolve('');
+      },
+    });
+    const report = JSON.parse(lines.join('\n')) as { checks: Array<{ name: string }> };
+    expect(report.checks.some((check) => check.name === 'keepalive')).toBe(false);
+    expect(asked).toBe(false);
   });
 });
