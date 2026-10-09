@@ -78,10 +78,10 @@ Never copy a login between machines or profiles (\`~/.claude-auto-switch/profile
 A sign-in needs the person: they approve it in a browser signed in to that account, and may paste a code back. So give them the command to run in the user's own terminal rather than running it with the Bash tool, where it would wait for input that never comes.
 
 - This machine: \`ccx login <name>\`, or \`ccx login --all\` for every account that is signed out.
-- A server, from a machine with a browser: \`ccx login --host <ssh-host> --all\`. It registers the accounts the server is missing and relays each sign-in there. ccx on the server must be 2.3.0 or newer and found by a login shell; otherwise add \`--remote-ccx '<path to node> <path to ccx>'\`.
+- A server, from a machine with a browser: \`ccx login --host <ssh-host> --all\`. It registers the accounts the server is missing and relays each sign-in there. ccx on the server must be 2.3.0 or newer, whatever the flags (update it there first: \`npm install -g claude-auto-switch\`). If a login shell there cannot find ccx, add \`--remote-ccx '<path to node> <path to ccx>'\`.
 - On the server, once: \`ccx keepalive on\`, so its logins renew while nobody uses it. \`ccx doctor\` there says what is still missing.
 
-A sign-in that comes back as a different account than the one asked for is refused and the previous login kept: the browser was signed in to the wrong account, so the fix is to switch it and run the same command again.
+A sign-in that comes back as a different account than the one asked for is refused. The login the account had before is put back, or, when there was none to put back, the account is left signed out. Either way the browser was signed in to the wrong account: switch it and run the same command again.
 `;
 
 export function skillPath(c: PathCtx = {}): string {

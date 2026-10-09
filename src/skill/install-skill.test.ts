@@ -37,6 +37,9 @@ describe('the /ccx skill', () => {
     expect(SKILL_TEXT).toContain('ccx login --host <ssh-host> --all');
     expect(SKILL_TEXT).toContain('ccx keepalive on');
     expect(SKILL_TEXT).toContain("user's own terminal");
+    // A refusal with nothing to put back leaves the account signed out; the skill must not promise otherwise.
+    expect(SKILL_TEXT).toContain('left signed out');
+    expect(SKILL_TEXT).toContain('2.3.0 or newer, whatever the flags');
   });
 
   it('brings an older copy of its own up to date, but never one the user took over', () => {
