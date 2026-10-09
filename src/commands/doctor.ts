@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
+import { browserPortReachable } from '../login/browser.js';
+import { findKeepalive } from '../keepalive/crontab.js';
+import { systemCrontab } from './keepalive.js';
+import { isHeadlessSession } from '../util/headless.js';
 import { auditSessionAccount } from './doctor-session-account.js';
 import { configHome, profilesDir } from '../config/paths.js';
 import { detectEditors } from '../editor/settings.js';
@@ -42,6 +45,10 @@ export interface DoctorDeps {
   resolveClaude?: () => ClaudeInvoker;
   /** Browser debug-port reachability probe; injected in tests. */
   checkBrowserPort?: (port: number) => Promise<boolean>;
+  /** Whether nobody is at a browser here; read from the session when absent. */
+  headless?: boolean;
+  /** The user's crontab, or null when cron is unavailable; injected in tests. */
+  readCrontab?: () => Promise<string | null>;
   /** Shell-profile resolver for the shim check; injected in tests. */
   resolveShimProfile?: () => string | null;
   /** Skip checks that need the network (used by tests and offline runs). */
@@ -97,29 +104,48 @@ function auditRealClaude(context: CliContext, deps: DoctorDeps): DoctorCheck {
 /** Informational: is Chrome listening on the debug port (needed only for auto-login)? */
 async function auditBrowserPort(context: CliContext, deps: DoctorDeps): Promise<DoctorCheck> {
   const port = context.config.browser.debugPort;
-  const reachable = await (deps.checkBrowserPort ?? defaultCheckBrowserPort)(port);
+  const reachable = await (deps.checkBrowserPort ?? browserPortReachable)(port);
+  if (reachable) {
+    return {
+      name: 'browser-debug-port',
+      ok: true,
+      detail: `Chrome is reachable for automatic sign-in (port ${port})`,
+    };
+  }
   return {
     name: 'browser-debug-port',
     ok: true,
-    ...(reachable ? {} : { note: true }),
-    detail: reachable
-      ? `Chrome is reachable for automatic sign-in (port ${port})`
-      : `automatic sign-in unavailable; ccx login opens a browser for you instead`,
+    note: true,
+    detail: headless(context, deps)
+      ? 'no browser on this machine; ccx login shows a link and takes the pasted code, or sign in from a machine with one: ccx login --host <this machine>'
+      : 'automatic sign-in unavailable; ccx login opens a browser for you instead',
   };
 }
 
-function defaultCheckBrowserPort(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect({ port, host: '127.0.0.1' });
-    const finish = (ok: boolean) => {
-      socket.destroy();
-      resolve(ok);
-    };
-    socket.setTimeout(500);
-    socket.once('connect', () => finish(true));
-    socket.once('timeout', () => finish(false));
-    socket.once('error', () => finish(false));
-  });
+/**
+ * On a machine nobody sits at, is anything renewing idle logins? Asked only
+ * there: a desktop renews them whenever Claude or the status line runs.
+ */
+async function auditKeepalive(context: CliContext, deps: DoctorDeps): Promise<DoctorCheck | null> {
+  if (!headless(context, deps) || (context.ctx.platform ?? process.platform) === 'win32') return null;
+  const crontab = await (deps.readCrontab ?? (() => systemCrontab.read()))();
+  if (crontab === null) return null;
+  return findKeepalive(crontab)
+    ? { name: 'keepalive', ok: true, detail: 'idle logins are renewed every four hours' }
+    : {
+        name: 'keepalive',
+        ok: true,
+        note: true,
+        detail: 'nothing renews idle logins here, and a machine nobody uses for a day can lose them',
+        fix: ['ccx keepalive on'],
+      };
+}
+
+function headless(context: CliContext, deps: DoctorDeps): boolean {
+  return (
+    deps.headless ??
+    isHeadlessSession(context.ctx.env ?? process.env, context.ctx.platform ?? process.platform)
+  );
 }
 
 function defaultTrackedFiles(): string[] {
@@ -479,7 +505,9 @@ export async function runDoctor(
     auditRealClaude(context, deps),
     auditEditor(context),
     await auditBrowserPort(context, deps),
-    ...[auditDesktopHooks(context)].filter((c): c is DoctorCheck => c !== null),
+    ...[await auditKeepalive(context, deps), auditDesktopHooks(context)].filter(
+      (c): c is DoctorCheck => c !== null,
+    ),
   ];
   return { checks, ok: checks.every((c) => c.ok) };
 }
@@ -499,6 +527,7 @@ const LABELS: Record<string, string> = {
   'real-claude': 'claude',
   editor: 'editor',
   'browser-debug-port': 'browser',
+  keepalive: 'keepalive',
   'desktop-hooks': 'Claude Desktop',
 };
 
