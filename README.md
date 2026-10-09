@@ -160,6 +160,42 @@ ccx desktop handoff credits   # move by itself: off | limit | credits
 - Both are hooks in `~/.claude/settings.json`. A moved conversation continues as
   a copy (`ccx desktop mode fork`, the default) or as itself (`mode same`).
 
+## On a server you reach over SSH
+
+A server keeps Claude working while your laptop sleeps. ccx runs there as it
+does anywhere, and you can do the server's sign-ins from your laptop.
+
+Each machine needs its own login of each account. A refresh token can be used
+once, so a login copied between machines ends whichever copy renews second.
+
+```sh
+# on the server, once
+npm install -g claude-auto-switch
+ccx on
+ccx keepalive on               # renew idle logins every four hours (cron)
+
+# on your laptop, whenever the server needs signing in
+ccx login --host my-server --all
+```
+
+`ccx login --host` asks ccx on the server which accounts need a sign-in and
+registers any it is missing (the name and address, never a login). Then it
+relays each sign-in: the server starts it and sends the link, your laptop's
+browser approves it, and the code goes back. With Chrome started with
+`--remote-debugging-port=9222` approving is automatic; otherwise ccx shows the
+link and asks you to paste the code. The server's ccx still checks who signed
+in, and refuses a login that belongs to a different account than the one being
+signed in. Links that are not on an Anthropic address are never opened.
+
+When a plain `ssh my-server` login shell does not find ccx (for example, nvm
+set up only in `.bashrc`), say where it is: `--remote-ccx /path/to/ccx`.
+
+Signed in on the server itself, `ccx login` sees there is no browser and lets
+Claude print the link and take the pasted code.
+
+Logins on a shared machine are as private as that machine: anyone with root
+there can read them.
+
 ## Inside Claude: `/ccx`
 
 `/ccx` shows every account's room and swaps the current session to the one you
@@ -190,6 +226,8 @@ conversation in a terminal. From a shell, `ccx swap [name]` does the same.
 | `ccx run -- <args>`                      | run one Claude session through ccx without `ccx on`                                                               |
 | `ccx desktop [...]`                      | Claude Desktop: status, `move`, `handoff`, `mode`, `prompt`                                                       |
 | `ccx login <name>` / `--all`             | sign a stale account back in                                                                                      |
+| `ccx login --host <host> [name]`         | sign in a server's accounts from here, over SSH (`--all`, `--remote-ccx <path>`)                                  |
+| `ccx keepalive on\|off\|status`          | renew idle logins every four hours with cron, for a machine nobody uses                                           |
 | `ccx list` / `status [name]`             | account health: email, plan, signed in, capped until                                                              |
 | `ccx doctor`                             | check the setup and who each profile really is                                                                    |
 | `ccx history`                            | what ccx did to logins, sessions and your settings                                                                |
@@ -245,6 +283,7 @@ usage check, as `ccx config <key>` says.
 | `~/.claude/skills/ccx/`                  | the `/ccx` command                                                    |
 | your shell profile                       | the `claude` function                                                 |
 | Cursor / VS Code settings                | `claudeCode.environmentVariables`                                     |
+| your crontab                             | one line marked `# ccx keepalive`, only after `ccx keepalive on`      |
 
 To read ccx from another program, use `ccx state`; the files above are internal
 and change between releases. See

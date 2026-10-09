@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.2.0]
+
+### Added
+
+- **Sign in a server's accounts from your laptop.** `ccx login --host
+  <ssh-host> [name | --all]` asks ccx on the server which accounts need a
+  sign-in, registers any that exist here and are missing there (the name and
+  address, never a login), and relays each sign-in: the server starts it and
+  sends the link, this machine's browser approves it, and the code read from
+  Anthropic's page goes back. Without a browser ccx can drive, it shows the
+  link and takes the code here. Each machine keeps its own login, because a
+  refresh token works once and two machines sharing one log each other out.
+- **`ccx login` works over SSH.** On a machine with nobody at a browser (an
+  SSH session, or Linux with no display), it hands the sign-in to the
+  terminal, where Claude prints the link and takes the pasted code. It used
+  to wait five minutes for a browser that was not there.
+- **`ccx keepalive on | off | status`.** A crontab line that runs `ccx usage`
+  every four hours, which renews logins that have expired while nobody used
+  them. A server can go days without a session, and an idle login has been
+  reported to lapse after about a day.
+- **`ccx doctor` on a server** says how to sign in without a browser, and
+  suggests `ccx keepalive on` when nothing renews idle logins.
+
+### Changed
+
+- **A sign-in that comes back as a different account is refused.** When the
+  browser was signed in to another account, ccx recorded whichever account
+  came back as the profile's address, so the profile was relabeled and the
+  account it was meant for was later refused as its duplicate. The previous
+  login is now put back, and ccx names the account the browser is signed in
+  to. This includes `ccx add <name> --email <address>`.
+
+### Fixed
+
+- **A sign-in link split across two reads was taken half written.** The link
+  is now read only once it is complete.
+
 ## [2.1.3]
 
 ### Fixed
