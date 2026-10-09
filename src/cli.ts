@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { buildContext } from './context.js';
 import { tolerateBrokenTerminal } from './ui/tolerate-broken-terminal.js';
 import { listCommand } from './commands/list.js';
@@ -151,11 +151,22 @@ program
 
 program
   .command('login [name]')
-  .description('log in a stale account via the browser (or --all)')
+  .description('log in a stale account via the browser (or --all); --host signs in another machine')
   .option('--all', 'log in every currently logged-out account')
-  .action(async (name: string | undefined, opts: { all?: boolean }) => {
-    process.exitCode = await loginCommand(context(), name, opts);
-  });
+  .option(
+    '--host <ssh-host>',
+    "sign in the accounts of a machine you reach over SSH, approving in this machine's browser",
+  )
+  .option('--remote-ccx <command>', 'how to run ccx on that machine (default: ccx, via its login shell)')
+  .addOption(new Option('--relay', "the other machine's half of --host").hideHelp())
+  .action(
+    async (
+      name: string | undefined,
+      opts: { all?: boolean; host?: string; remoteCcx?: string; relay?: boolean },
+    ) => {
+      process.exitCode = await loginCommand(context(), name, opts);
+    },
+  );
 
 program
   .command('rotate')

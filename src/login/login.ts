@@ -1,5 +1,6 @@
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { credentialFingerprint } from '../accounts/credential-vault.js';
+import { runInherit } from '../util/exec.js';
 
 export type AuthorizeOutcome = 'authorized' | 'left-open' | 'failed';
 
@@ -16,12 +17,22 @@ export interface AuthLoginProcess {
   done(): Promise<number>;
   /** Stop the process. Called when the wait is given up on. */
   cancel?: () => void;
+  /** Answer the "Paste code here" prompt; present only when started with `acceptsCode`. */
+  submitCode?: (code: string) => void;
+}
+
+export interface StartAuthLoginOptions {
+  /** Keep the process's input open so a pasted code can be handed to it. */
+  acceptsCode?: boolean;
+  /** How long to wait for the sign-in link before reporting there is none. */
+  urlWaitMs?: number;
 }
 
 export type StartAuthLogin = (
   invoker: ClaudeInvoker,
   args: string[],
   env: NodeJS.ProcessEnv,
+  options?: StartAuthLoginOptions,
 ) => AuthLoginProcess;
 
 export interface LoginDeps {
@@ -67,12 +78,7 @@ export async function loginAccount(
   account: LoginAccountInput,
   deps: LoginDeps,
 ): Promise<LoginResult> {
-  const args = invokerArgs(deps.claude, [
-    'auth',
-    'login',
-    '--claudeai',
-    ...(account.email ? ['--email', account.email] : []),
-  ]);
+  const args = authLoginArgs(deps.claude, account.email);
   // What the account holds BEFORE, so afterwards we can tell whether a new login
   // was actually written rather than guessing from how the browser step went.
   const fingerprint = deps.fingerprint ?? credentialFingerprint;
@@ -104,33 +110,152 @@ export async function loginAccount(
       detail: 'gave up waiting for the sign-in to be completed',
     };
   }
-  const after = fingerprint(account.dir);
-  // The truth is what ended up on disk. A new login means it worked, whatever
-  // the browser step or the exit code said; no new login means it did not, even
-  // if the process exited cleanly.
-  const gotNewLogin = after !== null && after !== before;
-  if (gotNewLogin) {
-    // Not "logged in (failed)": the browser step failing while the person
-    // finishes by hand is the ordinary path here, and a success line containing
-    // the word failed reads as a contradiction.
-    return {
-      account: account.name,
-      ok: true,
-      detail: outcome === 'failed' ? 'logged in (completed manually)' : `logged in (${outcome})`,
-    };
+  // Not "logged in (failed)": the browser step failing while the person
+  // finishes by hand is the ordinary path here, and a success line containing
+  // the word failed reads as a contradiction.
+  return judgeStoredLogin(
+    account.name,
+    before,
+    fingerprint(account.dir),
+    exitCode,
+    outcome === 'failed' ? 'completed manually' : outcome,
+  );
+}
+
+/** The arguments for `claude auth login`, the same for every way of signing in. */
+export function authLoginArgs(claude: ClaudeInvoker, email?: string): string[] {
+  return invokerArgs(claude, ['auth', 'login', '--claudeai', ...(email ? ['--email', email] : [])]);
+}
+
+/**
+ * The truth is what ended up on disk. A new login means it worked, whatever the
+ * browser step or the exit code said; no new login means it did not, even if the
+ * process exited cleanly.
+ */
+function judgeStoredLogin(
+  name: string,
+  before: string | null,
+  after: string | null,
+  exitCode: number,
+  how: string,
+): LoginResult {
+  if (after !== null && after !== before) {
+    return { account: name, ok: true, detail: `logged in (${how})` };
   }
   if (exitCode === 0 && after !== null) {
     // Signed in already, and nothing changed: still a usable account.
-    return { account: account.name, ok: true, detail: 'already signed in; nothing changed' };
+    return { account: name, ok: true, detail: 'already signed in; nothing changed' };
   }
   return {
-    account: account.name,
+    account: name,
     ok: false,
     detail:
       after === null
         ? 'no login was stored; the sign-in was not completed'
         : `login process exited ${exitCode}`,
   };
+}
+
+export interface TerminalLoginDeps {
+  claude: ClaudeInvoker;
+  /** Runs the sign-in attached to this terminal. Injected for tests. */
+  run?: (bin: string, args: string[], env: NodeJS.ProcessEnv) => Promise<number>;
+  fingerprint?: (dir: string) => string | null;
+}
+
+/**
+ * Sign in with the terminal doing the talking: Claude prints the link and reads
+ * the pasted code itself. For a machine with no browser to drive, such as one
+ * reached over SSH, where the browser step can only wait for nothing.
+ */
+export async function loginInTerminal(
+  account: LoginAccountInput,
+  deps: TerminalLoginDeps,
+): Promise<LoginResult> {
+  const fingerprint = deps.fingerprint ?? credentialFingerprint;
+  const run = deps.run ?? ((bin, args, env) => runInherit(bin, args, { env }));
+  const before = fingerprint(account.dir);
+  const exitCode = await run(deps.claude.bin, authLoginArgs(deps.claude, account.email), {
+    CLAUDE_CONFIG_DIR: account.dir,
+  });
+  return judgeStoredLogin(account.name, before, fingerprint(account.dir), exitCode, 'in the terminal');
+}
+
+/**
+ * Marks the one line of a relayed sign-in that is meant for the machine driving
+ * it rather than for a person: the link to approve. Everything else is relayed
+ * to the person as written.
+ */
+export const RELAY_URL_PREFIX = 'ccx-relay-url ';
+
+/** Claude reads its pasted code as `<code>#<state>`, split on the `#`. */
+const RELAY_CODE_RE = /^[^\s#]+#[^\s#]+$/;
+/** Starting claude on a slow server can take seconds before the link appears. */
+const RELAY_URL_WAIT_MS = 30_000;
+/** Turning a code into a login is one request; a minute means it is not happening. */
+const CODE_EXCHANGE_TIMEOUT_MS = 60_000;
+
+export interface RelayLoginDeps {
+  claude: ClaudeInvoker;
+  startAuthLogin: StartAuthLogin;
+  /** One line to the machine driving this sign-in. */
+  send: (line: string) => void;
+  /** The code that machine sends back, or null when none arrives in time. */
+  receiveCode: (timeoutMs: number) => Promise<string | null>;
+  fingerprint?: (dir: string) => string | null;
+  /** How long to wait for the code: the time a person takes to approve. */
+  timeoutMs?: number;
+  exchangeTimeoutMs?: number;
+}
+
+/**
+ * The half of a sign-in that runs on the machine being signed in, while another
+ * machine approves it in its browser (`ccx login --host`). Sends the link out,
+ * takes the code back, and gives it to Claude's paste prompt. Whether to keep
+ * the login is still decided here, by the caller, exactly as for a local one.
+ */
+export async function relayLogin(
+  account: LoginAccountInput,
+  deps: RelayLoginDeps,
+): Promise<LoginResult> {
+  const fingerprint = deps.fingerprint ?? credentialFingerprint;
+  const fail = (detail: string): LoginResult => ({ account: account.name, ok: false, detail });
+  const before = fingerprint(account.dir);
+  const proc = deps.startAuthLogin(
+    deps.claude,
+    authLoginArgs(deps.claude, account.email),
+    { CLAUDE_CONFIG_DIR: account.dir },
+    { acceptsCode: true, urlWaitMs: RELAY_URL_WAIT_MS },
+  );
+
+  const url = await proc.urlHint();
+  if (!url || !proc.submitCode) {
+    proc.cancel?.();
+    return fail('claude printed no sign-in link to relay');
+  }
+  deps.send(`${RELAY_URL_PREFIX}${url}`);
+
+  const code = await deps.receiveCode(deps.timeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS);
+  if (!code) {
+    proc.cancel?.();
+    return fail('no code arrived from the machine approving the sign-in');
+  }
+  if (!RELAY_CODE_RE.test(code)) {
+    proc.cancel?.();
+    return fail('the code was not in the form claude reads (code#state)');
+  }
+  proc.submitCode(code);
+
+  const exitCode = await waitForLogin(proc, deps.exchangeTimeoutMs ?? CODE_EXCHANGE_TIMEOUT_MS);
+  if (exitCode === TIMED_OUT) {
+    proc.cancel?.();
+    const after = fingerprint(account.dir);
+    if (after !== null && after !== before) {
+      return { account: account.name, ok: true, detail: 'logged in (relayed)' };
+    }
+    return fail('the code was not accepted');
+  }
+  return judgeStoredLogin(account.name, before, fingerprint(account.dir), exitCode, 'relayed');
 }
 
 /** Sentinel for "the wait was given up on", distinct from any real exit code. */

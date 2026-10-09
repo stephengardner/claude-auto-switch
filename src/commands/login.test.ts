@@ -16,7 +16,9 @@ import type { CliContext } from '../context.js';
  */
 function setup(names: string[]) {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-login-'));
-  const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home } };
+  // A display, so these tests drive the browser path on every platform; a Linux
+  // runner with none would otherwise count as a machine nobody is at.
+  const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, DISPLAY: ':0' } as NodeJS.ProcessEnv };
   const accounts = names.map((name, i) => {
     const dir = path.join(home, 'profiles', name);
     mkdirSync(dir, { recursive: true });
@@ -102,5 +104,125 @@ describe('ccx login --all', () => {
     });
 
     expect(attempted).toEqual(['out']);
+  });
+});
+
+describe('ccx login on a machine nobody is at', () => {
+  const signedOut = (accts: Array<{ name: string }>) =>
+    Promise.resolve(accts.map((a) => ({ name: a.name, loggedIn: false }))) as never;
+
+  function quietSetup(names: string[]) {
+    const s = setup(names);
+    (s.context as { lookupOwner?: unknown }).lookupOwner = () => Promise.resolve(null);
+    return s;
+  }
+
+  it('hands the sign-in to the terminal when there is no browser to drive', async () => {
+    const { context, lines } = quietSetup(['a']);
+    const viaTerminal: string[] = [];
+    const viaBrowser: string[] = [];
+    const code = await loginCommand(context, 'a', {}, {
+      headless: true,
+      browserReachable: () => Promise.resolve(false),
+      terminalLogin: (account) => {
+        viaTerminal.push(account.name);
+        return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (in the terminal)' });
+      },
+      login: (account) => {
+        viaBrowser.push(account.name);
+        return Promise.resolve({ ok: true }) as never;
+      },
+    });
+    expect(code).toBe(0);
+    expect(viaTerminal).toEqual(['a']);
+    expect(viaBrowser).toEqual([]);
+    expect(lines.join('\n')).toContain('no browser on this machine');
+  });
+
+  it('still drives the browser when one is reachable, even over SSH', async () => {
+    const { context } = quietSetup(['a']);
+    const viaBrowser: string[] = [];
+    await loginCommand(context, undefined, { all: true }, {
+      probe: signedOut,
+      headless: true,
+      browserReachable: () => Promise.resolve(true),
+      terminalLogin: () => Promise.reject(new Error('should not be used')),
+      login: (account) => {
+        viaBrowser.push(account.name);
+        return Promise.resolve({ ok: true }) as never;
+      },
+    });
+    expect(viaBrowser).toEqual(['a']);
+  });
+
+  it('leaves a desktop with no debug port on the browser path, as before', async () => {
+    const { context } = quietSetup(['a']);
+    const viaBrowser: string[] = [];
+    await loginCommand(context, 'a', {}, {
+      headless: false,
+      browserReachable: () => Promise.resolve(false),
+      terminalLogin: () => Promise.reject(new Error('should not be used')),
+      login: (account) => {
+        viaBrowser.push(account.name);
+        return Promise.resolve({ ok: true }) as never;
+      },
+    });
+    expect(viaBrowser).toEqual(['a']);
+  });
+});
+
+describe('ccx login --relay', () => {
+  it('relays the named account and then checks who signed in', async () => {
+    const { context } = setup(['a']);
+    const owners: string[] = [];
+    (context as { lookupOwner?: unknown }).lookupOwner = (dir: string) => {
+      owners.push(dir);
+      return Promise.resolve(null);
+    };
+    const relayed: string[] = [];
+    const code = await loginCommand(context, 'a', { relay: true }, {
+      relay: (account) => {
+        relayed.push(account.name);
+        return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (relayed)' });
+      },
+    });
+    expect(code).toBe(0);
+    expect(relayed).toEqual(['a']);
+    expect(owners).toHaveLength(1);
+  });
+
+  it('signs in exactly one named account', async () => {
+    const { context, lines } = setup(['a', 'b']);
+    expect(await loginCommand(context, undefined, { relay: true, all: true })).toBe(1);
+    expect(lines.join('\n')).toContain('one named account');
+  });
+
+  it('fails without checking anything when the relay did not produce a login', async () => {
+    const { context } = setup(['a']);
+    let looked = false;
+    (context as { lookupOwner?: unknown }).lookupOwner = () => {
+      looked = true;
+      return Promise.resolve(null);
+    };
+    const code = await loginCommand(context, 'a', { relay: true }, {
+      relay: (account) => Promise.resolve({ account: account.name, ok: false, detail: 'no code arrived' }),
+    });
+    expect(code).toBe(1);
+    expect(looked).toBe(false);
+  });
+});
+
+describe('ccx login --host', () => {
+  it('hands the whole job to the remote sign-in, with its options', async () => {
+    const { context } = setup(['a']);
+    const calls: unknown[] = [];
+    const code = await loginCommand(context, undefined, { host: 'beast', all: true, remoteCcx: '/opt/ccx' }, {
+      remote: (_c, host, name, options) => {
+        calls.push({ host, name, options });
+        return Promise.resolve(0);
+      },
+    });
+    expect(code).toBe(0);
+    expect(calls).toEqual([{ host: 'beast', name: undefined, options: { all: true, remoteCcx: '/opt/ccx' } }]);
   });
 });

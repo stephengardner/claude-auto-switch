@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { loginAccount, type LoginDeps, type AuthorizeOutcome } from './login.js';
+import {
+  loginAccount,
+  loginInTerminal,
+  relayLogin,
+  RELAY_URL_PREFIX,
+  type LoginDeps,
+  type AuthorizeOutcome,
+} from './login.js';
 
 /**
  * A sign-in is judged by what ends up stored, not by how the browser step went,
@@ -147,5 +154,140 @@ describe('loginAccount', () => {
     );
     expect(r.ok).toBe(true);
     expect(r.detail).toContain('already signed in');
+  });
+});
+
+describe('loginInTerminal', () => {
+  function terminalDeps(scenario: { exitCode: number; before: string | null; after: string | null; ran?: unknown[] }) {
+    let asked = 0;
+    return {
+      claude: { bin: 'claude' },
+      run: (bin: string, args: string[], env: NodeJS.ProcessEnv) => {
+        scenario.ran?.push({ bin, args, env });
+        return Promise.resolve(scenario.exitCode);
+      },
+      fingerprint: () => {
+        asked += 1;
+        return asked === 1 ? scenario.before : scenario.after;
+      },
+    };
+  }
+
+  it('signs in through the terminal, in the account folder, with the address pre-filled', async () => {
+    const ran: unknown[] = [];
+    const r = await loginInTerminal(account, terminalDeps({ exitCode: 0, before: null, after: 'new', ran }));
+    expect(r.ok).toBe(true);
+    expect(ran).toEqual([
+      {
+        bin: 'claude',
+        args: ['auth', 'login', '--claudeai', '--email', 'a@b.com'],
+        env: { CLAUDE_CONFIG_DIR: '/dir/a' },
+      },
+    ]);
+  });
+
+  it('fails when the person left without finishing', async () => {
+    const r = await loginInTerminal(account, terminalDeps({ exitCode: 1, before: 'old', after: 'old' }));
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('relayLogin', () => {
+  function relayDeps(scenario: {
+    url?: string;
+    code?: string | null;
+    exitCode?: number;
+    neverFinishes?: boolean;
+    before?: string | null;
+    after?: string | null;
+    sent?: string[];
+    submitted?: string[];
+    cancelled?: { yes: boolean };
+    started?: unknown[];
+  }) {
+    let asked = 0;
+    return {
+      claude: { bin: 'claude' },
+      startAuthLogin: (_c: unknown, args: string[], env: NodeJS.ProcessEnv, options?: unknown) => {
+        scenario.started?.push({ args, env, options });
+        return {
+          urlHint: () => Promise.resolve(scenario.url),
+          done: () =>
+            scenario.neverFinishes ? new Promise<number>(() => {}) : Promise.resolve(scenario.exitCode ?? 0),
+          cancel: () => {
+            if (scenario.cancelled) scenario.cancelled.yes = true;
+          },
+          submitCode: (code: string) => scenario.submitted?.push(code),
+        };
+      },
+      send: (line: string) => scenario.sent?.push(line),
+      receiveCode: () => Promise.resolve(scenario.code === undefined ? 'c0de#st4te' : scenario.code),
+      fingerprint: () => {
+        asked += 1;
+        return asked === 1 ? (scenario.before ?? null) : (scenario.after ?? null);
+      },
+      exchangeTimeoutMs: 40,
+    };
+  }
+
+  it('sends the link, passes the code back to claude, and judges by what was stored', async () => {
+    const sent: string[] = [];
+    const submitted: string[] = [];
+    const started: unknown[] = [];
+    const r = await relayLogin(
+      account,
+      relayDeps({ url: 'https://claude.com/cai/oauth/authorize?x=1', after: 'new', sent, submitted, started }),
+    );
+    expect(r.ok).toBe(true);
+    expect(sent).toEqual([`${RELAY_URL_PREFIX}https://claude.com/cai/oauth/authorize?x=1`]);
+    expect(submitted).toEqual(['c0de#st4te']);
+    expect(started).toEqual([
+      {
+        args: ['auth', 'login', '--claudeai', '--email', 'a@b.com'],
+        env: { CLAUDE_CONFIG_DIR: '/dir/a' },
+        options: { acceptsCode: true, urlWaitMs: expect.any(Number) },
+      },
+    ]);
+  });
+
+  it('stops when claude prints no link, without waiting for a code', async () => {
+    const sent: string[] = [];
+    const cancelled = { yes: false };
+    const r = await relayLogin(account, relayDeps({ sent, cancelled }));
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('no sign-in link');
+    expect(sent).toEqual([]);
+    expect(cancelled.yes).toBe(true);
+  });
+
+  it('stops when no code arrives', async () => {
+    const cancelled = { yes: false };
+    const r = await relayLogin(account, relayDeps({ url: 'https://claude.com/x', code: null, cancelled }));
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('no code arrived');
+    expect(cancelled.yes).toBe(true);
+  });
+
+  it('refuses a code that is not in the form claude reads, instead of waiting on it', async () => {
+    const submitted: string[] = [];
+    const cancelled = { yes: false };
+    const r = await relayLogin(
+      account,
+      relayDeps({ url: 'https://claude.com/x', code: 'just-a-code', submitted, cancelled }),
+    );
+    expect(r.ok).toBe(false);
+    expect(submitted).toEqual([]);
+    expect(cancelled.yes).toBe(true);
+  });
+
+  it('gives up when claude never finishes with the code, and stops it', async () => {
+    const cancelled = { yes: false };
+    const r = await relayLogin(
+      account,
+      relayDeps({ url: 'https://claude.com/x', neverFinishes: true, cancelled }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('not accepted');
+    expect(cancelled.yes).toBe(true);
   });
 });
