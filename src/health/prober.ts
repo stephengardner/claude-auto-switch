@@ -1,4 +1,5 @@
 import { runCapture } from '../util/exec.js';
+import { ACCOUNT_ENV } from '../launcher/child-env.js';
 import { parseAuthStatus, type Health } from './auth-status.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 
@@ -27,6 +28,9 @@ export async function probe(account: ProbeableAccount, deps: ProberDeps): Promis
   const argv = invokerArgs(deps.claude, ['auth', 'status']);
   const result = await runCapture(deps.claude.bin, argv, {
     env: { CLAUDE_CONFIG_DIR: account.dir },
+    // The login in the account's folder, as ccx will launch it: a token in
+    // the shell would answer for an account whose folder has none.
+    dropEnv: ACCOUNT_ENV,
   });
   try {
     const health = parseAuthStatus(result.stdout);

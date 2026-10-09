@@ -97,8 +97,14 @@ export function claimedElsewhere(c: PathCtx = {}, options: ClaimOptions = {}): S
     }
     if (!isClaim(claim) || claim.pid === own) continue;
     if (now - claim.at > CLAIM_TTL_MS || !isAlive(claim.pid)) {
-      // Its lease, if it has one, says the rest from here.
-      rmSync(file, { force: true });
+      // Its lease, if it has one, says the rest from here. A claim that cannot
+      // be removed (held open on Windows, a shared home) is ignored all the
+      // same: tidying up must never stop a worker from starting.
+      try {
+        rmSync(file, { force: true });
+      } catch {
+        /* left for the next look */
+      }
       continue;
     }
     claimed.add(claim.account);

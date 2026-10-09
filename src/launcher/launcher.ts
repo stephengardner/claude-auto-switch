@@ -32,6 +32,7 @@ export async function launch(
   const argv = invokerArgs(deps.claude, args);
   const exitCode = await run(deps.claude.bin, argv, {
     env: { CLAUDE_CONFIG_DIR: account.dir },
+    dropEnv: ACCOUNT_ENV,
   });
   return { exitCode };
 }
@@ -91,6 +92,7 @@ export async function launchHeadless(
   const argv = invokerArgs(deps.claude, args);
   const result = await run(deps.claude.bin, argv, {
     env: { CLAUDE_CONFIG_DIR: account.dir },
+    dropEnv: ACCOUNT_ENV,
   });
   return { ...result, classification: classifyRun(result) };
 }

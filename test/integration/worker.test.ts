@@ -33,6 +33,7 @@ interface Launch {
   prompt?: string | null;
   via?: 'arg' | 'stdin' | null;
   cwd?: string;
+  pid?: number;
   oauthToken?: string | null;
   entrypoint?: string | null;
 }
@@ -126,6 +127,67 @@ function processAlive(pid: number): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+
+/**
+ * A worker in a process of its own, as an orchestrator starts one, run
+ * through tsx so no build is needed. It writes its pid to `pid-<tag>`, waits
+ * until `total` such processes are ready (so they can be released together),
+ * then prints its output and exits with the worker's code.
+ */
+function workerScript(home: string): string {
+  const script = path.join(home, 'worker-process.mts');
+  const workerModule = pathToFileURL(path.join(REPO, 'src', 'commands', 'worker.ts')).href;
+  const configModule = pathToFileURL(path.join(REPO, 'src', 'config', 'config.ts')).href;
+  writeFileSync(
+    script,
+    [
+      `import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';`,
+      `import path from 'node:path';`,
+      `import { workerCommand } from ${JSON.stringify(workerModule)};`,
+      `import { loadConfig } from ${JSON.stringify(configModule)};`,
+      `const [home, fake, tag, total] = process.argv.slice(2);`,
+      `const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home } };`,
+      `writeFileSync(path.join(home, 'pid-' + tag), String(process.pid));`,
+      `const barrier = path.join(home, 'barrier');`,
+      `mkdirSync(barrier, { recursive: true });`,
+      `writeFileSync(path.join(barrier, tag), '');`,
+      `while (readdirSync(barrier).length < Number(total)) await new Promise((r) => setTimeout(r, 5));`,
+      `let out = '';`,
+      `const context = { ctx, config: loadConfig(ctx), claude: { bin: process.execPath, prefixArgs: [fake] },`,
+      `  verifyCap: () => Promise.resolve('allowed'), out: () => {}, err: () => {}, json: false, quiet: false };`,
+      `const code = await workerCommand(context, ['hi'], {}, [], { stdout: (t) => { out += t; }, stderr: () => {} });`,
+      `process.stdout.write(out, () => process.exit(code));`,
+    ].join('\n'),
+    'utf8',
+  );
+  return script;
+}
+
+function runWorkerProcess(
+  script: string,
+  home: string,
+  tag: string,
+  total: number,
+  env: Record<string, string>,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(TSX, [script, home, fakeClaude, tag, String(total)], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
+      env: { ...process.env, ...env },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => {
+      stdout += String(d);
+    });
+    child.stderr.on('data', (d) => {
+      stderr += String(d);
+    });
+    child.on('exit', (code) => resolve({ code, stdout, stderr }));
+  });
 }
 
 /** Every variable a test here sets, put back as it was afterwards. */
@@ -333,58 +395,62 @@ describe('ccx worker (against fake-claude)', () => {
     // Real separate processes, released together: each used to read the leases
     // before any had written one, and all of them picked the same account.
     const { home, runsLog } = await setup(['A', 'B', 'C']);
-    const barrier = path.join(home, 'barrier');
-    mkdirSync(barrier, { recursive: true });
-    // An ES module, for the waiting at the top level.
-    const script = path.join(home, 'spread-worker.mts');
-    const workerModule = pathToFileURL(path.join(REPO, 'src', 'commands', 'worker.ts')).href;
-    const configModule = pathToFileURL(path.join(REPO, 'src', 'config', 'config.ts')).href;
-    writeFileSync(
-      script,
-      [
-        `import { readdirSync, writeFileSync } from 'node:fs';`,
-        `import path from 'node:path';`,
-        `import { workerCommand } from ${JSON.stringify(workerModule)};`,
-        `import { loadConfig } from ${JSON.stringify(configModule)};`,
-        `const [home, fake, tag, total] = process.argv.slice(2);`,
-        `const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home } };`,
-        `const barrier = path.join(home, 'barrier');`,
-        `writeFileSync(path.join(barrier, tag), '');`,
-        `while (readdirSync(barrier).length < Number(total)) await new Promise((r) => setTimeout(r, 5));`,
-        `let out = '';`,
-        `const context = { ctx, config: loadConfig(ctx), claude: { bin: process.execPath, prefixArgs: [fake] },`,
-        `  verifyCap: () => Promise.resolve('allowed'), out: () => {}, err: () => {}, json: false, quiet: false };`,
-        `const code = await workerCommand(context, ['hi'], {}, [], { stdout: (t) => { out += t; }, stderr: () => {} });`,
-        `process.stdout.write(out, () => process.exit(code));`,
-      ].join('\n'),
-      'utf8',
-    );
+    const script = workerScript(home);
     const WORKERS = 3;
     const results = await Promise.all(
-      Array.from(
-        { length: WORKERS },
-        (_, w) =>
-          new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-            const child = spawn(TSX, [script, home, fakeClaude, `w${w}`, String(WORKERS)], {
-              stdio: ['ignore', 'pipe', 'pipe'],
-              shell: process.platform === 'win32',
-              env: { ...process.env, FAKE_CLAUDE_IDLE_MS: '3000', FAKE_CLAUDE_RUNS_LOG: runsLog },
-            });
-            let stdout = '';
-            let stderr = '';
-            child.stdout.on('data', (d) => {
-              stdout += String(d);
-            });
-            child.stderr.on('data', (d) => {
-              stderr += String(d);
-            });
-            child.on('exit', (code) => resolve({ code, stdout, stderr }));
-          }),
+      Array.from({ length: WORKERS }, (_, w) =>
+        runWorkerProcess(script, home, `w${w}`, WORKERS, { FAKE_CLAUDE_IDLE_MS: '3000', FAKE_CLAUDE_RUNS_LOG: runsLog }),
       ),
     );
     expect(results.filter((r) => r.code !== 0).map((r) => r.stderr.slice(0, 1500))).toEqual([]);
     const picked = results.map((r) => (JSON.parse(r.stdout) as { ccx: { accounts: string[] } }).ccx.accounts[0]);
     expect(new Set(picked)).toEqual(new Set(['A', 'B', 'C']));
+  });
+
+  it('ends Claude, and what Claude started, when the worker itself is ended', { timeout: 90_000 }, async () => {
+    // As a program gives up on a worker. Where there are signals, SIGTERM,
+    // which the worker handles by ending Claude's tree. On Windows the
+    // outright end no handler sees: there Node keeps what it starts in a job
+    // Windows ends along with it.
+    const { home, runsLog } = await setup(['A']);
+    const pidFile = path.join(home, 'grandchild.pid');
+    const running = runWorkerProcess(workerScript(home), home, 'w0', 1, {
+      FAKE_CLAUDE_IDLE_MS: '60000',
+      FAKE_CLAUDE_RUNS_LOG: runsLog,
+      FAKE_CLAUDE_GRANDCHILD: pidFile,
+    });
+    const workerPidFile = path.join(home, 'pid-w0');
+    for (let i = 0; i < 160 && !(existsSync(pidFile) && existsSync(workerPidFile) && launchesIn(runsLog).length > 0); i++) {
+      await sleep(250);
+    }
+    const claudePid = launchesIn(runsLog)[0]?.pid ?? 0;
+    const grandchild = Number(readFileSync(pidFile, 'utf8'));
+    expect(processAlive(claudePid)).toBe(true);
+    process.kill(Number(readFileSync(workerPidFile, 'utf8')));
+    for (let i = 0; i < 60 && (processAlive(claudePid) || processAlive(grandchild)); i++) await sleep(250);
+    expect(processAlive(claudePid)).toBe(false);
+    expect(processAlive(grandchild)).toBe(false);
+    const ended = await running;
+    if (process.platform !== 'win32') {
+      // Ended by a signal it handled: 128 + SIGTERM, and still one json object.
+      expect(ended.code).toBe(143);
+      expect(JSON.parse(ended.stdout)).toMatchObject({ is_error: true });
+    }
+  });
+
+  it('ends Claude, and what Claude started, at its own timeout, and says so', { timeout: 60_000 }, async () => {
+    // How an orchestrator bounds a worker without killing it from outside.
+    const { home, context } = await setup(['A']);
+    const pidFile = path.join(home, 'grandchild.pid');
+    Object.assign(process.env, { FAKE_CLAUDE_IDLE_MS: '60000', FAKE_CLAUDE_GRANDCHILD: pidFile });
+    const seen = capture();
+    const startedAt = Date.now();
+    expect(await workerCommand(context, ['hi'], { timeout: '0.05' }, [], seen.io)).toBe(124);
+    expect(Date.now() - startedAt).toBeLessThan(20_000);
+    expect(JSON.parse(seen.out())).toMatchObject({ is_error: true, result: 'timed out after 0.05 minutes' });
+    const grandchild = Number(readFileSync(pidFile, 'utf8'));
+    for (let i = 0; i < 40 && processAlive(grandchild); i++) await sleep(250);
+    expect(processAlive(grandchild)).toBe(false);
   });
 
   it('asks about a refusal that came while another was being checked, rather than dropping it', { timeout: 60_000 }, async () => {
@@ -538,6 +604,11 @@ describe('ccx worker (against fake-claude)', () => {
     expect(said.join('\n')).toMatch(/--output is one of json, stream-json, text/);
     expect(said.join('\n')).toMatch(/no brief given/);
     expect(said.join('\n')).toMatch(/not both/);
+    expect(await workerCommand(context, ['hi'], {}, ['--output-format=text'], capture().io)).toBe(2);
+    expect(await workerCommand(context, ['hi'], {}, ['--resume', 'x'], capture().io)).toBe(2);
+    expect(said.join('\n')).toMatch(/--output-format is the worker's own/);
+    expect(await workerCommand(context, ['hi'], { timeout: 'soon' }, [], capture().io)).toBe(2);
+    expect(said.join('\n')).toMatch(/--timeout is a number of minutes/);
     // A program reading json still gets one object it can parse.
     expect(JSON.parse(refused.out())).toMatchObject({ is_error: true, ccx: { accounts: [], sessionId: null } });
   });

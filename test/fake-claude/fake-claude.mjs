@@ -158,6 +158,7 @@ if (runsLog) {
       marker: readMarker(),
       settingsModel,
       ...(outputFormat ? { prompt: printPrompt, via: promptVia, cwd: process.cwd() } : {}),
+      pid: process.pid,
       // What it would sign in with, besides the session folder.
       oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null,
       entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT ?? null,
@@ -172,9 +173,13 @@ const printSession = () => {
   }
   return null;
 };
-/** The answer a print-mode run gives as it ends normally. */
-const printResult = () => {
-  if (!outputFormat) return;
+/**
+ * The answer a print-mode run gives as it ends normally, then `done`. Only
+ * once it is written out: a pipe on macOS takes writes asynchronously, and
+ * exiting straight after a long answer cut it off.
+ */
+const printResult = (done) => {
+  if (!outputFormat) return done();
   const result = {
     type: 'result',
     subtype: 'success',
@@ -190,7 +195,7 @@ const printResult = () => {
         ? `${JSON.stringify({ type: 'system', subtype: 'init', session_id: printSession() })}\n${JSON.stringify(result)}\n`
         : `done: ${printPrompt}\n`;
   if (!process.env.FAKE_CLAUDE_SPLIT_ANSWER) {
-    process.stdout.write(text);
+    process.stdout.write(text, () => done());
     return;
   }
   // In two writes a moment apart, split inside the first character that
@@ -201,6 +206,7 @@ const printResult = () => {
   writeSync(1, bytes.subarray(0, cut));
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
   writeSync(1, bytes.subarray(cut));
+  done();
 };
 // The real CLI's answer to print mode with no prompt at all.
 if (outputFormat && !printPrompt) {
@@ -334,9 +340,8 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
           result: 'Out of room on this account for now.',
           session_id: printSession(),
         };
-        if (outputFormat === 'text') process.stderr.write(`${failed.result}\n`);
-        else process.stdout.write(`${JSON.stringify(failed)}\n`);
-        process.exit(1);
+        if (outputFormat === 'text') process.stderr.write(`${failed.result}\n`, () => process.exit(1));
+        else process.stdout.write(`${JSON.stringify(failed)}\n`, () => process.exit(1));
       }
     };
     const after = Number(process.env.FAKE_CLAUDE_REFUSE_AFTER_MS) || 0;
@@ -397,20 +402,22 @@ if (capEvery > 0) {
 
 // Stay alive when asked, so a test can interrupt the run (cap or switch) before
 // it exits. Killed by the parent (child.kill) ends it immediately.
-// One that does not stop when asked keeps running well past any test, unless made to.
-const idleMs =
-  process.env.FAKE_CLAUDE_IGNORE_TERM && firstLaunch ? 60_000 : Number(process.env.FAKE_CLAUDE_IDLE_MS) || 0;
+// One that does not stop when asked keeps running well past any test, unless
+// made to; so does one cut off mid-write, which is only ever ended from outside
+// (finishing would print its next event straight after the half line, which a
+// real run never does).
+const runsUntilEnded =
+  firstLaunch && (process.env.FAKE_CLAUDE_IGNORE_TERM || process.env.FAKE_CLAUDE_PARTIAL_LINE);
+const idleMs = runsUntilEnded ? 60_000 : Number(process.env.FAKE_CLAUDE_IDLE_MS) || 0;
 if (idleMs > 0) {
   setTimeout(() => {
     // Simulate Claude re-reading its credential file from disk (its ~30s cache
     // TTL) before the run ends, so a seamless in-place swap is observable.
     if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'reread', marker: readMarker() })}\n`, 'utf8');
-    printResult();
-    process.exit(0);
+    printResult(() => process.exit(0));
   }, idleMs);
 } else {
-  printResult();
-  process.exit(0);
+  printResult(() => process.exit(0));
 }
 
 

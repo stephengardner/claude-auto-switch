@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { Command } from 'commander';
 import { listAccounts } from '../accounts/registry.js';
 import type { CliContext } from '../context.js';
+import { handleInterruption } from '../launcher/interruption.js';
 import { runInteractiveHotSwap } from './session.js';
 
 /**
@@ -35,6 +36,8 @@ export interface WorkerOptions {
   cwd?: string;
   /** Read the brief from this file, or `-` for standard input. */
   briefFile?: string;
+  /** End the worker, Claude and everything Claude started after this many minutes. */
+  timeout?: string;
 }
 
 /** What a worker's conversation is told when it resumes on another account. */
@@ -45,6 +48,25 @@ export const WORKER_CARRY_ON =
 
 const OUTPUTS = ['json', 'stream-json', 'text'] as const;
 type Output = (typeof OUTPUTS)[number];
+
+/**
+ * Claude flags a worker sets itself. Given again after `--`, Claude takes the
+ * later one: a second --output-format turns the answer into something the
+ * worker cannot read, and a conversation flag points a move at the wrong
+ * conversation. Each has a worker option or no meaning for a worker.
+ */
+const WORKER_OWNED_FLAGS = new Set([
+  '-p',
+  '--print',
+  '--output-format',
+  '--input-format',
+  '--session-id',
+  '-r',
+  '--resume',
+  '-c',
+  '--continue',
+  '--fork-session',
+]);
 
 /** Which accounts a worker ran on, in order, for its report. */
 export interface WorkerReport {
@@ -156,6 +178,7 @@ export function registerWorkerCommand(
     .option('--permission-mode <mode>', "Claude's permission mode, e.g. acceptEdits; a worker cannot stop to ask")
     .option('--cwd <dir>', 'work in this folder (one git worktree per coder keeps them out of each other)')
     .option('--brief-file <path>', 'read the brief from a file, or - for standard input')
+    .option('--timeout <minutes>', 'end the worker, Claude and everything it started after this long (exit code 124)')
     .argument('[brief...]', 'the task, best quoted as one argument')
     .action(async (brief: string[], opts: WorkerOptions) => {
       const { words, passthrough } = splitPassthrough(argv(), brief);
@@ -190,6 +213,10 @@ export async function workerCommand(
   if (options.briefFile !== undefined && words.length > 0) {
     return refuse('give the brief as words or with --brief-file, not both');
   }
+  const owned = passthrough.find((arg) => WORKER_OWNED_FLAGS.has(arg.split('=')[0] ?? arg));
+  if (owned !== undefined) {
+    return refuse(`${owned.split('=')[0] ?? owned} is the worker's own (see ccx worker --help), not one to pass to Claude`);
+  }
   let brief: string;
   try {
     brief = options.briefFile !== undefined ? readBrief(options.briefFile) : words.join(' ');
@@ -205,6 +232,11 @@ export async function workerCommand(
     if (!existsSync(options.cwd) || !statSync(options.cwd).isDirectory()) return refuse(`no folder at ${options.cwd}`);
     // Claude works where it is started, and the session says where it runs.
     process.chdir(options.cwd);
+  }
+
+  const minutes = options.timeout === undefined ? null : Number(options.timeout);
+  if (minutes !== null && !(Number.isFinite(minutes) && minutes > 0)) {
+    return refuse('--timeout is a number of minutes above 0');
   }
 
   const registered = listAccounts(context.ctx);
@@ -251,11 +283,21 @@ export async function workerCommand(
     },
   };
 
-  const exitCode = await runInteractiveHotSwap(workerContext, args, {
+  // Ended by whoever started it, or by its own timeout: either way Claude and
+  // everything it started are stopped by ccx, while their tree is whole. An
+  // orchestrator that bounds a worker with --timeout never has to kill it
+  // from outside, which on Windows cannot reach what Claude's tools started.
+  const interruption = handleInterruption();
+  const deadline =
+    minutes === null
+      ? null
+      : setTimeout(() => interruption.end(124, `timed out after ${minutes} minutes`), minutes * 60_000);
+  const runCode = await runInteractiveHotSwap(workerContext, args, {
     ...(account !== undefined ? { account } : {}),
     resumePrompt: WORKER_CARRY_ON,
     worker: {
       brief,
+      interruption,
       onAccount: (name) => {
         accountsRun.push(name);
       },
@@ -292,9 +334,15 @@ export async function workerCommand(
       },
     },
   });
-  if (output === 'stream-json' && partial.trim() !== '') {
-    io.stdout(`${partial}\n`);
-    if (resultObject(partial)?.type === 'result') sawResult = true;
+  if (deadline) clearTimeout(deadline);
+  interruption.dispose();
+  const exitCode = interruption.exitCode ?? runCode;
+  // A last event without its line ending is passed on whole; half of one,
+  // from a launch that was ended, is not an event at all.
+  const last = output === 'stream-json' && partial.trim() !== '' ? resultObject(partial) : null;
+  if (last) {
+    io.stdout(`${partial.trim()}\n`);
+    if (last.type === 'result') sawResult = true;
   }
 
   // Consecutive stays on one account (a fresh start after a resume that found
@@ -310,9 +358,10 @@ export async function workerCommand(
   if (!answered) {
     const lastError = launchStderr.split('\n').filter((line) => line.trim() !== '').pop();
     error =
-      accounts.length === 0
+      interruption.why ??
+      (accounts.length === 0
         ? (lastSaid ?? 'no account could run it')
-        : `Claude ended (exit code ${exitCode}) without a result${lastError ? `: ${lastError.trim()}` : ''}`;
+        : `Claude ended (exit code ${exitCode}) without a result${lastError ? `: ${lastError.trim()}` : ''}`);
   }
   const report: WorkerReport = {
     accounts,

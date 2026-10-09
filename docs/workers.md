@@ -47,6 +47,7 @@ ccx worker --agent coder --cwd ../wt-billing --permission-mode acceptEdits \
 | `--permission-mode <mode>` | Claude's permission mode; a worker cannot stop to ask, so set what it may do |
 | `--cwd <dir>`              | work in this folder                                                          |
 | `--brief-file <path>`      | read the brief from a file, or `-` for standard input                        |
+| `--timeout <minutes>`      | end the worker, Claude and everything it started after this long (exit 124)  |
 | `-- <claude flags>`        | anything else goes to Claude as is (`--allowedTools`, `--max-turns`, ...)    |
 
 The brief is the words after the options, best quoted as one argument, or
@@ -93,17 +94,27 @@ was moved to while running (`ccx use <account> --session <pid>`).
 
 The exit code is Claude's (0 on success), 1 when no account could run it or
 Claude gave no result, 2 for a worker refused before it started (no brief,
-unknown account or output, no accounts added), and 128 plus the signal when
-it was stopped.
+unknown account or output, no accounts added), 124 at its `--timeout`, and
+128 plus the signal when it was stopped.
 
 ## Stopping a worker
 
-Ending `ccx worker` (Ctrl+C, or a program stopping it, as `execFile` does at
-its `timeout`) ends Claude and everything Claude started, such as a test run or
-a dev server, rather than leaving them working in the folder unwatched. The
-same happens when a worker moves to another account. On Windows, ending the
-worker's process outright (Task Manager) cannot be caught; stop it the
-ordinary way.
+Bound a worker with `--timeout <minutes>`. When it passes, ccx ends Claude and
+everything Claude started (a test run, a dev server), and the worker exits with
+124 and says why (`"result": "timed out after 30 minutes"`). That is the
+safe way for an orchestrator to give up on one, on every platform.
+
+Ending `ccx worker` from outside works too, with a signal: Ctrl+C, or SIGTERM
+(what `kill` and Node's `child.kill()` send on macOS and Linux). ccx ends Claude
+and everything it started, and the worker exits with 128 plus the signal. The
+same happens when a worker moves to another account. SIGKILL cannot be caught,
+so it leaves Claude running; send SIGTERM.
+
+On Windows a program cannot send a signal: `child.kill()`, `execFile`'s own
+timeout and Task Manager end the process outright, and nothing of ccx's runs.
+Claude ends with it, but a command Claude was running in its Bash tool keeps
+running, as it would under a plain `claude` ended that way. Use `--timeout`, or
+end the whole tree: `taskkill /T /F /PID <pid>`.
 
 ## Agent definitions
 
@@ -161,9 +172,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
-const { stdout } = await run('ccx', ['worker', '--agent', 'coder', '--cwd', tree, brief], {
-  maxBuffer: 64 * 1024 * 1024,
-});
+const { stdout } = await run(
+  'ccx',
+  ['worker', '--timeout', '30', '--agent', 'coder', '--cwd', tree, brief],
+  {
+    maxBuffer: 64 * 1024 * 1024,
+  },
+);
 const answer = JSON.parse(stdout);
 console.log(answer.result, answer.ccx.accounts);
 ```

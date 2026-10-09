@@ -31,9 +31,12 @@ semantic versioning.
   - Nothing global moves: the active account, the editor's link and the
     terminal are left alone. Started from inside a Claude session, a worker
     takes none of that session's login or host variables.
-  - Ending a worker (Ctrl+C, or a program stopping it) ends Claude and
-    everything Claude started; so does a move to another account. See
-    docs/workers.md.
+  - `--timeout <minutes>` bounds a worker: at the timeout ccx ends Claude and
+    everything Claude started, and the worker exits with 124 and says so.
+    Ending a worker with a signal (Ctrl+C, SIGTERM) does the same, and so does
+    a move to another account. On Windows a program cannot signal, and ending
+    the process outright leaves a command Claude was running; use `--timeout`
+    or `taskkill /T`. See docs/workers.md.
 
 ### Changed
 
@@ -43,7 +46,9 @@ semantic versioning.
   (`CLAUDE_CODE_OAUTH_TOKEN` and its companions) no longer reaches the Claude
   ccx starts. Claude reads it before the session's own credential, so it put a
   session on an account other than the one ccx chose, and usage and refusals
-  were then counted against the wrong account.
+  were then counted against the wrong account. A token exported in the shell
+  is not a ccx login (`ccx token <name>` gives an account one), and the login
+  check and the startup check no longer count it either.
 
 ### Fixed
 

@@ -1,11 +1,11 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { constants } from 'node:os';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { createRefusalFollower, type Refusal } from '../session/transcript.js';
 import { matchesCapText, resetAtIn } from './cap-detect.js';
 import { scrubHostEnv } from './child-env.js';
 import { conversationIdIn, wantsExistingConversation } from './conversation.js';
 import type { SessionOutcome } from './hot-swap.js';
+import { exitCodeForSignal, type Interruption } from './interruption.js';
 
 /**
  * One headless run of Claude (`claude -p`) for a worker: the counterpart of
@@ -36,6 +36,8 @@ export interface HeadlessSessionOptions {
   /** Resolves true only when the account is really out (asked of the account). */
   verifyCap?: (renderedText: string) => Promise<boolean>;
   ignoreLimits?: boolean;
+  /** Ending the worker: an end stops this run, and one that came first means no run starts. */
+  interruption?: Interruption;
   /** How often the record and the hooks are checked, in ms. */
   pollMs?: number;
 }
@@ -48,48 +50,55 @@ const KILL_GRACE_MS = 3000;
 const VERIFY_WAIT_MS = 12_000;
 /** How long Claude's output may stay open after it exits, held by something it started, before the run is over anyway. */
 const CLOSE_WAIT_MS = 5000;
-/** Signals that end a worker. Claude, and everything it started, is stopped on the way out. */
-const ENDING_SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
 type Hit = { reason?: string; resetAt?: number };
 
 /** The exit code a shell would report: the code, or 128 + the signal that ended it. */
 function exitCodeOf(code: number | null, signal: NodeJS.Signals | null): number {
-  if (typeof code === 'number') return code;
-  const number = signal ? constants.signals[signal] : undefined;
-  return number !== undefined ? 128 + number : 1;
+  return code ?? (signal ? exitCodeForSignal(signal) : 1);
 }
 
-/**
- * Every process under `root` in a `ps -A -o pid=,ppid=` listing, children
- * before grandchildren.
- */
-export function descendantsIn(table: string, root: number): number[] {
-  const children = new Map<number, number[]>();
+/** One line of `ps -A -o pid=,ppid=,lstart=`: a process, its parent, and when it started. */
+export interface ProcessRow {
+  pid: number;
+  ppid: number;
+  /** As ps prints it. With the pid it names one process: a pid freed and used again starts later. */
+  started: string;
+}
+
+export function processRows(table: string): ProcessRow[] {
+  const rows: ProcessRow[] = [];
   for (const line of table.split('\n')) {
-    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-    if (pid === undefined || ppid === undefined || !Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
-    children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+    const match = /^\s*(\d+)\s+(\d+)\s+(\S.*?)\s*$/.exec(line);
+    if (!match) continue;
+    rows.push({ pid: Number(match[1]), ppid: Number(match[2]), started: match[3] ?? '' });
   }
-  const found: number[] = [];
+  return rows;
+}
+
+/** Every process under `root` in `rows`, children before grandchildren. */
+export function descendantsIn(rows: readonly ProcessRow[], root: number): ProcessRow[] {
+  const children = new Map<number, ProcessRow[]>();
+  for (const row of rows) children.set(row.ppid, [...(children.get(row.ppid) ?? []), row]);
+  const found: ProcessRow[] = [];
+  const seen = new Set<number>([root]);
   const queue = [root];
   for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-    for (const pid of children.get(next) ?? []) {
-      if (pid === root || found.includes(pid)) continue;
-      found.push(pid);
-      queue.push(pid);
+    for (const row of children.get(next) ?? []) {
+      if (seen.has(row.pid)) continue;
+      seen.add(row.pid);
+      found.push(row);
+      queue.push(row.pid);
     }
   }
   return found;
 }
 
-function descendantsOf(root: number): number[] {
+function readProcesses(): ProcessRow[] {
   try {
-    const table = execFileSync('ps', ['-A', '-o', 'pid=,ppid='], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return descendantsIn(table, root);
+    return processRows(
+      execFileSync('ps', ['-A', '-o', 'pid=,ppid=,lstart='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+    );
   } catch {
     return [];
   }
@@ -104,7 +113,7 @@ function isAlive(pid: number): boolean {
   }
 }
 
-function signalAll(pids: readonly number[], signal: NodeJS.Signals): void {
+function signalAll(pids: Iterable<number>, signal: NodeJS.Signals): void {
   for (const pid of pids) {
     try {
       process.kill(pid, signal);
@@ -118,7 +127,9 @@ function signalAll(pids: readonly number[], signal: NodeJS.Signals): void {
  * End Claude and everything it started: a test run or a dev server Claude
  * started must not go on running, or editing the same folder, after it. On
  * Windows the whole tree at once; elsewhere asked first (SIGTERM), then made
- * to (SIGKILL) whatever is still running KILL_GRACE_MS later.
+ * to (SIGKILL) whatever is still running KILL_GRACE_MS later. Only what is
+ * provably the same process is made to: the same pid started at the same
+ * moment, or something still running under Claude.
  */
 function endTree(child: ChildProcess): void {
   const root = child.pid;
@@ -137,21 +148,31 @@ function endTree(child: ChildProcess): void {
     }
     return;
   }
+  const rootDone = (): boolean => child.exitCode !== null || child.signalCode !== null;
   // Read before anything is signalled: once Claude exits, what it started is
   // no longer listed under it.
-  const tree = [root, ...descendantsOf(root)];
-  signalAll(tree, 'SIGTERM');
+  const descendants = descendantsIn(readProcesses(), root);
+  // Claude itself through its own handle, which never signals a pid that has
+  // since been given to another process.
+  child.kill('SIGTERM');
+  signalAll(
+    descendants.map((p) => p.pid),
+    'SIGTERM',
+  );
   const askedAt = Date.now();
   const watch = setInterval(() => {
-    const running = tree.filter(isAlive);
-    if (running.length === 0) {
+    if (rootDone() && !descendants.some((p) => isAlive(p.pid))) {
       clearInterval(watch);
       return;
     }
     if (Date.now() - askedAt < KILL_GRACE_MS) return;
     clearInterval(watch);
-    // And anything started since the first look.
-    signalAll([...new Set([...running, ...(isAlive(root) ? descendantsOf(root) : [])])], 'SIGKILL');
+    const now = readProcesses();
+    const startedAt = new Map(now.map((p) => [p.pid, p.started]));
+    const same = descendants.filter((p) => startedAt.get(p.pid) === p.started);
+    const since = rootDone() ? [] : descendantsIn(now, root);
+    if (!rootDone()) child.kill('SIGKILL');
+    signalAll(new Set([...same, ...since].map((p) => p.pid)), 'SIGKILL');
   }, 250);
 }
 
@@ -169,6 +190,10 @@ function within(promise: Promise<unknown>, ms: number): Promise<void> {
 
 export function runHeadlessSession(options: HeadlessSessionOptions): Promise<SessionOutcome> {
   const startedAt = Date.now();
+  // Ended before it began: nothing is started.
+  const already = options.interruption?.exitCode ?? null;
+  if (already !== null) return Promise.resolve({ kind: 'ok', exitCode: already, ranMs: 0 });
+
   const argv = invokerArgs(options.claude, options.args);
   const child = spawn(options.claude.bin, argv, {
     ...(options.cwd ? { cwd: options.cwd } : {}),
@@ -211,8 +236,8 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
   /** A cap the account confirmed; null until one is. */
   let capped: Hit | null = null;
   let switchTo: string | null = null;
-  /** The signal ending this worker, once one has. */
-  let interruptedBy: NodeJS.Signals | null = null;
+  /** The exit code the worker is being ended with, once it is. */
+  let interruptedBy: number | null = null;
   /** The confirmation in flight; the outcome waits for it, within VERIFY_WAIT_MS. */
   let verifying: Promise<void> | null = null;
   /** A refusal seen while another was being confirmed: asked about next, not dropped. */
@@ -226,9 +251,13 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
     endTree(child);
   };
 
-  /** Evidence of a refused turn: counted only once the account confirms it. */
+  /**
+   * Evidence of a refused turn: counted only once the account confirms it. No
+   * new question is asked once the worker is being ended; one already asked
+   * still counts when it comes back.
+   */
   const evidence = (text: string, hit: Hit): void => {
-    if (options.ignoreLimits || capped || switchTo || interruptedBy) return;
+    if (options.ignoreLimits || capped || switchTo || interruptedBy !== null) return;
     if (verifying) {
       held = { text, hit };
       return;
@@ -236,7 +265,7 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
     const check = options.verifyCap ? options.verifyCap(text) : Promise.resolve(true);
     verifying = check
       .then((confirmed) => {
-        if (confirmed && !switchTo && !interruptedBy) {
+        if (confirmed && !switchTo) {
           capped = hit;
           stop();
         }
@@ -261,7 +290,7 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
   };
 
   const checkRecord = (): void => {
-    if (options.ignoreLimits || capped || switchTo || interruptedBy) return;
+    if (options.ignoreLimits || capped || switchTo || interruptedBy !== null) return;
     const seen = record.poll(conversation);
     recordReadable = recordReadable || seen.readable;
     for (const refusal of seen.refusals) {
@@ -276,7 +305,7 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
     } catch {
       /* a hook failing must not end the run */
     }
-    if (interruptedBy) return;
+    if (interruptedBy !== null) return;
     if (!capped && !switchTo && options.switchWatch) {
       const target = options.switchWatch();
       if (target) {
@@ -288,14 +317,12 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
     checkRecord();
   }, options.pollMs ?? 400);
 
-  // Whoever started the worker can end it (an orchestrator giving up, Ctrl+C
-  // in a terminal), and ending it must end Claude too, not leave it working on
-  // unwatched.
-  const onSignal = (signal: NodeJS.Signals): void => {
-    interruptedBy = interruptedBy ?? signal;
-    stop();
-  };
-  for (const signal of ENDING_SIGNALS) process.on(signal, onSignal);
+  // Ending the worker ends Claude, and what Claude started, too.
+  const unsubscribe =
+    options.interruption?.onEnd(() => {
+      interruptedBy = options.interruption?.exitCode ?? 1;
+      stop();
+    }) ?? null;
 
   return new Promise<SessionOutcome>((resolve) => {
     let finished = false;
@@ -308,26 +335,27 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
       exited = true;
       clearInterval(timer);
       if (closeWait) clearTimeout(closeWait);
-      for (const signal of ENDING_SIGNALS) process.removeListener(signal, onSignal);
+      unsubscribe?.();
       const ranMs = Date.now() - startedAt;
       // A refusal written just before Claude exited is read now, and the
       // output stands in for the record only when there was none to read.
       checkRecord();
-      if (!capped && !switchTo && !interruptedBy && !recordReadable && exitCode !== 0 && !options.ignoreLimits) {
+      if (!capped && !switchTo && interruptedBy === null && !recordReadable && exitCode !== 0 && !options.ignoreLimits) {
         const hit = matchesCapText(tail);
         if (hit) evidence(tail, { reason: hit.reason, ...(hit.resetAt !== undefined ? { resetAt: hit.resetAt } : {}) });
       }
-      // The account's answer, while one is still coming, but not for ever.
-      const deadline = Date.now() + VERIFY_WAIT_MS;
+      // The account's answer, while one is still coming, but not for ever, and
+      // only briefly when the worker is being ended.
+      const deadline = Date.now() + (interruptedBy !== null ? KILL_GRACE_MS : VERIFY_WAIT_MS);
       while (verifying !== null && Date.now() < deadline) await within(verifying, deadline - Date.now());
-      if (interruptedBy) {
-        resolve({ kind: 'ok', exitCode: exitCodeOf(null, interruptedBy), ranMs });
-        return;
-      }
-      if (switchTo) {
+      if (switchTo && interruptedBy === null) {
         resolve({ kind: 'switch', exitCode: 0, switchTo, ranMs });
         return;
       }
+      // A confirmed cap is reported even when the worker is being ended, so the
+      // ledger learns the limit this run paid to confirm. The loop then ends
+      // at its next step, since the next launch sees the signal and starts
+      // nothing.
       if (capped) {
         resolve({
           kind: 'capped',
@@ -336,6 +364,10 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
           ...(capped.reason !== undefined ? { reason: capped.reason } : {}),
           ...(capped.resetAt !== undefined ? { resetAt: capped.resetAt } : {}),
         });
+        return;
+      }
+      if (interruptedBy !== null) {
+        resolve({ kind: 'ok', exitCode: interruptedBy, ranMs });
         return;
       }
       // A resume of a conversation that was never written: the swap loop's
@@ -352,6 +384,7 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
     // 'close' waits for Claude's output to close, and something Claude started
     // can hold it open after Claude itself has gone.
     child.on('exit', (code, signal) => {
+      if (finished) return;
       closeWait = setTimeout(() => {
         child.stdout?.destroy();
         child.stderr?.destroy();

@@ -113,6 +113,7 @@ import {
 import { fetchTokenOwner } from '../accounts/identity-check.js';
 import { takeLease, touchLease, releaseLease, liveLeases } from '../session/lease.js';
 import { claimedElsewhere, pickAndClaim, releaseClaim } from '../session/worker-claim.js';
+import type { Interruption } from '../launcher/interruption.js';
 import { spreadWorkers } from '../usage/spread.js';
 import { HEALTHY_RUN, standingOf } from '../usage/runway.js';
 import { holdBackOf } from '../dashboard/rotation-settings.js';
@@ -278,6 +279,8 @@ export interface WorkerHooks {
   onAccount: (account: string) => void;
   onStdout: (chunk: string) => void;
   onStderr: (chunk: string) => void;
+  /** Ending the worker (a signal, its timeout): stops the launch running and starts no other. */
+  interruption?: Interruption;
 }
 
 export async function runInteractiveHotSwap(
@@ -1320,6 +1323,9 @@ export async function runInteractiveHotSwap(
     return { name: picked.name, dir: picked.dir };
   };
 
+  // Ending a worker reaches it between launches too, so it stops Claude and
+  // still lets the run below clean up.
+  const interruption = worker?.interruption ?? null;
   const exitCode = await runHotSwapSession({
     // Skipped up front rather than launched and rejected. These go into the same
     // set a runtime rejection goes into, so the closing message still says to
@@ -1361,6 +1367,8 @@ export async function runInteractiveHotSwap(
         modelOnly: modelOnlyLimit(loadLedger(context.ctx), Date.now()),
       }),
     runSession: async (hotAccount, isContinue, runOptions) => {
+      // A worker ended between launches starts nothing more.
+      if (interruption?.exitCode != null) return { kind: 'ok', exitCode: interruption.exitCode };
       const account = accounts.find((a) => a.name === hotAccount.name);
       if (!account) return { kind: 'ok', exitCode: 1 };
       // A new child on a new account. Whatever refusals were adding up belonged
@@ -1652,6 +1660,7 @@ export async function runInteractiveHotSwap(
           verifyCap,
           ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
           ...(stdin !== undefined ? { stdin } : {}),
+          ...(interruption ? { interruption } : {}),
           onStdout: worker.onStdout,
           onStderr: worker.onStderr,
         });
