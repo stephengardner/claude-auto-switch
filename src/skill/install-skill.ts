@@ -5,7 +5,8 @@ import { writeFileAtomic } from '../util/atomic-write.js';
 import type { PathCtx } from '../config/paths.js';
 
 /**
- * The `/ccx` skill: every account's room, and a swap, from inside Claude.
+ * The `/ccx` skill: every account's room, a swap, and how accounts get
+ * signed in here or on a server, from inside Claude.
  *
  * Installed into `~/.claude/skills/ccx` by `ccx on`, where plain `claude`,
  * Claude Desktop and every ccx session read it. ccx owns the file: `ccx on`
@@ -22,12 +23,14 @@ export const SKILL_MARK =
 
 export const SKILL_TEXT = `---
 name: ccx
-description: See how much room every one of your Claude accounts has left, and swap this session to another account, with ccx (claude-auto-switch). Use when the user runs /ccx, /ccx swap or /ccx status, asks to swap or switch Claude accounts, asks which account has room, or asks about usage limits across their accounts.
+description: See how much room every one of your Claude accounts has left, swap this session to another account, and sign accounts in here or on a server, with ccx (claude-auto-switch). Use when the user runs /ccx, /ccx swap or /ccx status, asks to swap or switch Claude accounts, asks which account has room, asks about usage limits across their accounts, or wants accounts signed in, ccx set up on another machine or server over SSH, or a server's logins kept alive.
 ---
 
 ${SKILL_MARK}
 
-# ccx: your accounts, and swapping between them
+# ccx: your accounts, swapping between them, and signing them in
+
+To sign accounts in or set up a server, skip to "Signing in" at the end.
 
 The argument says what to do: \`swap\` (also what no argument means), \`swap <account>\`, or \`status\`.
 
@@ -67,6 +70,18 @@ If no account is eligible, say so, name the soonest reset from the board, and st
 Run \`ccx swap <name>\` and report what it printed, in one or two plain sentences.
 
 In Claude Desktop the conversation then continues in a terminal window as soon as this reply ends: tell the user to carry on there and not to send anything more here.
+
+## Signing in, here or on a server reached over SSH
+
+Never copy a login between machines or profiles (\`~/.claude-auto-switch/profiles\`, \`.credentials.json\`, the Keychain). A refresh token works once: whichever copy renews second is logged out, usually within hours. Each machine signs each account in on its own.
+
+A sign-in needs the person: they approve it in a browser signed in to that account, and may paste a code back. So give them the command to run in the user's own terminal rather than running it with the Bash tool, where it would wait for input that never comes.
+
+- This machine: \`ccx login <name>\`, or \`ccx login --all\` for every account that is signed out.
+- A server, from a machine with a browser: \`ccx login --host <ssh-host> --all\`. It registers the accounts the server is missing and relays each sign-in there. ccx on the server must be 2.3.0 or newer, whatever the flags (update it there first: \`npm install -g claude-auto-switch\`). If a login shell there cannot find ccx, add \`--remote-ccx '<path to node> <path to ccx>'\`.
+- On the server, once: \`ccx keepalive on\`, so its logins renew while nobody uses it. \`ccx doctor\` there says what is still missing.
+
+A sign-in that comes back as a different account than the one asked for is refused. The login the account had before is put back, or, when there was none to put back, the account is left signed out. Either way the browser was signed in to the wrong account: switch it and run the same command again.
 `;
 
 export function skillPath(c: PathCtx = {}): string {

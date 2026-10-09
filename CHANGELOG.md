@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.3.1]
+
+### Changed
+
+- **The `/ccx` skill knows how accounts get signed in, here and on a
+  server.** It tells Claude never to copy a login between machines (a
+  refresh token works once, so one copy is logged out at the next renewal),
+  to sign a server in from a machine with a browser with `ccx login --host
+  <ssh-host> --all`, to run `ccx keepalive on` there, and to hand sign-ins to
+  the person's own terminal, since they need a browser and may ask for a
+  pasted code. Run `ccx on` after updating to refresh the installed skill.
+
 ## [2.3.0]
 
 ### Added
