@@ -30,7 +30,7 @@ import type { CliContext } from '../context.js';
  */
 
 /** The first ccx that answers `login --relay`. */
-const RELAY_SINCE = [2, 2, 0] as const;
+const RELAY_SINCE = [2, 3, 0] as const;
 /** Time for a browser that ccx drives to get from the link to the code. */
 const APPROVE_TIMEOUT_MS = 3 * 60_000;
 /**

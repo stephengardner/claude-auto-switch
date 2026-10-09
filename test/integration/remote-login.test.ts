@@ -93,7 +93,7 @@ describe.skipIf(posixOnly)('ccx login --host, across real processes', () => {
 
   it('registers, relays and hands back a code for every account not signed in there', async () => {
     process.env.FAKE_REMOTE_STATE = JSON.stringify({
-      ccxVersion: '2.2.0',
+      ccxVersion: '2.3.0',
       accounts: [
         { name: 'work', email: 'work@example.com', loggedIn: false, enabled: true },
         { name: 'done', loggedIn: true, enabled: true },
@@ -118,7 +118,7 @@ describe.skipIf(posixOnly)('ccx login --host, across real processes', () => {
 
   it('closes the remote input when there is no code, and the remote stops at once', async () => {
     process.env.FAKE_REMOTE_STATE = JSON.stringify({
-      ccxVersion: '2.2.0',
+      ccxVersion: '2.3.0',
       accounts: [{ name: 'work', loggedIn: false, enabled: true }],
     });
     const { c } = context([]);
@@ -135,7 +135,7 @@ describe.skipIf(posixOnly)('ccx login --host, across real processes', () => {
 
   it('never sends a code for a link that is not Anthropic', async () => {
     process.env.FAKE_REMOTE_STATE = JSON.stringify({
-      ccxVersion: '2.2.0',
+      ccxVersion: '2.3.0',
       accounts: [{ name: 'work', loggedIn: false, enabled: true }],
     });
     process.env.FAKE_REMOTE_LINK = 'https://evil.example/authorize';

@@ -1,8 +1,14 @@
 import { execa } from 'execa';
+import { withoutEnv } from '../launcher/child-env.js';
 
 export interface RunOptions {
   /** Extra environment variables (merged on top of process.env). */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Variables of process.env the command must not inherit, such as the login
+   * variables that would outrank the account a Claude is meant to run as.
+   */
+  dropEnv?: readonly string[];
   cwd?: string;
 }
 
@@ -10,6 +16,12 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+}
+
+/** The environment options for execa: process.env with `env` over it, less `dropEnv`. */
+function envOptions(opts: RunOptions): { env?: NodeJS.ProcessEnv; extendEnv?: boolean } {
+  if (!opts.dropEnv) return { env: opts.env };
+  return { env: { ...withoutEnv(process.env, opts.dropEnv), ...opts.env }, extendEnv: false };
 }
 
 /**
@@ -26,7 +38,7 @@ export async function runCapture(
   const result = await execa(bin, args, {
     reject: false,
     stripFinalNewline: false,
-    env: opts.env,
+    ...envOptions(opts),
     cwd: opts.cwd,
   });
   return {
@@ -48,7 +60,7 @@ export async function runInherit(
   const result = await execa(bin, args, {
     reject: false,
     stdio: 'inherit',
-    env: opts.env,
+    ...envOptions(opts),
     cwd: opts.cwd,
   });
   return result.exitCode ?? 1;

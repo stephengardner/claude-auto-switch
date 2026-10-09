@@ -63,7 +63,7 @@ function fakeRunner(remote: FakeRemote): RemoteRunner {
             exitCode: 0,
             stderr: '',
             stdout: JSON.stringify({
-              ccxVersion: remote.version ?? '2.2.0',
+              ccxVersion: remote.version ?? '2.3.0',
               accounts: (remote.remoteAccounts ?? []).map((a) => ({ enabled: true, ...a })),
             }),
           },
@@ -244,17 +244,17 @@ describe('ccx login --host', () => {
 
   it('asks for an update when ccx there is too old to relay', async () => {
     const { c, lines } = context([{ name: 'a' }]);
-    const remote = remoteWith({ version: '2.1.3', remoteAccounts: [{ name: 'a', loggedIn: false }] });
+    const remote = remoteWith({ version: '2.2.0', remoteAccounts: [{ name: 'a', loggedIn: false }] });
     const code = await loginOnHost(c, 'beast', 'a', {}, { ...browserApproves, runner: fakeRunner(remote) });
     expect(code).toBe(1);
-    expect(lines.join('\n')).toContain('2.1.3');
+    expect(lines.join('\n')).toContain('2.2.0');
     expect(remote.started).toEqual([]);
   });
 
   it('reads the state past anything the remote login profile prints first', async () => {
     const { c } = context([{ name: 'a' }]);
     const state = JSON.stringify(
-      { ccxVersion: '2.2.0', accounts: [{ name: 'a', loggedIn: false, enabled: true }] },
+      { ccxVersion: '2.3.0', accounts: [{ name: 'a', loggedIn: false, enabled: true }] },
       null,
       2,
     );

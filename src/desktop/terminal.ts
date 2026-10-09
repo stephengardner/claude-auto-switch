@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { HOST_ONLY_ENV, scrubHostEnv } from '../launcher/child-env.js';
 
 /**
  * Opening a new terminal window that runs one command, in one folder.
@@ -31,54 +32,10 @@ export interface TerminalJob {
   scriptName: string;
 }
 
-/**
- * Variables a Claude host sets for its OWN child processes: Claude Desktop for
- * the Claude it runs, and Claude for the hooks and tools it runs. A brand-new
- * top-level session must not inherit them. `CLAUDECODE` alone makes Claude
- * refuse to start, taking itself for a session nested inside another; the rest
- * tie it to a host that is not there (a messaging socket, a session id, an
- * account Desktop chose) or change how it behaves.
- */
-export const HOST_ONLY_ENV: readonly string[] = [
-  'CLAUDECODE',
-  'CLAUDE_CONFIG_DIR',
-  'CLAUDE_PID',
-  'CLAUDE_PROJECT_DIR',
-  'CLAUDE_EFFORT',
-  'CLAUDE_ENV_FILE',
-  'CLAUDE_CODE_ENTRYPOINT',
-  'CLAUDE_CODE_SESSION_ID',
-  'CLAUDE_CODE_SESSION_NAME',
-  'CLAUDE_CODE_SESSION_ATTENDED',
-  'CLAUDE_CODE_CHILD_SESSION',
-  'CLAUDE_CODE_HOST_SESSION_ID',
-  'CLAUDE_CODE_MESSAGING_SOCKET',
-  'CLAUDE_CODE_MESSAGING_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_SCOPES',
-  'CLAUDE_CODE_ACCOUNT_UUID',
-  'CLAUDE_CODE_ORGANIZATION_UUID',
-  'CLAUDE_CODE_RATE_LIMIT_TIER',
-  'CLAUDE_CODE_SUBSCRIPTION_TYPE',
-  'CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH',
-  'CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH',
-  'CLAUDE_CODE_SDK_READS_SESSION_STATE',
-  'CLAUDE_CODE_DESKTOP_APP_VERSION',
-  'CLAUDE_CODE_TERMINAL_MCP_TOOLS',
-  'CLAUDE_CODE_DISABLE_TERMINAL_TITLE',
-  'CLAUDE_AGENT_SDK_VERSION',
-];
-
-/** `env` without the host-only variables, as a plain string map. */
-export function scrubHostEnv(env: NodeJS.ProcessEnv): Record<string, string> {
-  const out: Record<string, string> = {};
-  // Case-insensitive, because Windows environment names are.
-  const drop = new Set(HOST_ONLY_ENV.map((n) => n.toUpperCase()));
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined && !drop.has(key.toUpperCase())) out[key] = value;
-  }
-  return out;
-}
+// Which variables a new top-level Claude must not inherit: kept with the rest
+// of what ccx decides about a child's environment, and named here too for the
+// launcher scripts below, which have to clear them in a shell.
+export { HOST_ONLY_ENV, scrubHostEnv };
 
 /** A PowerShell single-quoted string: nothing inside it is interpreted. */
 export function psQuote(value: string): string {

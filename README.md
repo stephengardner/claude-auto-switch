@@ -208,43 +208,63 @@ there can read them.
 pick: in place in a ccx session, or, in Claude Desktop, by continuing the
 conversation in a terminal. From a shell, `ccx swap [name]` does the same.
 
+## Workers: one task, one account
+
+A Claude Code subagent shares its parent's single login, so every subagent
+spends the same account. `ccx worker` runs a task headless (`claude -p`) as its
+own process, on the account ccx picks for it, for an orchestrator: a Claude
+session handing work out, or a program of your own.
+
+```sh
+ccx worker --agent coder --cwd ../wt-billing --permission-mode acceptEdits \
+  "Make the billing retry idempotent. Run npm test before you finish."
+```
+
+It runs as your own Claude (your agents, settings and MCP servers), spreads
+across accounts other sessions are not using, and when its account runs out it
+resumes the same conversation on the next one instead of starting the task
+over. It prints Claude's answer (JSON by default) with the accounts that did
+the work. See [workers](docs/workers.md) for the options, output, agent
+definitions and parallel coders in git worktrees.
+
 ## Commands
 
-| Command                                  | What it does                                                                                                      |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `ccx add <name>`                         | add an account and sign it in through the browser                                                                 |
-| `ccx on` / `ccx off`                     | set up / remove ccx in your shell, editors, status line and `/ccx`                                                |
-| `ccx`                                    | status at a glance (a setup guide when nothing is set up)                                                         |
-| `ccx dashboard`                          | live view with keys (alias `watch`)                                                                               |
-| `ccx usage`                              | every window on every account                                                                                     |
-| `ccx use <name>`                         | make an account active and move the only running session (`--now` restarts; `--session <pid>`, `--here`, `--all`) |
-| `ccx config [key] [value]`               | every setting; one explained; one changed (`default` resets it)                                                   |
-| `ccx sessions`                           | the ccx sessions running now: pid, account, folder                                                                |
-| `ccx swap [name]`                        | the room on every account; swap this session                                                                      |
-| `ccx rotate`                             | switch to the next pick now                                                                                       |
-| `ccx order [smart\|most-room\|priority]` | the pick rule                                                                                                     |
-| `ccx models [models...]`                 | the model chain (`--strategy model-first\|account-first`)                                                         |
-| `ccx priority <name> <n>`                | an account's place in your order (lower first)                                                                    |
-| `ccx enable` / `disable <name>`          | include / exclude an account                                                                                      |
-| `ccx proactive on\|off`                  | move before an account runs out (off by default)                                                                  |
-| `ccx auto`                               | run that check once (`--once`, `--json`)                                                                          |
-| `ccx resume-prompt "<text>"`             | what a session is told after a relaunch (`--clear`)                                                               |
-| `ccx run -- <args>`                      | run one Claude session through ccx without `ccx on`                                                               |
-| `ccx desktop [...]`                      | Claude Desktop: status, `move`, `handoff`, `mode`, `prompt`                                                       |
-| `ccx login <name>` / `--all`             | sign a stale account back in                                                                                      |
-| `ccx login --host <host> [name]`         | sign in a server's accounts from here, over SSH (`--all`, `--remote-ccx <path>`)                                  |
-| `ccx keepalive on\|off\|status`          | renew idle logins every four hours with cron, for a machine nobody uses                                           |
-| `ccx list` / `status [name]`             | account health: email, plan, signed in, capped until                                                              |
-| `ccx doctor`                             | check the setup and who each profile really is                                                                    |
-| `ccx history`                            | what ccx did to logins, sessions and your settings                                                                |
-| `ccx state`                              | everything ccx knows, as JSON                                                                                     |
-| `ccx cap <name>`                         | mark an account out by hand (`--clear`)                                                                           |
-| `ccx token <name>`                       | mint a long-lived token for headless use                                                                          |
-| `ccx statusline`                         | the status line itself (`--install` prints the snippet, `--compact`)                                              |
-| `ccx setup`                              | the next setup step, wherever you are                                                                             |
-| `ccx editor on\|off`                     | set up / remove just the editor                                                                                   |
-| `ccx daemon install`                     | always-on rotation outside a terminal                                                                             |
-| `ccx remove <name>`                      | remove an account (`--purge` also deletes its folder)                                                             |
+| Command                                  | What it does                                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `ccx worker [brief...]`                  | one task headless on an account, for an orchestrator (`--agent`, `--account`, `--cwd`, `--timeout`; see docs/workers.md) |
+| `ccx add <name>`                         | add an account and sign it in through the browser                                                                        |
+| `ccx on` / `ccx off`                     | set up / remove ccx in your shell, editors, status line and `/ccx`                                                       |
+| `ccx`                                    | status at a glance (a setup guide when nothing is set up)                                                                |
+| `ccx dashboard`                          | live view with keys (alias `watch`)                                                                                      |
+| `ccx usage`                              | every window on every account                                                                                            |
+| `ccx use <name>`                         | make an account active and move the only running session (`--now` restarts; `--session <pid>`, `--here`, `--all`)        |
+| `ccx config [key] [value]`               | every setting; one explained; one changed (`default` resets it)                                                          |
+| `ccx sessions`                           | the ccx sessions running now: pid, account, folder                                                                       |
+| `ccx swap [name]`                        | the room on every account; swap this session                                                                             |
+| `ccx rotate`                             | switch to the next pick now                                                                                              |
+| `ccx order [smart\|most-room\|priority]` | the pick rule                                                                                                            |
+| `ccx models [models...]`                 | the model chain (`--strategy model-first\|account-first`)                                                                |
+| `ccx priority <name> <n>`                | an account's place in your order (lower first)                                                                           |
+| `ccx enable` / `disable <name>`          | include / exclude an account                                                                                             |
+| `ccx proactive on\|off`                  | move before an account runs out (off by default)                                                                         |
+| `ccx auto`                               | run that check once (`--once`, `--json`)                                                                                 |
+| `ccx resume-prompt "<text>"`             | what a session is told after a relaunch (`--clear`)                                                                      |
+| `ccx run -- <args>`                      | run one Claude session through ccx without `ccx on`                                                                      |
+| `ccx desktop [...]`                      | Claude Desktop: status, `move`, `handoff`, `mode`, `prompt`                                                              |
+| `ccx login <name>` / `--all`             | sign a stale account back in                                                                                             |
+| `ccx login --host <host> [name]`         | sign in a server's accounts from here, over SSH (`--all`, `--remote-ccx <path>`)                                         |
+| `ccx keepalive on\|off\|status`          | renew idle logins every four hours with cron, for a machine nobody uses                                                  |
+| `ccx list` / `status [name]`             | account health: email, plan, signed in, capped until                                                                     |
+| `ccx doctor`                             | check the setup and who each profile really is                                                                           |
+| `ccx history`                            | what ccx did to logins, sessions and your settings                                                                       |
+| `ccx state`                              | everything ccx knows, as JSON                                                                                            |
+| `ccx cap <name>`                         | mark an account out by hand (`--clear`)                                                                                  |
+| `ccx token <name>`                       | mint a long-lived token for headless use                                                                                 |
+| `ccx statusline`                         | the status line itself (`--install` prints the snippet, `--compact`)                                                     |
+| `ccx setup`                              | the next setup step, wherever you are                                                                                    |
+| `ccx editor on\|off`                     | set up / remove just the editor                                                                                          |
+| `ccx daemon install`                     | always-on rotation outside a terminal                                                                                    |
+| `ccx remove <name>`                      | remove an account (`--purge` also deletes its folder)                                                                    |
 
 ## Configuration
 

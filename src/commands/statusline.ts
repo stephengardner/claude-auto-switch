@@ -231,7 +231,9 @@ function runCapturing(command: string, input: string): Promise<string> {
     // operator's own settings (including .cmd shims on Windows).
     const child = spawn(command, { shell: true });
     let out = '';
-    child.stdout.on('data', (c: Buffer) => (out += c.toString('utf8')));
+    // Decoded as a stream, so a character split between two reads stays whole.
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (c: string) => (out += c));
     child.on('error', reject);
     child.on('close', () => resolve(out));
     try {

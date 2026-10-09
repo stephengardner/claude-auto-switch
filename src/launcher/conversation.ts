@@ -270,6 +270,28 @@ const MANY_VALUE_FLAGS = new Set([
   '--tools',
 ]);
 
+/**
+ * The options in `args` as Claude's parser reads them, without their values,
+ * so a value is never mistaken for an option of its own. Nothing after `--`
+ * is an option.
+ */
+export function optionTokens(args: string[]): string[] {
+  const tokens: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg === '--') break;
+    if (isOperand(arg)) continue;
+    tokens.push(arg);
+    if (arg.includes('=')) continue;
+    if (ONE_VALUE_FLAGS.has(arg)) {
+      if (isOperand(args[i + 1])) i += 1;
+    } else if (MANY_VALUE_FLAGS.has(arg)) {
+      while (isOperand(args[i + 1])) i += 1;
+    }
+  }
+  return tokens;
+}
+
 /** Whether `args` carry a prompt: an operand that is not some option's value. */
 export function hasOwnPrompt(args: string[]): boolean {
   for (let i = 0; i < args.length; i++) {
@@ -286,6 +308,26 @@ export function hasOwnPrompt(args: string[]): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Whether an operand added at the end of `args` would be read as one more value
+ * of the last option there, because that option takes every operand after it:
+ * `--add-dir ../shared` or `--allowedTools "Bash(npm test:*)"`.
+ */
+export function endsInManyValues(args: string[]): boolean {
+  let taking = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    // Everything after `--` is an operand, and so is anything added after it.
+    if (arg === '--') return false;
+    if (isOperand(arg)) continue;
+    // `--add-dir=../shared` carries its value inside itself and takes no more.
+    const inline = arg.includes('=');
+    taking = !inline && MANY_VALUE_FLAGS.has(arg);
+    if (!inline && ONE_VALUE_FLAGS.has(arg) && isOperand(args[i + 1])) i += 1;
+  }
+  return taking;
 }
 
 /**
@@ -309,6 +351,13 @@ export function withResumePrompt(relaunch: string[], prompt: string): ResumeProm
       applied: false,
       args: relaunch,
       reason: 'this run was launched with a prompt of its own, and Claude takes only one',
+    };
+  }
+  if (endsInManyValues(relaunch)) {
+    return {
+      applied: false,
+      args: relaunch,
+      reason: 'the last option takes every value after it, so a prompt there would be read as one of them',
     };
   }
   return { applied: true, args: [...relaunch, promptOperand(prompt)] };

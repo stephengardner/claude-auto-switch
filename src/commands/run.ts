@@ -89,7 +89,7 @@ export async function runCommand(
     maybeHintShim(context); // one-time tip after the session, if the shim is off
     return code;
   }
-  const ignored = (['resumePrompt', 'startPrompt', 'account'] as const).filter(
+  const ignored = (['resumePrompt', 'startPrompt'] as const).filter(
     (key) => options[key] !== undefined,
   );
   if (ignored.length > 0) {
@@ -100,7 +100,9 @@ export async function runCommand(
     );
   }
 
-  const pinned = getActive(context.ctx) ?? undefined;
+  // An account asked for by name comes first here too, when it can take the
+  // run; otherwise the order picks, as for an interactive session.
+  const pinned = options.account ?? getActive(context.ctx) ?? undefined;
   const claude = getClaude(context);
   const healths = await probeAll(accounts, { claude });
   const loggedIn = signedInAndNotRejected(healths, accounts, context.ctx);
