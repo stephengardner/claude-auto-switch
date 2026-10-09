@@ -166,10 +166,30 @@ ccx desktop handoff credits   # move by itself: off | limit | credits
 pick: in place in a ccx session, or, in Claude Desktop, by continuing the
 conversation in a terminal. From a shell, `ccx swap [name]` does the same.
 
+## Workers: one task, one account
+
+A Claude Code subagent shares its parent's single login, so every subagent
+spends the same account. `ccx worker` runs a task headless (`claude -p`) as its
+own process, on the account ccx picks for it, for an orchestrator: a Claude
+session handing work out, or a program of your own.
+
+```sh
+ccx worker --agent coder --cwd ../wt-billing --permission-mode acceptEdits \
+  "Make the billing retry idempotent. Run npm test before you finish."
+```
+
+It runs as your own Claude (your agents, settings and MCP servers), spreads
+across accounts other sessions are not using, and when its account runs out it
+resumes the same conversation on the next one instead of starting the task
+over. It prints Claude's answer (JSON by default) with the accounts that did
+the work. See [workers](docs/workers.md) for the options, output, agent
+definitions and parallel coders in git worktrees.
+
 ## Commands
 
 | Command                                  | What it does                                                                                                      |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `ccx worker [brief...]`                  | one task headless on an account, for an orchestrator (`--agent`, `--account`, `--cwd`; see docs/workers.md)       |
 | `ccx add <name>`                         | add an account and sign it in through the browser                                                                 |
 | `ccx on` / `ccx off`                     | set up / remove ccx in your shell, editors, status line and `/ccx`                                                |
 | `ccx`                                    | status at a glance (a setup guide when nothing is set up)                                                         |

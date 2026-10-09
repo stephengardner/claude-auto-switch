@@ -86,11 +86,68 @@ const readObject = (file) => {
     return {};
   }
 };
+// Print mode with an output format, as a worker runs it: the prompt is the
+// last operand, or standard input when there is none, and the answer is
+// printed in that format when the run ends normally.
+const printMode = args.includes('-p') || args.includes('--print');
+const formatAt = args.indexOf('--output-format');
+const outputFormat = printMode && formatAt >= 0 ? args[formatAt + 1] : null;
+const VALUE_FLAGS = new Set(['--output-format', '--session-id', '--resume', '--agent', '--model', '--permission-mode']);
+let printPrompt = null;
+let promptVia = null;
+if (outputFormat) {
+  const last = args[args.length - 1];
+  if (args.length > 0 && !last.startsWith('-') && !VALUE_FLAGS.has(args[args.length - 2])) {
+    printPrompt = last.trim();
+    promptVia = 'arg';
+  } else {
+    try {
+      printPrompt = readFileSync(0, 'utf8');
+      promptVia = 'stdin';
+    } catch {
+      printPrompt = '';
+    }
+  }
+}
 if (runsLog) {
   // The model the session was given in its settings, as Claude would read it.
   const settingsModel = readObject(path.join(configDir, 'settings.json')).model ?? null;
-  appendFileSync(runsLog, `${JSON.stringify({ type: 'launch', args, marker: readMarker(), settingsModel })}\n`, 'utf8');
+  appendFileSync(
+    runsLog,
+    `${JSON.stringify({
+      type: 'launch',
+      args,
+      marker: readMarker(),
+      settingsModel,
+      ...(outputFormat ? { prompt: printPrompt, via: promptVia, cwd: process.cwd() } : {}),
+    })}\n`,
+    'utf8',
+  );
 }
+const printSession = () => {
+  for (const flag of ['--session-id', '--resume']) {
+    const i = args.indexOf(flag);
+    if (i >= 0 && args[i + 1]) return args[i + 1];
+  }
+  return null;
+};
+/** The answer a print-mode run gives as it ends normally. */
+const printResult = () => {
+  if (!outputFormat) return;
+  const result = {
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    result: `done: ${printPrompt}`,
+    session_id: printSession(),
+    num_turns: 1,
+  };
+  if (outputFormat === 'json') process.stdout.write(`${JSON.stringify(result)}\n`);
+  else if (outputFormat === 'stream-json') {
+    process.stdout.write(`${JSON.stringify({ type: 'system', subtype: 'init', session_id: printSession() })}\n`);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+  } else process.stdout.write(`done: ${printPrompt}\n`);
+};
 
 // What Claude itself writes into its config folder during a run: a model picked
 // with /model, a theme, a folder trusted. Merged in, as Claude would save them.
@@ -104,7 +161,9 @@ if (process.env.CLAUDE_CONFIG_DIR) {
     writeJson(file, { ...readObject(file), ...JSON.parse(process.env[variable]) });
   }
 }
-process.stdout.write(`fake-claude ran: ${args.join(' ')}\n`);
+// On standard error in print mode with a format: standard output there is the
+// answer, and a program reads it whole.
+(outputFormat ? process.stderr : process.stdout).write(`fake-claude ran: ${args.join(' ')}\n`);
 
 // Arbitrary output at start, standing in for a replayed conversation.
 if (process.env.FAKE_CLAUDE_SAY) process.stdout.write(`${process.env.FAKE_CLAUDE_SAY}\n`);
@@ -241,9 +300,11 @@ if (idleMs > 0) {
     // Simulate Claude re-reading its credential file from disk (its ~30s cache
     // TTL) before the run ends, so a seamless in-place swap is observable.
     if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'reread', marker: readMarker() })}\n`, 'utf8');
+    printResult();
     process.exit(0);
   }, idleMs);
 } else {
+  printResult();
   process.exit(0);
 }
 

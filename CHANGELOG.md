@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.2.0]
+
+### Added
+
+- **Workers: one task, one account (`ccx worker`).** Runs a task headless
+  (`claude -p`) as its own process on an account ccx picks, for an
+  orchestrator: a Claude session handing work out, or a program. The
+  out-of-process version of a subagent, which shares its parent's one login.
+  - Runs as your own Claude, in a session folder that shares your `~/.claude`,
+    so agent definitions (`--agent <name>`), settings and MCP servers are
+    there.
+  - When its account runs out mid-task, the cap is confirmed, and the same
+    conversation resumes on the next account with a note to carry on, rather
+    than the task starting over.
+  - Workers spread out: each prefers a healthy account no other session or
+    worker is using.
+  - Prints Claude's answer as `json` (default, with a `ccx` field naming the
+    accounts that did the work), `stream-json` (with a closing `ccx` line) or
+    `text` (with a report on standard error).
+  - A brief of any length: one too long for a command line goes in by standard
+    input. `--cwd` for a git worktree per coder, `--permission-mode`, and
+    Claude flags after `--`.
+  - Nothing global moves: the active account, the editor's link and the
+    terminal are left alone. See docs/workers.md.
+
+### Changed
+
+- `ccx run --account <name> -- -p ...` starts a headless run on that account;
+  `--account` was ignored for headless runs.
+
 ## [2.1.3]
 
 ### Fixed

@@ -44,6 +44,7 @@ import {
   retireLeftoverSessionDir,
 } from '../session/session-dir.js';
 import { runPtySession } from '../launcher/pty-session.js';
+import { runHeadlessSession } from '../launcher/headless-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
 import {
   notifyAccountSwitch,
@@ -74,6 +75,7 @@ import {
   checkResumePrompt,
   checkStartPrompt,
   resumePromptOff,
+  START_PROMPT_MAX_CHARS,
 } from '../session/resume-prompt.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
@@ -108,7 +110,10 @@ import {
   type SaveOutcome,
 } from '../session/mirror-state.js';
 import { fetchTokenOwner } from '../accounts/identity-check.js';
-import { takeLease, touchLease, releaseLease } from '../session/lease.js';
+import { takeLease, touchLease, releaseLease, liveLeases } from '../session/lease.js';
+import { spreadWorkers } from '../usage/spread.js';
+import { HEALTHY_RUN, standingOf } from '../usage/runway.js';
+import { holdBackOf } from '../dashboard/rotation-settings.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
 import { ensureLoginUsable, readinessMessage, swapMode } from '../session/preflight.js';
 import { renewalIsDue, refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
@@ -249,6 +254,23 @@ export interface HotSwapOptions {
   startPrompt?: string;
   /** Start on this account rather than the active one (it must be usable). */
   account?: string;
+  /**
+   * Run as a WORKER (`ccx worker`): Claude headless, its output handed to the
+   * hooks, no terminal taken, and nothing global moved: the active account,
+   * the editor's link and the terminal stay as they are. Everything else is a
+   * session's: its own folder, the account pick, logins kept safe, and moving
+   * on to the next account when one runs out, resuming the same conversation.
+   */
+  worker?: WorkerHooks;
+}
+
+export interface WorkerHooks {
+  /** The task, sent on the first launch only; by standard input when it is too long for a command line. */
+  brief: string;
+  /** Called as each launch starts, with the account it runs on. */
+  onLaunch: (account: string) => void;
+  onStdout: (chunk: string) => void;
+  onStderr: (chunk: string) => void;
 }
 
 export async function runInteractiveHotSwap(
@@ -268,6 +290,10 @@ export async function runInteractiveHotSwap(
     startPrompt = checked.prompt;
   }
   const say = context.err ?? ((m: string) => process.stderr.write(`${m}\n`));
+  const worker = options.worker ?? null;
+  // Terminal notifications and titles are escape codes for a screen; a worker
+  // has none, and whoever reads its error stream wants only words.
+  if (worker) setTerminalOwnedElsewhere(true);
   if (options.startPrompt !== undefined) {
     const checked = checkStartPrompt(options.startPrompt);
     if (!checked.ok) {
@@ -286,6 +312,23 @@ export async function runInteractiveHotSwap(
    */
   let accounts = listAccounts(context.ctx);
   let accountsStamp = fileStamp(registryFilePath(context.ctx));
+  /** Whether another running session (or worker) is on this account now. */
+  const inUseElsewhere = (name: string): boolean =>
+    liveLeases(context.ctx).some((lease) => lease.account === name && lease.pid !== process.pid);
+  /**
+   * Whether an account is healthy by the pick order's own measure: worth a
+   * move, its week not held back, and room for half a 5-hour window.
+   */
+  const healthyToStart = (name: string): boolean => {
+    const rotation = context.config.rotation;
+    const standing = standingOf(
+      readUsageSnapshot(context.ctx).accounts[name],
+      Date.now(),
+      runningModel() ?? preferredModel(context),
+      holdBackOf(rotation),
+    );
+    return standing.worthMoving && !standing.heldBack && standing.runway >= HEALTHY_RUN;
+  };
   const refreshAccounts = (): void => {
     const stamp = fileStamp(registryFilePath(context.ctx));
     if (stamp === accountsStamp) return;
@@ -1113,7 +1156,7 @@ export async function runInteractiveHotSwap(
 
   // Claim the operator's keyboard once for the whole run; every session in the
   // swap loop borrows it, so terminal mode is never toggled mid-swap.
-  const terminalInput = openTerminalInput(process.stdin, {
+  const terminalInput = worker ? null : openTerminalInput(process.stdin, {
     onUnrequestedReports: ({ dropped, toldTerminalToStop }) => {
       logEvent(
         'this terminal is reporting mouse activity nothing asked for; dropping those ' +
@@ -1159,8 +1202,10 @@ export async function runInteractiveHotSwap(
       refresh: refreshSettings,
       requestSwitch: (account, reason) => {
         notice(`${reason}; moving to "${account}" before this account runs out`);
-        setActive(account, context.ctx);
-        syncEditorPointerIfEnabled(context);
+        if (!worker) {
+          setActive(account, context.ctx);
+          syncEditorPointerIfEnabled(context);
+        }
         // Addressed to THIS session. A shared request is taken by whichever
         // session looks first, so this one's early move could move another.
         writeSwitchRequest(account, Date.now(), 'seamless', context.ctx, process.pid);
@@ -1184,7 +1229,9 @@ export async function runInteractiveHotSwap(
       refreshSettings();
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
       // An account this run was told to start on outranks the active one.
-      const pinned = options.account ?? getActive(context.ctx);
+      // A worker is not "the" session: it starts where it was told, or where
+      // the pick order says, never on the account others start on by default.
+      const pinned = options.account ?? (worker ? null : getActive(context.ctx));
       // Ordered by the operator's policy: `most-room` reaches for the least-used
       // account first (the one with the most headroom), `priority` keeps the
       // classic order. Same comparator the `select`/`rotate`/dashboard paths use,
@@ -1222,7 +1269,9 @@ export async function runInteractiveHotSwap(
       // Start on the pinned account if it is still eligible, else the chosen order.
       const ordered = pinned
         ? [...eligible.filter((a) => a.name === pinned), ...eligible.filter((a) => a.name !== pinned)]
-        : eligible;
+        : worker
+          ? spreadWorkers(eligible, inUseElsewhere, healthyToStart)
+          : eligible;
 
       // ONE decision, made by the planner: which account, on which model. The
       // model half used to be decided separately, inside the session, and it
@@ -1370,7 +1419,7 @@ export async function runInteractiveHotSwap(
       // aimed at this one session and must leave the global active account and the
       // editor pointer where they were. Consumed once, so the next ordinary start
       // updates them again.
-      if (!nextStartTargeted) {
+      if (!nextStartTargeted && !worker) {
         setActive(account.name, context.ctx);
         syncEditorPointerIfEnabled(context);
       }
@@ -1442,7 +1491,7 @@ export async function runInteractiveHotSwap(
         // belong to the default session. A broadcast switch is the old behaviour
         // and still sets both. `activate` above swaps the login under THIS session
         // either way; only the global surfaces are gated.
-        if (!targeted) {
+        if (!targeted && !worker) {
           setActive(target.name, context.ctx);
           syncEditorPointerIfEnabled(context);
         }
@@ -1523,8 +1572,10 @@ export async function runInteractiveHotSwap(
 
         // Auto-rotation, not a targeted user switch: the global active account
         // and the editor pointer SHOULD follow, same as the swap loop's own moves.
-        setActive(relievedTo.name, context.ctx);
-        syncEditorPointerIfEnabled(context);
+        if (!worker) {
+          setActive(relievedTo.name, context.ctx);
+          syncEditorPointerIfEnabled(context);
+        }
         notice(`"${capName}" hit its limit; moved this session to "${relievedTo.name}" in place (no restart)`);
         notifyAccountSwitch(relievedTo.name, 'switched in place');
         logEvent(`seamless cap relief: ${capName} -> ${relievedTo.name}`, {
@@ -1542,7 +1593,7 @@ export async function runInteractiveHotSwap(
         verifyCap,
         onCapConfirmed,
         ...(context.blockedWatch ? { blockedWatch: context.blockedWatch } : {}),
-        input: terminalInput,
+        ...(terminalInput ? { input: terminalInput } : {}),
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
         ...(debugLog ? { debugLog } : {}),
         // Claude's own record of which conversation the child is in, kept
@@ -1559,6 +1610,34 @@ export async function runInteractiveHotSwap(
           rememberReport(sessionDir, { id });
         },
       };
+      /**
+       * One run of Claude on this account: in a terminal, or headless for a
+       * worker, whose output goes to the caller and whose brief, when it is too
+       * long for a command line, goes in by standard input.
+       */
+      const runChild = (childArgs: string[], stdin?: string): Promise<SessionOutcome> => {
+        if (!worker) return runPtySession({ ...base, args: childArgs });
+        worker.onLaunch(account.name);
+        return runHeadlessSession({
+          claude,
+          args: childArgs,
+          configDir: sessionDir,
+          env,
+          switchWatch,
+          onTick,
+          verifyCap,
+          ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
+          ...(stdin !== undefined ? { stdin } : {}),
+          onStdout: worker.onStdout,
+          onStderr: worker.onStderr,
+        });
+      };
+      /** A worker's brief on a launch: as Claude's prompt, or by standard input when too long. */
+      const withBrief = (launch: string[]): { args: string[]; stdin?: string } => {
+        if (!worker) return { args: launch };
+        const placed = worker.brief.length <= START_PROMPT_MAX_CHARS ? withResumePrompt(launch, worker.brief) : null;
+        return placed?.applied ? { args: placed.args } : { args: launch, stdin: worker.brief };
+      };
       // A relaunch after a swap resumes this run's own conversation by id.
       // `--continue` was "the most recent one in this directory", which is a
       // different conversation entirely whenever two sessions share a project.
@@ -1573,7 +1652,8 @@ export async function runInteractiveHotSwap(
       // account this relaunch chose, saying what this relaunch would have said.
       // The run ends normally and the newer ccx is started after it (below).
       refreshSettings();
-      const newer = isContinue && context.config.update.follow ? (context.newerInstall ?? newerInstall)() : null;
+      const newer =
+        isContinue && !worker && context.config.update.follow ? (context.newerInstall ?? newerInstall)() : null;
       if (newer) {
         handoverPlan = {
           ...newer,
@@ -1593,7 +1673,7 @@ export async function runInteractiveHotSwap(
       notifyAccountSwitch(account.name, isContinue ? 'continued here' : 'session start');
       // From here until it returns, the screen belongs to Claude, so anything
       // ccx has to say goes through `notice` rather than onto the screen.
-      takeScreen(true);
+      if (!worker) takeScreen(true);
       try {
         // The chosen model is applied here, and stays applied for later
         // rotations in this run: once Fable is gone it does not come back
@@ -1607,7 +1687,13 @@ export async function runInteractiveHotSwap(
         let runArgs = modelArgs;
         /** The prompt this launch was given, so a copy made again below gets it too. */
         let appliedPrompt: string | null = null;
-        if (isContinue) {
+        /** A worker's brief by standard input, on its first launch only. */
+        let firstStdin: string | undefined;
+        if (worker && !isContinue) {
+          const briefed = withBrief(modelArgs);
+          runArgs = briefed.args;
+          firstStdin = briefed.stdin;
+        } else if (isContinue) {
           const carryOn = relaunchPrompt();
           if (carryOn) {
             const placed = withResumePrompt(modelArgs, carryOn.prompt);
@@ -1641,7 +1727,7 @@ export async function runInteractiveHotSwap(
             { kind: 'resume-prompt', data: { applied: placed.applied, chars: first.length, atStart: true } },
           );
         }
-        let outcome = await runPtySession({ ...base, args: runArgs });
+        let outcome = await runChild(runArgs, firstStdin);
         // Ended idle for a newer ccx: it resumes the conversation as it was,
         // with nothing to say, since nothing was interrupted.
         if (outcome.handover) {
@@ -1670,10 +1756,7 @@ export async function runInteractiveHotSwap(
         if (outcome.kind === 'no-conversation' && isContinue && forkLaunch && conversationId() === forkLaunch.id) {
           notice('the copy of this conversation was never saved; copying it again');
           const again = chosenModel ? withModel(forkLaunch.args, chosenModel) : forkLaunch.args;
-          outcome = await runPtySession({
-            ...base,
-            args: appliedPrompt !== null ? withResumePrompt(again, appliedPrompt).args : again,
-          });
+          outcome = await runChild(appliedPrompt !== null ? withResumePrompt(again, appliedPrompt).args : again);
         }
         // If we tried to resume but the new account has no saved conversation,
         // start a fresh session on it instead of dead-ending.
@@ -1701,10 +1784,12 @@ export async function runInteractiveHotSwap(
           rememberReport(sessionDir, { id: fresh.id });
           // The armed prompt was written for the conversation that is gone; a
           // held message was not, and dropping it here would lose it outright.
-          return await runPtySession({
-            ...base,
-            args: carried !== null ? withResumePrompt(fresh.args, carried).args : fresh.args,
-          });
+          // A worker's task starts over in the new conversation, brief and all.
+          if (worker) {
+            const briefed = withBrief(fresh.args);
+            return await runChild(briefed.args, briefed.stdin);
+          }
+          return await runChild(carried !== null ? withResumePrompt(fresh.args, carried).args : fresh.args);
         }
         // A model-scoped limit is remembered against THIS ACCOUNT and handed
         // back to the swap loop, which asks the planner what to do next. It
@@ -1727,7 +1812,7 @@ export async function runInteractiveHotSwap(
         }
         return withCapScope(outcome);
       } finally {
-        takeScreen(false);
+        if (!worker) takeScreen(false);
       }
     },
     markCapped: (accountName, reason, resetAt) => recordCap(accountName, reason, resetAt),
@@ -1758,7 +1843,7 @@ export async function runInteractiveHotSwap(
   // run and be read by a later session that reuses this pid. Startup clears it
   // too; this just keeps the folder from collecting files between runs.
   clearSwitchRequest(context.ctx, process.pid);
-  terminalInput.close();
+  terminalInput?.close();
   // Claude has stopped: what it changed in this session's settings and state
   // goes back to the user's own files, where plain `claude` reads them. What
   // cannot go back yet stays in the session folder, and the next ccx start

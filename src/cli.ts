@@ -15,6 +15,7 @@ import { proactiveCommand } from './commands/proactive-config.js';
 import { modelsCommand } from './commands/models-config.js';
 import { orderCommand } from './commands/order-config.js';
 import { configCommand } from './commands/settings.js';
+import { workerCommand, type WorkerOptions } from './commands/worker.js';
 import { statuslineCommand } from './commands/statusline.js';
 import { historyCommand } from './commands/history.js';
 import { runCommand } from './commands/run.js';
@@ -293,6 +294,28 @@ program
       process.exitCode = await runCommand(context(), args, opts);
     },
   );
+
+program
+  .command('worker')
+  .description(
+    'run one task headless on an account, for an orchestrator; when the account runs out it resumes on the next (claude flags after --)',
+  )
+  .option('--agent <name>', 'run as this agent definition (.claude/agents/<name>.md)')
+  .option('--account <name>', 'start on this account, or "best" (the default): the pick order, spread across workers')
+  .option('--model <model>', 'the model to run')
+  .option('--output <format>', 'json (the default), stream-json or text, as claude -p --output-format')
+  .option('--permission-mode <mode>', "Claude's permission mode, e.g. acceptEdits; a worker cannot stop to ask")
+  .option('--cwd <dir>', 'work in this folder (one git worktree per coder keeps them out of each other)')
+  .option('--brief-file <path>', 'read the brief from a file, or - for standard input')
+  .argument('[brief...]')
+  .action(async (brief: string[], opts: WorkerOptions) => {
+    // Everything after `--` is Claude's; commander hands it over as the tail
+    // of the brief, so it is taken back off there.
+    const dash = process.argv.indexOf('--');
+    const passthrough = dash >= 0 ? process.argv.slice(dash + 1) : [];
+    const words = brief.slice(0, Math.max(0, brief.length - passthrough.length));
+    process.exitCode = await workerCommand(context(), words, opts, passthrough);
+  });
 
 program
   .command('remove <name>')
