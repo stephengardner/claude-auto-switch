@@ -3,7 +3,8 @@
 // claude-auto-switch drives: `auth status`, `auth login`, and a generic run.
 // Behavior is driven by a scenario JSON, resolved from FAKE_CLAUDE_SCENARIO or
 // <CLAUDE_CONFIG_DIR>/fake-scenario.json. No network, no model spend, no logins.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, writeSync, existsSync, mkdirSync, appendFileSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 
 const args = process.argv.slice(2);
@@ -86,10 +87,153 @@ const readObject = (file) => {
     return {};
   }
 };
+// Print mode with an output format, as a worker runs it. The prompt is read
+// the way Claude's own parser reads it: the first operand that is not some
+// option's value, where an option such as --allowedTools takes EVERY operand
+// up to the next option. With no operand, it is standard input, and with
+// neither, Claude refuses, as the real one does.
+const printMode = args.includes('-p') || args.includes('--print');
+const formatAt = args.indexOf('--output-format');
+const outputFormat = printMode && formatAt >= 0 ? args[formatAt + 1] : null;
+const VALUE_FLAGS = new Set([
+  '--output-format',
+  '--session-id',
+  '--resume',
+  '--agent',
+  '--model',
+  '--permission-mode',
+  '--max-turns',
+  '--append-system-prompt',
+  '--settings',
+  '--effort',
+  '--fallback-model',
+  '--input-format',
+]);
+const MANY_VALUE_FLAGS = new Set([
+  '--add-dir',
+  '--allowedTools',
+  '--allowed-tools',
+  '--disallowedTools',
+  '--disallowed-tools',
+  '--tools',
+  '--mcp-config',
+  '--betas',
+  '--file',
+]);
+const operandPrompt = () => {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') return args[i + 1] ?? null;
+    if (!arg.startsWith('-')) return arg;
+    if (arg.includes('=')) continue;
+    if (VALUE_FLAGS.has(arg)) i += 1;
+    else if (MANY_VALUE_FLAGS.has(arg)) while (i + 1 < args.length && !args[i + 1].startsWith('-')) i += 1;
+  }
+  return null;
+};
+let printPrompt = null;
+let promptVia = null;
+if (outputFormat) {
+  const operand = operandPrompt();
+  if (operand !== null) {
+    printPrompt = operand.trim();
+    promptVia = 'arg';
+  } else {
+    try {
+      printPrompt = readFileSync(0, 'utf8');
+      promptVia = 'stdin';
+    } catch {
+      printPrompt = '';
+    }
+  }
+}
 if (runsLog) {
   // The model the session was given in its settings, as Claude would read it.
   const settingsModel = readObject(path.join(configDir, 'settings.json')).model ?? null;
-  appendFileSync(runsLog, `${JSON.stringify({ type: 'launch', args, marker: readMarker(), settingsModel })}\n`, 'utf8');
+  appendFileSync(
+    runsLog,
+    `${JSON.stringify({
+      type: 'launch',
+      args,
+      marker: readMarker(),
+      settingsModel,
+      ...(outputFormat ? { prompt: printPrompt, via: promptVia, cwd: process.cwd() } : {}),
+      pid: process.pid,
+      // What it would sign in with, besides the session folder.
+      oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null,
+      entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT ?? null,
+    })}\n`,
+    'utf8',
+  );
+}
+const printSession = () => {
+  for (const flag of ['--session-id', '--resume']) {
+    const i = args.indexOf(flag);
+    if (i >= 0 && args[i + 1]) return args[i + 1];
+  }
+  return null;
+};
+/**
+ * The answer a print-mode run gives as it ends normally, then `done`. Only
+ * once it is written out: a pipe on macOS takes writes asynchronously, and
+ * exiting straight after a long answer cut it off.
+ */
+const printResult = (done) => {
+  if (!outputFormat) return done();
+  const result = {
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    result: `done: ${printPrompt}`,
+    session_id: printSession(),
+    num_turns: 1,
+  };
+  const text =
+    outputFormat === 'json'
+      ? `${JSON.stringify(result)}\n`
+      : outputFormat === 'stream-json'
+        ? `${JSON.stringify({ type: 'system', subtype: 'init', session_id: printSession() })}\n${JSON.stringify(result)}\n`
+        : `done: ${printPrompt}\n`;
+  if (!process.env.FAKE_CLAUDE_SPLIT_ANSWER) {
+    process.stdout.write(text, () => done());
+    return;
+  }
+  // In two writes a moment apart, split inside the first character that
+  // takes more than one byte, so the reader gets half a character per read.
+  const bytes = Buffer.from(text, 'utf8');
+  const lead = bytes.findIndex((b) => b >= 0xc0);
+  const cut = lead >= 0 ? lead + 1 : Math.floor(bytes.length / 2);
+  writeSync(1, bytes.subarray(0, cut));
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  writeSync(1, bytes.subarray(cut));
+  done();
+};
+// The real CLI's answer to print mode with no prompt at all.
+if (outputFormat && !printPrompt) {
+  process.stderr.write('Error: Input must be provided either through stdin or as a prompt argument when using --print\n');
+  process.exit(1);
+}
+const firstLaunch = !args.includes('--resume');
+// A process Claude started (a test run, a dev server) that would run on after
+// it: its pid goes to the named file. Holding Claude's own output open, when
+// asked, as one that inherited it would. On Windows it is outside the job
+// Claude itself sits in, as the commands Claude's Bash tool runs are
+// (measured: ending Claude's parent outright ends Claude, not those).
+if (process.env.FAKE_CLAUDE_GRANDCHILD && firstLaunch) {
+  const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], {
+    stdio: process.env.FAKE_CLAUDE_GRANDCHILD_STDIO === 'inherit' ? 'inherit' : 'ignore',
+    detached: process.platform === 'win32',
+    windowsHide: true,
+  });
+  writeFileSync(process.env.FAKE_CLAUDE_GRANDCHILD, String(grandchild.pid), 'utf8');
+}
+// A Claude that does not stop when asked to.
+if (process.env.FAKE_CLAUDE_IGNORE_TERM && firstLaunch) {
+  process.on('SIGTERM', () => {});
+}
+// Half an event, cut off by the end of the launch, as a kill mid-write leaves it.
+if (process.env.FAKE_CLAUDE_PARTIAL_LINE && outputFormat === 'stream-json' && firstLaunch) {
+  process.stdout.write('{"type":"assistant","message":{"content":"cut off mid');
 }
 
 // What Claude itself writes into its config folder during a run: a model picked
@@ -104,7 +248,9 @@ if (process.env.CLAUDE_CONFIG_DIR) {
     writeJson(file, { ...readObject(file), ...JSON.parse(process.env[variable]) });
   }
 }
-process.stdout.write(`fake-claude ran: ${args.join(' ')}\n`);
+// On standard error in print mode with a format: standard output there is the
+// answer, and a program reads it whole.
+(outputFormat ? process.stderr : process.stdout).write(`fake-claude ran: ${args.join(' ')}\n`);
 
 // Arbitrary output at start, standing in for a replayed conversation.
 if (process.env.FAKE_CLAUDE_SAY) process.stdout.write(`${process.env.FAKE_CLAUDE_SAY}\n`);
@@ -166,7 +312,12 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
     const transcript = path.join(configDir, 'projects', 'fake-project', `${recordedId}.jsonl`);
     mkdirSync(path.dirname(transcript), { recursive: true });
     appendFileSync(transcript, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
-    const refuse = () =>
+    // Only on the accounts named, when some are: an account with room does
+    // not refuse.
+    const refuseOn = process.env.FAKE_CLAUDE_REFUSE_ON;
+    const refusesHere = !refuseOn || refuseOn.split(',').includes(readMarker() ?? '');
+    const refuse = () => {
+      if (!refusesHere) return;
       appendFileSync(
         transcript,
         `${JSON.stringify({
@@ -183,9 +334,29 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
           },
         })}\n`,
       );
+      // Print mode ends the run on a refused turn, with an error result and
+      // exit 1, where the terminal app stays up and waits.
+      if (process.env.FAKE_CLAUDE_REFUSAL_ENDS_RUN && outputFormat) {
+        const failed = {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          result: 'Out of room on this account for now.',
+          session_id: printSession(),
+        };
+        if (outputFormat === 'text') process.stderr.write(`${failed.result}\n`, () => process.exit(1));
+        else process.stdout.write(`${JSON.stringify(failed)}\n`, () => process.exit(1));
+      }
+    };
     const after = Number(process.env.FAKE_CLAUDE_REFUSE_AFTER_MS) || 0;
     if (after > 0) {
       const t = setTimeout(refuse, after);
+      if (t.unref) t.unref();
+    }
+    // A second refusal, as when the operator tries again.
+    const again = Number(process.env.FAKE_CLAUDE_REFUSE_AGAIN_AFTER_MS) || 0;
+    if (again > 0) {
+      const t = setTimeout(refuse, again);
       if (t.unref) t.unref();
     }
   }
@@ -235,16 +406,22 @@ if (capEvery > 0) {
 
 // Stay alive when asked, so a test can interrupt the run (cap or switch) before
 // it exits. Killed by the parent (child.kill) ends it immediately.
-const idleMs = Number(process.env.FAKE_CLAUDE_IDLE_MS) || 0;
+// One that does not stop when asked keeps running well past any test, unless
+// made to; so does one cut off mid-write, which is only ever ended from outside
+// (finishing would print its next event straight after the half line, which a
+// real run never does).
+const runsUntilEnded =
+  firstLaunch && (process.env.FAKE_CLAUDE_IGNORE_TERM || process.env.FAKE_CLAUDE_PARTIAL_LINE);
+const idleMs = runsUntilEnded ? 60_000 : Number(process.env.FAKE_CLAUDE_IDLE_MS) || 0;
 if (idleMs > 0) {
   setTimeout(() => {
     // Simulate Claude re-reading its credential file from disk (its ~30s cache
     // TTL) before the run ends, so a seamless in-place swap is observable.
     if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'reread', marker: readMarker() })}\n`, 'utf8');
-    process.exit(0);
+    printResult(() => process.exit(0));
   }, idleMs);
 } else {
-  process.exit(0);
+  printResult(() => process.exit(0));
 }
 
 

@@ -11,6 +11,7 @@ import {
   hasOwnPrompt,
   promptOperand,
   startsByResuming,
+  endsInManyValues,
 } from './conversation.js';
 
 const ID = '11111111-2222-4333-8444-555555555555';
@@ -248,6 +249,27 @@ describe('the prompt a session armed for its own relaunch', () => {
   it('gives a list-taking flag every value up to the next flag', () => {
     const relaunch = relaunchArgs(['--add-dir', '../lib', '../docs', '--effort', 'max'], ID);
     expect(withResumePrompt(relaunch, 'carry on').applied).toBe(true);
+  });
+
+  it('stands aside rather than become one more value of a list-taking flag at the end', () => {
+    // `--allowedTools "Bash(npm test:*)" "the task"`: Claude reads the task as
+    // a second tool and runs with no prompt at all. A worker then sends its
+    // brief by standard input instead.
+    for (const args of [
+      ['-p', '--allowedTools', 'Bash(npm test:*)'],
+      ['-p', '--add-dir', '../lib', '../docs'],
+      ['-p', '--mcp-config'],
+    ]) {
+      const placed = withResumePrompt(args, 'the task');
+      expect(placed.applied).toBe(false);
+      expect(placed.args).toEqual(args);
+      if (!placed.applied) expect(placed.reason).toMatch(/takes every value after it/);
+    }
+    expect(endsInManyValues(['--add-dir', '../lib', '--session-id', ID])).toBe(false);
+    expect(endsInManyValues(['--add-dir=../lib'])).toBe(false);
+    expect(endsInManyValues(['--add-dir', '../lib', '--verbose'])).toBe(false);
+    expect(endsInManyValues(['--add-dir', '../lib', '--', 'x'])).toBe(false);
+    expect(endsInManyValues(['--model', 'opus', '--tools', 'Read'])).toBe(true);
   });
 
   it('keeps a value written into the flag itself out of the question', () => {

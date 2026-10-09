@@ -15,6 +15,7 @@ import { proactiveCommand } from './commands/proactive-config.js';
 import { modelsCommand } from './commands/models-config.js';
 import { orderCommand } from './commands/order-config.js';
 import { configCommand } from './commands/settings.js';
+import { registerWorkerCommand, workerCommand } from './commands/worker.js';
 import { statuslineCommand } from './commands/statusline.js';
 import { historyCommand } from './commands/history.js';
 import { runCommand } from './commands/run.js';
@@ -293,6 +294,14 @@ program
       process.exitCode = await runCommand(context(), args, opts);
     },
   );
+
+registerWorkerCommand(
+  program,
+  () => process.argv,
+  async (words, opts, passthrough) => {
+    process.exitCode = await workerCommand(context(), words, opts, passthrough);
+  },
+);
 
 program
   .command('remove <name>')

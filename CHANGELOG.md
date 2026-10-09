@@ -4,6 +4,58 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.2.0]
+
+### Added
+
+- **Workers: one task, one account (`ccx worker`).** Runs a task headless
+  (`claude -p`) as its own process on an account ccx picks, for an
+  orchestrator: a Claude session handing work out, or a program. The
+  out-of-process version of a subagent, which shares its parent's one login.
+  - Runs as your own Claude, in a session folder that shares your `~/.claude`,
+    so agent definitions (`--agent <name>`), settings and MCP servers are
+    there.
+  - When its account runs out mid-task, the cap is confirmed, and the same
+    conversation resumes on the next account with a note to carry on, rather
+    than the task starting over.
+  - Workers spread out: each prefers a healthy account no other session or
+    worker is using, including workers started at the same moment (the pick
+    and a claim on it are one step under a shared lock).
+  - Prints Claude's answer as `json` (default, with a `ccx` field naming the
+    accounts that did the work), `stream-json` (with a closing `ccx` line) or
+    `text` (with a report on standard error). In `json`, standard output is
+    always one object, an error result saying why when Claude gave none.
+  - A brief of any length: one too long for a command line goes in by standard
+    input. `--cwd` for a git worktree per coder, `--permission-mode`, and
+    Claude flags after `--`.
+  - Nothing global moves: the active account, the editor's link and the
+    terminal are left alone. Started from inside a Claude session, a worker
+    takes none of that session's login or host variables.
+  - `--timeout <minutes>` bounds a worker: at the timeout ccx ends Claude and
+    everything Claude started, and the worker exits with 124 and says so.
+    Ending a worker with a signal (Ctrl+C, SIGTERM) does the same, and so does
+    a move to another account. On Windows a program cannot signal, and ending
+    the process outright leaves a command Claude was running; use `--timeout`
+    or `taskkill /T`. See docs/workers.md.
+
+### Changed
+
+- `ccx run --account <name> -- -p ...` starts a headless run on that account;
+  `--account` was ignored for headless runs.
+- A login variable inherited from wherever ccx was started
+  (`CLAUDE_CODE_OAUTH_TOKEN` and its companions) no longer reaches the Claude
+  ccx starts. Claude reads it before the session's own credential, so it put a
+  session on an account other than the one ccx chose, and usage and refusals
+  were then counted against the wrong account. A token exported in the shell
+  is not a ccx login (`ccx token <name>` gives an account one), and the login
+  check and the startup check no longer count it either.
+
+### Fixed
+
+- A character split between two reads of Claude's output (the error output of
+  a headless `ccx run`, a status line command's output) came out as two
+  replacement marks; it is now decoded whole.
+
 ## [2.1.3]
 
 ### Fixed

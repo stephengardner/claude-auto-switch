@@ -78,7 +78,7 @@ export function leasePath(account: string, c: PathCtx = {}, pid: number = proces
   return path.join(leasesDir(c), `${encodeURIComponent(account)}__${pid}.json`);
 }
 
-function processIsAlive(pid: number): boolean {
+export function processIsAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     // Signal 0 checks for existence without touching the process.

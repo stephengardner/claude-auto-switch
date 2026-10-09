@@ -53,8 +53,9 @@ describe('what ccx says while Claude owns the screen', () => {
     const region = midSessionRegion();
     expect(region).toContain('takeScreen(true);');
     // Released in a finally, so a session that throws does not leave ccx mute
-    // and believing the screen is still taken.
-    expect(region).toMatch(/finally \{\s*takeScreen\(false\);/);
+    // and believing the screen is still taken. (A worker has no screen to take
+    // or give back, so both are skipped for one.)
+    expect(region).toMatch(/finally \{\s*(if \(!worker\) )?takeScreen\(false\);/);
   });
 
   it('writes to the screen for ONE thing only: a login problem before launch', () => {

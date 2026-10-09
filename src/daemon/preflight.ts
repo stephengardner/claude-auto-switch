@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runCapture } from '../util/exec.js';
+import { ACCOUNT_ENV } from '../launcher/child-env.js';
 import { parseAuthStatus } from '../health/auth-status.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 
@@ -43,6 +44,9 @@ export async function detectIsolation(claude: ClaudeInvoker): Promise<IsolationM
   const dir = mkdtempSync(path.join(tmpdir(), 'cas-preflight-'));
   const { stdout } = await runCapture(claude.bin, invokerArgs(claude, ['auth', 'status']), {
     env: { CLAUDE_CONFIG_DIR: dir },
+    // Asked of the credential store, not of a token in the shell, which would
+    // make an empty folder look signed in.
+    dropEnv: ACCOUNT_ENV,
   });
   let loggedIn = false;
   try {
