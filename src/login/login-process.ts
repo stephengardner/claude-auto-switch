@@ -6,6 +6,8 @@ const URL_RE = /(https?:\/\/\S+)\s/;
 const URL_WAIT_MS = 3000;
 /** Enough for the line carrying the URL; output past this is not searched. */
 const MAX_SCANNED_CHARS = 64 * 1024;
+/** Enough for the last thing claude said, which explains a refused code. */
+const MAX_TAIL_CHARS = 2048;
 
 /**
  * Real adapter: spawn `claude auth login` and sniff an auth URL from its output.
@@ -38,7 +40,9 @@ export const spawnAuthLogin: StartAuthLogin = (invoker, args, env, options = {})
   };
 
   let scanned = '';
+  let tail = '';
   const onData = (chunk: Buffer) => {
+    tail = (tail + chunk.toString()).slice(-MAX_TAIL_CHARS);
     if (settled || scanned.length > MAX_SCANNED_CHARS) return;
     scanned += chunk.toString();
     const match = scanned.match(URL_RE);
@@ -73,6 +77,7 @@ export const spawnAuthLogin: StartAuthLogin = (invoker, args, env, options = {})
   return {
     urlHint: () => urlPromise,
     done: () => donePromise,
+    lastLine: () => lastNonEmptyLine(tail),
     ...(options.acceptsCode
       ? {
           submitCode: (code: string) => {
@@ -104,3 +109,19 @@ export const spawnAuthLogin: StartAuthLogin = (invoker, args, env, options = {})
     },
   };
 };
+
+const ESC = String.fromCharCode(27);
+const BEL = String.fromCharCode(7);
+/** Colour codes, and the link wrapper some terminals get. */
+const TERMINAL_CODES = new RegExp(`${ESC}\\[[0-9;?]*[a-zA-Z]|${ESC}\\][^${BEL}]*${BEL}`, 'g');
+const PASTE_PROMPT = /^Paste code here if prompted >\s*/;
+
+/** The last line of output with words in it, without terminal codes or the paste prompt. */
+function lastNonEmptyLine(text: string): string | undefined {
+  const lines = text
+    .replace(TERMINAL_CODES, '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(PASTE_PROMPT, '').trim())
+    .filter(Boolean);
+  return lines[lines.length - 1];
+}

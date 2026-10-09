@@ -28,7 +28,11 @@ export const systemCrontab: CrontabIO = {
     return null;
   },
   async write(text) {
-    const result = await execa('crontab', ['-'], { input: text, reject: false });
+    // Nothing left but ccx's own line: remove the crontab, back to how it was before.
+    const result =
+      text === ''
+        ? await execa('crontab', ['-r'], { reject: false })
+        : await execa('crontab', ['-'], { input: text, reject: false });
     return result.exitCode === 0
       ? { ok: true }
       : { ok: false, detail: result.stderr.trim() || result.shortMessage };

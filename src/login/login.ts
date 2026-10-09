@@ -19,6 +19,8 @@ export interface AuthLoginProcess {
   cancel?: () => void;
   /** Answer the "Paste code here" prompt; present only when started with `acceptsCode`. */
   submitCode?: (code: string) => void;
+  /** The last thing the process printed, which says why a code was refused. */
+  lastLine?: () => string | undefined;
 }
 
 export interface StartAuthLoginOptions {
@@ -245,6 +247,10 @@ export async function relayLogin(
     return fail('the code was not in the form claude reads (code#state)');
   }
   proc.submitCode(code);
+  const why = (): string => {
+    const said = proc.lastLine?.();
+    return said ? ` (claude said: ${said})` : '';
+  };
 
   const exitCode = await waitForLogin(proc, deps.exchangeTimeoutMs ?? CODE_EXCHANGE_TIMEOUT_MS);
   if (exitCode === TIMED_OUT) {
@@ -253,9 +259,10 @@ export async function relayLogin(
     if (after !== null && after !== before) {
       return { account: account.name, ok: true, detail: 'logged in (relayed)' };
     }
-    return fail('the code was not accepted');
+    return fail(`the code was not accepted${why()}`);
   }
-  return judgeStoredLogin(account.name, before, fingerprint(account.dir), exitCode, 'relayed');
+  const judged = judgeStoredLogin(account.name, before, fingerprint(account.dir), exitCode, 'relayed');
+  return judged.ok ? judged : { ...judged, detail: `${judged.detail}${why()}` };
 }
 
 /** Sentinel for "the wait was given up on", distinct from any real exit code. */

@@ -15,6 +15,10 @@ createInterface({ input: process.stdin }).once('line', (line) => {
     process.stderr.write('Invalid code. Please make sure the full code was copied.\n');
     process.exit(1);
   }
+  if (code.startsWith('bad')) {
+    process.stderr.write('OAuth error: invalid_grant\n');
+    process.exit(1);
+  }
   const dir = process.env.CLAUDE_CONFIG_DIR;
   mkdirSync(dir, { recursive: true });
   writeFileSync(

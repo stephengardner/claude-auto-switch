@@ -189,7 +189,7 @@ describe.skipIf(posixOnly)('the remote half: relaying one sign-in into claude', 
     expect(credentialFingerprint(dir)).not.toBeNull();
   }, 20_000);
 
-  it('stores nothing when the code is refused', async () => {
+  it('stores nothing when the code is refused, and passes on why', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'cas-relay-'));
     const result = await relayLogin(
       { name: 'acct', dir },
@@ -197,10 +197,11 @@ describe.skipIf(posixOnly)('the remote half: relaying one sign-in into claude', 
         claude,
         startAuthLogin: spawnAuthLogin,
         send: () => {},
-        receiveCode: () => Promise.resolve('no-separator-here'),
+        receiveCode: () => Promise.resolve('bad-code#state'),
       },
     );
     expect(result.ok).toBe(false);
+    expect(result.detail).toContain('claude said: OAuth error: invalid_grant');
     expect(credentialFingerprint(dir)).toBeNull();
   }, 20_000);
 });
