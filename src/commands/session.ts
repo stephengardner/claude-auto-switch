@@ -1340,8 +1340,12 @@ export async function runInteractiveHotSwap(
     // A worker picks and says so in one step, so workers started together see
     // each other's picks and spread out, rather than each reading the leases
     // before any has written one and all picking the same account.
-    nextAccount: (excluding) =>
-      worker ? pickAndClaim(() => pickAccount(excluding), context.ctx) : pickAccount(excluding),
+    nextAccount: (excluding) => {
+      // An ended worker picks and claims nothing more: the start that follows
+      // ends the run, whatever account it is handed.
+      if (interruption?.exitCode != null) return { name: current?.name ?? '', dir: current?.dir ?? '' };
+      return worker ? pickAndClaim(() => pickAccount(excluding), context.ctx) : pickAccount(excluding);
+    },
     resolveAccount: (name) => {
       const a = accounts.find((x) => x.name === name);
       return a && hasLogin(a.dir) ? { name: a.name, dir: a.dir } : null;
@@ -1445,6 +1449,9 @@ export async function runInteractiveHotSwap(
       // interrupting for.
       const readinessNote = readinessMessage(account.name, readiness);
       if (readinessNote) err(readinessNote);
+      // Ended while the login was being checked: the account is never put
+      // to use, so it is not one the worker ran on.
+      if (interruption?.exitCode != null) return { kind: 'ok', exitCode: interruption.exitCode };
       activate(account);
       // Track the account we are actually on so the editor pointer follows it.
       // Skipped for a session started by a TARGETED restart switch: that move was
@@ -1649,6 +1656,10 @@ export async function runInteractiveHotSwap(
        */
       const runChild = (childArgs: string[], stdin?: string): Promise<SessionOutcome> => {
         if (!worker) return runPtySession({ ...base, args: childArgs });
+        // Ended: nothing starts, and what the last launch printed stays as it was.
+        if (interruption?.exitCode != null) {
+          return Promise.resolve({ kind: 'ok', exitCode: interruption.exitCode });
+        }
         worker.onLaunch(conversationIdIn(childArgs));
         return runHeadlessSession({
           claude,

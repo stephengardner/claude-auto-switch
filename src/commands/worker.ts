@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { Command } from 'commander';
 import { listAccounts } from '../accounts/registry.js';
 import type { CliContext } from '../context.js';
-import { handleInterruption } from '../launcher/interruption.js';
+import { handleInterruption, type SignalSource } from '../launcher/interruption.js';
 import { runInteractiveHotSwap } from './session.js';
 
 /**
@@ -47,6 +47,8 @@ export const WORKER_CARRY_ON =
   'your final answer again in full.';
 
 const OUTPUTS = ['json', 'stream-json', 'text'] as const;
+/** The longest delay a Node timer takes (2^31 - 1 ms, about 24.8 days). */
+const MAX_TIMER_MS = 2_147_483_647;
 type Output = (typeof OUTPUTS)[number];
 
 /**
@@ -84,7 +86,11 @@ export function resultObject(stdout: string): Record<string, unknown> | null {
   const whole = stdout.trim();
   // The whole output, else its last line: Claude's result is one line, and
   // anything printed before it is not the answer.
-  const lastLine = whole.split('\n').filter((line) => line.trim() !== '').pop() ?? '';
+  const lastLine =
+    whole
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .pop() ?? '';
   for (const text of [whole, lastLine]) {
     if (text === '') continue;
     try {
@@ -106,9 +112,14 @@ export function resultObject(stdout: string): Record<string, unknown> | null {
  * gets the report as its last line (Claude's lines went out as they came).
  * text gets the report on standard error.
  */
-export function workerOutput(output: Output, finalStdout: string, report: WorkerReport): { stdout: string; stderr: string } {
+export function workerOutput(
+  output: Output,
+  finalStdout: string,
+  report: WorkerReport,
+): { stdout: string; stderr: string } {
   const summary = `${reportLine(report)}\n${report.error !== undefined && report.accounts.length > 0 ? `[ccx] ${report.error}\n` : ''}`;
-  if (output === 'stream-json') return { stdout: `${JSON.stringify({ type: 'ccx', ...report })}\n`, stderr: '' };
+  if (output === 'stream-json')
+    return { stdout: `${JSON.stringify({ type: 'ccx', ...report })}\n`, stderr: '' };
   if (output === 'json') {
     const result = report.error === undefined ? resultObject(finalStdout) : null;
     if (result) return { stdout: `${JSON.stringify({ ...result, ccx: report })}\n`, stderr: '' };
@@ -129,7 +140,8 @@ export function workerOutput(output: Output, finalStdout: string, report: Worker
 
 /** "[ccx] worker ran on a, then b (session ...)". */
 export function reportLine(report: WorkerReport): string {
-  if (report.accounts.length === 0) return `[ccx] worker did not run${report.error ? `: ${report.error}` : ''}`;
+  if (report.accounts.length === 0)
+    return `[ccx] worker did not run${report.error ? `: ${report.error}` : ''}`;
   const session = report.sessionId ? ` (session ${report.sessionId})` : '';
   return `[ccx] worker ran on ${report.accounts.join(', then ')}${session}`;
 }
@@ -138,6 +150,8 @@ export function reportLine(report: WorkerReport): string {
 export interface WorkerIo {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
+  /** Where the signals that end the worker come from; the process unless a test gives its own. */
+  signals?: SignalSource;
 }
 
 const processIo: WorkerIo = {
@@ -154,10 +168,16 @@ const processIo: WorkerIo = {
  * and commander hands it over as the tail of the brief, so it is taken back
  * off there.
  */
-export function splitPassthrough(argv: readonly string[], operands: string[]): { words: string[]; passthrough: string[] } {
+export function splitPassthrough(
+  argv: readonly string[],
+  operands: string[],
+): { words: string[]; passthrough: string[] } {
   const dash = argv.indexOf('--');
   const passthrough = dash >= 0 ? argv.slice(dash + 1) : [];
-  return { words: operands.slice(0, Math.max(0, operands.length - passthrough.length)), passthrough };
+  return {
+    words: operands.slice(0, Math.max(0, operands.length - passthrough.length)),
+    passthrough,
+  };
 }
 
 /** `ccx worker` on `program`. Here rather than in cli.ts so a test can drive the real parser. */
@@ -172,13 +192,28 @@ export function registerWorkerCommand(
       'run one task headless on an account, for an orchestrator; when the account runs out it resumes on the next (claude flags after --)',
     )
     .option('--agent <name>', 'run as this agent definition (.claude/agents/<name>.md)')
-    .option('--account <name>', 'start on this account, or "best" (the default): the pick order, spread across workers')
+    .option(
+      '--account <name>',
+      'start on this account, or "best" (the default): the pick order, spread across workers',
+    )
     .option('--model <model>', 'the model to run')
-    .option('--output <format>', 'json (the default), stream-json or text, as claude -p --output-format')
-    .option('--permission-mode <mode>', "Claude's permission mode, e.g. acceptEdits; a worker cannot stop to ask")
-    .option('--cwd <dir>', 'work in this folder (one git worktree per coder keeps them out of each other)')
+    .option(
+      '--output <format>',
+      'json (the default), stream-json or text, as claude -p --output-format',
+    )
+    .option(
+      '--permission-mode <mode>',
+      "Claude's permission mode, e.g. acceptEdits; a worker cannot stop to ask",
+    )
+    .option(
+      '--cwd <dir>',
+      'work in this folder (one git worktree per coder keeps them out of each other)',
+    )
     .option('--brief-file <path>', 'read the brief from a file, or - for standard input')
-    .option('--timeout <minutes>', 'end the worker, Claude and everything it started after this long (exit code 124)')
+    .option(
+      '--timeout <minutes>',
+      'end the worker, Claude and everything it started after this long (exit code 124)',
+    )
     .argument('[brief...]', 'the task, best quoted as one argument')
     .action(async (brief: string[], opts: WorkerOptions) => {
       const { words, passthrough } = splitPassthrough(argv(), brief);
@@ -206,7 +241,10 @@ export async function workerCommand(
   /** Refused before anything started: said, and in the output's own shape too, so a program reads why. */
   const refuse = (why: string): number => {
     say(`ccx worker: ${why}`);
-    if (output !== 'text') io.stdout(workerOutput(output, '', { accounts: [], moves: 0, sessionId: null, error: why }).stdout);
+    if (output !== 'text')
+      io.stdout(
+        workerOutput(output, '', { accounts: [], moves: 0, sessionId: null, error: why }).stdout,
+      );
     return 2;
   };
 
@@ -215,7 +253,9 @@ export async function workerCommand(
   }
   const owned = passthrough.find((arg) => WORKER_OWNED_FLAGS.has(arg.split('=')[0] ?? arg));
   if (owned !== undefined) {
-    return refuse(`${owned.split('=')[0] ?? owned} is the worker's own (see ccx worker --help), not one to pass to Claude`);
+    return refuse(
+      `${owned.split('=')[0] ?? owned} is the worker's own (see ccx worker --help), not one to pass to Claude`,
+    );
   }
   let brief: string;
   try {
@@ -224,12 +264,15 @@ export async function workerCommand(
     return refuse(`could not read the brief: ${(err as Error).message}`);
   }
   if (brief.trim() === '') {
-    return refuse('no brief given (as words, --brief-file <path>, or --brief-file - for standard input)');
+    return refuse(
+      'no brief given (as words, --brief-file <path>, or --brief-file - for standard input)',
+    );
   }
   if (brief.includes('\0')) return refuse('the brief contains a NUL character');
 
   if (options.cwd !== undefined) {
-    if (!existsSync(options.cwd) || !statSync(options.cwd).isDirectory()) return refuse(`no folder at ${options.cwd}`);
+    if (!existsSync(options.cwd) || !statSync(options.cwd).isDirectory())
+      return refuse(`no folder at ${options.cwd}`);
     // Claude works where it is started, and the session says where it runs.
     process.chdir(options.cwd);
   }
@@ -238,10 +281,15 @@ export async function workerCommand(
   if (minutes !== null && !(Number.isFinite(minutes) && minutes > 0)) {
     return refuse('--timeout is a number of minutes above 0');
   }
+  // The longest a timer can wait; Node runs a longer one at once.
+  if (minutes !== null && minutes * 60_000 > MAX_TIMER_MS) {
+    return refuse(`--timeout is at most ${Math.floor(MAX_TIMER_MS / 60_000)} minutes`);
+  }
 
   const registered = listAccounts(context.ctx);
   if (registered.length === 0) return refuse('no accounts registered (run: ccx add <name>)');
-  const account = options.account === undefined || options.account === 'best' ? undefined : options.account;
+  const account =
+    options.account === undefined || options.account === 'best' ? undefined : options.account;
   if (account !== undefined && !registered.some((a) => a.name === account)) {
     return refuse(`no account named "${account}" (ccx list shows them, or use --account best)`);
   }
@@ -287,56 +335,68 @@ export async function workerCommand(
   // everything it started are stopped by ccx, while their tree is whole. An
   // orchestrator that bounds a worker with --timeout never has to kill it
   // from outside, which on Windows cannot reach what Claude's tools started.
-  const interruption = handleInterruption();
+  const interruption = handleInterruption(undefined, io.signals);
   const deadline =
     minutes === null
       ? null
-      : setTimeout(() => interruption.end(124, `timed out after ${minutes} minutes`), minutes * 60_000);
-  const runCode = await runInteractiveHotSwap(workerContext, args, {
-    ...(account !== undefined ? { account } : {}),
-    resumePrompt: WORKER_CARRY_ON,
-    worker: {
-      brief,
-      interruption,
-      onAccount: (name) => {
-        accountsRun.push(name);
+      : setTimeout(
+          () => interruption.end(124, `timed out after ${minutes} minutes`),
+          minutes * 60_000,
+        );
+  // Never what keeps the process alive: Claude running is.
+  deadline?.unref();
+  let runCode: number;
+  try {
+    runCode = await runInteractiveHotSwap(workerContext, args, {
+      ...(account !== undefined ? { account } : {}),
+      resumePrompt: WORKER_CARRY_ON,
+      worker: {
+        brief,
+        interruption,
+        onAccount: (name) => {
+          accountsRun.push(name);
+        },
+        onLaunch: (conversation) => {
+          if (conversation) sessionId = conversation;
+          launchStdout = '';
+          launchStderr = '';
+          // A line cut off when its launch was ended is no event: dropped.
+          partial = '';
+          sawResult = false;
+        },
+        onStdout: (chunk) => {
+          if (output !== 'stream-json') {
+            launchStdout += chunk;
+            return;
+          }
+          // Whole lines only, so a launch ended mid-line cannot glue half an
+          // event onto the next launch's first.
+          partial += chunk;
+          const end = partial.lastIndexOf('\n');
+          if (end < 0) return;
+          const lines = partial.slice(0, end + 1);
+          partial = partial.slice(end + 1);
+          for (const line of lines.split('\n')) {
+            if (line.trim() === '') continue;
+            const event = resultObject(line);
+            if (event?.type === 'result') sawResult = true;
+          }
+          io.stdout(lines);
+        },
+        onStderr: (chunk) => {
+          launchStderr = (launchStderr + chunk).slice(-2000);
+          io.stderr(chunk);
+        },
       },
-      onLaunch: (conversation) => {
-        if (conversation) sessionId = conversation;
-        launchStdout = '';
-        launchStderr = '';
-        // A line cut off when its launch was ended is no event: dropped.
-        partial = '';
-        sawResult = false;
-      },
-      onStdout: (chunk) => {
-        if (output !== 'stream-json') {
-          launchStdout += chunk;
-          return;
-        }
-        // Whole lines only, so a launch ended mid-line cannot glue half an
-        // event onto the next launch's first.
-        partial += chunk;
-        const end = partial.lastIndexOf('\n');
-        if (end < 0) return;
-        const lines = partial.slice(0, end + 1);
-        partial = partial.slice(end + 1);
-        for (const line of lines.split('\n')) {
-          if (line.trim() === '') continue;
-          const event = resultObject(line);
-          if (event?.type === 'result') sawResult = true;
-        }
-        io.stdout(lines);
-      },
-      onStderr: (chunk) => {
-        launchStderr = (launchStderr + chunk).slice(-2000);
-        io.stderr(chunk);
-      },
-    },
-  });
-  if (deadline) clearTimeout(deadline);
-  interruption.dispose();
-  const exitCode = interruption.exitCode ?? runCode;
+    });
+  } finally {
+    if (deadline) clearTimeout(deadline);
+    interruption.dispose();
+  }
+  // The session's own code, which is the timeout's or the signal's whenever
+  // ending the worker stopped work. An end that came after Claude had answered
+  // (during the session's clean-up) changes nothing.
+  const exitCode = runCode;
   // A last event without its line ending is passed on whole; half of one,
   // from a launch that was ended, is not an event at all.
   const last = output === 'stream-json' && partial.trim() !== '' ? resultObject(partial) : null;
@@ -354,14 +414,20 @@ export async function workerCommand(
       : output === 'stream-json'
         ? sawResult
         : exitCode === 0 || launchStdout.trim() !== '';
-  let error: string | undefined;
-  if (!answered) {
-    const lastError = launchStderr.split('\n').filter((line) => line.trim() !== '').pop();
+  // Why the run was ended, when ending it is what stopped the work: then the
+  // output says so, whatever an earlier launch printed.
+  const endedIt =
+    interruption.exitCode !== null && interruption.exitCode === exitCode ? interruption.why : null;
+  let error: string | undefined = endedIt ?? undefined;
+  if (error === undefined && !answered) {
+    const lastError = launchStderr
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .pop();
     error =
-      interruption.why ??
-      (accounts.length === 0
+      accounts.length === 0
         ? (lastSaid ?? 'no account could run it')
-        : `Claude ended (exit code ${exitCode}) without a result${lastError ? `: ${lastError.trim()}` : ''}`);
+        : `Claude ended (exit code ${exitCode}) without a result${lastError ? `: ${lastError.trim()}` : ''}`;
   }
   const report: WorkerReport = {
     accounts,

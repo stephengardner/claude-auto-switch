@@ -216,10 +216,14 @@ if (outputFormat && !printPrompt) {
 const firstLaunch = !args.includes('--resume');
 // A process Claude started (a test run, a dev server) that would run on after
 // it: its pid goes to the named file. Holding Claude's own output open, when
-// asked, as one that inherited it would.
+// asked, as one that inherited it would. On Windows it is outside the job
+// Claude itself sits in, as the commands Claude's Bash tool runs are
+// (measured: ending Claude's parent outright ends Claude, not those).
 if (process.env.FAKE_CLAUDE_GRANDCHILD && firstLaunch) {
   const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], {
     stdio: process.env.FAKE_CLAUDE_GRANDCHILD_STDIO === 'inherit' ? 'inherit' : 'ignore',
+    detached: process.platform === 'win32',
+    windowsHide: true,
   });
   writeFileSync(process.env.FAKE_CLAUDE_GRANDCHILD, String(grandchild.pid), 'utf8');
 }

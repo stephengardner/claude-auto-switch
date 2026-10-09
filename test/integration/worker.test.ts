@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -71,11 +72,18 @@ function launchesIn(runsLog: string): Launch[] {
     .filter((r) => r.type === 'launch');
 }
 
-function capture(): { io: WorkerIo; out: () => string; err: () => string } {
+/**
+ * What a worker writes, kept, and its own source of signals: a worker run in
+ * the test process must not take the test runner's own signals.
+ */
+function capture(): { io: WorkerIo; out: () => string; err: () => string; signals: EventEmitter } {
   let out = '';
   let err = '';
+  const signals = new EventEmitter();
   return {
+    signals,
     io: {
+      signals,
       stdout: (text) => {
         out += text;
       },
@@ -427,14 +435,20 @@ describe('ccx worker (against fake-claude)', () => {
     const grandchild = Number(readFileSync(pidFile, 'utf8'));
     expect(processAlive(claudePid)).toBe(true);
     process.kill(Number(readFileSync(workerPidFile, 'utf8')));
-    for (let i = 0; i < 60 && (processAlive(claudePid) || processAlive(grandchild)); i++) await sleep(250);
+    for (let i = 0; i < 60 && processAlive(claudePid); i++) await sleep(250);
     expect(processAlive(claudePid)).toBe(false);
-    expect(processAlive(grandchild)).toBe(false);
     const ended = await running;
-    if (process.platform !== 'win32') {
-      // Ended by a signal it handled: 128 + SIGTERM, and still one json object.
+    if (process.platform === 'win32') {
+      // The documented limit: an outright end reaches Claude, not a command
+      // its Bash tool started. --timeout or taskkill /T is the way (below).
+      expect(processAlive(grandchild)).toBe(true);
+      process.kill(grandchild);
+    } else {
+      for (let i = 0; i < 40 && processAlive(grandchild); i++) await sleep(250);
+      expect(processAlive(grandchild)).toBe(false);
+      // Ended by a signal it handled: 128 + SIGTERM, saying so in json.
       expect(ended.code).toBe(143);
-      expect(JSON.parse(ended.stdout)).toMatchObject({ is_error: true });
+      expect(JSON.parse(ended.stdout)).toMatchObject({ is_error: true, result: 'stopped by SIGTERM' });
     }
   });
 
@@ -451,6 +465,65 @@ describe('ccx worker (against fake-claude)', () => {
     const grandchild = Number(readFileSync(pidFile, 'utf8'));
     for (let i = 0; i < 40 && processAlive(grandchild); i++) await sleep(250);
     expect(processAlive(grandchild)).toBe(false);
+  });
+
+  it('says it was ended, not what the launch before printed, when ended between launches', { timeout: 60_000 }, async () => {
+    // A ran out and printed its failure; the worker is ended while the move
+    // is being decided. The answer is the end, and nothing more is started.
+    const seen = capture();
+    let probes = 0;
+    const { context, runsLog } = await setup(['A', 'B'], () => {
+      probes += 1;
+      if (probes === 1) seen.signals.emit('SIGTERM', 'SIGTERM');
+      return Promise.resolve(probes === 1 ? 'limited' : 'allowed');
+    });
+    Object.assign(process.env, refusing(), { FAKE_CLAUDE_REFUSE_ON: 'A', FAKE_CLAUDE_REFUSAL_ENDS_RUN: '1' });
+    expect(await workerCommand(context, ['hi'], {}, [], seen.io)).toBe(143);
+    expect(launchesIn(runsLog).map((l) => l.marker)).toEqual(['A']);
+    expect(JSON.parse(seen.out())).toMatchObject({
+      is_error: true,
+      subtype: 'error_ccx',
+      result: 'stopped by SIGTERM',
+      ccx: { accounts: ['A'] },
+    });
+  });
+
+  it('keeps an answer Claude had already given when the end comes after it', { timeout: 60_000 }, async () => {
+    // Claude answers and exits while a refusal in its record is still being
+    // checked (the first check is slow, the second refusal waits its turn).
+    // The worker is ended during that second check, after Claude is done: the
+    // work is finished, and the answer stands.
+    const seen = capture();
+    let probes = 0;
+    const { context } = await setup(['A'], async () => {
+      probes += 1;
+      if (probes === 1) {
+        await sleep(2500);
+        return 'allowed';
+      }
+      seen.signals.emit('SIGTERM', 'SIGTERM');
+      return 'allowed';
+    });
+    Object.assign(process.env, refusing(1500), {
+      FAKE_CLAUDE_REFUSE_AFTER_MS: '1000',
+      FAKE_CLAUDE_REFUSE_AGAIN_AFTER_MS: '1300',
+    });
+    expect(await workerCommand(context, ['hi'], {}, [], seen.io)).toBe(0);
+    expect(probes).toBe(2);
+    expect(JSON.parse(seen.out())).toMatchObject({ is_error: false, result: 'done: hi' });
+  });
+
+  it('keeps the answer when the end lands after Claude exits but before its output closes', { timeout: 60_000 }, async () => {
+    // Claude answered and exited at once; something it started holds its
+    // output open, and the timeout lands in that gap.
+    const { home, context } = await setup(['A']);
+    Object.assign(process.env, {
+      FAKE_CLAUDE_GRANDCHILD: path.join(home, 'grandchild.pid'),
+      FAKE_CLAUDE_GRANDCHILD_STDIO: 'inherit',
+    });
+    const seen = capture();
+    expect(await workerCommand(context, ['hi'], { timeout: '0.05' }, [], seen.io)).toBe(0);
+    expect(JSON.parse(seen.out())).toMatchObject({ is_error: false, result: 'done: hi' });
   });
 
   it('asks about a refusal that came while another was being checked, rather than dropping it', { timeout: 60_000 }, async () => {
@@ -608,6 +681,9 @@ describe('ccx worker (against fake-claude)', () => {
     expect(await workerCommand(context, ['hi'], {}, ['--resume', 'x'], capture().io)).toBe(2);
     expect(said.join('\n')).toMatch(/--output-format is the worker's own/);
     expect(await workerCommand(context, ['hi'], { timeout: 'soon' }, [], capture().io)).toBe(2);
+    // Past the longest a timer can wait, which Node would run at once.
+    expect(await workerCommand(context, ['hi'], { timeout: '60000' }, [], capture().io)).toBe(2);
+    expect(said.join('\n')).toMatch(/--timeout is at most 35791 minutes/);
     expect(said.join('\n')).toMatch(/--timeout is a number of minutes/);
     // A program reading json still gets one object it can parse.
     expect(JSON.parse(refused.out())).toMatchObject({ is_error: true, ccx: { accounts: [], sessionId: null } });

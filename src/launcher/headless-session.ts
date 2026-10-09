@@ -320,6 +320,8 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
   // Ending the worker ends Claude, and what Claude started, too.
   const unsubscribe =
     options.interruption?.onEnd(() => {
+      // Claude already done: the end changes nothing about this run.
+      if (child.exitCode !== null || child.signalCode !== null) return;
       interruptedBy = options.interruption?.exitCode ?? 1;
       stop();
     }) ?? null;
