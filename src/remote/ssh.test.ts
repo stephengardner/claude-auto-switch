@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { assertSshHost, remoteCcxCommand, shellQuote } from './ssh.js';
+import { assertSshHost, remoteCcxCommand } from './ssh.js';
+import { shellQuote } from '../util/shell-quote.js';
 
 const printArgs = `"${process.execPath}" -e 'console.log(JSON.stringify(process.argv.slice(1)))'`;
 

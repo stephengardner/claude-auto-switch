@@ -26,6 +26,7 @@ import { loginCommand } from './commands/login.js';
 import { enableCommand, disableCommand, priorityCommand } from './commands/account-config.js';
 import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
+import { keepaliveCommand } from './commands/keepalive.js';
 import {
   desktopCommand,
   desktopContinueCommand,
@@ -355,6 +356,13 @@ program
   .description('always-on rotation everywhere: install|uninstall|status|start|stop|run')
   .action(async (action?: string) => {
     process.exitCode = await daemonCommand(context(), action);
+  });
+
+program
+  .command('keepalive [action]')
+  .description('renew idle logins every four hours with cron, for a machine nobody uses: on|off|status')
+  .action(async (action?: string) => {
+    process.exitCode = await keepaliveCommand(context(), action);
   });
 
 program

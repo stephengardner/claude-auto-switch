@@ -1,25 +1,13 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { CasError } from '../util/errors.js';
+import { shellQuote } from '../util/shell-quote.js';
 
 /**
- * Running ccx on another machine over SSH.
- *
- * The command reaches the other machine as one string that its login shell
- * parses, and that shell may be sh, bash, zsh or fish. Every word is therefore
- * single-quoted, which those shells read alike, and a backslash or control
- * character is refused rather than escaped, because fish treats a backslash
- * inside single quotes differently from the rest.
+ * Running ccx on another machine over SSH. The command reaches it as one
+ * string that its login shell parses, which may be sh, bash, zsh or fish, so
+ * every word goes through `shellQuote`.
  */
-
-/** Quote one word for any of the shells above. */
-export function shellQuote(word: string): string {
-  // eslint-disable-next-line no-control-regex
-  if (/[\\\u0000-\u001f\u007f]/.test(word)) {
-    throw new CasError(`cannot pass ${JSON.stringify(word)} to another machine safely`);
-  }
-  return `'${word.split("'").join(`'"'"'`)}'`;
-}
 
 /**
  * The command string ssh runs for `ccx <args>` on the other machine.
