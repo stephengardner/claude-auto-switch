@@ -196,9 +196,13 @@ export function rollbackCredential(dir: string): boolean {
  * so a refused sign-in leaves no login rather than a dead one.
  */
 export function keepForRollback(dir: string): void {
-  const prev = previousCredentialPath(dir);
-  if (isUsableCredential(credentialPath(dir))) copyCredential(credentialPath(dir), prev);
-  else removeCredential(prev);
+  if (isUsableCredential(credentialPath(dir))) copyCredential(credentialPath(dir), previousCredentialPath(dir));
+  else forgetRollback(dir);
+}
+
+/** Leave nothing for a refused sign-in to put back. */
+export function forgetRollback(dir: string): void {
+  removeCredential(previousCredentialPath(dir));
 }
 
 /** Remove a config dir's live credential (used to scrub a shared session dir). */

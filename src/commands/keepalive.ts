@@ -86,7 +86,7 @@ export async function keepaliveCommand(
     context.out('keepalive is on: every four hours, ccx usage renews any login that has expired.');
     context.out(`  ${line}`);
     const exists = deps.exists ?? existsSync;
-    if (!line.includes(shellQuote(node)) || !line.includes(shellQuote(cli)) || !exists(node) || !exists(cli)) {
+    if (line !== keepaliveLine(usage) || !exists(node) || !exists(cli)) {
       context.out('  It points at a different node or ccx than this one; run ccx keepalive on to update it.');
     }
     return 0;

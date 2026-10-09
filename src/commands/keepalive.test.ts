@@ -108,10 +108,22 @@ describe('ccx keepalive', () => {
   });
 
   it('keeps a % in a path from being read by cron as a new line', async () => {
-    const { c } = context();
+    const { c, lines } = context();
     const crontab = memoryCrontab('');
     await keepaliveCommand(c, 'on', { ...paths, cliPath: '/opt/100%/cli.js', crontab });
     expect(crontab.text).toContain("'/opt/100\\%/cli.js'");
+    // And status recognises the line it wrote as this ccx's.
+    await keepaliveCommand(c, 'status', { ...paths, cliPath: '/opt/100%/cli.js', crontab });
+    expect(lines.join('\n')).not.toContain('different node or ccx');
+  });
+
+  it('notices when the ccx home the job renews is not this one', async () => {
+    const { c } = context();
+    const crontab = memoryCrontab('');
+    await keepaliveCommand(c, 'on', { ...paths, crontab });
+    const other = context('linux', { CLAUDE_AUTO_SWITCH_HOME: '/srv/other' });
+    await keepaliveCommand(other.c, 'status', { ...paths, crontab });
+    expect(other.lines.join('\n')).toContain('run ccx keepalive on to update it');
   });
 
   it('refuses an action it does not know', async () => {

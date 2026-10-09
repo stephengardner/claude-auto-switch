@@ -1,7 +1,12 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { fetchTokenOwner } from '../accounts/identity-check.js';
 import { profileAlreadyHolding, renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
-import { rollbackCredential, clearCredential } from '../accounts/credential-vault.js';
+import {
+  rollbackCredential,
+  clearCredential,
+  keepForRollback,
+  forgetRollback,
+} from '../accounts/credential-vault.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -74,6 +79,16 @@ export async function settleNewLogin(
   // known rather than against whatever a local file claims about itself.
   updateAccount(account.name, { email: owner }, context.ctx);
   return { ok: true, owner };
+}
+
+/**
+ * Mark what a refused sign-in may put back, just before the sign-in starts. A
+ * login that another profile also holds is never kept: putting it back would
+ * leave the two sharing one token, the state the refusal exists to end.
+ */
+export function keepRollbackPoint(context: CliContext, account: { name: string; dir: string }): void {
+  if (renewalWouldBreakOthers(account, listAccounts(context.ctx)).length > 0) forgetRollback(account.dir);
+  else keepForRollback(account.dir);
 }
 
 /**

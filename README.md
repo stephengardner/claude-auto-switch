@@ -192,7 +192,8 @@ shown for you to check, and links anywhere else are never opened.
 ccx runs on the server through your login shell, which is where an npm install
 puts it on the PATH. When that shell does not find node and ccx (for example,
 nvm set up only in `.bashrc`, below its line that stops non-interactive shells),
-either move the nvm lines into `~/.profile` or name both:
+either move the nvm lines into the file your login shell reads (`~/.profile`,
+`~/.bash_profile` when it exists, or `~/.zprofile` for zsh) or name both:
 `--remote-ccx '/home/me/.nvm/versions/node/v22.19.0/bin/node /home/me/.nvm/versions/node/v22.19.0/bin/ccx'`.
 
 Signed in on the server itself, `ccx login` sees there is no browser and lets

@@ -35,6 +35,12 @@ describe('isClaudeCodeSignIn', () => {
     expect(isClaudeCodeSignIn(swap('response_type=code', 'response_type=token'))).toBe(false);
   });
 
+  it('refuses a link that repeats a key it checks', () => {
+    expect(isClaudeCodeSignIn(`${real}&client_id=other-client`)).toBe(false);
+    expect(isClaudeCodeSignIn(`${real}&redirect_uri=https%3A%2F%2Fevil.example%2Fcb`)).toBe(false);
+    expect(isClaudeCodeSignIn(`${real}&response_type=token`)).toBe(false);
+  });
+
   it('refuses any other page on an Anthropic host', () => {
     expect(isClaudeCodeSignIn('https://claude.ai/settings/billing')).toBe(false);
     expect(isClaudeCodeSignIn('https://console.anthropic.com/settings/keys')).toBe(false);

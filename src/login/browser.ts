@@ -79,13 +79,18 @@ const SUBSCRIPTION_AUTHORIZE_PAGES = new Set(['claude.com/cai/oauth/authorize', 
 export function isClaudeCodeSignIn(url: string): boolean {
   try {
     const parsed = new URL(url);
-    const params = parsed.searchParams;
+    // Exactly one of each: with a key repeated, the page might act on a value
+    // this check never read.
+    const only = (key: string): string | null => {
+      const values = parsed.searchParams.getAll(key);
+      return values.length === 1 ? (values[0] as string) : null;
+    };
     return (
       parsed.protocol === 'https:' &&
       SUBSCRIPTION_AUTHORIZE_PAGES.has(`${parsed.hostname}${parsed.pathname}`) &&
-      params.get('client_id') === CLAUDE_CODE_CLIENT_ID &&
-      params.get('redirect_uri') === MANUAL_REDIRECT &&
-      params.get('response_type') === 'code'
+      only('client_id') === CLAUDE_CODE_CLIENT_ID &&
+      only('redirect_uri') === MANUAL_REDIRECT &&
+      only('response_type') === 'code'
     );
   } catch {
     return false;

@@ -1,6 +1,5 @@
 import { listAccounts, getAccount } from '../accounts/registry.js';
-import { keepForRollback } from '../accounts/credential-vault.js';
-import { settleNewLogin } from '../login/settle-login.js';
+import { keepRollbackPoint, settleNewLogin } from '../login/settle-login.js';
 import { probeAll } from '../health/prober.js';
 import {
   loginAccount,
@@ -116,7 +115,7 @@ export async function loginCommand(
   for (const account of targets) {
     context.out(`logging in "${account.name}"...`);
     const input = { name: account.name, dir: account.dir, ...(account.email ? { email: account.email } : {}) };
-    keepForRollback(account.dir);
+    keepRollbackPoint(context, account);
     const result = inTerminal ? await terminal(input) : await signIn(input, deps);
     context.out(`  ${result.ok ? 'ok' : 'FAILED'}: ${result.detail}`);
     if (!result.ok) {
@@ -157,7 +156,7 @@ async function relayCommand(
         send: (line) => context.out(line),
         receiveCode: (timeoutMs) => readOneLine(timeoutMs),
       }));
-  keepForRollback(account.dir);
+  keepRollbackPoint(context, account);
   const result = await relay(input);
   context.out(`  ${result.ok ? 'ok' : 'FAILED'}: ${result.detail}`);
   if (!result.ok) return 1;

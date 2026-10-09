@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { assertSshHost, remoteCcxCommand } from './ssh.js';
+import { SSH_UNAVAILABLE, assertSshHost, remoteCcxCommand, sshRunner } from './ssh.js';
 import { shellQuote } from '../util/shell-quote.js';
 
 const printArgs = `"${process.execPath}" -e 'console.log(JSON.stringify(process.argv.slice(1)))'`;
@@ -41,6 +41,14 @@ describe('remoteCcxCommand', () => {
       },
     );
   }
+});
+
+describe('sshRunner with no ssh to run', () => {
+  it('says ssh could not start, apart from the far end lacking a command', async () => {
+    const runner = sshRunner('beast', { sshBin: path.join(tmpdir(), 'no-such-ssh-anywhere') });
+    expect((await runner.run(['state'])).exitCode).toBe(SSH_UNAVAILABLE);
+    expect(await runner.start(['login', 'a', '--relay']).done()).toBe(SSH_UNAVAILABLE);
+  });
 });
 
 describe('assertSshHost', () => {

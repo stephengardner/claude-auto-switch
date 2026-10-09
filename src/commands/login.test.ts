@@ -5,6 +5,7 @@ import path from 'node:path';
 import { loginCommand } from './login.js';
 import { rememberDeadLogin } from '../usage/dead-login-store.js';
 import { credentialFileFingerprint, previousCredentialPath } from '../accounts/credential-vault.js';
+import { renewalWouldBreakOthers } from '../accounts/duplicate-guard.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
 
@@ -247,6 +248,69 @@ describe('a refused sign-in puts back the login it replaced', () => {
         // What claude auth login does when the browser is signed in to another account.
         write(path.join(account.dir, '.credentials.json'), 'rt-wrong-account');
         return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (authorized)' });
+      },
+    });
+
+    expect(code).toBe(1);
+    const live = JSON.parse(readFileSync(path.join(dir, '.credentials.json'), 'utf8')) as {
+      claudeAiOauth: { refreshToken: string };
+    };
+    expect(live.claudeAiOauth.refreshToken).toBe('rt-working');
+  });
+
+  it('never puts back a login another profile also holds', async () => {
+    // b holds a's token, which doctor flags with "ccx login b" as the fix. A
+    // refused sign-in on b must not restore the shared token: the next renewal
+    // of either would end the other.
+    const { context, accounts, home } = setup(['a', 'b']);
+    const write = (dir: string, refresh: string) =>
+      writeFileSync(
+        path.join(dir, '.credentials.json'),
+        JSON.stringify({ claudeAiOauth: { accessToken: `at-${refresh}`, refreshToken: refresh } }),
+      );
+    write(accounts[0]!.dir, 'rt-A');
+    write(accounts[1]!.dir, 'rt-A');
+    writeFileSync(
+      path.join(home, 'accounts.json'),
+      JSON.stringify({
+        accounts: [
+          { ...accounts[0], email: 'a@example.com' },
+          { ...accounts[1], email: 'b@example.com' },
+        ],
+      }),
+    );
+    (context as { lookupOwner?: unknown }).lookupOwner = () => Promise.resolve('a@example.com');
+
+    const code = await loginCommand(context, 'b', {}, {
+      headless: false,
+      login: (account) => {
+        write(account.dir, 'rt-A-fresh'); // the browser was still on a@example.com
+        return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (authorized)' });
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(renewalWouldBreakOthers({ name: 'b', dir: accounts[1]!.dir }, accounts)).toEqual([]);
+    expect(credentialFileFingerprint(accounts[1]!.dir)).toBeNull();
+  });
+
+  it('puts back the working login when a relayed sign-in is refused', async () => {
+    const { context, accounts, home } = setup(['work']);
+    const dir = accounts[0]!.dir;
+    const write = (file: string, refresh: string) =>
+      writeFileSync(file, JSON.stringify({ claudeAiOauth: { accessToken: `at-${refresh}`, refreshToken: refresh } }));
+    write(path.join(dir, '.credentials.json'), 'rt-working');
+    write(previousCredentialPath(dir), 'rt-spent-by-last-renewal');
+    writeFileSync(
+      path.join(home, 'accounts.json'),
+      JSON.stringify({ accounts: [{ ...accounts[0], email: 'work@example.com' }] }),
+    );
+    (context as { lookupOwner?: unknown }).lookupOwner = () => Promise.resolve('personal@example.com');
+
+    const code = await loginCommand(context, 'work', { relay: true }, {
+      relay: (account) => {
+        write(path.join(account.dir, '.credentials.json'), 'rt-wrong-account');
+        return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (relayed)' });
       },
     });
 
