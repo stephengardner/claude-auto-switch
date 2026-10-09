@@ -31,6 +31,14 @@ describe('keepalive crontab entry', () => {
     expect(withKeepalive(on, null)).toBe('');
   });
 
+  it('does not count a line that is commented out, and turning on replaces it', () => {
+    const line = keepaliveLine('x usage');
+    const commented = `${theirs}# ${line}\n`;
+    expect(findKeepalive(commented)).toBeNull();
+    const on = withKeepalive(commented, line);
+    expect(on.split('\n').filter((l) => l.includes(KEEPALIVE_MARK))).toEqual([line]);
+  });
+
   it('runs every four hours, off the hour, and discards its output', () => {
     expect(keepaliveLine('cmd')).toBe(`17 */4 * * * cmd >/dev/null 2>&1 ${KEEPALIVE_MARK}`);
   });

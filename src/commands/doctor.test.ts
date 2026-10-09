@@ -16,6 +16,7 @@ import { installShim } from '../shell/install-shim.js';
 import { loadConfig } from '../config/config.js';
 import { credentialFileFingerprint } from '../accounts/credential-vault.js';
 import { loadLedger, markCapped, saveLedger } from '../ledger/ledger.js';
+import { expectedKeepalive } from './keepalive.js';
 import type { CliContext } from '../context.js';
 
 function context(lines: string[] = []): CliContext {
@@ -376,16 +377,38 @@ describe('doctor on a machine nobody is at', () => {
     expect(keepalive).toMatchObject({ ok: true, note: true, fix: ['ccx keepalive on'] });
   });
 
-  it.skipIf(process.platform === 'win32')('is satisfied once keepalive is on', async () => {
+  const programs = { nodePath: '/usr/bin/node', cliPath: '/opt/ccx/dist/cli.js' };
+  const keepaliveReport = async (crontab: string, exists: (file: string) => boolean = () => true) => {
     const lines: string[] = [];
     const c = context(lines);
     c.json = true;
+    const installed = expectedKeepalive(c, programs).line;
     await doctorCommand(c, {
       ...serverDeps,
-      readCrontab: () => Promise.resolve('17 */4 * * * x usage >/dev/null 2>&1 # ccx keepalive\n'),
+      keepalive: { ...programs, exists },
+      readCrontab: () => Promise.resolve(crontab.replace('INSTALLED', installed)),
     });
-    const report = JSON.parse(lines.join('\n')) as { checks: Array<{ name: string; note?: boolean }> };
-    expect(report.checks.find((check) => check.name === 'keepalive')?.note).toBeUndefined();
+    const report = JSON.parse(lines.join('\n')) as {
+      checks: Array<{ name: string; note?: boolean; detail: string; fix?: string[] }>;
+    };
+    return report.checks.find((check) => check.name === 'keepalive');
+  };
+
+  it.skipIf(process.platform === 'win32')('is satisfied once keepalive runs this ccx', async () => {
+    expect((await keepaliveReport('INSTALLED\n'))?.note).toBeUndefined();
+  });
+
+  it.skipIf(process.platform === 'win32')('flags a keepalive line whose node or ccx has moved', async () => {
+    const moved = await keepaliveReport('INSTALLED\n', (file) => file !== '/usr/bin/node');
+    expect(moved).toMatchObject({ note: true, fix: ['ccx keepalive on'] });
+    expect(moved?.detail).toContain('renews nothing');
+    const other = await keepaliveReport("17 */4 * * * '/old/node' '/old/cli.js' usage >/dev/null 2>&1 # ccx keepalive\n");
+    expect(other).toMatchObject({ note: true, fix: ['ccx keepalive on'] });
+  });
+
+  it.skipIf(process.platform === 'win32')('does not count a keepalive line that is commented out', async () => {
+    const off = await keepaliveReport('# INSTALLED\n');
+    expect(off?.detail).toContain('nothing renews idle logins');
   });
 
   it('does not bring up keepalive on a desktop', async () => {

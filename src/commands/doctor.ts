@@ -3,7 +3,12 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { browserPortReachable } from '../login/browser.js';
 import { findKeepalive } from '../keepalive/crontab.js';
-import { systemCrontab } from './keepalive.js';
+import {
+  expectedKeepalive,
+  keepaliveIsCurrent,
+  systemCrontab,
+  type KeepaliveDeps,
+} from './keepalive.js';
 import { isHeadlessSession } from '../util/headless.js';
 import { auditSessionAccount } from './doctor-session-account.js';
 import { configHome, profilesDir } from '../config/paths.js';
@@ -49,6 +54,8 @@ export interface DoctorDeps {
   headless?: boolean;
   /** The user's crontab, or null when cron is unavailable; injected in tests. */
   readCrontab?: () => Promise<string | null>;
+  /** The node and ccx keepalive should be running; injected in tests. */
+  keepalive?: KeepaliveDeps;
   /** Shell-profile resolver for the shim check; injected in tests. */
   resolveShimProfile?: () => string | null;
   /** Skip checks that need the network (used by tests and offline runs). */
@@ -130,15 +137,19 @@ async function auditKeepalive(context: CliContext, deps: DoctorDeps): Promise<Do
   if (!headless(context, deps) || (context.ctx.platform ?? process.platform) === 'win32') return null;
   const crontab = await (deps.readCrontab ?? (() => systemCrontab.read()))();
   if (crontab === null) return null;
-  return findKeepalive(crontab)
-    ? { name: 'keepalive', ok: true, detail: 'idle logins are renewed every four hours' }
-    : {
-        name: 'keepalive',
-        ok: true,
-        note: true,
-        detail: 'nothing renews idle logins here, and a machine nobody uses for a day can lose them',
-        fix: ['ccx keepalive on'],
-      };
+  const line = findKeepalive(crontab);
+  if (line && keepaliveIsCurrent(line, expectedKeepalive(context, deps.keepalive), deps.keepalive?.exists)) {
+    return { name: 'keepalive', ok: true, detail: 'idle logins are renewed every four hours' };
+  }
+  return {
+    name: 'keepalive',
+    ok: true,
+    note: true,
+    detail: line
+      ? 'the keepalive job runs a node or ccx that is not this one, so it renews nothing'
+      : 'nothing renews idle logins here, and a machine nobody uses for a day can lose them',
+    fix: ['ccx keepalive on'],
+  };
 }
 
 function headless(context: CliContext, deps: DoctorDeps): boolean {

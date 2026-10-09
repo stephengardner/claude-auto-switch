@@ -19,8 +19,13 @@ export function keepaliveLine(command: string): string {
   return `${SCHEDULE} ${command.replaceAll('%', '\\%')} >/dev/null 2>&1 ${KEEPALIVE_MARK}`;
 }
 
+/** ccx's line, if cron would run it: a line commented out is not running. */
 export function findKeepalive(crontab: string): string | null {
-  return crontab.split('\n').find((line) => line.includes(KEEPALIVE_MARK)) ?? null;
+  return (
+    crontab
+      .split('\n')
+      .find((line) => !line.trimStart().startsWith('#') && line.includes(KEEPALIVE_MARK)) ?? null
+  );
 }
 
 /** The crontab with ccx's line replaced by `line`, or removed when `line` is null. */
