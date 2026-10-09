@@ -95,9 +95,23 @@ describe('ccx keepalive', () => {
   it('gives the Task Scheduler equivalent on Windows instead of touching anything', async () => {
     const { c, lines } = context('win32');
     const crontab = memoryCrontab('');
-    expect(await keepaliveCommand(c, 'on', { ...paths, crontab })).toBe(1);
+    const windowsPaths = {
+      nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+      cliPath: 'C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\claude-auto-switch\\dist\\cli.js',
+    };
+    expect(await keepaliveCommand(c, 'on', { ...paths, ...windowsPaths, crontab })).toBe(1);
+    expect(await keepaliveCommand(c, 'status', { ...paths, ...windowsPaths, crontab })).toBe(0);
     expect(crontab.writes).toBe(0);
     expect(lines.join('\n')).toContain('schtasks');
+    // Task Scheduler wants the path, spaces and all, inside escaped quotes within /TR.
+    expect(lines.join('\n')).toContain('/TR "\\"C:\\Program Files\\nodejs\\node.exe\\" ');
+  });
+
+  it('keeps a % in a path from being read by cron as a new line', async () => {
+    const { c } = context();
+    const crontab = memoryCrontab('');
+    await keepaliveCommand(c, 'on', { ...paths, cliPath: '/opt/100%/cli.js', crontab });
+    expect(crontab.text).toContain("'/opt/100\\%/cli.js'");
   });
 
   it('refuses an action it does not know', async () => {

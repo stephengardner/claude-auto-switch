@@ -3,7 +3,8 @@ import { profilesDir } from '../config/paths.js';
 import { addAccount, removeAccount } from '../accounts/registry.js';
 import { settleNewLogin } from '../login/settle-login.js';
 import { runInherit } from '../util/exec.js';
-import { invokerArgs } from '../invoker.js';
+import { authLoginArgs } from '../login/login.js';
+import { keepForRollback } from '../accounts/credential-vault.js';
 import { assertProfileName, assertInsideProfiles } from '../util/names.js';
 import { secureMkdir } from '../util/secret-file.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -33,13 +34,8 @@ export async function addCommand(
 
   if (options.login !== false) {
     const claude = getClaude(context);
-    const loginArgs = [
-      'auth',
-      'login',
-      '--claudeai',
-      ...(options.email ? ['--email', options.email] : []),
-    ];
-    await runInherit(claude.bin, invokerArgs(claude, loginArgs), {
+    keepForRollback(dir);
+    await runInherit(claude.bin, authLoginArgs(claude, options.email), {
       env: { CLAUDE_CONFIG_DIR: dir },
     });
 

@@ -2,13 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { loginOnHost, type HostLoginDeps } from './remote-login.js';
-import { RELAY_URL_PREFIX } from './login.js';
+import { HOST_CODE_BUDGET_MS, loginOnHost, type HostLoginDeps } from './remote-login.js';
+import { RELAY_CODE_WAIT_MS, RELAY_URL_PREFIX } from './login.js';
 import { loadConfig } from '../config/config.js';
 import type { RemoteResult, RemoteRunner, RemoteSession } from '../remote/ssh.js';
 import type { CliContext } from '../context.js';
 
-const LINK = 'https://claude.com/cai/oauth/authorize?code=true&state=s1';
+/** The shape claude 2.1.295 prints, with its one-time values replaced. */
+const LINK =
+  'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e' +
+  '&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback' +
+  '&scope=user%3Ainference&code_challenge=c&code_challenge_method=S256&state=s1';
 
 function context(localAccounts: Array<{ name: string; email?: string; enabled?: boolean }>) {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-remote-'));
@@ -154,6 +158,34 @@ describe('ccx login --host', () => {
     expect(lines.join('\n')).toContain('not Anthropic');
   });
 
+  it('shows an Anthropic link that is not a Claude Code sign-in to the person instead of approving it', async () => {
+    // A Console sign-in for another client, which approving would turn into API keys for the remote.
+    const consoleSignIn =
+      'https://platform.claude.com/oauth/authorize?client_id=someone-else&response_type=code' +
+      '&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key';
+    const { c, lines } = context([{ name: 'a' }]);
+    const remote = remoteWith({ remoteAccounts: [{ name: 'a', loggedIn: false }], link: consoleSignIn });
+    let approverUsed = false;
+    const asked: string[] = [];
+    await loginOnHost(c, 'beast', 'a', {}, {
+      browserReachable: () => Promise.resolve(true),
+      approver: {
+        approve: () => {
+          approverUsed = true;
+          return Promise.resolve({ outcome: 'authorized', code: 'x#y' });
+        },
+      },
+      askCode: (url) => {
+        asked.push(url);
+        return Promise.resolve(null);
+      },
+      runner: fakeRunner(remote),
+    });
+    expect(approverUsed).toBe(false);
+    expect(asked).toEqual([consoleSignIn]);
+    expect(lines.join('\n')).toContain('not approved automatically');
+  });
+
   it('asks the person for the code when no browser here can be driven', async () => {
     const { c } = context([{ name: 'a', email: 'a@example.com' }]);
     const remote = remoteWith({ remoteAccounts: [{ name: 'a', email: 'a@example.com', loggedIn: false }] });
@@ -217,6 +249,50 @@ describe('ccx login --host', () => {
     expect(code).toBe(1);
     expect(lines.join('\n')).toContain('2.1.3');
     expect(remote.started).toEqual([]);
+  });
+
+  it('reads the state past anything the remote login profile prints first', async () => {
+    const { c } = context([{ name: 'a' }]);
+    const state = JSON.stringify(
+      { ccxVersion: '2.2.0', accounts: [{ name: 'a', loggedIn: false, enabled: true }] },
+      null,
+      2,
+    );
+    const remote = remoteWith({ state: { exitCode: 0, stdout: `Welcome to beast\n{not json\n${state}\n`, stderr: '' } });
+    const code = await loginOnHost(c, 'beast', 'a', {}, { ...browserApproves, runner: fakeRunner(remote) });
+    expect(code).toBe(0);
+    expect(remote.started).toEqual([['login', 'a', '--relay']]);
+  });
+
+  it('says ssh is missing here, rather than ccx missing there', async () => {
+    const { c, lines } = context([{ name: 'a' }]);
+    const remote = remoteWith({ state: { exitCode: -1, stdout: '', stderr: 'Error: spawn ssh ENOENT' } });
+    expect(await loginOnHost(c, 'beast', 'a', {}, { ...browserApproves, runner: fakeRunner(remote) })).toBe(1);
+    expect(lines.join('\n')).toContain('could not run ssh on this machine');
+    expect(lines.join('\n')).not.toContain('ccx was not found');
+  });
+
+  it('produces its code inside the time the other machine keeps listening', () => {
+    // Pasting late would send the code to a relay that has already given up.
+    expect(HOST_CODE_BUDGET_MS).toBeLessThan(RELAY_CODE_WAIT_MS - 30_000);
+  });
+
+  it('gives the person whatever time is left after the browser tried', async () => {
+    const { c } = context([{ name: 'a' }]);
+    const remote = remoteWith({ remoteAccounts: [{ name: 'a', loggedIn: false }] });
+    const given: number[] = [];
+    await loginOnHost(c, 'beast', 'a', {}, {
+      browserReachable: () => Promise.resolve(true),
+      approver: { approve: () => Promise.resolve({ outcome: 'left-open' }) },
+      askCode: (_url, _who, timeoutMs) => {
+        given.push(timeoutMs);
+        return Promise.resolve('typed#code');
+      },
+      runner: fakeRunner(remote),
+    });
+    expect(given).toHaveLength(1);
+    expect(given[0]).toBeGreaterThan(0);
+    expect(given[0]).toBeLessThanOrEqual(HOST_CODE_BUDGET_MS);
   });
 
   it('reports a machine ssh cannot reach', async () => {

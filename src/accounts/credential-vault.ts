@@ -188,6 +188,19 @@ export function rollbackCredential(dir: string): boolean {
   return true;
 }
 
+/**
+ * Keep the login a profile holds right now as the one to put back, just before
+ * a sign-in replaces it. `claude auth login` writes over the live credential
+ * itself, so without this the backup is whatever a renewal last retired, which
+ * the server has already invalidated. With no login now, the backup is removed,
+ * so a refused sign-in leaves no login rather than a dead one.
+ */
+export function keepForRollback(dir: string): void {
+  const prev = previousCredentialPath(dir);
+  if (isUsableCredential(credentialPath(dir))) copyCredential(credentialPath(dir), prev);
+  else removeCredential(prev);
+}
+
 /** Remove a config dir's live credential (used to scrub a shared session dir). */
 export function clearCredential(dir: string): void {
   removeCredential(credentialPath(dir));

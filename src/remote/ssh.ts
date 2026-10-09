@@ -54,6 +54,8 @@ export interface RemoteRunner {
 export const COMMAND_NOT_FOUND = 127;
 /** Exit code ssh uses when it could not connect or authenticate. */
 export const SSH_FAILED = 255;
+/** ssh itself could not be started here; no real exit code is negative. */
+export const SSH_UNAVAILABLE = -1;
 
 export interface SshRunnerOptions {
   /** How ccx is run there; `ccx` through the login shell unless told otherwise. */
@@ -80,7 +82,7 @@ export function sshRunner(host: string, options: SshRunnerOptions = {}): RemoteR
         let stderr = '';
         child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
         child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
-        child.on('error', (err) => resolve({ exitCode: COMMAND_NOT_FOUND, stdout, stderr: String(err) }));
+        child.on('error', (err) => resolve({ exitCode: SSH_UNAVAILABLE, stdout, stderr: String(err) }));
         child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
       });
     },
@@ -90,7 +92,7 @@ export function sshRunner(host: string, options: SshRunnerOptions = {}): RemoteR
         /* the far end closed first; its exit code says why */
       });
       const done = new Promise<number>((resolve) => {
-        child.on('error', () => resolve(COMMAND_NOT_FOUND));
+        child.on('error', () => resolve(SSH_UNAVAILABLE));
         child.on('close', (code) => resolve(code ?? 1));
       });
       return {

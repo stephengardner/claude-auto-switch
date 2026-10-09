@@ -49,22 +49,25 @@ export async function keepaliveCommand(
   const cli = deps.cliPath ?? fileURLToPath(new URL('../cli.js', import.meta.url));
   const env = context.ctx.env ?? process.env;
   const home = env.CLAUDE_AUTO_SWITCH_HOME;
+
+  if (!['on', 'off', 'status'].includes(action)) {
+    context.out('usage: ccx keepalive <on|off|status>');
+    return 1;
+  }
+  // Before any quoting for a POSIX shell, which a Windows path cannot pass.
+  if ((context.ctx.platform ?? process.platform) === 'win32') {
+    context.out('ccx keepalive uses cron, which Windows does not have. The same with Task Scheduler:');
+    context.out(`  schtasks /Create /SC HOURLY /MO 4 /TN "ccx keepalive" /TR "\\"${node}\\" \\"${cli}\\" usage"`);
+    if (home) context.out(`  (with CLAUDE_AUTO_SWITCH_HOME=${home} set for your user)`);
+    return action === 'status' ? 0 : 1;
+  }
+
   const usage = [
     ...(home ? [`CLAUDE_AUTO_SWITCH_HOME=${shellQuote(home)}`] : []),
     shellQuote(node),
     shellQuote(cli),
     'usage',
   ].join(' ');
-
-  if (!['on', 'off', 'status'].includes(action)) {
-    context.out('usage: ccx keepalive <on|off|status>');
-    return 1;
-  }
-  if ((context.ctx.platform ?? process.platform) === 'win32') {
-    context.out('ccx keepalive uses cron, which Windows does not have. The same with Task Scheduler:');
-    context.out(`  schtasks /Create /SC HOURLY /MO 4 /TN "ccx keepalive" /TR "'${node}' '${cli}' usage"`);
-    return action === 'status' ? 0 : 1;
-  }
 
   const crontab = deps.crontab ?? systemCrontab;
   const current = await crontab.read();

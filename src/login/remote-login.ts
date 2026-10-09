@@ -1,14 +1,16 @@
 import { listAccounts } from '../accounts/registry.js';
-import { RELAY_URL_PREFIX, DEFAULT_LOGIN_TIMEOUT_MS } from './login.js';
+import { RELAY_URL_PREFIX } from './login.js';
 import {
   browserPortReachable,
   cdpSignInApprover,
   isAnthropicSignInUrl,
+  isClaudeCodeSignIn,
   type SignInApprover,
 } from './browser.js';
 import {
   COMMAND_NOT_FOUND,
   SSH_FAILED,
+  SSH_UNAVAILABLE,
   assertSshHost,
   sshRunner,
   type RemoteRunner,
@@ -31,6 +33,12 @@ import type { CliContext } from '../context.js';
 const RELAY_SINCE = [2, 2, 0] as const;
 /** Time for a browser that ccx drives to get from the link to the code. */
 const APPROVE_TIMEOUT_MS = 3 * 60_000;
+/**
+ * Everything this side may take to produce a code once the link arrives,
+ * browser and pasting together. Kept under the relay's own wait
+ * (RELAY_CODE_WAIT_MS) so the other end is still listening when it is sent.
+ */
+export const HOST_CODE_BUDGET_MS = 9 * 60_000;
 
 export interface HostLoginOptions {
   all?: boolean;
@@ -43,7 +51,7 @@ export interface HostLoginDeps {
   approver?: SignInApprover;
   browserReachable?: (port: number) => Promise<boolean>;
   /** Asks the person for the code when no browser here can be driven. */
-  askCode?: (url: string, who: string) => Promise<string | null>;
+  askCode?: (url: string, who: string, timeoutMs: number) => Promise<string | null>;
 }
 
 interface RemoteAccount {
@@ -120,6 +128,10 @@ async function readRemoteAccounts(
   runner: RemoteRunner,
 ): Promise<Map<string, RemoteAccount> | null> {
   const state = await runner.run(['state']);
+  if (state.exitCode === SSH_UNAVAILABLE) {
+    context.out(`could not run ssh on this machine: ${lastLine(state.stderr)}`);
+    return null;
+  }
   if (state.exitCode === SSH_FAILED) {
     context.out(`could not reach ${host} over ssh: ${lastLine(state.stderr)}`);
     return null;
@@ -129,13 +141,13 @@ async function readRemoteAccounts(
     (state.exitCode !== 0 && /command not found/i.test(state.stderr))
   ) {
     context.out(`ccx was not found on ${host}.`);
-    context.out('  Install it there (npm install -g claude-auto-switch) so a login shell finds it,');
-    context.out('  or say how to run it: --remote-ccx /path/to/ccx');
+    context.out('  Install it there (npm install -g claude-auto-switch) so a login shell finds it and node,');
+    context.out("  or name both: --remote-ccx '/path/to/node /path/to/ccx'");
     return null;
   }
   let parsed: { ccxVersion?: string; accounts?: RemoteAccount[] };
   try {
-    parsed = JSON.parse(state.stdout) as typeof parsed;
+    parsed = parseState(state.stdout) as typeof parsed;
   } catch {
     context.out(`ccx on ${host} did not report its state: ${lastLine(state.stderr || state.stdout)}`);
     return null;
@@ -187,8 +199,12 @@ async function codeFor(
     context.out(`  REFUSED: ${host} sent a sign-in link that is not Anthropic's, so it was not opened.`);
     return null;
   }
+  const deadline = Date.now() + HOST_CODE_BUDGET_MS;
   const port = context.config.browser.debugPort;
-  if (await (deps.browserReachable ?? browserPortReachable)(port)) {
+  if (!isClaudeCodeSignIn(url)) {
+    context.out(`  ${host} sent a link that is not a Claude Code sign-in ccx recognizes,`);
+    context.out('  so it is not approved automatically. Look at the page before you approve anything.');
+  } else if (await (deps.browserReachable ?? browserPortReachable)(port)) {
     const approved = await (deps.approver ?? cdpSignInApprover).approve({
       url,
       debugPort: port,
@@ -200,16 +216,37 @@ async function codeFor(
     }
     context.out('  could not finish it in the browser automatically');
   }
-  return (deps.askCode ?? askForCode(context))(url, who);
+  return (deps.askCode ?? askForCode(context))(url, who, Math.max(0, deadline - Date.now()));
 }
 
-function askForCode(context: CliContext): (url: string, who: string) => Promise<string | null> {
-  return async (url, who) => {
-    context.out(`  open this link in a browser signed in to ${who}, approve, and paste the code it shows:`);
+function askForCode(
+  context: CliContext,
+): (url: string, who: string, timeoutMs: number) => Promise<string | null> {
+  return async (url, who, timeoutMs) => {
+    const minutes = Math.max(1, Math.floor(timeoutMs / 60_000));
+    context.out(`  open this link in a browser signed in to ${who}, approve, and paste the code it shows`);
+    context.out(`  within ${minutes} minute${minutes === 1 ? '' : 's'}:`);
     context.out(`    ${url}`);
     process.stdout.write('  code: ');
-    return readOneLine(DEFAULT_LOGIN_TIMEOUT_MS);
+    return readOneLine(timeoutMs);
   };
+}
+
+/**
+ * The login shell runs the remote profile first, and a profile may print a
+ * greeting, so the state is the JSON from the first line that starts one and
+ * parses to the end of the output.
+ */
+function parseState(stdout: string): unknown {
+  const starts = [0, ...[...stdout.matchAll(/^\{/gm)].map((m) => m.index ?? 0)];
+  for (const start of starts) {
+    try {
+      return JSON.parse(stdout.slice(start));
+    } catch {
+      /* not this one */
+    }
+  }
+  throw new Error('no state in the output');
 }
 
 function lastLine(text: string): string {

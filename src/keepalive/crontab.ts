@@ -14,8 +14,9 @@ export const KEEPALIVE_MARK = '# ccx keepalive';
 /** Seventeen past, so it does not land on the hour with everyone else's jobs. */
 const SCHEDULE = '17 */4 * * *';
 
+/** cron turns an unescaped % in a command into a new line, so each one is escaped. */
 export function keepaliveLine(command: string): string {
-  return `${SCHEDULE} ${command} >/dev/null 2>&1 ${KEEPALIVE_MARK}`;
+  return `${SCHEDULE} ${command.replaceAll('%', '\\%')} >/dev/null 2>&1 ${KEEPALIVE_MARK}`;
 }
 
 export function findKeepalive(crontab: string): string | null {

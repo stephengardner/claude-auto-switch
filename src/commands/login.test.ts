@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loginCommand } from './login.js';
 import { rememberDeadLogin } from '../usage/dead-login-store.js';
-import { credentialFileFingerprint } from '../accounts/credential-vault.js';
+import { credentialFileFingerprint, previousCredentialPath } from '../accounts/credential-vault.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
 
@@ -224,5 +224,36 @@ describe('ccx login --host', () => {
     });
     expect(code).toBe(0);
     expect(calls).toEqual([{ host: 'beast', name: undefined, options: { all: true, remoteCcx: '/opt/ccx' } }]);
+  });
+});
+
+describe('a refused sign-in puts back the login it replaced', () => {
+  it('restores the working login, not an older one a renewal already spent', async () => {
+    const { context, accounts } = setup(['work']);
+    const dir = accounts[0]!.dir;
+    const write = (file: string, refresh: string) =>
+      writeFileSync(file, JSON.stringify({ claudeAiOauth: { accessToken: `at-${refresh}`, refreshToken: refresh } }));
+    write(path.join(dir, '.credentials.json'), 'rt-working');
+    write(previousCredentialPath(dir), 'rt-spent-by-last-renewal');
+    writeFileSync(
+      path.join(path.dirname(dir), '..', 'accounts.json'),
+      JSON.stringify({ accounts: [{ ...accounts[0], email: 'work@example.com' }] }),
+    );
+    (context as { lookupOwner?: unknown }).lookupOwner = () => Promise.resolve('personal@example.com');
+
+    const code = await loginCommand(context, 'work', {}, {
+      headless: false,
+      login: (account) => {
+        // What claude auth login does when the browser is signed in to another account.
+        write(path.join(account.dir, '.credentials.json'), 'rt-wrong-account');
+        return Promise.resolve({ account: account.name, ok: true, detail: 'logged in (authorized)' });
+      },
+    });
+
+    expect(code).toBe(1);
+    const live = JSON.parse(readFileSync(path.join(dir, '.credentials.json'), 'utf8')) as {
+      claudeAiOauth: { refreshToken: string };
+    };
+    expect(live.claudeAiOauth.refreshToken).toBe('rt-working');
   });
 });

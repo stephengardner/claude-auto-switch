@@ -63,6 +63,35 @@ export function isAnthropicSignInUrl(url: string): boolean {
   }
 }
 
+/** Claude Code's own OAuth client, and the page that shows the code to paste. */
+const CLAUDE_CODE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const MANUAL_REDIRECT = 'https://platform.claude.com/oauth/code/callback';
+/** Where a Claude subscription sign-in starts; the Console's own page is not one of them. */
+const SUBSCRIPTION_AUTHORIZE_PAGES = new Set(['claude.com/cai/oauth/authorize', 'claude.ai/oauth/authorize']);
+
+/**
+ * Is this exactly a Claude subscription sign-in for Claude Code? Only such a
+ * link is approved without the person seeing it, because approving clicks
+ * through on whatever page the link opens. Any other link, even on an
+ * Anthropic host (a settings page, a Console sign-in, another client), is
+ * shown to the person to decide.
+ */
+export function isClaudeCodeSignIn(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const params = parsed.searchParams;
+    return (
+      parsed.protocol === 'https:' &&
+      SUBSCRIPTION_AUTHORIZE_PAGES.has(`${parsed.hostname}${parsed.pathname}`) &&
+      params.get('client_id') === CLAUDE_CODE_CLIENT_ID &&
+      params.get('redirect_uri') === MANUAL_REDIRECT &&
+      params.get('response_type') === 'code'
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The code Claude's paste prompt wants, read from the address of the page shown
  * after Authorize. That page displays the same `code#state` it carries in its
@@ -71,7 +100,7 @@ export function isAnthropicSignInUrl(url: string): boolean {
 export function codeFromCallbackUrl(url: string): string | null {
   try {
     const parsed = new URL(url);
-    if (!isAnthropicSignInUrl(url) || parsed.pathname !== '/oauth/code/callback') return null;
+    if (`${parsed.origin}${parsed.pathname}` !== MANUAL_REDIRECT) return null;
     const code = parsed.searchParams.get('code');
     const state = parsed.searchParams.get('state');
     return code && state ? `${code}#${state}` : null;
@@ -99,7 +128,7 @@ export interface SignInApprover {
  */
 export const cdpSignInApprover: SignInApprover = {
   async approve({ url, debugPort, timeoutMs }) {
-    if (!isAnthropicSignInUrl(url)) return { outcome: 'failed' };
+    if (!isClaudeCodeSignIn(url)) return { outcome: 'failed' };
     const browser = await chromium
       .connectOverCDP(`http://127.0.0.1:${debugPort}`)
       .catch(() => null);

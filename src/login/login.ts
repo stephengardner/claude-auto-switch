@@ -196,6 +196,12 @@ const RELAY_CODE_RE = /^[^\s#]+#[^\s#]+$/;
 const RELAY_URL_WAIT_MS = 30_000;
 /** Turning a code into a login is one request; a minute means it is not happening. */
 const CODE_EXCHANGE_TIMEOUT_MS = 60_000;
+/**
+ * How long this side waits for the code: longer than the other side may take
+ * to produce it (HOST_CODE_BUDGET_MS in remote-login.ts), so a code the person
+ * pastes in time never arrives at a relay that has already stopped listening.
+ */
+export const RELAY_CODE_WAIT_MS = 10 * 60_000;
 
 export interface RelayLoginDeps {
   claude: ClaudeInvoker;
@@ -237,7 +243,7 @@ export async function relayLogin(
   }
   deps.send(`${RELAY_URL_PREFIX}${url}`);
 
-  const code = await deps.receiveCode(deps.timeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS);
+  const code = await deps.receiveCode(deps.timeoutMs ?? RELAY_CODE_WAIT_MS);
   if (!code) {
     proc.cancel?.();
     return fail('no code arrived from the machine approving the sign-in');

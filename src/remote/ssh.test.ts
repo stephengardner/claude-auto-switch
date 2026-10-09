@@ -1,15 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { assertSshHost, remoteCcxCommand } from './ssh.js';
 import { shellQuote } from '../util/shell-quote.js';
 
 const printArgs = `"${process.execPath}" -e 'console.log(JSON.stringify(process.argv.slice(1)))'`;
 
-/** Run a command string the way sshd does: handed to the user's login shell with -c. */
+/**
+ * Run a command string the way sshd does: handed to the user's login shell
+ * with -c. In an empty home, so the developer's own profile cannot print into
+ * the result.
+ */
 function asSshdWould(loginShell: string, command: string): string[] {
+  const home = mkdtempSync(path.join(tmpdir(), 'cas-ssh-home-'));
   const result = spawnSync(loginShell, ['-c', command], {
-    env: { ...process.env, SHELL: loginShell },
+    env: { ...process.env, SHELL: loginShell, HOME: home, ZDOTDIR: home },
     encoding: 'utf8',
   });
   expect(result.status, result.stderr).toBe(0);

@@ -13,9 +13,12 @@ semantic versioning.
   sign-in, registers any that exist here and are missing there (the name and
   address, never a login), and relays each sign-in: the server starts it and
   sends the link, this machine's browser approves it, and the code read from
-  Anthropic's page goes back. Without a browser ccx can drive, it shows the
-  link and takes the code here. Each machine keeps its own login, because a
-  refresh token works once and two machines sharing one log each other out.
+  Anthropic's page goes back. Only an exact Claude Code sign-in link is
+  approved without you seeing it; any other link on an Anthropic address is
+  shown for you to check, and links anywhere else are never opened. Without a
+  browser ccx can drive, it shows the link and takes the code here. Each
+  machine keeps its own login, because a refresh token works once and two
+  machines sharing one log each other out.
 - **`ccx login` works over SSH.** On a machine with nobody at a browser (an
   SSH session, or Linux with no display), it hands the sign-in to the
   terminal, where Claude prints the link and takes the pasted code. It used
@@ -38,6 +41,12 @@ semantic versioning.
 
 ### Fixed
 
+- **A refused sign-in put back a login that no longer worked.** When ccx
+  refused a sign-in (a duplicate, or now the wrong account), it restored the
+  login a renewal had last retired, which the server had already
+  invalidated, and said the profile was put back. It now keeps what the
+  profile held just before the sign-in and restores exactly that, or leaves
+  no login when there was none.
 - **A sign-in link split across two reads was taken half written.** The link
   is now read only once it is complete.
 
