@@ -270,6 +270,28 @@ const MANY_VALUE_FLAGS = new Set([
   '--tools',
 ]);
 
+/**
+ * The options in `args` as Claude's parser reads them, without their values,
+ * so a value is never mistaken for an option of its own. Nothing after `--`
+ * is an option.
+ */
+export function optionTokens(args: string[]): string[] {
+  const tokens: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg === '--') break;
+    if (isOperand(arg)) continue;
+    tokens.push(arg);
+    if (arg.includes('=')) continue;
+    if (ONE_VALUE_FLAGS.has(arg)) {
+      if (isOperand(args[i + 1])) i += 1;
+    } else if (MANY_VALUE_FLAGS.has(arg)) {
+      while (isOperand(args[i + 1])) i += 1;
+    }
+  }
+  return tokens;
+}
+
 /** Whether `args` carry a prompt: an operand that is not some option's value. */
 export function hasOwnPrompt(args: string[]): boolean {
   for (let i = 0; i < args.length; i++) {

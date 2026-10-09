@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Command } from 'commander';
-import { registerWorkerCommand, reportLine, resultObject, workerOutput, type WorkerOptions } from './worker.js';
+import { ownedFlagIn, registerWorkerCommand, reportLine, resultObject, workerOutput, type WorkerOptions } from './worker.js';
 
 /** The command line as the real parser hands it to the worker. */
 async function parsed(argv: string[]): Promise<{ words: string[]; options: WorkerOptions; passthrough: string[] }> {
@@ -53,6 +53,27 @@ describe('the worker command line', () => {
     expect(got.words).toEqual([]);
     expect(got.passthrough).toEqual(['--max-turns', '2']);
     expect(got.options.briefFile).toBe('brief.md');
+  });
+});
+
+describe("the worker's own flags among Claude's", () => {
+  it('finds one however it is spelled', () => {
+    expect(ownedFlagIn(['--output-format=text'])).toBe('--output-format');
+    expect(ownedFlagIn(['--resume', 'x'])).toBe('--resume');
+    // A short option with its value attached, and short options in a cluster.
+    expect(ownedFlagIn(['-rabc'])).toBe('-r');
+    expect(ownedFlagIn(['-pc'])).toBe('-p');
+    expect(ownedFlagIn(['-vp'])).toBe('-p');
+    expect(ownedFlagIn(['--add-dir', 'x', '-c'])).toBe('-c');
+  });
+
+  it('never reads an option value, or what comes after --, as an option', () => {
+    expect(ownedFlagIn(['--append-system-prompt', 'use print mode sparingly'])).toBeNull();
+    expect(ownedFlagIn(['--max-turns', '5', '--add-dir', 'a', 'b'])).toBeNull();
+    // -d takes the rest of its cluster as its value.
+    expect(ownedFlagIn(['-dapi'])).toBeNull();
+    expect(ownedFlagIn(['--', '-p'])).toBeNull();
+    expect(ownedFlagIn([])).toBeNull();
   });
 });
 

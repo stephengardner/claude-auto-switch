@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { Command } from 'commander';
 import { listAccounts } from '../accounts/registry.js';
 import type { CliContext } from '../context.js';
+import { optionTokens } from '../launcher/conversation.js';
 import { handleInterruption, type SignalSource } from '../launcher/interruption.js';
 import { runInteractiveHotSwap } from './session.js';
 
@@ -69,6 +70,32 @@ const WORKER_OWNED_FLAGS = new Set([
   '--continue',
   '--fork-session',
 ]);
+
+/** Claude's short options that take a value, which takes the rest of a cluster with it (`-rID`). */
+const SHORT_VALUE_FLAGS = new Set(['-d', '-n', '-r', '-w']);
+
+/**
+ * The first of the worker's own flags among Claude's flags, however it is
+ * spelled: `--name`, `--name=value`, or a short option on its own, in a
+ * cluster (`-pc` is `-p -c`) or with its value attached (`-rID`). An option's
+ * value is never read as an option.
+ */
+export function ownedFlagIn(passthrough: string[]): string | null {
+  for (const token of optionTokens(passthrough)) {
+    if (token.startsWith('--')) {
+      const name = token.split('=')[0] ?? token;
+      if (WORKER_OWNED_FLAGS.has(name)) return name;
+      continue;
+    }
+    for (const letter of token.slice(1)) {
+      const flag = `-${letter}`;
+      if (WORKER_OWNED_FLAGS.has(flag)) return flag;
+      // The rest of the cluster is this option's value, or not options at all.
+      if (SHORT_VALUE_FLAGS.has(flag) || !/[A-Za-z]/.test(letter)) break;
+    }
+  }
+  return null;
+}
 
 /** Which accounts a worker ran on, in order, for its report. */
 export interface WorkerReport {
@@ -251,11 +278,9 @@ export async function workerCommand(
   if (options.briefFile !== undefined && words.length > 0) {
     return refuse('give the brief as words or with --brief-file, not both');
   }
-  const owned = passthrough.find((arg) => WORKER_OWNED_FLAGS.has(arg.split('=')[0] ?? arg));
-  if (owned !== undefined) {
-    return refuse(
-      `${owned.split('=')[0] ?? owned} is the worker's own (see ccx worker --help), not one to pass to Claude`,
-    );
+  const owned = ownedFlagIn(passthrough);
+  if (owned !== null) {
+    return refuse(`${owned} is the worker's own (see ccx worker --help), not one to pass to Claude`);
   }
   let brief: string;
   try {
