@@ -363,7 +363,8 @@ describe('doctor on a machine nobody is at', () => {
     expect(browser?.detail).not.toContain('opens a browser');
   });
 
-  it('suggests keepalive when nothing renews idle logins', async () => {
+  // Keepalive is cron's, so doctor brings it up only where cron exists.
+  it.skipIf(process.platform === 'win32')('suggests keepalive when nothing renews idle logins', async () => {
     const lines: string[] = [];
     const c = context(lines);
     c.json = true;
@@ -375,7 +376,7 @@ describe('doctor on a machine nobody is at', () => {
     expect(keepalive).toMatchObject({ ok: true, note: true, fix: ['ccx keepalive on'] });
   });
 
-  it('is satisfied once keepalive is on', async () => {
+  it.skipIf(process.platform === 'win32')('is satisfied once keepalive is on', async () => {
     const lines: string[] = [];
     const c = context(lines);
     c.json = true;

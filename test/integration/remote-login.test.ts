@@ -23,7 +23,9 @@ import type { CliContext } from '../../src/context.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_REMOTE = path.join(HERE, '..', 'fake-remote', 'fake-remote-ccx.mjs');
 const FAKE_CLAUDE_PASTE = path.join(HERE, '..', 'fake-remote', 'fake-claude-paste.mjs');
-const remoteCcx = `${shellQuote(process.execPath)} ${shellQuote(FAKE_REMOTE)}`;
+/** Built only where these tests run: a Windows path cannot be quoted for sh. */
+const remoteCcx =
+  process.platform === 'win32' ? '' : `${shellQuote(process.execPath)} ${shellQuote(FAKE_REMOTE)}`;
 
 /** ssh minus the network: drops -T and the host, runs the command with sh as sshd would. */
 const FAKE_SSH = [
