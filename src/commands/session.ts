@@ -49,6 +49,7 @@ import {
   type CapContext,
   type CapDecision,
   type CarryOnEvent,
+  type RestartBlocker,
 } from '../launcher/pty-session.js';
 import { runHeadlessSession } from '../launcher/headless-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
@@ -1540,7 +1541,7 @@ export async function runInteractiveHotSwap(
       };
       /** The switch this launch is waiting to make by a restart, once said. */
       let restartAwaited: string | null = null;
-      const switchWatch = (claudeIdle: () => boolean): string | null => {
+      const switchWatch = (restartBlocker: () => RestartBlocker | null): string | null => {
         // A request can name an account added since this session started.
         refreshAccounts();
         // This session's OWN request (written by `ccx use --session <pid>` or
@@ -1569,21 +1570,27 @@ export async function runInteractiveHotSwap(
         // In place only by the same rule a limit's move follows. Otherwise
         // relaunch: resuming by id keeps the same conversation, and the start
         // path renews a login, or passes a token, before handing it over.
-        // Asked for in place, so not at the cost of a turn, a subagent or a
-        // background command: the request stays until Claude is idle (or is
-        // replaced by another), which an early move and `/ccx`, asked in the
-        // middle of a turn, rely on. `--now` is the way to restart at once.
+        // Asked for in place, so not at the cost of a turn, a subagent, a
+        // background command or a prompt somebody is writing: the request
+        // stays until nothing would be cut off (or is replaced by another),
+        // which an early move and `/ccx`, asked in the middle of a turn, rely
+        // on. `--now` is the way to restart at once.
         const refusal = inPlaceRefusal(target, token);
         if (refusal !== null) {
-          if (!claudeIdle()) {
+          const blocker = restartBlocker();
+          if (blocker !== null) {
             if (restartAwaited !== target.name) {
               restartAwaited = target.name;
-              notice(`${refusal}; moving it to "${target.name}" by a restart once Claude is idle`);
+              notice(
+                blocker.kind === 'silent' || blocker.kind === 'headless'
+                  ? `${refusal}; ${blocker.why}, so it is not restarted for this (\`ccx use ${target.name} --now\` restarts it)`
+                  : `${refusal}; moving it to "${target.name}" by a restart once nothing in it would be cut off (now: ${blocker.why})`,
+              );
             }
             return null;
           }
           consume();
-          notice(`restarting this session on "${target.name}" now that Claude is idle`);
+          notice(`restarting this session on "${target.name}": nothing in it is running or being typed`);
           if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
           return target.name;
         }

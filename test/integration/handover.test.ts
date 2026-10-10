@@ -123,6 +123,8 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a running session moves to a
       });
       const newer = newerCcx();
       const context = makeContext(home, newer.cli);
+      // Left alone for 0.3 s counts, rather than the 20 s ccx waits.
+      context.idleBeforeRestartMs = 300;
       await loginAccount(context, home, 'A');
       await loginAccount(context, home, 'B');
       setActive('A', context.ctx);

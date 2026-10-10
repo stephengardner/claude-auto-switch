@@ -5,6 +5,7 @@ import { matchesCapText, resetAtIn } from './cap-detect.js';
 import { scrubHostEnv } from './child-env.js';
 import { conversationIdIn, wantsExistingConversation } from './conversation.js';
 import type { SessionOutcome } from './hot-swap.js';
+import type { RestartBlocker } from './pty-session.js';
 import { exitCodeForSignal, type Interruption } from './interruption.js';
 
 /**
@@ -34,7 +35,7 @@ export interface HeadlessSessionOptions {
    * A print-mode run is never idle until it is done, so a switch that would
    * end it is never made while it runs.
    */
-  switchWatch?: (claudeIdle: () => boolean) => string | null;
+  switchWatch?: (restartBlocker: () => RestartBlocker | null) => string | null;
   /** As runPtySession's: kept running for as long as Claude is (leases, logins). */
   onTick?: () => void;
   /** Resolves true only when the account is really out (asked of the account). */
@@ -315,7 +316,10 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
     }
     if (interruptedBy !== null) return;
     if (!capped && !switchTo && options.switchWatch) {
-      const target = options.switchWatch(() => false);
+      const target = options.switchWatch(() => ({
+        kind: 'headless',
+        why: 'it runs headless, and is idle only once its task is done',
+      }));
       if (target) {
         switchTo = target;
         stop();

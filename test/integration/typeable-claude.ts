@@ -171,6 +171,8 @@ export function live(options: {
   verifyLogin?: (login: string | null) => boolean;
   /** How long a check that did not lead to a move keeps the next one away. */
   refuteBackoffMs?: number;
+  /** How long Claude must be left alone before ccx may end it for anything but a limit. */
+  idleBeforeRestartMs?: number;
   /** Whether a newer ccx is waiting to take the session over, asked on each look. */
   newerInstall?: (moved: boolean) => boolean;
   /** The account the session is on now, when something moved it since the limit. */
@@ -233,6 +235,9 @@ export function live(options: {
     onCarryOn: (event) => events.push(event),
     carryOnTiming: { ...QUICK, ...options.timing },
     ...(options.refuteBackoffMs !== undefined ? { refuteBackoffMs: options.refuteBackoffMs } : {}),
+    ...(options.idleBeforeRestartMs !== undefined
+      ? { idleBeforeRestartMs: options.idleBeforeRestartMs }
+      : {}),
     ...(options.accountNow ? { currentAccount: options.accountNow } : {}),
     ...(options.newerInstall
       ? { handoverWhenIdle: () => options.newerInstall?.(decisions.length > 0) ?? false }

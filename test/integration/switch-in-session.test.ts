@@ -48,7 +48,7 @@ async function waitFor<T>(
 }
 
 interface RunEntry {
-  type: 'launch' | 'reread' | 'status';
+  type: 'launch' | 'reread' | 'status' | 'subagent-done';
   args?: string[];
   marker: string | null;
   oauthToken?: string | null;
@@ -191,6 +191,9 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     delete process.env.FAKE_CLAUDE_RESUMED_IDLE_MS;
     delete process.env.FAKE_CLAUDE_STATUS;
     delete process.env.FAKE_CLAUDE_STATUS_THEN;
+    delete process.env.FAKE_CLAUDE_IDLE_STATUS;
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    delete process.env.FAKE_CLAUDE_SUBAGENT_WRITES_UNTIL_MS;
   });
 
   it('replayed cap text is refuted by the API check: no false cap, no cascade', async () => {
@@ -434,15 +437,32 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     targeted: boolean;
     /** Claude keeps no record of what it is doing. */
     silent?: boolean;
-  }): Promise<RunEntry[]> {
+    /** Claude has been idle a minute already, instead of busy for its first 3 s. */
+    idleAlready?: boolean;
+    /** Typed into Claude before the switch is asked for, and not sent. */
+    draft?: string;
+    /** A subagent's record keeps growing until this many ms into the launch. */
+    subagentUntilMs?: number;
+    /** Resume this conversation rather than start one. */
+    resume?: string;
+  }): Promise<{ runs: RunEntry[]; home: string }> {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-switch-busy-'));
     const runsLog = path.join(home, 'runs.jsonl');
     Object.assign(process.env, {
       FAKE_CLAUDE_RUNS_LOG: runsLog,
       FAKE_CLAUDE_SESSION_RECORD: '1',
       FAKE_CLAUDE_IDLE_MS: options.silent ? '4000' : '9000',
-      FAKE_CLAUDE_RESUMED_IDLE_MS: '600',
-      ...(options.silent ? {} : { FAKE_CLAUDE_STATUS: 'busy', FAKE_CLAUDE_STATUS_THEN: '3000:idle' }),
+      // The relaunch ends at once, unless the first launch resumes too, as
+      // the fake tells the two apart only by that.
+      ...(options.resume ? {} : { FAKE_CLAUDE_RESUMED_IDLE_MS: '600' }),
+      ...(options.silent
+        ? {}
+        : options.idleAlready
+          ? { FAKE_CLAUDE_IDLE_STATUS: '1' }
+          : { FAKE_CLAUDE_STATUS: 'busy', FAKE_CLAUDE_STATUS_THEN: '3000:idle' }),
+      ...(options.subagentUntilMs
+        ? { FAKE_CLAUDE_TRANSCRIPT: '1', FAKE_CLAUDE_SUBAGENT_WRITES_UNTIL_MS: String(options.subagentUntilMs) }
+        : {}),
     });
     const context = makeContext(home);
     context.idleBeforeRestartMs = 300;
@@ -458,20 +478,31 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     }
     setActive('A', context.ctx);
 
-    const running = runCommand(context, []);
+    const running = runCommand(context, options.resume ? ['--resume', options.resume] : []);
     await firstLaunch(runsLog);
+    if (options.draft) process.stdin.emit('data', Buffer.from(options.draft));
     writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, options.targeted ? process.pid : undefined);
     expect(await running).toBe(0);
-    return readRuns(runsLog);
+    return { runs: readRuns(runsLog), home };
   }
 
-  /** The launches, the first Claude going idle, and each Claude ending by itself, in order. */
+  /** The launches, the first Claude going idle, a subagent finishing, and each Claude ending by itself, in order. */
   const lifeOf = (runs: RunEntry[]): string[] =>
-    runs.flatMap((r) => (r.type === 'launch' ? ['launch'] : r.type === 'status' ? [`status ${r.status}`] : r.type === 'reread' ? ['ended by itself'] : []));
+    runs.flatMap((r) =>
+      r.type === 'launch'
+        ? ['launch']
+        : r.type === 'status'
+          ? [`status ${r.status}`]
+          : r.type === 'subagent-done'
+            ? ['subagent done']
+            : r.type === 'reread'
+              ? ['ended by itself']
+              : [],
+    );
 
   it('waits for a token-launched Claude to be idle before restarting it for an early move', async () => {
     // An early move asks by this session's own request; so does `ccx use --session`.
-    const runs = await switchWhileBusy({ tokenOn: 'A', targeted: true });
+    const { runs } = await switchWhileBusy({ tokenOn: 'A', targeted: true });
     // Not ended while busy: it went idle first, and was restarted then, well
     // before it would have ended by itself.
     expect(lifeOf(runs)).toEqual(['launch', 'status idle', 'launch', 'ended by itself']);
@@ -483,14 +514,14 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
   });
 
   it('waits for a token-launched Claude to be idle before restarting it for ccx use', async () => {
-    const runs = await switchWhileBusy({ tokenOn: 'A', targeted: false });
+    const { runs } = await switchWhileBusy({ tokenOn: 'A', targeted: false });
     expect(lifeOf(runs)).toEqual(['launch', 'status idle', 'launch', 'ended by itself']);
     expect(runs.filter((r) => r.type === 'launch').map((l) => l.marker)).toEqual(['A', 'B']);
   });
 
   it('waits for Claude to be idle before restarting it onto an account that has only a token', async () => {
     // Swapped in place, the folder's login was removed under the running Claude.
-    const runs = await switchWhileBusy({ tokenOn: 'B', targeted: true });
+    const { runs } = await switchWhileBusy({ tokenOn: 'B', targeted: true });
     expect(lifeOf(runs)).toEqual(['launch', 'status idle', 'launch', 'ended by itself']);
     expect(
       runs.filter((r) => r.type === 'launch').map((l) => [l.marker, l.oauthToken ?? null]),
@@ -501,8 +532,39 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
   });
 
   it('never ends a Claude that does not say whether it is idle for such a switch', async () => {
-    const runs = await switchWhileBusy({ tokenOn: 'A', targeted: true, silent: true });
+    const { runs, home } = await switchWhileBusy({ tokenOn: 'A', targeted: true, silent: true });
     expect(lifeOf(runs)).toEqual(['launch', 'ended by itself']);
+    // And it says so, rather than promise a restart that will not come.
+    const said = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
+    expect(said).toContain('does not say whether it is idle, so it is not restarted for this');
+    expect(said).not.toContain('once Claude is idle');
+  });
+
+  it('never restarts Claude for a switch while something is typed in it', async () => {
+    // Claude idle at its prompt for a minute, and somebody in the middle of a
+    // prompt: ending Claude now would throw their draft away.
+    const { runs } = await switchWhileBusy({ tokenOn: 'A', targeted: true, idleAlready: true, draft: 'half a thought' });
+    expect(lifeOf(runs)).toEqual(['launch', 'ended by itself']);
+  });
+
+  it('restarts Claude for a switch only once its subagents have stopped working', async () => {
+    // Claude says it is idle while a subagent's record is still growing.
+    const { runs } = await switchWhileBusy({ tokenOn: 'A', targeted: true, idleAlready: true, subagentUntilMs: 3000 });
+    expect(lifeOf(runs)).toEqual(['launch', 'subagent done', 'launch', 'ended by itself']);
+  });
+
+  it("does not take a resumed conversation's subagents for quiet before it has watched them", async () => {
+    // A record that was there before ccx first looked is not news, so the
+    // first look cannot tell a working subagent from a finished one.
+    const { runs } = await switchWhileBusy({
+      tokenOn: 'A',
+      targeted: true,
+      idleAlready: true,
+      subagentUntilMs: 3000,
+      resume: '66666666-7777-4888-9999-aaaaaaaaaaaa',
+    });
+    // The relaunch resumes too, so the fake starts a subagent there as well.
+    expect(lifeOf(runs).slice(0, 3)).toEqual(['launch', 'subagent done', 'launch']);
   });
 
   it('seamless (default): swaps the credential file in place, no relaunch', async () => {

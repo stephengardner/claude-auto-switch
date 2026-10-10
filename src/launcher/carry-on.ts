@@ -19,8 +19,9 @@ import type { LiveStatus } from '../session/live-conversation.js';
  *    again when the file changed, so a login ccx wrote there is used by the
  *    very next request; a login Claude itself moved into the macOS Keychain is
  *    read through a cache it keeps for 30 seconds, dropped early when the
- *    file's time changes, which ccx does after every move. The prompt still
- *    waits out `pickupMs` first. That is a bound, not a signal, so the outcome is
+ *    folder's login file changes time, which ccx makes happen after a move
+ *    only while that file exists (one moved into the Keychain leaves none).
+ *    So the prompt waits out `pickupMs` first. That is a bound, not a signal, so the outcome is
  *    checked as well: a prompt that is refused although the new account has
  *    room is typed once more after another wait, and after a second refusal it
  *    is handed over by relaunch instead of typed for ever.
@@ -79,6 +80,18 @@ export interface CarryOnView {
   readsPastes: boolean;
   /** When a subagent's record was last seen to grow; 0 for never. */
   subagentWroteAt: number;
+}
+
+/**
+ * Whether the input box is empty, as far as the keys pressed can say: nobody
+ * has typed in this Claude, or the last key was the Enter that sends a prompt
+ * and Claude recorded a prompt since. Anything else may be a draft, which
+ * typing into it or ending Claude would lose.
+ */
+export function inputBoxEmpty(
+  view: Pick<CarryOnView, 'lastKeyAt' | 'endedOnEnter' | 'promptAt'>,
+): boolean {
+  return view.lastKeyAt === 0 || (view.endedOnEnter && view.promptAt >= view.lastKeyAt);
 }
 
 export type CarryOnStep =
@@ -167,8 +180,7 @@ export function createCarryOn(options: CarryOnOptions): CarryOn {
     blockedSince = null;
     const atPrompt = view.status.status === 'idle' || view.status.status === 'shell';
     if (!atPrompt || view.status.forMs < t.settleMs) return wait;
-    const boxEmpty = view.lastKeyAt === 0 || (view.endedOnEnter && view.promptAt >= view.lastKeyAt);
-    if (!boxEmpty) return giveUp('something is typed in the input box');
+    if (!inputBoxEmpty(view)) return giveUp('something is typed in the input box');
     return view.readsPastes ? { do: 'type' } : giveUp('Claude is not reading marked pastes');
   };
 
