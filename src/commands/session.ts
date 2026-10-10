@@ -21,6 +21,7 @@ import {
   clearSwitchRequest,
   decideSwitch,
   writeSwitchRequest,
+  sweepDeadSwitchRequests,
 } from '../state/switch-request.js';
 import { startProactiveRotation } from '../usage/proactive.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
@@ -119,7 +120,13 @@ import {
   type SaveOutcome,
 } from '../session/mirror-state.js';
 import { fetchTokenOwner } from '../accounts/identity-check.js';
-import { takeLease, touchLease, releaseLease, liveLeases } from '../session/lease.js';
+import {
+  takeLease,
+  touchLease,
+  releaseLease,
+  liveLeases,
+  processIsAlive,
+} from '../session/lease.js';
 import { claimedElsewhere, pickAndClaim, releaseClaim } from '../session/worker-claim.js';
 import type { Interruption } from '../launcher/interruption.js';
 import { spreadWorkers } from '../usage/spread.js';
@@ -423,6 +430,9 @@ export async function runInteractiveHotSwap(
   // request carries no generation, so clearing it here is what bounds its age.
   clearSwitchRequest(context.ctx);
   clearSwitchRequest(context.ctx, process.pid);
+  // And the requests of sessions that were killed before they could clear
+  // their own, which nothing else removes.
+  sweepDeadSwitchRequests(context.ctx, processIsAlive);
   if (startPrompt !== null) writeResumePrompt(sessionDir, startPrompt);
 
   /**

@@ -60,6 +60,13 @@ semantic versioning.
   removes only the lease of a process that is gone, and a session writes its
   lease again at its next tick if the file is missing or unreadable, and says
   so in `ccx history` (#111).
+- **A switch request left for a session that was killed stayed on disk for
+  good.** `ccx use --session`, `/ccx swap` and a session's own early move
+  each write a small request file named for the session's pid, which the
+  session removes as it takes it or as it ends. One that was killed first
+  never did, and the file was only ever looked at again if a later session
+  happened to get the same pid. Each session now removes, as it starts, the
+  requests of sessions whose process is gone.
 
 ## [2.4.0]
 

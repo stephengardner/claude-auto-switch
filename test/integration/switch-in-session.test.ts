@@ -1,5 +1,14 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  existsSync,
+  rmSync,
+} from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -541,6 +550,24 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     expect(await running).toBe(0);
     // Written again while it runs, and still given up when it ends.
     expect(liveLeases(context.ctx)).toEqual([]);
+  });
+
+  it('clears the switch request left for a session that is gone', async () => {
+    // A session clears its own request as it ends, and a killed one never
+    // does. The file then sat there for good unless a later session happened
+    // to get the same pid. The next session to start clears it.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-request-sweep-'));
+    process.env.FAKE_CLAUDE_IDLE_MS = '300';
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    setActive('A', context.ctx);
+    const gone = spawnSync(process.execPath, ['-e', '']).pid;
+    writeSwitchRequest('A', Date.now(), 'seamless', context.ctx, gone);
+    // Another process that is running keeps its own.
+    writeSwitchRequest('A', Date.now(), 'seamless', context.ctx, process.ppid);
+
+    expect(await runCommand(context, [])).toBe(0);
+    expect(readdirSync(path.join(home, 'switch-requests'))).toEqual([`${process.ppid}.json`]);
   });
 
   it('ends with the login saved back and the announcement given up', async () => {
