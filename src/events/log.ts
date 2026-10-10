@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync, statSync, renameSync, rmSync } from 'node:fs';
-import { acquireLockDir } from '../claude/locks.js';
+import { acquireLockDir, type LockHandle } from '../claude/locks.js';
 import path from 'node:path';
 import { writeSecretFile } from '../util/secret-file.js';
 import { ccxVersion } from '../util/version.js';
@@ -14,8 +14,25 @@ const FILE = 'events.jsonl';
 const ARCHIVE_SUFFIX = '.1';
 /** Where the live file is parked mid-compaction, so a crash there loses nothing. */
 const ROTATING_SUFFIX = '.rotating';
-/** Held only while compacting, so two processes cannot rotate at once. */
+/**
+ * Held by every append and every compaction, so a compaction never moves the
+ * file while a writer has it open. Named for compaction because older builds
+ * take it only to compact, and sharing the name keeps them out as well.
+ */
 const LOCK_SUFFIX = '.compact.lock';
+/**
+ * A holder lets go within milliseconds, so one held for seconds belongs to a
+ * process that died holding it, and is taken over. A writer waits longer than
+ * that, and writes without the lock only once the wait runs out, because it
+ * would otherwise drop the line.
+ */
+const LOCK = {
+  staleMs: 5_000,
+  waitMs: 6_000,
+  // How Windows refuses a new lock directory while the last one is still being
+  // removed.
+  busyErrors: process.platform === 'win32' ? ['EEXIST', 'EPERM', 'EACCES', 'EBUSY'] : ['EEXIST'],
+};
 const MAX = 200;
 
 export interface EventRecord {
@@ -203,14 +220,22 @@ export const TRIM_BYTES = 64 * 1024;
  * An append cannot collide with another append and needs no temp file, so both
  * go away. Writing is best effort besides: telemetry must never be able to stop
  * the thing it is describing.
+ *
+ * Opening the file and writing the line are two steps, though, and a compaction
+ * between them would move, archive and delete the file this writer then writes
+ * into. So the line is written under the lock every compaction holds.
  */
 export function appendEvent(
   configHome: string,
   msg: string,
   now: number,
   detail: EventDetail = {},
+  // A test passes its own to hold the file open across a compaction, as a
+  // writer in another process can between opening the file and writing to it.
+  writeLine: (file: string, line: string) => void = appendLine,
 ): void {
   const file = eventsFilePath(configHome);
+  let lock: LockHandle | undefined;
   try {
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     const record = {
@@ -220,11 +245,19 @@ export function appendEvent(
       ...(detail.kind ? { kind: detail.kind } : {}),
       ...(detail.data ? { data: detail.data } : {}),
     };
-    appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    // Written even when the wait runs out, rather than dropped: see LOCK.
+    lock = acquireLockDir(`${file}${LOCK_SUFFIX}`, LOCK);
+    writeLine(file, `${JSON.stringify(record)}\n`);
   } catch {
     return; // a lost log line must never break a session
+  } finally {
+    lock?.release();
   }
-  trimIfLong(file);
+  trimIfLong(configHome);
+}
+
+function appendLine(file: string, line: string): void {
+  appendFileSync(file, line, { mode: 0o600 });
 }
 
 /**
@@ -238,41 +271,47 @@ export function appendEvent(
  *
  * Best effort throughout. A trim that collides with another process just leaves
  * the file long for now, and the next append tries again.
+ *
+ * Exported so a test can compact as another process would, at a chosen moment.
  */
-function trimIfLong(file: string): void {
+export function trimIfLong(configHome: string): void {
+  const file = eventsFilePath(configHome);
   try {
     // The whole point of the cheap path: ask the size, do not read the file.
     if (statSync(file).size <= TRIM_BYTES) return;
 
-    // One compactor at a time, and never waiting: if someone else is doing it,
-    // there is nothing to add by queueing up behind them.
-    const lock = acquireLockDir(`${file}${LOCK_SUFFIX}`, { waitMs: 0 });
+    // Never waiting: whoever holds the lock is appending or compacting, and the
+    // next append tries again.
+    const lock = acquireLockDir(`${file}${LOCK_SUFFIX}`, { ...LOCK, waitMs: 0 });
     if (!lock.held) return;
     try {
       if (statSync(file).size <= TRIM_BYTES) return; // they may have just finished
 
-      // The live file is moved ASIDE in one atomic step rather than read and
-      // replaced. Snapshot-then-replace loses any event appended in between,
-      // which is the same lost-update bug this change removes from the write
-      // path, and it would have been reintroduced here where it is harder to
-      // see. After the rename, appends create a fresh file that compaction
-      // never touches, so nothing arriving from here on can be overwritten.
+      // Moved aside in one step rather than read and replaced, so a compaction
+      // stopped part way leaves every line in a file readers still read. One
+      // left that way is archived first, because this rename would replace it.
       const rotating = `${file}${ROTATING_SUFFIX}`;
-      const archive = `${file}${ARCHIVE_SUFFIX}`;
+      if (existsSync(rotating)) archiveRotating(file);
       renameSync(file, rotating);
-
-      const older = existsSync(archive) ? readFileSync(archive, 'utf8') : '';
-      const kept = foldRepeats(
-        parseRecords(joinChunks([older, readFileSync(rotating, 'utf8')])),
-      ).slice(-MAX);
-      writeSecretFile(archive, `${kept.map((r) => JSON.stringify(r)).join('\n')}\n`);
-      rmSync(rotating, { force: true });
+      archiveRotating(file);
     } finally {
       lock.release();
     }
   } catch {
     /* the file stays long until someone manages it; nothing is lost by that */
   }
+}
+
+/** Merge the file parked aside into the archive, keeping the newest records, then remove it. */
+function archiveRotating(file: string): void {
+  const rotating = `${file}${ROTATING_SUFFIX}`;
+  const archive = `${file}${ARCHIVE_SUFFIX}`;
+  const older = existsSync(archive) ? readFileSync(archive, 'utf8') : '';
+  const kept = foldRepeats(
+    parseRecords(joinChunks([older, readFileSync(rotating, 'utf8')])),
+  ).slice(-MAX);
+  writeSecretFile(archive, `${kept.map((r) => JSON.stringify(r)).join('\n')}\n`);
+  rmSync(rotating, { force: true });
 }
 
 /**

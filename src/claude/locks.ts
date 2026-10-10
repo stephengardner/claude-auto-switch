@@ -30,7 +30,13 @@ export interface LockOptions {
   staleMs?: number;
   /** Refresh our own lock's mtime this often so others do not judge it stale. */
   touchMs?: number;
+  /**
+   * mkdir errors that mean someone else holds the lock, so keep waiting. Any
+   * other error means the path is unusable and we proceed unheld at once.
+   */
+  busyErrors?: readonly string[];
   now?: () => number;
+  mkdir?: (dir: string) => void;
 }
 
 export interface LockHandle {
@@ -63,16 +69,18 @@ export function acquireLockDir(lockDir: string, options: LockOptions = {}): Lock
   const staleMs = options.staleMs ?? DEFAULTS.staleMs;
   const touchMs = options.touchMs ?? DEFAULTS.touchMs;
   const now = options.now ?? (() => Date.now());
+  const busyErrors = options.busyErrors ?? ['EEXIST'];
+  const mkdir = options.mkdir ?? ((dir: string) => mkdirSync(dir, { recursive: false }));
   const deadline = now() + waitMs;
 
   let held = false;
   for (;;) {
     try {
-      mkdirSync(lockDir, { recursive: false });
+      mkdir(lockDir);
       held = true;
       break;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') break; // unusable path: proceed
+      if (!busyErrors.includes((err as NodeJS.ErrnoException).code ?? '')) break; // unusable path: proceed
       const age = mtimeMs(lockDir);
       if (age !== null && now() - age > staleMs) {
         // Abandoned by a dead process: take it over rather than waiting forever.

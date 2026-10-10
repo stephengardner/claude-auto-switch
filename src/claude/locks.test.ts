@@ -46,6 +46,35 @@ describe('acquireLockDir', () => {
     h.release();
   });
 
+  it('keeps waiting through a refusal the caller names as busy', () => {
+    // On Windows a lock directory still being removed by its last holder
+    // refuses a new mkdir with EPERM for a moment. For a lock that something
+    // depends on, that is a busy lock, not an unusable path.
+    const lock = path.join(dir(), 'x.lock');
+    let attempts = 0;
+    const mkdir = (p: string): void => {
+      attempts += 1;
+      if (attempts < 3) throw Object.assign(new Error('being removed'), { code: 'EPERM' });
+      mkdirSync(p);
+    };
+    const h = acquireLockDir(lock, { waitMs: 10_000, busyErrors: ['EEXIST', 'EPERM'], mkdir });
+    expect(h.held).toBe(true);
+    expect(attempts).toBe(3);
+    h.release();
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('proceeds unheld at once on a refusal the caller did not name', () => {
+    let attempts = 0;
+    const mkdir = (): void => {
+      attempts += 1;
+      throw Object.assign(new Error('refused'), { code: 'EPERM' });
+    };
+    const h = acquireLockDir(path.join(dir(), 'x.lock'), { waitMs: 10_000, mkdir });
+    expect(h.held).toBe(false);
+    expect(attempts).toBe(1);
+  });
+
   it('proceeds unheld (never throws) when the lock path is unusable', () => {
     // Parent does not exist and recursive creation is off -> ENOENT, not EEXIST.
     const h = acquireLockDir(path.join(dir(), 'missing', 'deep', 'x.lock'), { waitMs: 50 });
