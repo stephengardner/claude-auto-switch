@@ -35,6 +35,9 @@ export function removeCommand(
   };
 
   if (options.purge) {
+    // Not a lock. A session that announces itself between this check and the
+    // delete below is not seen, the same gap a renewal has; closing either
+    // takes the reservation described in issue #37.
     const refusal = purgeRefusal(standing);
     if (refusal) {
       context.out(
