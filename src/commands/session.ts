@@ -413,6 +413,8 @@ export async function runInteractiveHotSwap(
   // cleared, is not this one's start.
   forgetEarlierStart(sessionDir);
   const sessionCreds = path.join(sessionDir, CREDS);
+  /** Where nudgeLoginReread looks for the session's login when its file is gone. */
+  const loginStore = context.loginInKeychain ? { keychainHolds: context.loginInKeychain } : {};
   // Share the user's REAL ~/.claude session/memory store (projects) so /resume
   // and project memories are complete and identical in ccx sessions and plain
   // `claude` alike. Self-heals each start; skips safely if files are busy.
@@ -1068,7 +1070,7 @@ export async function runInteractiveHotSwap(
             mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
             // A Claude already running here keeps the login it read until the
             // file's time changes, which a Keychain write does not do.
-            nudgeLoginReread(sessionDir);
+            nudgeLoginReread(sessionDir, new Date(), loginStore);
           } catch (e) {
             rollbackCredential(sessionDir);
             throw e;
@@ -1138,7 +1140,11 @@ export async function runInteractiveHotSwap(
     activate: (account) => activate(account, { temporary: true }),
     // A call that counts on the login already here: Claude reads it again
     // before the call, in case it was still on the one before it.
-    pin: () => nudgeLoginReread(sessionDir),
+    pin: () => {
+      if (!nudgeLoginReread(sessionDir, new Date(), loginStore)) {
+        throw new Error('the time of its login file could not be changed');
+      }
+    },
     standing: (to) => {
       if (tokenAccount !== null && to.name !== tokenAccount) {
         return {
@@ -1167,13 +1173,15 @@ export async function runInteractiveHotSwap(
   /** The account this session is on for its own work: the one it comes back to, while it is away. */
   const ownAccount = (): Account | null => hop.away()?.from ?? current;
   /**
-   * Refused turns while the session is away were refused by the account it is
-   * visiting. They are not read then, and those recorded during a visit are
-   * passed over afterwards: nothing about them is this session's own account
-   * running out, so they cap nothing and move nothing.
+   * No limit is read while a call holds the session, so nothing moves it
+   * under the call. Refused turns while the session is away were refused by
+   * the account it is visiting, and those recorded during a visit are passed
+   * over afterwards: nothing about them is this session's own account running
+   * out, so they cap nothing and move nothing. One recorded while a call held
+   * the session on its own account is read once the hold is over.
    */
   const limitGate: RefusalGate = {
-    held: () => hop.away() !== null,
+    held: () => hop.holding(),
     ignores: (refusal) => hop.duringHop(refusal.at),
   };
   /**

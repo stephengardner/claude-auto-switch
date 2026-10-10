@@ -308,12 +308,14 @@ describe('a call for the account the session is on', () => {
     expect(world.pins).toEqual(['work']);
     expect(readState(world.dir, 'toolu_1')).toMatchObject({ state: 'applied', moved: false, from: 'work', to: 'work' });
     expect(hop.away()).toBeNull();
-    // Nothing else moves the session while the call is out.
+    // Nothing else moves the session while the call is out: no switch (poll) and no limit (holding).
     expect(hop.poll()).toBe(true);
+    expect(hop.holding()).toBe(true);
     markDone(world.dir, 'toolu_1');
     hop.tick();
     expect(readState(world.dir, 'toolu_1')).toMatchObject({ state: 'ended', by: 'done' });
     expect(hop.poll()).toBe(false);
+    expect(hop.holding()).toBe(false);
     expect(world.moves).toEqual([]);
   });
 

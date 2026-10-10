@@ -135,6 +135,7 @@ const TEST_ENV = [
   'FAKE_CLAUDE_ARTIFACT_THEN_EXIT_MS',
   'FAKE_CLAUDE_SESSION_RECORD',
   'FAKE_CLAUDE_TRANSCRIPT',
+  'FAKE_CLAUDE_RESUMED_IDLE_MS',
   // The hook is a program Claude starts, so it finds the test's ccx home the
   // way a real one finds the real one: in its environment.
   'CLAUDE_AUTO_SWITCH_HOME',
@@ -163,6 +164,10 @@ async function scene(
     tokenFor?: string;
     /** The address Claude records the session as signed in as, once it is up. A is a@example.com, B b@example.com. */
     signedInAs?: string;
+    /** The session's login is in the Keychain (macOS, once Claude has saved it there itself). */
+    loginInKeychain?: boolean;
+    /** How long a relaunched Claude stays; the first one's length is set above. */
+    resumedIdleMs?: number;
   },
 ): Promise<Scene> {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-artifact-routing-'));
@@ -178,8 +183,10 @@ async function scene(
     ...(options.capWords
       ? { FAKE_CLAUDE_EMIT_CAP: '1', FAKE_CLAUDE_CAP_AFTER_MS: '700', FAKE_CLAUDE_CAP_EVERY_MS: '300' }
       : {}),
+    ...(options.resumedIdleMs !== undefined ? { FAKE_CLAUDE_RESUMED_IDLE_MS: String(options.resumedIdleMs) } : {}),
   });
   const context = makeContext(home, options.verifyCap ?? (() => Promise.resolve('allowed')), options.holdMs);
+  if (options.loginInKeychain) context.loginInKeychain = () => true;
   if (options.artifacts) {
     saveConfig({ artifacts: options.artifacts }, context.ctx);
     context.config = loadConfig(context.ctx);
@@ -271,6 +278,55 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('page routing in a running se
       expect(of(log, 'launch')).toHaveLength(1);
       expect(readPages(s.context.ctx)[0]?.owner).toBe('A');
       expectNothingLeftBehind(s);
+    },
+  );
+
+  it(
+    'makes a login file appear for Claude to read its Keychain login again, and never saves that file anywhere',
+    { timeout: 120_000 },
+    async () => {
+      // Claude has saved the session's login to the Keychain, and its file is gone:
+      // no time on it can change, so only a file appearing makes Claude read again.
+      const s = await scene({
+        artifacts: { home: 'A' },
+        loginInKeychain: true,
+        calls: [{ afterMs: 1500, id: 'toolu_new', input: { file_path: PAGE }, response: RESPONSE, loginToKeychain: true }],
+      });
+      const profileA = path.join(s.home, 'profiles', 'A', '.credentials.json');
+      const loginA = readFileSync(profileA, 'utf8');
+      expect(await runCommand(s.context, [])).toBe(0);
+      const log = entries(s.runsLog);
+      expect(of(log, 'artifact-call').map((e) => e.loginReread)).toEqual([true]);
+      expect(readPages(s.context.ctx)[0]?.owner).toBe('A');
+      // The file held no login, and was never saved over the profile's.
+      expect(readFileSync(profileA, 'utf8')).toBe(loginA);
+      expectNothingLeftBehind(s);
+    },
+  );
+
+  it(
+    'holds a call already on its account through that account running out, and only then acts on it',
+    { timeout: 120_000 },
+    async () => {
+      // A's own limit is met while the call is out: relief may move the session,
+      // but not under the call.
+      const s = await scene({
+        artifacts: { home: 'A' },
+        record: true,
+        verifyCap: () => Promise.resolve('limited'),
+        // Time for the limit to be acted on after the call, on a slow machine too.
+        thenExitMs: 6000,
+        resumedIdleMs: 1500,
+        calls: [{ afterMs: 1500, id: 'toolu_new', input: { file_path: PAGE }, response: RESPONSE, refuseDuring: true, takesMs: 4000 }],
+      });
+      await runCommand(s.context, []);
+      const log = entries(s.runsLog);
+      expect(of(log, 'artifact-call').map((e) => e.marker)).toEqual(['A']);
+      expect(of(log, 'artifact-end').map((e) => e.marker)).toEqual(['A']);
+      expect(readPages(s.context.ctx)[0]?.owner).toBe('A');
+      // The limit was acted on once the call was over.
+      const moved = readEvents(s.home, 200).filter((e) => e.kind === 'capped' || e.kind === 'cap-relief');
+      expect(moved.length).toBeGreaterThan(0);
     },
   );
 

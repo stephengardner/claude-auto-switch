@@ -304,7 +304,9 @@ counted against the session's own.
 
 ccx records each page a ccx session publishes while either setting is on, and
 each page it deletes: a deleted page leaves `ccx artifacts`, and publishing
-its file again makes a new page on the home account. An update to a page
+its file again makes a new page, on the home account when one is set. Past
+512 KiB the record is folded to half that, and the pages used least recently
+go first; one of those reads as unknown again until a scan. An update to a page
 published before that goes out as the session's account, and ccx says so,
 once for each page. `ccx artifacts scan` asks each signed-in account for the
 pages it already has, with one headless Claude. It is best effort: it relies

@@ -240,7 +240,26 @@ describe('a page that is deleted', () => {
 });
 
 describe('keeping the record small', () => {
-  it('folds it to what each page needs, leaving what is read from it exactly as it was', () => {
+  /** Every lookup the routing makes, for every link and every conversation and file the record has seen. */
+  const lookups = (ctx: PathCtx, urls: string[], published: Array<[string, string]>) => {
+    const pages = readPages(ctx);
+    const found = (page: { key: string; owner: string | null; title: string | null } | null) =>
+      page && { key: page.key, owner: page.owner, title: page.title };
+    return {
+      byLink: urls.map((url) => found(findPage(pages, url))),
+      byFile: published.map(([session, file]) => found(findRepublished(pages, session, file))),
+      listed: pages.filter((p) => !p.deleted).map((p) => [p.key, p.owner, p.title, p.at, p.firstAt]),
+    };
+  };
+  const seen = (ctx: PathCtx): { urls: string[]; published: Array<[string, string]> } => {
+    const pages = readPages(ctx);
+    return {
+      urls: pages.map((p) => p.url),
+      published: pages.flatMap((p) => p.sources.map((s): [string, string] => [s.session, s.file])),
+    };
+  };
+
+  it('folds it to what each page needs, with every lookup answered as it was', () => {
     const ctx = ctxOf();
     for (let i = 0; i < 40; i += 1) {
       appendPage(row({ title: `Shape Lab ${i}`, at: 1_000 + i }), ctx);
@@ -249,15 +268,56 @@ describe('keeping the record small', () => {
     appendPage(row({ url: 'https://claude.ai/artifact/gone', id: null, at: 5_000 }), ctx);
     recordDeletion('https://claude.ai/artifact/gone', ctx, 6_000);
     renamePageOwner('work', 'day-job', ctx, 7_000);
-    const before = readPages(ctx).filter((p) => !p.deleted);
+    const { urls, published } = seen(ctx);
+    const before = lookups(ctx, urls, published);
     const linesBefore = readFileSync(recordPath(ctx), 'utf8').trim().split('\n').length;
     compactRecord(ctx);
     const linesAfter = readFileSync(recordPath(ctx), 'utf8').trim().split('\n').length;
     expect(linesBefore).toBe(83);
-    // One line per place each page was published from, and the deleted page gone.
     expect(linesAfter).toBe(2);
-    expect(readPages(ctx)).toEqual(before);
+    expect(lookups(ctx, urls, published)).toEqual(before);
     expect(readPages(ctx).map((p) => p.owner)).toEqual(['day-job', 'day-job']);
+  });
+
+  it('keeps hidden what a deleted page hid: the older page the same conversation published that file to', () => {
+    const ctx = ctxOf();
+    appendPage(row({ url: 'https://claude.ai/artifact/first', id: null, owner: 'personal', at: 1_000 }), ctx);
+    appendPage(row({ url: 'https://claude.ai/artifact/second', id: null, owner: 'work', at: 2_000 }), ctx);
+    recordDeletion('https://claude.ai/artifact/second', ctx, 3_000);
+    const { urls, published } = seen(ctx);
+    const before = lookups(ctx, urls, published);
+    // Publishing that file again makes a new page, not an update of the first.
+    expect(findRepublished(readPages(ctx), row().session, row().file)).toBeNull();
+    compactRecord(ctx);
+    expect(findRepublished(readPages(ctx), row().session, row().file)).toBeNull();
+    expect(lookups(ctx, urls, published)).toEqual(before);
+    // The first page is still known by its link.
+    expect(findPage(readPages(ctx), 'https://claude.ai/artifact/first')?.owner).toBe('personal');
+  });
+
+  it('folds to well under the size that starts a fold, keeping the pages used most recently', () => {
+    const ctx = ctxOf();
+    const limits = { compactAtBytes: 4_000 };
+    const page = (i: number): PageRow =>
+      row({ url: `https://claude.ai/artifact/page${i}`, id: null, title: `Page ${i} ${'x'.repeat(150)}`, file: `/p/${i}.html`, at: 1_000 + i });
+    const size = (): number => statSync(recordPath(ctx)).size;
+    const lines = (): number => readFileSync(recordPath(ctx), 'utf8').trim().split('\n').length;
+    // Up to the first fold: the append that makes the file fewer lines than it was.
+    let i = 0;
+    for (let last = 0; i < 100; i += 1) {
+      appendPage(page(i), ctx, limits);
+      if (lines() < last) break;
+      last = lines();
+    }
+    expect(i).toBeLessThan(100);
+    expect(size()).toBeLessThanOrEqual(2_000);
+    const keys = readPages(ctx).map((p) => p.key);
+    expect(keys).toContain(`page${i}`);
+    expect(keys).not.toContain('page0');
+    // So the next page is only added, not another fold.
+    const before = lines();
+    appendPage(page(i + 1), ctx, limits);
+    expect(lines()).toBe(before + 1);
   });
 
   it('still records a page when the lock is not free within its wait, rather than lose the line for certain', () => {

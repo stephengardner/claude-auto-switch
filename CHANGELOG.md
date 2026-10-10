@@ -50,6 +50,18 @@ semantic versioning.
   went out as the old account without that signal, and as the new one with
   it.
 
+### Fixed
+
+- **A move in place on a Mac whose session login Claude had saved to the
+  Keychain itself could still go out as the old account for 30 seconds.**
+  Claude removes the session's `.credentials.json` once it saves the login
+  there, so the time 2.5.2 changes after a move had no file to change, and
+  requests in those 30 seconds (a page published for one call among them)
+  went out on the login Claude still held. ccx now creates that file as `{}` in that
+  case, which Claude takes as a change and which holds no login: Claude and
+  ccx read the Keychain first, and on its own `{}` reads as signed out, so it
+  is never saved over a login.
+
 - **`ccx artifacts`** lists the pages ccx has recorded and the account that
   owns each, and **`ccx artifacts scan`** asks each signed-in account for the
   pages it already has, with one headless Claude. The scan is best effort:

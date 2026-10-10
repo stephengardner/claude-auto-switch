@@ -614,8 +614,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // The conversation's own record decides once it can be read (see
       // checkRecord): the screen only stands in for it until then.
       if (options.ignoreLimits || recordReadable) return;
-      // Dropped, not kept for later: what is on screen while the gate holds is
-      // not this session's account talking.
+      // Dropped, not kept for later: what is on screen while the gate holds
+      // can be another account talking, and nothing on it says which.
       if (options.limitGate?.held()) {
         window = '';
         return;

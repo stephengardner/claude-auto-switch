@@ -50,6 +50,8 @@ export interface CliContext {
    * minutes in artifacts/hop, which no test can wait for.
    */
   artifactHop?: { holdMs?: number };
+  /** Injected in tests: whether a folder's login lives in the macOS Keychain (see nudgeLoginReread). */
+  loginInKeychain?: (dir: string) => boolean;
   out: (message: string) => void;
   /** ccx's own status messages. MUST go to stderr so it never corrupts a run's stdout protocol. */
   err?: (message: string) => void;

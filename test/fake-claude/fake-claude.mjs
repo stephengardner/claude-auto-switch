@@ -595,7 +595,7 @@ if (capEvery > 0) {
 // run before the next model request, which is noted at once with the login it
 // would go out on. FAKE_CLAUDE_ARTIFACT is a JSON list of calls: { afterMs, id,
 // input, response?, fail?, takesMs?, skipAfterHook?, writeResult?,
-// refuseDuring?, sayDuring?, deniedByOtherHook? }. deniedByOtherHook: another
+// refuseDuring?, sayDuring?, deniedByOtherHook?, loginToKeychain? }. deniedByOtherHook: another
 // PreToolUse hook (the person's own) refuses the call after ccx's has run, as a
 // permission rule or plan mode can, so no after-hook runs for it.
 if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
@@ -675,6 +675,8 @@ if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
       tool_input: call.input,
       tool_use_id: call.id,
     };
+    // As Claude does once it has saved the login to the Keychain: the file goes.
+    if (call.loginToKeychain) rmSync(path.join(configDir, '.credentials.json'), { force: true });
     record({ type: 'assistant', message: { content: [{ type: 'tool_use', id: call.id, name: 'Artifact', input: call.input }] } });
     for (const hook of hooksFor('PreToolUse')) {
       const said = await runHook(hook, { ...base, hook_event_name: 'PreToolUse' });

@@ -71,6 +71,8 @@ export interface HopController<A extends { name: string }> {
   childEnded(): void;
   /** The account the session left and the one it is on, while it is moved for a call. */
   away(): { from: A; to: A } | null;
+  /** Whether a call holds the session where it is, moved there or not: nothing else may move it meanwhile. */
+  holding(): boolean;
   /**
    * Whether a refused turn recorded at `at` fell inside a move. Such a turn
    * was most likely refused by the account the session was visiting, so it
@@ -363,6 +365,10 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
 
     away() {
       return visit && visit.moved ? { from: visit.from, to: visit.to } : null;
+    },
+
+    holding() {
+      return visit !== null;
     },
 
     duringHop(at) {

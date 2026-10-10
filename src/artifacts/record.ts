@@ -50,8 +50,18 @@ export interface Page {
   sources: Array<{ session: string; file: string; at: number }>;
 }
 
-/** Past this size the record is folded. A few thousand pages fit under it. */
+/**
+ * Past this size the record is folded, to at most half of it, so a fold is
+ * followed by room for as many lines again before the next.
+ */
 export const COMPACT_AT_BYTES = 512 * 1024;
+
+export interface CompactOptions {
+  /** The size past which an append folds the record. */
+  compactAtBytes?: number;
+  /** The most a fold leaves; the pages used least recently go first. Half of the above when not given. */
+  compactToBytes?: number;
+}
 
 export function recordPath(c: PathCtx = {}): string {
   return path.join(configHome(c), 'artifacts.jsonl');
@@ -73,7 +83,8 @@ export function pageKey(url: unknown): string | null {
  * `compactAtBytes`. Never throws: a page that could not be recorded is only an
  * unknown one later.
  */
-function appendLines(lines: unknown[], c: PathCtx, compactAtBytes: number): void {
+function appendLines(lines: unknown[], c: PathCtx, options: CompactOptions): void {
+  const compactAtBytes = options.compactAtBytes ?? COMPACT_AT_BYTES;
   let lock: { held: boolean; release: () => void } | null = null;
   try {
     const file = recordPath(c);
@@ -84,7 +95,9 @@ function appendLines(lines: unknown[], c: PathCtx, compactAtBytes: number): void
     // loses it only if a fold is running at that moment.
     appendFileSync(file, lines.map((line) => `${JSON.stringify(line)}\n`).join(''), { encoding: 'utf8', mode: 0o600 });
     // Without the lock a fold could drop what another session is appending.
-    if (lock.held && statSync(file).size > compactAtBytes) compactLocked(c);
+    if (lock.held && statSync(file).size > compactAtBytes) {
+      compactLocked(c, options.compactToBytes ?? Math.floor(compactAtBytes / 2));
+    }
   } catch {
     /* best effort */
   } finally {
@@ -93,15 +106,15 @@ function appendLines(lines: unknown[], c: PathCtx, compactAtBytes: number): void
 }
 
 /** Write down one publish, or what a listing showed. */
-export function appendPage(row: PageRow, c: PathCtx = {}, options: { compactAtBytes?: number } = {}): void {
+export function appendPage(row: PageRow, c: PathCtx = {}, options: CompactOptions = {}): void {
   if (pageKey(row.url) === null) return;
-  appendLines([row], c, options.compactAtBytes ?? COMPACT_AT_BYTES);
+  appendLines([row], c, options);
 }
 
 /** A page deleted through a ccx session: nothing routes to it any more, and its file makes a new page. */
 export function recordDeletion(url: string, c: PathCtx = {}, at: number = Date.now()): void {
   if (pageKey(url) === null) return;
-  appendLines([{ url, deleted: true, at }], c, COMPACT_AT_BYTES);
+  appendLines([{ url, deleted: true, at }], c, {});
 }
 
 /**
@@ -110,7 +123,7 @@ export function recordDeletion(url: string, c: PathCtx = {}, at: number = Date.n
  */
 export function renamePageOwner(from: string, to: string, c: PathCtx = {}, at: number = Date.now()): void {
   if (!existsSync(recordPath(c))) return;
-  appendLines([{ renamed: { from, to }, at }], c, COMPACT_AT_BYTES);
+  appendLines([{ renamed: { from, to }, at }], c, {});
 }
 
 const text = (value: unknown): string | null => (typeof value === 'string' && value.length > 0 ? value : null);
@@ -225,41 +238,81 @@ export function readPages(c: PathCtx = {}): Page[] {
   return readFrom(recordPath(c));
 }
 
-/** Rewrite the record as the fewest lines that read back as the same pages, deleted ones left out. Holds the lock. */
-function compactLocked(c: PathCtx): void {
+/**
+ * Rewrite the record as the fewest lines that answer every lookup as it was
+ * answered before (findPage, findRepublished, ccx artifacts), then drop the
+ * pages used least recently until it is at most `toBytes`. Holds the lock.
+ *
+ * Each conversation and file keeps only the source the newest publish of it
+ * left. An older page's source for it can never be found again, and keeping
+ * it would bring that page back once a newer page that hid it was gone. So a
+ * deleted page, which hides those sources while it is kept, can go once they
+ * have: its own source goes with it, and the file then makes a new page, as
+ * before.
+ */
+function compactLocked(c: PathCtx, toBytes: number): void {
   const file = recordPath(c);
-  const lines: string[] = [];
-  for (const page of readFrom(file)) {
-    if (page.deleted) continue;
-    const base = { url: page.url, id: page.id, title: page.title, owner: page.owner, firstAt: page.firstAt };
-    const sources = [...page.sources].sort((a, b) => a.at - b.at);
-    for (const source of sources) {
-      lines.push(JSON.stringify({ ...base, session: source.session, file: source.file, at: source.at, via: 'publish' }));
+  const pages = readFrom(file);
+  // The page findRepublished returns for each conversation and file: the same walk, so the same pick on a tie.
+  const newest = new Map<string, { page: Page; at: number }>();
+  for (const page of pages) {
+    for (const source of page.sources) {
+      const key = sourceKey(source.session, source.file);
+      const found = newest.get(key);
+      if (!found || source.at > found.at) newest.set(key, { page, at: source.at });
     }
+  }
+  const linesOf = (page: Page): string[] => {
+    const base = { url: page.url, id: page.id, title: page.title, owner: page.owner, firstAt: page.firstAt };
+    const sources = page.sources
+      .filter((s) => newest.get(sourceKey(s.session, s.file))?.page === page)
+      .sort((a, b) => a.at - b.at);
+    const lines = sources.map((s) =>
+      JSON.stringify({ ...base, session: s.session, file: s.file, at: s.at, via: 'publish' }),
+    );
     const last = sources[sources.length - 1];
     if (!last || page.at > last.at || page.via !== 'publish') {
       lines.push(JSON.stringify({ ...base, session: null, file: null, at: page.at, via: page.via }));
     }
+    return lines;
+  };
+  const live = pages.filter((page) => !page.deleted).map((page) => ({ page, lines: linesOf(page) }));
+  // The cut is made from the most recently used down; what is kept is written in the order it was read.
+  const fits = new Set<Page>();
+  let bytes = 0;
+  for (const { page, lines } of [...live].sort((a, b) => b.page.at - a.page.at)) {
+    const size = lines.reduce((sum, line) => sum + Buffer.byteLength(line, 'utf8') + 1, 0);
+    if (bytes + size > toBytes) break;
+    bytes += size;
+    fits.add(page);
   }
+  const lines = live.filter(({ page }) => fits.has(page)).flatMap(({ lines }) => lines);
   writeSecretFile(file, lines.length > 0 ? `${lines.join('\n')}\n` : '');
 }
 
 /** Fold the record now. */
-export function compactRecord(c: PathCtx = {}): void {
+export function compactRecord(c: PathCtx = {}, options: { compactToBytes?: number } = {}): void {
   const lock = acquireLockDir(`${recordPath(c)}.lock`, { waitMs: 2_000 });
   if (!lock.held) return;
   try {
-    compactLocked(c);
+    compactLocked(c, options.compactToBytes ?? Math.floor(COMPACT_AT_BYTES / 2));
   } finally {
     lock.release();
   }
 }
 
+/** A file as sameFile compares it: on Windows its case and separators do not count. */
+function foldFile(p: string): string {
+  return process.platform === 'win32' ? p.split('\\').join('/').toLowerCase() : p;
+}
+
 function sameFile(a: string, b: string): boolean {
-  if (a === b) return true;
-  if (process.platform !== 'win32') return false;
-  const fold = (p: string): string => p.split('\\').join('/').toLowerCase();
-  return fold(a) === fold(b);
+  return a === b || foldFile(a) === foldFile(b);
+}
+
+/** One conversation's publishes of one file, as findRepublished matches them. */
+function sourceKey(session: string, file: string): string {
+  return JSON.stringify([session, foldFile(file)]);
 }
 
 /** The recorded page a link names, by either form of its link. A deleted page is no page. */
