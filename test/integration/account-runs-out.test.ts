@@ -306,7 +306,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)(
           ...TYPEABLE,
           FAKE_CLAUDE_RUNS_LOG: runsLog,
           FAKE_CLAUDE_IDLE_MS: '5000',
-          FAKE_CLAUDE_REFUSE_AFTER_MS: '1500',
+          FAKE_CLAUDE_REFUSE_AFTER_MS: '1000',
         });
 
         expect(await runCommand(context, [])).toBe(0);

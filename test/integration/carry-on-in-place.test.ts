@@ -38,7 +38,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)(
             FAKE_CLAUDE_IDLE_MS: '20000',
             FAKE_CLAUDE_REFUSE_AFTER_MS: '800',
             FAKE_CLAUDE_EXIT_AFTER_PROMPTS: '1',
-            FAKE_CLAUDE_EXIT_DELAY_MS: '2200',
+            FAKE_CLAUDE_EXIT_DELAY_MS: '3500',
           },
         });
         expect((await session.outcome).kind).toBe('ok');

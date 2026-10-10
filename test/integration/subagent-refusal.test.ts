@@ -101,7 +101,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)("a subagent's refusal starts 
       // stalled on the limit would be relaunched to be told; this one is
       // working, and is left as it is.
       const session = live({
-        env: { FAKE_CLAUDE_IDLE_MS: '4500', FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS: '1500' },
+        env: { FAKE_CLAUDE_IDLE_MS: '6500', FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS: '1500' },
       });
       await waitFor('the launch', session.log, (log) => launches(log).length === 1);
       session.press('half a thought');
@@ -117,7 +117,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)("a subagent's refusal starts 
     // No account to move to, or a limit on one model: the caller leaves it.
     // The main thread has not stopped, and ending Claude would end the rest.
     const session = live({
-      env: { FAKE_CLAUDE_IDLE_MS: '3600', FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS: '800' },
+      env: { FAKE_CLAUDE_IDLE_MS: '5000', FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS: '800' },
       decide: () => ({ kind: 'left' }),
       verify: () => true,
     });
@@ -134,7 +134,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)("a subagent's refusal starts 
     // not another decision, for each.
     const session = live({
       env: {
-        FAKE_CLAUDE_IDLE_MS: '4200',
+        FAKE_CLAUDE_IDLE_MS: '5500',
         FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS: '800',
         FAKE_CLAUDE_SUBAGENT_REFUSE_AGAIN_AFTER_MS: '2400',
       },
