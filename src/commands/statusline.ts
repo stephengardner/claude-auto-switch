@@ -6,6 +6,8 @@ import { hasUsableLogin, credentialFileFingerprint } from '../accounts/credentia
 import { loginIsKnownDead } from '../usage/dead-login-store.js';
 import { configHome } from '../config/paths.js';
 import { isSessionDir } from '../session/session-dir.js';
+import { liveLeases } from '../session/lease.js';
+import { resolveSessionIdentity } from '../session/session-identity.js';
 import { rememberReport } from '../session/claude-report.js';
 import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
 import { readUsageSnapshot } from '../usage/usage-store.js';
@@ -19,8 +21,9 @@ import type { CliContext } from '../context.js';
  * prints is either overwritten or steps on the interface. The status line is
  * Claude's own space and it redraws it for us.
  *
- * Deliberately cheap: it reads the account pointer and the cached usage figures
- * and never touches the network, because Claude re-runs this frequently.
+ * Deliberately cheap: it reads which account the session is on and the cached
+ * usage figures and never touches the network, because Claude re-runs this
+ * frequently.
  */
 
 export interface StatuslineOptions {
@@ -72,21 +75,48 @@ function samePath(a: string, b: string): boolean {
   return path.resolve(a).replace(/\\/g, '/').toLowerCase() === path.resolve(b).replace(/\\/g, '/').toLowerCase();
 }
 
+type Driven = { kind: 'session'; dir: string } | { kind: 'editor' };
+
 /**
- * Is ccx driving the session that asked for this line?
+ * Is ccx driving the session that asked for this line, and through which folder?
  *
  * Claude runs the status line command as a child of the session, so it inherits
  * that session's config location. When ccx is running things, that location is
  * one of the folders ccx hands out; when you launched Claude directly it is not.
  */
-function isManagedSession(context: CliContext): boolean {
+function drivenBy(context: CliContext): Driven | null {
   const configDir = (context.ctx.env ?? process.env).CLAUDE_CONFIG_DIR;
-  if (!configDir) return false; // plain `claude` on the default config
-  const home = configHome(context.ctx);
-  return (
-    isSessionDir(configDir, context.ctx) || // terminal session (one dir per session)
-    samePath(configDir, path.join(home, 'editor-active')) // editor, following ccx
+  if (!configDir) return null; // plain `claude` on the default config
+  // A terminal session, one folder each.
+  if (isSessionDir(configDir, context.ctx)) return { kind: 'session', dir: configDir };
+  if (samePath(configDir, path.join(configHome(context.ctx), 'editor-active'))) return { kind: 'editor' };
+  return null;
+}
+
+/**
+ * The account a terminal session is on, or null when nothing says.
+ *
+ * Never the active account: that is where new sessions start, and a move aimed
+ * at one session leaves it alone, so it names the wrong account in every session
+ * that has been moved. What ccx gave the session is in its announcement. A live
+ * session can be left without one (an announcement untouched past its freshness
+ * window is cleared by whoever reads next), and then the login in the folder,
+ * which ccx stamps with the account's identity at every move, still says.
+ */
+function sessionAccount(context: CliContext, dir: string): string | null {
+  // Oldest first, so the last match is the newest: a move announces the account
+  // it is moving onto before it gives up the old one.
+  const mine = liveLeases(context.ctx).filter(
+    (lease) => typeof lease.configDir === 'string' && samePath(lease.configDir, dir),
   );
+  const announced = mine[mine.length - 1];
+  if (announced) return announced.account;
+  const signedInAs = resolveSessionIdentity({
+    sessionDir: dir,
+    believed: null,
+    accounts: listAccounts(context.ctx),
+  });
+  return signedInAs.actual?.name ?? null;
 }
 
 function accountDirOf(context: CliContext, name: string): string {
@@ -131,26 +161,29 @@ export function statuslineSegment(context: CliContext, options: StatuslineOption
   // Otherwise the line reports the room on whichever account ccx would pick,
   // while you are really on a different one and nothing is watching for a
   // limit: reassuring, and wrong, which is the worst thing a status line can be.
-  if (!isManagedSession(context)) return 'no ccx';
+  const driven = drivenBy(context);
+  if (!driven) return 'no ccx';
 
-  const active = getActive(context.ctx);
-  if (!active) return 'ccx: no account';
+  // The editor's folder is a link ccx re-points at the active account, so there
+  // the active account is the one in use.
+  const account = driven.kind === 'session' ? sessionAccount(context, driven.dir) : getActive(context.ctx);
+  if (!account) return driven.kind === 'session' ? 'ccx: account unknown' : 'ccx: no account';
   // Two ways a login is finished, and both have to reach this line. A file with
   // no token material is the obvious one. The other is a credential that LOOKS
   // complete but whose refresh token the endpoint has already rejected: it
   // passes every local check, so without the recorded refusal this warning
   // cannot fire and the line reports healthy headroom for an account that
   // cannot authenticate.
-  const accountDir = accountDirOf(context, active);
+  const accountDir = accountDirOf(context, account);
   if (
     !hasUsableLogin(accountDir) ||
     loginIsKnownDead(credentialFileFingerprint(accountDir), context.ctx)
   ) {
-    return `! ${active} needs sign-in`;
+    return `! ${account} needs sign-in`;
   }
 
-  const entry = readUsageSnapshot(context.ctx).accounts[active];
-  const name = options.compact ? '' : active;
+  const entry = readUsageSnapshot(context.ctx).accounts[account];
+  const name = options.compact ? '' : account;
   if (!entry) return name || 'ccx';
 
   const now = Date.now();

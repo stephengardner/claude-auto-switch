@@ -113,8 +113,8 @@ in your settings); otherwise ccx rotates on account capacity alone.
 
 ## Seeing where you stand
 
-- **Status line**: the account and its tightest window, e.g. `work 5h 64% left`
-  or `! work week spent resets 2d`.
+- **Status line**: the account this session is on and its tightest window,
+  e.g. `work 5h 64% left` or `! work week spent resets 2d`.
 - **`ccx usage`**: every window on every account, with reset times.
 - **`ccx dashboard`**: a live view. `#` is the pick order, `next →` says where
   the session goes next and why, and `sessions:` which session is on which

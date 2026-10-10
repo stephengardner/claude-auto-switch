@@ -6,45 +6,75 @@ import { statuslineCommand } from './statusline.js';
 import { rememberDeadLogin } from '../usage/dead-login-store.js';
 import { refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { loadConfig } from '../config/config.js';
+import { sessionDirFor } from '../session/session-dir.js';
+import { leasePath, takeLease } from '../session/lease.js';
 import type { CliContext } from '../context.js';
+
+interface SetupOptions {
+  /**
+   * Which folder Claude runs the session on: one ccx handed a terminal session,
+   * the editor's (which follows the active account), or neither (plain claude).
+   */
+  where?: 'session' | 'editor' | 'plain';
+  /** Every registered account, each signed in. Defaults to just the active one. */
+  accounts?: string[];
+  /**
+   * The account the terminal session announced when ccx started or moved it, or
+   * null for a session with no live announcement. Defaults to the active one.
+   */
+  sessionOn?: string | null;
+}
 
 function setup(
   active: string | null,
   usage?: Record<string, unknown>,
-  options: { managed?: boolean } = {},
-): { context: CliContext; lines: string[] } {
+  options: SetupOptions = {},
+): { context: CliContext; lines: string[]; home: string; sessionDir: string } {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-status-'));
+  const where = options.where ?? 'session';
+  // A folder of the shape ccx gives each terminal session, named for the pid of
+  // the ccx process running it. This test process stands in for that one, so
+  // its announcement counts as live for as long as the test runs.
+  const sessionDir = sessionDirFor(process.pid, { env: { CLAUDE_AUTO_SWITCH_HOME: home } });
+  mkdirSync(sessionDir, { recursive: true });
   // Claude runs the status line inside the session, so a managed session is one
   // whose config location is the folder ccx handed it.
-  const managed = options.managed ?? true;
+  const configDir =
+    where === 'session' ? sessionDir : where === 'editor' ? path.join(home, 'editor-active') : null;
   const ctx = {
     env: {
       CLAUDE_AUTO_SWITCH_HOME: home,
-      ...(managed ? { CLAUDE_CONFIG_DIR: path.join(home, 'session') } : {}),
+      ...(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}),
     },
   };
-  if (active) {
-    writeFileSync(path.join(home, 'active.json'), JSON.stringify({ active }), 'utf8');
-    // A signed-in account, so the line reports usage rather than asking for a login.
-    const dir = path.join(home, 'profiles', active);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      path.join(dir, '.credentials.json'),
-      JSON.stringify({ claudeAiOauth: { accessToken: 'tok' } }),
-      'utf8',
-    );
-    writeFileSync(
-      path.join(home, 'accounts.json'),
-      JSON.stringify({ accounts: [{ name: active, dir, priority: 0, enabled: true }] }),
-      'utf8',
-    );
+  if (active) writeFileSync(path.join(home, 'active.json'), JSON.stringify({ active }), 'utf8');
+  const names = options.accounts ?? (active ? [active] : []);
+  if (names.length > 0) {
+    const accounts = names.map((name, priority) => {
+      // A signed-in account, so the line reports usage rather than asking for a login.
+      const dir = path.join(home, 'profiles', name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        path.join(dir, '.credentials.json'),
+        JSON.stringify({ claudeAiOauth: { accessToken: `tok-${name}` } }),
+        'utf8',
+      );
+      return { name, dir, email: `${name}@example.com`, priority, enabled: true };
+    });
+    writeFileSync(path.join(home, 'accounts.json'), JSON.stringify({ accounts }), 'utf8');
   }
+  // A running ccx session announces the account it is on, through the same call
+  // the session itself makes.
+  const sessionOn = options.sessionOn === undefined ? active : options.sessionOn;
+  if (sessionOn) takeLease(sessionOn, sessionDir, ctx);
   if (usage) {
     writeFileSync(path.join(home, 'usage-snapshot.json'), JSON.stringify({ accounts: usage }), 'utf8');
   }
   const lines: string[] = [];
   return {
     lines,
+    home,
+    sessionDir,
     context: { ctx, config: loadConfig(ctx), out: (m) => lines.push(m), json: false, quiet: false },
   };
 }
@@ -189,7 +219,7 @@ describe('statuslineCommand', () => {
   it('says "no ccx" when ccx is NOT driving this session', async () => {
     // A plain `claude` session must never be shown another account's headroom
     // as though it were protected.
-    const { context, lines } = setup('work', { work: entry({ fiveHour: 0.1, sevenDay: 0.1 }) }, { managed: false });
+    const { context, lines } = setup('work', { work: entry({ fiveHour: 0.1, sevenDay: 0.1 }) }, { where: 'plain' });
     await statuslineCommand(context);
     expect(lines[0]).toBe('no ccx');
   });
@@ -207,9 +237,105 @@ describe('statuslineCommand', () => {
   });
 
   it('says so when no account is selected', async () => {
-    const { context, lines } = setup(null);
+    // The editor's folder follows the active account, so there the active
+    // account being unset is the whole story.
+    const { context, lines } = setup(null, undefined, { where: 'editor' });
     await statuslineCommand(context);
     expect(lines[0]).toContain('no account');
+  });
+
+  describe('whose account the line describes', () => {
+    // The active account is where NEW sessions start. A move aimed at one
+    // session (a swap, `ccx use --session` or `--here`, a move off a capped
+    // account) leaves it alone, so every session that has been moved is on a
+    // different account from it, and the line has to follow the session.
+    const usage = {
+      work: entry({ fiveHour: 0.1, sevenDay: 0 }),
+      side: entry({ fiveHour: 0.7, sevenDay: 0 }),
+    };
+
+    it("names the session's OWN account, with that account's numbers", async () => {
+      const { context, lines } = setup('work', usage, { accounts: ['work', 'side'], sessionOn: 'side' });
+      expect(await statuslineCommand(context)).toBe(0);
+      expect(lines[0]).toBe('side 5h 30% left');
+    });
+
+    it("warns about the session's account, not the active one", async () => {
+      const { context, lines, home } = setup('work', usage, { accounts: ['work', 'side'], sessionOn: 'side' });
+      writeFileSync(
+        path.join(home, 'profiles', 'side', '.credentials.json'),
+        JSON.stringify({ claudeAiOauth: { accessToken: '' } }),
+        'utf8',
+      );
+      await statuslineCommand(context);
+      expect(lines[0]).toBe('! side needs sign-in');
+    });
+
+    it('keeps following the active account in the editor, whatever a terminal session is on', async () => {
+      // The editor's folder is a link ccx re-points at the active account, so
+      // there the active account IS the one in use.
+      const { context, lines } = setup('work', usage, {
+        where: 'editor',
+        accounts: ['work', 'side'],
+        sessionOn: 'side',
+      });
+      await statuslineCommand(context);
+      expect(lines[0]).toBe('work 5h 90% left');
+    });
+
+    it('names the account the session is moving onto while it briefly announces both', async () => {
+      // A move announces the new account before it gives up the old one, so for
+      // a moment two announcements name this folder. The newer one is the move.
+      const { context, lines, sessionDir } = setup('work', usage, {
+        accounts: ['work', 'side'],
+        sessionOn: null,
+      });
+      takeLease('work', sessionDir, context.ctx, { now: () => Date.now() - 5_000 });
+      takeLease('side', sessionDir, context.ctx);
+      await statuslineCommand(context);
+      expect(lines[0]).toBe('side 5h 30% left');
+    });
+
+    it('goes by who the folder is signed in as when no announcement names it', async () => {
+      // A live session can lose its announcement (one left untouched past its
+      // freshness window is cleared by the next reader). The folder's own login
+      // still says which account Claude is running on.
+      const { context, lines, sessionDir } = setup('work', usage, {
+        accounts: ['work', 'side'],
+        sessionOn: null,
+      });
+      writeFileSync(
+        path.join(sessionDir, '.claude.json'),
+        JSON.stringify({ oauthAccount: { emailAddress: 'SIDE@example.com' } }),
+        'utf8',
+      );
+      await statuslineCommand(context);
+      expect(lines[0]).toBe('side 5h 30% left');
+    });
+
+    it('says the account is unknown rather than naming the active one when nothing says', async () => {
+      const { context, lines } = setup('work', usage, { accounts: ['work', 'side'], sessionOn: null });
+      await statuslineCommand(context);
+      expect(lines[0]).toBe('ccx: account unknown');
+    });
+
+    it('is not thrown by a damaged announcement', async () => {
+      const { context, lines, sessionDir } = setup('work', usage, {
+        accounts: ['work', 'side'],
+        sessionOn: null,
+      });
+      takeLease('side', sessionDir, context.ctx, { now: () => Date.now() - 5_000 });
+      // Live and newer, so it is read, but with no folder a path can be made of.
+      writeFileSync(
+        leasePath('work', context.ctx, process.pid),
+        JSON.stringify({ account: 'work', pid: process.pid, configDir: 42, at: Date.now() }),
+        'utf8',
+      );
+      // Valid JSON, and not a lease at all.
+      writeFileSync(leasePath('other', context.ctx, process.pid), 'null', 'utf8');
+      await statuslineCommand(context);
+      expect(lines[0]).toBe('side 5h 30% left');
+    });
   });
 
   it('prints the settings snippet with --install', async () => {
