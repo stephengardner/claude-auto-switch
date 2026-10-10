@@ -274,26 +274,42 @@ ccx config artifacts.updates owner    # a change to a page goes out as the accou
 ccx artifacts                         # the pages ccx has recorded, and who owns each
 ```
 
-For one call, ccx moves the session in place to the account the page belongs
-on, sends the call, and moves it straight back. The session never restarts,
-and the account new sessions start on is not touched. The move ends when the
-call is over, or when its result shows up in the conversation, or after two
-minutes, whichever comes first. If the session cannot be moved (the account
-is not signed in, or the session signs in with a `ccx token`), the call is
+For one call, ccx holds the session on the account the page belongs on: it
+moves the session there in place when it is on another one, sends the call,
+and moves it straight back. When the session is on that account already,
+ccx still holds it there and has Claude pick up the login in its folder, since
+Claude can be up to 30 seconds behind an ordinary move. Two calls for the same
+account at once share one move, and the session goes back after the later
+one. The session never restarts, and the account new sessions start on is not
+touched. A hold ends when the call is over, when its result shows up in the
+conversation, before Claude's next request after the call (even one refused
+by your own hook or a permission rule), or after two minutes, whichever comes
+first. If the call cannot be held there (the account is not signed in, the
+session signs in with a `ccx token` of another account, it was signed in as
+someone else from inside with `/login`, or `config.json` does not load), it is
 refused with the reason, so a page never lands on the wrong account without
-anyone knowing. A usage limit hit by the other account during the move is
-not counted against the session's own.
+anyone knowing. A usage limit hit by the other account during the move is not
+counted against the session's own.
 
-ccx records each page a ccx session publishes while either setting is on. An
-update to a page published before that goes out as the session's account, and
-ccx says so, once for each page. `ccx artifacts scan` asks each signed-in account for the
+ccx records each page a ccx session publishes while either setting is on, and
+each page it deletes: a deleted page leaves `ccx artifacts`, and publishing
+its file again makes a new page on the home account. An update to a page
+published before that goes out as the session's account, and ccx says so,
+once for each page. `ccx artifacts scan` asks each signed-in account for the
 pages it already has, with one headless Claude. It is best effort: it relies
 on a Claude Code variable that is not documented (`CLAUDE_CODE_ARTIFACT=1`).
 
-Turning either setting on adds three hooks on the Artifact tool to
-`~/.claude/settings.json`, and turning both off removes them. A running
-session picks the hooks up when its Claude next starts. They do nothing in
-plain `claude`, Claude Desktop or the editor.
+Turning either setting on adds four hooks to `~/.claude/settings.json`: three
+on the Artifact tool and one that runs after each batch of tool calls and
+leaves at once when no Artifact call is in it. Turning both off removes them.
+The dashboard asks before it edits that file; `ccx config` edits it as soon as
+you set the value. A running session picks the hooks up when its Claude next
+starts. They do nothing in plain `claude`, Claude Desktop or the editor.
+
+For one session alone, `CAS_ARTIFACTS_HOME=<account>` (or `off`) and
+`CAS_ARTIFACTS_UPDATES=owner` (or `off`) in the environment of the `ccx` that
+starts it take the place of the two settings. They do nothing unless the hooks
+are already in `~/.claude/settings.json`.
 
 ## Commands
 
