@@ -27,11 +27,13 @@ semantic versioning.
   no record of whether it is idle, ccx said it would restart the session
   "once Claude is idle", which never comes. It now says the session is not
   restarted for it, and that `ccx use <name> --now` does.
-- **The README said a moved session picks up its new login at its next
-  request.** That holds while the login is in the session folder's
-  `.credentials.json`. Once Claude has moved it into the macOS Keychain,
-  which leaves no such file (every Keychain session folder on one machine,
-  checked), it takes up to about 30 seconds, as before.
+- **The README, and the 2.5.2 notes, said a moved session picks up its new
+  login at its next request.** That holds while the login is in the session
+  folder's `.credentials.json`, whose time ccx changes after a move. When
+  Claude has moved the session's login into the macOS Keychain itself, the
+  folder has no such file (every Keychain session folder on one machine,
+  checked), and Claude may keep using the previous login for up to about 30
+  seconds after a move.
 
 ## [2.5.2]
 
