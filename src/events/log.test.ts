@@ -7,6 +7,9 @@ import {
   rmdirSync,
   existsSync,
   statSync,
+  openSync,
+  closeSync,
+  utimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -16,9 +19,11 @@ import {
   formatEvent,
   formatEvents,
   eventsFilePath,
+  trimIfLong,
   TRIM_BYTES,
 } from './log.js';
 import { ccxVersion } from '../util/version.js';
+import { acquireOwnedLock } from '../claude/locks.js';
 
 function home(): string {
   return mkdtempSync(path.join(tmpdir(), 'cas-ev-'));
@@ -372,35 +377,150 @@ describe('keeping the file bounded without losing what matters', () => {
   });
 });
 
-describe('when another process is already compacting', () => {
-  it('leaves the file alone instead of compacting alongside it', () => {
-    // Two compactions at once can both merge the archive and both write it, so
-    // one erases the other's merge. The rename makes rotation itself safe; the
-    // archive write is what needs the lock. Held here directly, which is the
-    // only deterministic way to observe it from a single process.
+/**
+ * A live log just past the size that starts a compaction, written directly so
+ * nothing compacts it yet. Fewer records than compaction keeps, so every one of
+ * them must survive. Returns their messages, oldest first.
+ */
+function fillPastTheThreshold(h: string, label = 'filler', count = 150): string[] {
+  const file = eventsFilePath(h);
+  mkdirSync(path.dirname(file), { recursive: true });
+  const padding = 'y'.repeat(Math.ceil(TRIM_BYTES / count));
+  const messages = Array.from({ length: count }, (_, i) => `${label} ${i} ${padding}`);
+  const lines = messages.map((msg, i) => JSON.stringify({ at: 1000 + i, msg }));
+  writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');
+  expect(statSync(file).size).toBeGreaterThan(TRIM_BYTES);
+  return messages;
+}
+
+describe('a compaction and a writer that already has the file open', () => {
+  it('cannot compact between the writer opening the file and writing its line', () => {
+    // Appending is two steps, open and then write, and other processes run
+    // between them. A compaction there moved the open file aside, read it,
+    // archived it and deleted it, and the line was then written into the
+    // deleted file: issue #118. The seam holds the file open across a
+    // compaction attempt, so this interleaving happens on every run.
     const h = home();
     const file = eventsFilePath(h);
-    const padding = 'y'.repeat(400);
+    const fill = fillPastTheThreshold(h);
 
-    mkdirSync(path.dirname(file), { recursive: true });
-    mkdirSync(`${file}.compact.lock`); // another process is mid-compaction
+    let compactedWhileOpen = false;
+    appendEvent(h, 'written late', 9000, {}, (target, line) => {
+      const fd = openSync(target, 'a');
+      try {
+        trimIfLong(h); // another process's append, compacting
+        compactedWhileOpen = existsSync(`${file}.1`);
+        writeFileSync(fd, line);
+      } finally {
+        closeSync(fd);
+      }
+    });
+
+    expect(readEvents(h, 500).map((r) => r.msg)).toEqual([...fill, 'written late']);
+    expect(compactedWhileOpen).toBe(false);
+    // Compacted once the writer was done, so the compaction path did run.
+    expect(existsSync(`${file}.1`)).toBe(true);
+  });
+
+  it('folds in what an interrupted compaction left aside, rather than replacing it', () => {
+    // A compaction stopped after moving the live file aside leaves it as
+    // events.jsonl.rotating, which readers still read. The next compaction
+    // moves the live file to that same name.
+    const h = home();
+    const file = eventsFilePath(h);
+    mkdirSync(h, { recursive: true });
+    writeFileSync(`${file}.rotating`, `${JSON.stringify({ at: 500, msg: 'left aside' })}\n`, 'utf8');
+    const fill = fillPastTheThreshold(h);
+
+    appendEvent(h, 'next', 9000);
+
+    expect(existsSync(`${file}.rotating`)).toBe(false);
+    expect(readEvents(h, 500).map((r) => r.msg)).toEqual(['left aside', ...fill, 'next']);
+  });
+
+  it('archives a file left aside only once, when the compaction stopped after archiving it', () => {
+    // Stopped between writing the archive and removing the parked file, a
+    // compaction leaves the same events in both. Merging them again counted
+    // them twice, and past 200 pushed older events out of the archive.
+    const h = home();
+    const file = eventsFilePath(h);
+    mkdirSync(h, { recursive: true });
+    const older = Array.from({ length: 10 }, (_, i) => `older ${i}`);
+    writeFileSync(
+      `${file}.1`,
+      `${older.map((msg, i) => JSON.stringify({ at: 100 + i, msg })).join('\n')}\n`,
+      'utf8',
+    );
+    const first = fillPastTheThreshold(h, 'first', 60);
+    const parked = readFileSync(file, 'utf8');
+    trimIfLong(h);
+    writeFileSync(`${file}.rotating`, parked, 'utf8'); // as the stopped compaction left it
+
+    const second = fillPastTheThreshold(h, 'second', 60);
+    trimIfLong(h);
+
+    expect(existsSync(`${file}.rotating`)).toBe(false);
+    expect(readEvents(h, 500).map((r) => r.msg)).toEqual([...older, ...first, ...second]);
+  });
+});
+
+describe('when another process holds the log', () => {
+  it('does not compact alongside it, and compacts once it lets go', () => {
+    // Two compactions at once can both merge the archive and both write it, so
+    // one erases the other's merge. Held here directly, which is the only
+    // deterministic way to observe it from a single process. That an append
+    // waits for the holder is tested with a real second process, in
+    // test/integration/event-log-concurrency.test.ts.
+    const h = home();
+    const file = eventsFilePath(h);
+    const fill = fillPastTheThreshold(h);
+
+    mkdirSync(`${file}.compact.lock`);
     try {
-      for (let i = 0; i < 200; i++) appendEvent(h, `filler ${i} ${padding}`, 1000 + i);
-      // Grew past the threshold and stayed whole: no compaction ran.
-      expect(readFileSync(file, 'utf8').length).toBeGreaterThan(64 * 1024);
+      trimIfLong(h);
       expect(existsSync(`${file}.1`)).toBe(false);
+      expect(readEvents(h, 500).map((r) => r.msg)).toEqual(fill);
     } finally {
       rmdirSync(`${file}.compact.lock`);
     }
 
-    // Nothing was dropped while compaction was deferred.
-    expect(readEvents(h, 500)).toHaveLength(200);
-
-    // With the lock free, the next append compacts, and the history survives it.
-    appendEvent(h, 'after the lock is released', 9001);
+    trimIfLong(h);
     expect(existsSync(`${file}.1`)).toBe(true);
-    const messages = readEvents(h, 500).map((r) => r.msg);
-    expect(messages).toContain('after the lock is released');
-    expect(messages.some((m) => m.startsWith('filler 199'))).toBe(true);
+    expect(readEvents(h, 500).map((r) => r.msg)).toEqual(fill);
+  });
+
+  it('never takes it from a holder that is still running, however long it holds it', () => {
+    // A compaction is synchronous, so its holder cannot refresh the lock while
+    // it works. Taken for abandoned, it would have a second compaction run
+    // alongside it.
+    const h = home();
+    const file = eventsFilePath(h);
+    const fill = fillPastTheThreshold(h);
+    const lock = `${file}.compact.lock`;
+    const holder = acquireOwnedLock(lock, { waitMs: 0, staleMs: 5_000 });
+    const then = new Date(Date.now() - 30_000);
+    utimesSync(lock, then, then);
+    try {
+      trimIfLong(h);
+      expect(existsSync(`${file}.1`)).toBe(false);
+    } finally {
+      holder.release();
+    }
+    trimIfLong(h);
+    expect(readEvents(h, 500).map((r) => r.msg)).toEqual(fill);
+    expect(existsSync(`${file}.1`)).toBe(true);
+  });
+
+  it('takes over a lock left by a process that died holding it', () => {
+    const h = home();
+    const lock = `${eventsFilePath(h)}.compact.lock`;
+    mkdirSync(lock, { recursive: true });
+    const old = new Date(Date.now() - 10 * 60_000);
+    utimesSync(lock, old, old);
+
+    appendEvent(h, 'after a crash', 1000);
+
+    expect(readEvents(h).map((r) => r.msg)).toEqual(['after a crash']);
+    expect(existsSync(lock)).toBe(false);
   });
 });
