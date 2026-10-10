@@ -31,6 +31,8 @@ export interface RemovalStanding {
   editor: boolean;
   /** So does every Claude outside ccx, through the link `ccx daemon install` keeps. */
   daemon: boolean;
+  /** The other accounts registered on this same folder (`ccx add --dir` allows it). */
+  sharedWith: string[];
   /** Its folder is inside the profiles tree, the only place ccx deletes one. */
   folderIsOurs: boolean;
 }
@@ -45,6 +47,11 @@ export function removalStanding(
   const accounts = listAccounts(c);
   const account = accounts.find((a) => a.name === name);
   if (!account) return null;
+  // By folder, not by name: the folder is what a delete takes, and two
+  // accounts can be registered on one.
+  const sameFolder = (dir: string): boolean => path.resolve(dir) === path.resolve(account.dir);
+  const editorName = editorPointerAccount(accounts, c);
+  const editorDir = accounts.find((a) => a.name === editorName)?.dir;
   const daemonTarget = readTarget(activeLinkPath(configHome(c)));
   return {
     name,
@@ -52,8 +59,9 @@ export function removalStanding(
     leases: leases().filter((l) => l.account === name),
     active: getActive(c) === name,
     last: accounts.length === 1,
-    editor: editorPointerAccount(accounts, c) === name,
-    daemon: daemonTarget !== null && path.resolve(daemonTarget) === path.resolve(account.dir),
+    editor: editorDir !== undefined && sameFolder(editorDir),
+    daemon: daemonTarget !== null && sameFolder(daemonTarget),
+    sharedWith: accounts.filter((a) => a.name !== name && sameFolder(a.dir)).map((a) => a.name),
     folderIsOurs: isInside(profilesDir(config, c), account.dir),
   };
 }
@@ -70,15 +78,20 @@ function listed(parts: string[]): string {
  * A running session saves its login back into the folder when the login is
  * renewed and when the session ends, creating the folder again if it is gone,
  * so a delete under it is undone. The editor and the daemon's link read the
- * folder directly, and would be left pointing at nothing.
+ * folder directly, and would be left pointing at nothing. Another account
+ * registered on the folder would lose its login with it, and so would any
+ * session running on that account.
  */
 export function purgeRefusal(standing: RemovalStanding): string | null {
   const running = new Set(standing.leases.map((l) => l.pid)).size;
+  const sharers = standing.sharedWith.map((other) => `"${other}"`);
   const using = [
     ...(running === 1 ? ['1 session is running on it'] : []),
     ...(running > 1 ? [`${running} sessions are running on it`] : []),
     ...(standing.editor ? ['your editor is on it'] : []),
     ...(standing.daemon ? ["the daemon's link is on it"] : []),
+    ...(sharers.length === 1 ? [`${sharers[0]} shares it`] : []),
+    ...(sharers.length > 1 ? [`${listed(sharers)} share it`] : []),
   ];
   return using.length > 0 ? `its folder cannot be deleted while ${listed(using)}` : null;
 }

@@ -150,8 +150,9 @@ editor is on it. Enter alone or `esc` leaves the account as it is. `y` removes
 it from ccx and keeps its folder and login. `purge <name>` also deletes the
 folder: the login in it is deleted, and the account must be signed in again to
 come back. A folder is not deleted while something is using it: a session
-running on the account, your editor, or the link `ccx daemon install` keeps.
-`ccx remove --purge` follows the same rule.
+running on the account, your editor, the link `ccx daemon install` keeps, or
+another account registered on the same folder. `ccx remove --purge` follows the
+same rule.
 
 ## Claude Desktop
 

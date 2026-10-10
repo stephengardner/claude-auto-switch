@@ -31,10 +31,11 @@ semantic versioning.
   purge under a running session came back holding a login for an account ccx
   no longer listed. The editor reads the folder directly, as does every Claude
   outside ccx through the link `ccx daemon install` keeps, and a purge left
-  either pointing at nothing until the next switch. `--purge` now says what
-  is using the folder and exits 1 with the account still registered. Run it
-  again once nothing is, or without `--purge` to keep the folder. Removing
-  without `--purge` is unchanged.
+  either pointing at nothing until the next switch. And two accounts can be
+  registered on one folder (`ccx add --dir`), where purging one deleted the
+  other's login. `--purge` now says what is using the folder and exits 1 with
+  the account still registered. Run it again once nothing is, or without
+  `--purge` to keep the folder. Removing without `--purge` is unchanged.
 
 ## [2.3.2]
 

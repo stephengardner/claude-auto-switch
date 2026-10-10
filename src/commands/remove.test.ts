@@ -164,6 +164,27 @@ describe('ccx remove --purge', () => {
     );
   });
 
+  it('removes nothing while another account is registered on the same folder, whose login would go with it', () => {
+    const { context, ctx, said, dirOf } = setup();
+    addAccount({ name: 'twin', dir: dirOf('work') }, ctx);
+    // With a session on the other account, and with nothing running at all.
+    for (const running of [[lease(11, 'work', '/w/api')], []]) {
+      expect(removeCommand(context, 'twin', { purge: true }, () => running)).toBe(1);
+      expect(getAccount('twin', ctx)).toBeDefined();
+      expect(existsSync(credentialPath(dirOf('work')))).toBe(true);
+    }
+    expect(said.join('\n')).toContain('its folder cannot be deleted while "work" shares it.');
+  });
+
+  it('still removes an account on a shared folder without --purge, leaving the folder to the other', () => {
+    const { context, ctx, dirOf } = setup();
+    addAccount({ name: 'twin', dir: dirOf('work') }, ctx);
+    expect(removeCommand(context, 'twin', {}, nothingRunning)).toBe(0);
+    expect(getAccount('twin', ctx)).toBeUndefined();
+    expect(getAccount('work', ctx)?.dir).toBe(dirOf('work'));
+    expect(existsSync(credentialPath(dirOf('work')))).toBe(true);
+  });
+
   it('refuses the same way for a folder outside the profiles tree, whose login it would clear', () => {
     const { context, ctx, home } = setup();
     const elsewhere = path.join(home, 'elsewhere');

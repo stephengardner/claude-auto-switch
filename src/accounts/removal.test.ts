@@ -44,6 +44,7 @@ describe('what removing an account would touch', () => {
       last: false,
       editor: false,
       daemon: false,
+      sharedWith: [],
       folderIsOurs: true,
     });
   });
@@ -94,6 +95,23 @@ describe('what removing an account would touch', () => {
     expect(standing('work')?.editor).toBe(false);
   });
 
+  it('knows the other accounts registered on the same folder', () => {
+    // `ccx add <name> --dir` takes a folder another account already has.
+    const { standing, ctx, dirOf } = setup();
+    addAccount({ name: 'twin', dir: dirOf('work') }, ctx);
+    expect(standing('twin')?.sharedWith).toEqual(['work']);
+    expect(standing('work')?.sharedWith).toEqual(['twin']);
+    expect(standing('spare')?.sharedWith).toEqual([]);
+  });
+
+  it('sees the editor on a shared folder from either account, since it is the folder that would go', () => {
+    const { standing, ctx, home, dirOf } = setup();
+    addAccount({ name: 'twin', dir: dirOf('work') }, ctx);
+    setTarget(path.join(home, 'editor-active'), dirOf('work'));
+    expect(standing('work')?.editor).toBe(true);
+    expect(standing('twin')?.editor).toBe(true);
+  });
+
   it('knows a folder outside the profiles tree is not one ccx deletes', () => {
     const { standing, home, ctx } = setup();
     const elsewhere = path.join(home, 'elsewhere');
@@ -137,6 +155,18 @@ describe('when an account folder may be deleted', () => {
     setTarget(path.join(home, 'active'), dirOf('work'));
     expect(purgeRefusal(standing('work')!)).toBe(
       "its folder cannot be deleted while the daemon's link is on it",
+    );
+  });
+
+  it('may not be while another account is registered on it, whose login would go with it', () => {
+    const { standing, ctx, dirOf } = setup();
+    addAccount({ name: 'twin', dir: dirOf('work') }, ctx);
+    expect(purgeRefusal(standing('twin')!)).toBe(
+      'its folder cannot be deleted while "work" shares it',
+    );
+    addAccount({ name: 'triplet', dir: dirOf('work') }, ctx);
+    expect(purgeRefusal(standing('work')!)).toBe(
+      'its folder cannot be deleted while "twin" and "triplet" share it',
     );
   });
 
