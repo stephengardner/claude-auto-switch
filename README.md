@@ -34,7 +34,7 @@ logins on renewal, so ccx refuses such a sign-in and keeps the previous login.
 **A config folder per session.** Claude reads its login from its config folder
 (`CLAUDE_CONFIG_DIR`). ccx runs each session on its own folder,
 `~/.claude-auto-switch/sessions/<pid>`, holding that session's login. Changing
-account means replacing that login; Claude picks it up within about 30 seconds,
+account means replacing that login; Claude picks it up at its next request,
 without a restart.
 
 **Everything else is your `~/.claude`.** The session folder links your projects

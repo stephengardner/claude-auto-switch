@@ -97,6 +97,7 @@ import {
   sessionIdentityEmail,
   credentialFingerprint,
   hasUsableLogin,
+  nudgeLoginReread,
 } from '../accounts/credential-vault.js';
 import { hasLogin, hasWorkingLogin } from '../accounts/account-login.js';
 import {
@@ -1042,6 +1043,9 @@ export async function runInteractiveHotSwap(
             // What we just put there is by definition already in the profile, so it
             // is not a change to mirror back.
             mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
+            // A Claude already running here keeps the login it read until the
+            // file's time changes, which a Keychain write does not do.
+            nudgeLoginReread(sessionDir);
           } catch (e) {
             rollbackCredential(sessionDir);
             throw e;

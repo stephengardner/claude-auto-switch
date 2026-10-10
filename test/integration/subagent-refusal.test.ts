@@ -160,6 +160,39 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)("a subagent's refusal starts 
     },
   );
 
+  it(
+    'checks a refusal from the login Claude still held against the account it moved to',
+    { timeout: 60_000 },
+    async () => {
+      // After a move Claude can keep the login it had for up to 30 s, so a
+      // subagent can be refused as A after the session is on B. The check asks
+      // the login now in the folder, B, which has room: nothing is recorded
+      // against B and nothing moves again.
+      const session = live({
+        env: {
+          FAKE_CLAUDE_IDLE_MS: '20000',
+          FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS: '800',
+          FAKE_CLAUDE_SUBAGENT_REFUSE_AGAIN_AFTER_MS: '3500',
+          FAKE_CLAUDE_OLD_LOGIN_REQUESTS: '1',
+          FAKE_CLAUDE_EXIT_AFTER_PROMPTS: '1',
+        },
+        verifyLogin: (login) => login === 'A',
+        // Short, so the second refusal is checked rather than waved through.
+        refuteBackoffMs: 500,
+        timing: { pickupMs: 4000 },
+      });
+      expect((await session.outcome).kind).toBe('ok');
+
+      const refused = session.log().filter((e) => e.type === 'subagent-refusal');
+      expect(refused.map((e) => e.marker)).toEqual(['A', 'A']);
+      expect(session.asked()).toBe(2);
+      expect(session.decisions).toHaveLength(1);
+      expect(prompts(session.log())).toEqual([
+        expect.objectContaining({ marker: 'B', refused: false }),
+      ]);
+    },
+  );
+
   it('is one limit when the main thread then meets it too', { timeout: 60_000 }, async () => {
     // The main thread's own request was already on its way on the old login.
     const session = live({

@@ -18,8 +18,9 @@ import type { LiveStatus } from '../session/live-conversation.js';
  *    request Claude looks at the login file in its config folder and reads it
  *    again when the file changed, so a login ccx wrote there is used by the
  *    very next request; a login Claude itself moved into the macOS Keychain is
- *    read through a cache it keeps for 30 seconds. So the prompt waits out
- *    `pickupMs` first. That is a bound, not a signal, so the outcome is
+ *    read through a cache it keeps for 30 seconds, dropped early when the
+ *    file's time changes, which ccx does after every move. The prompt still
+ *    waits out `pickupMs` first. That is a bound, not a signal, so the outcome is
  *    checked as well: a prompt that is refused although the new account has
  *    room is typed once more after another wait, and after a second refusal it
  *    is handed over by relaunch instead of typed for ever.

@@ -69,6 +69,14 @@ semantic versioning.
   Claude that keeps no record of whether it is idle is not restarted for it.
   `ccx use --now` still restarts at once. A worker (`ccx worker`) is never
   idle while it runs, so it finishes on the account it is on.
+- **After a move in place, Claude could go on using the old account for up
+  to 30 seconds.** On macOS a login Claude has saved itself lives in the
+  Keychain, and replacing it there changes no file. Claude keeps the login it
+  read for up to 30 seconds and drops it early only when the time of
+  `.credentials.json` in its folder changes, so a request right after a move
+  could go out as the account the session had just left. Every move now
+  changes that file's time, never its contents, so Claude reads the new login
+  at its next request.
 - **A running session could drop out of `ccx sessions` for good.** A session
   that could not refresh its lease for two minutes while its process stayed
   alive, as when the machine sleeps, had the lease deleted by whatever read

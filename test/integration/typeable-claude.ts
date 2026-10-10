@@ -164,6 +164,13 @@ export function live(options: {
   verify?: (asked: number) => boolean;
   /** How long the account takes to answer each check; at once when not given. */
   verifyDelayMs?: number;
+  /**
+   * Answer each check by the login in the session's folder at that moment, as
+   * the real check does (it asks the folder's own login), instead of `verify`.
+   */
+  verifyLogin?: (login: string | null) => boolean;
+  /** How long a check that did not lead to a move keeps the next one away. */
+  refuteBackoffMs?: number;
   /** Whether a newer ccx is waiting to take the session over, asked on each look. */
   newerInstall?: (moved: boolean) => boolean;
   /** The account the session is on now, when something moved it since the limit. */
@@ -180,6 +187,19 @@ export function live(options: {
   const runsLog = path.join(dir, 'runs.jsonl');
   const moveTo = (name: string): void =>
     writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ account: name }), 'utf8');
+  const loginInFolder = (): string | null => {
+    try {
+      return (
+        (
+          JSON.parse(readFileSync(path.join(dir, '.credentials.json'), 'utf8')) as {
+            account?: string;
+          }
+        ).account ?? null
+      );
+    } catch {
+      return null;
+    }
+  };
   moveTo('A');
   Object.assign(process.env, { FAKE_CLAUDE_RUNS_LOG: runsLog, ...TYPEABLE, ...options.env });
   const events: CarryOnEvent[] = [];
@@ -195,7 +215,11 @@ export function live(options: {
     verifyCap: () => {
       asked += 1;
       // A is out; B, where it moves, has room.
-      const answer = options.verify ? options.verify(asked) : asked === 1;
+      const answer = options.verifyLogin
+        ? options.verifyLogin(loginInFolder())
+        : options.verify
+          ? options.verify(asked)
+          : asked === 1;
       if (!options.verifyDelayMs) return Promise.resolve(answer);
       return new Promise((resolve) => setTimeout(() => resolve(answer), options.verifyDelayMs));
     },
@@ -208,6 +232,7 @@ export function live(options: {
     },
     onCarryOn: (event) => events.push(event),
     carryOnTiming: { ...QUICK, ...options.timing },
+    ...(options.refuteBackoffMs !== undefined ? { refuteBackoffMs: options.refuteBackoffMs } : {}),
     ...(options.accountNow ? { currentAccount: options.accountNow } : {}),
     ...(options.newerInstall
       ? { handoverWhenIdle: () => options.newerInstall?.(decisions.length > 0) ?? false }
