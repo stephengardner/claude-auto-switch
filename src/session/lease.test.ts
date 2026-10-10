@@ -169,4 +169,15 @@ describe('session leases', () => {
     writeFileSync(leasePath('work', c), 'not json at all', 'utf8');
     expect(liveLeases(c)).toEqual([]);
   });
+
+  it('treats a file that parses to something other than an object as absent', () => {
+    // Valid JSON is not a lease: `null` parses, and reading a field off it
+    // throws, which took down every reader, the status line included.
+    const c = home();
+    takeLease('work', '/session', c);
+    mkdirSync(path.dirname(leasePath('work', c)), { recursive: true });
+    writeFileSync(leasePath('null', c), 'null', 'utf8');
+    writeFileSync(leasePath('number', c), '42', 'utf8');
+    expect(liveLeases(c).map((l) => l.account)).toEqual(['work']);
+  });
 });

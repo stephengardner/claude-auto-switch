@@ -157,7 +157,10 @@ export function liveLeases(c: PathCtx = {}, options: LeaseOptions = {}): Session
     const file = path.join(leasesDir(c), name);
     let lease: SessionLease;
     try {
-      lease = JSON.parse(readFileSync(file, 'utf8')) as SessionLease;
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+      // Valid JSON is not always an object, and reading a field off `null` throws.
+      if (typeof parsed !== 'object' || parsed === null) continue;
+      lease = parsed as SessionLease;
     } catch {
       continue; // unreadable: treat as absent rather than as protection
     }

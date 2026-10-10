@@ -331,6 +331,8 @@ describe('statuslineCommand', () => {
         JSON.stringify({ account: 'work', pid: process.pid, configDir: 42, at: Date.now() }),
         'utf8',
       );
+      // Valid JSON, and not a lease at all.
+      writeFileSync(leasePath('other', context.ctx, process.pid), 'null', 'utf8');
       await statuslineCommand(context);
       expect(lines[0]).toBe('side 5h 30% left');
     });
