@@ -147,8 +147,20 @@ settings from a shell.
 | `[` / `]`       | move the highlighted account up / down your priority order                                            |
 | `e`             | enable or disable the highlighted account                                                             |
 | `a` `n` `l`     | add an account, rename one, sign one in again                                                         |
+| `x`             | remove the highlighted account, after asking (see below)                                              |
 | `d` `m` `t` `D` | Claude Desktop: handoff, mode, carry-on text, move a conversation                                     |
 | `q` / `esc`     | quit                                                                                                  |
+
+`x` removes nothing until you answer it. It first says what the removal touches:
+any session running on the account (it keeps going until it next moves, then
+uses another account), whether new sessions start on it, and whether your
+editor is on it. Enter alone or `esc` leaves the account as it is. `y` removes
+it from ccx and keeps its folder and login. `purge <name>` also deletes the
+folder: the login in it is deleted, and the account must be signed in again to
+come back. A folder is not deleted while something is using it: a session
+running on the account, your editor, the link `ccx daemon install` keeps, or
+another account whose folder is the same one or inside it. `ccx remove --purge`
+follows the same rule.
 
 ## Claude Desktop
 
@@ -272,7 +284,7 @@ definitions and parallel coders in git worktrees.
 | `ccx setup`                              | the next setup step, wherever you are                                                                                    |
 | `ccx editor on\|off`                     | set up / remove just the editor                                                                                          |
 | `ccx daemon install`                     | always-on rotation outside a terminal                                                                                    |
-| `ccx remove <name>`                      | remove an account (`--purge` also deletes its folder)                                                                    |
+| `ccx remove <name>`                      | remove an account (`--purge` also deletes its folder and login, once nothing is using them)                              |
 
 ## Configuration
 
