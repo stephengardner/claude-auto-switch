@@ -7,6 +7,8 @@ export type KeyAction =
   | 'rotate'
   | 'add'
   | 'rename'
+  /** Ask to remove the highlighted account (x). */
+  | 'remove'
   | 'login'
   /** Claude Desktop: when its conversations move by themselves (d). */
   | 'desktop-handoff'
@@ -67,6 +69,9 @@ export function dispatchKey(
   if (key === 'f') return { selected, action: 'force' }; // instant switch (restarts the session)
   if (key === 'a') return { selected, action: 'add' }; // register another account
   if (key === 'n') return { selected, action: 'rename' }; // rename the highlighted one
+  // Remove the highlighted one. One key and either case, like sign-in below,
+  // because what it opens removes nothing until an answer is typed into it.
+  if (key === 'x' || key === 'X') return { selected, action: 'remove' };
   // Sign this account in again, as itself or as a different account. Either case:
   // l sits right next to j and k, so a stray press while moving is likely, and
   // that is handled by asking for confirmation rather than by hiding the key
