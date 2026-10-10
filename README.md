@@ -6,7 +6,7 @@ carries on: same terminal, same conversation, same model.
 
 It runs on your machine against your own accounts. No server, no telemetry.
 
-![The ccx dashboard: every account, its 5-hour, weekly and model windows, the pick order, and where the session goes next](docs/img/dashboard.svg)
+![The ccx dashboard: accounts in the order ccx would pick them, what is left of each window with its reset beside it, the accounts out of room below, and where a session goes when its account runs out](docs/img/dashboard.svg)
 
 ## Quick start
 
@@ -116,9 +116,30 @@ in your settings); otherwise ccx rotates on account capacity alone.
 - **Status line**: the account this session is on and its tightest window,
   e.g. `work 5h 64% left` or `! work week spent resets 2d`.
 - **`ccx usage`**: every window on every account, with reset times.
-- **`ccx dashboard`**: a live view. `#` is the pick order, `next →` says where
-  the session goes next and why, and `sessions:` which session is on which
-  account.
+- **`ccx dashboard`**: a live view, drawn to be read at a glance.
+  - Accounts you can use come first, numbered in the order ccx would pick
+    them, with the next one marked. Accounts that are out of room are listed
+    under their own heading, soonest back first, and signed-out or disabled
+    ones last.
+  - Every bar and number is what is LEFT of that window, as on the status
+    line: a full bar is an untouched window.
+  - When a window resets is beside its own bar: `resets in 4h 16m (3:15 AM)`,
+    with the clock time for a wait under a day. The cell is blank while no
+    5-hour window is running (one starts at first use). On an account that is
+    out, the window blocking it reads `back in ...`, which is when the last
+    thing blocking it lifts.
+  - The end of a row says what else matters about the account: `next in
+    line`, `held back` (its week is nearly spent, so it waits behind healthier
+    accounts), and how many sessions are running on it. `*` marks the account
+    new sessions start on.
+  - A column for one model's own weekly limit (`FABLE LEFT`) appears only
+    while that limit is in play: the model is spent on some account, or has
+    less left there than the account's week.
+  - `when one runs out →` says where a session goes next and why, and
+    `recent` the last few things that happened.
+  - A row never wraps. As a terminal narrows, the table gives up the clock
+    times, then the bars, then the words `resets in`; the numbers and reset
+    times stay.
 
 ![ccx usage: every window per account, with a bar, a percentage and when it comes back](docs/img/usage.svg)
 
