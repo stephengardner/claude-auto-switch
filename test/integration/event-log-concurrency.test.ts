@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readEvents } from '../../src/events/log.js';
+import { acquireOwnedLock } from '../../src/claude/locks.js';
 
 /**
  * Several ccx processes share one event log: a session writes swaps, the
@@ -45,22 +46,22 @@ function runWriters(home: string): Promise<Array<{ code: number | null; stderr: 
   );
 
   return Promise.all(
-    Array.from(
-      { length: WRITERS },
-      (_, w) =>
-        new Promise<{ code: number | null; stderr: string }>((resolve) => {
-          const p = spawn(TSX, [child, home, `w${w}`, String(PER_WRITER)], {
-            stdio: ['ignore', 'ignore', 'pipe'],
-            shell: process.platform === 'win32',
-          });
-          let stderr = '';
-          p.stderr.on('data', (d) => {
-            stderr += String(d);
-          });
-          p.on('exit', (code) => resolve({ code, stderr }));
-        }),
-    ),
+    Array.from({ length: WRITERS }, (_, w) => runChild(child, [home, `w${w}`, String(PER_WRITER)])),
   );
+}
+
+function runChild(script: string, args: string[]): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    const p = spawn(TSX, [script, ...args], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      shell: process.platform === 'win32',
+    });
+    let stderr = '';
+    p.stderr.on('data', (d) => {
+      stderr += String(d);
+    });
+    p.on('exit', (code) => resolve({ code, stderr }));
+  });
 }
 
 describe('several processes writing the event log at once', () => {
@@ -95,5 +96,47 @@ describe('several processes writing the event log at once', () => {
     }
     const missing = expected.filter((m) => !present.has(m));
     expect(missing).toEqual([]);
+  }, 60_000);
+
+  it('waits while another process holds the log, and writes once it lets go', async () => {
+    // A writer that went ahead while a compaction held the log could open the
+    // file just before the compaction moved it, and write into it after the
+    // compaction had read it. The line then went with the file.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-evhold-'));
+    const marker = path.join(home, 'about-to-append');
+    const child = path.join(home, 'held-writer.ts');
+    writeFileSync(
+      child,
+      [
+        `import { writeFileSync } from 'node:fs';`,
+        `import { appendEvent } from ${JSON.stringify(LOG_MODULE.split(path.sep).join('/'))};`,
+        `const [home, marker] = process.argv.slice(2);`,
+        `writeFileSync(marker, '');`,
+        `appendEvent(home, 'written after the holder let go', Date.now());`,
+      ].join('\n'),
+      'utf8',
+    );
+
+    // Held as a running process holds it: this one, which the child can see is running.
+    const holder = acquireOwnedLock(path.join(home, 'events.jsonl.compact.lock'), {
+      waitMs: 0,
+      staleMs: 5_000,
+    });
+    expect(holder.held).toBe(true);
+    let exited: Promise<{ code: number | null; stderr: string }>;
+    try {
+      exited = runChild(child, [home, marker]);
+      await vi.waitUntil(() => existsSync(marker), { timeout: 30_000, interval: 20 });
+      // The append is the child's next statement, so by now it has either
+      // written or is waiting.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(readEvents(home, 10)).toEqual([]);
+    } finally {
+      holder.release();
+    }
+
+    const { code, stderr } = await exited;
+    expect(code, stderr).toBe(0);
+    expect(readEvents(home, 10).map((r) => r.msg)).toEqual(['written after the holder let go']);
   }, 60_000);
 });
