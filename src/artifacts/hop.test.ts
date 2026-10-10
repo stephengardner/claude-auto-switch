@@ -23,6 +23,8 @@ function setup(over: Partial<HopDeps<Acct>> = {}) {
     on: WORK as Acct | null,
     accounts: [WORK, HOME, OTHER] as Acct[],
     moves: [] as string[],
+    /** Each time Claude was told to use the login already in its folder. */
+    pins: [] as string[],
     logged: [] as Array<{ message: string; data: Record<string, unknown> }>,
   };
   const deps: HopDeps<Acct> = {
@@ -35,6 +37,9 @@ function setup(over: Partial<HopDeps<Acct>> = {}) {
     activate: (account) => {
       world.moves.push(account.name);
       world.on = account;
+    },
+    pin: (account) => {
+      world.pins.push(account.name);
     },
     standing: () => 'free',
     log: (message, data) => world.logged.push({ message, data }),
@@ -156,6 +161,7 @@ describe('a temporary move for one Artifact call', () => {
         moved.push(account.name);
         world.on = account;
       },
+      pin: () => {},
       standing: () => 'free',
       log: (message, data) => world.logged.push({ message, data }),
       holdMs: 60_000,
@@ -274,13 +280,143 @@ describe('a request that cannot be honoured', () => {
     expect(readdirSync(hopDir(world.dir))).toEqual(['ready.json']);
   });
 
-  it('needs no move, and holds nothing, when the session is already on that account', () => {
-    const { world, hop, ask } = setup();
-    ask('toolu_1', 'work');
+  it('drops every request of a Claude that ended, so the next one is never moved for a call nobody makes', () => {
+    // The reviewer's probe: a request waits while a usage limit is checked,
+    // the limit ends that Claude, and ccx starts the next one on "other".
+    let standing: 'free' | 'busy' = 'busy';
+    const { world, hop, ask } = setup({ standing: () => standing, holdMs: 120_000 });
+    ask('toolu_old', 'home');
+    expect(hop.poll()).toBe(false);
+    hop.childEnded();
+    standing = 'free';
+    world.on = OTHER;
+    world.now += 5_000;
     expect(hop.poll()).toBe(false);
     expect(world.moves).toEqual([]);
+    expect(hop.away()).toBeNull();
+    expect(readdirSync(hopDir(world.dir))).toEqual(['ready.json']);
+  });
+});
+
+describe('a call for the account the session is on', () => {
+  it('needs no move, but tells Claude to use that login now, and holds the session there for the call', () => {
+    const { world, hop, ask } = setup();
+    ask('toolu_1', 'work');
+    expect(hop.poll()).toBe(true);
+    expect(world.moves).toEqual([]);
+    // Within half a minute of an ordinary move, Claude may still be on the login before it.
+    expect(world.pins).toEqual(['work']);
     expect(readState(world.dir, 'toolu_1')).toMatchObject({ state: 'applied', moved: false, from: 'work', to: 'work' });
     expect(hop.away()).toBeNull();
+    // Nothing else moves the session while the call is out.
+    expect(hop.poll()).toBe(true);
+    markDone(world.dir, 'toolu_1');
+    hop.tick();
+    expect(readState(world.dir, 'toolu_1')).toMatchObject({ state: 'ended', by: 'done' });
+    expect(hop.poll()).toBe(false);
+    expect(world.moves).toEqual([]);
+  });
+
+  it('is refused when Claude cannot be told, rather than sent on a login it may not be using', () => {
+    const { world, hop, ask } = setup({
+      pin: () => {
+        throw new Error('the folder cannot be written');
+      },
+    });
+    ask('toolu_1', 'work');
+    expect(hop.poll()).toBe(false);
+    const state = readState(world.dir, 'toolu_1');
+    expect(state?.state === 'refused' && state.reason).toContain('the folder cannot be written');
+  });
+
+  it('ends its hold when something else moves the session, never dragging it back', () => {
+    const { world, hop, ask } = setup();
+    ask('toolu_1', 'work');
+    hop.poll();
+    world.on = OTHER;
+    hop.tick();
+    expect(readState(world.dir, 'toolu_1')).toMatchObject({ state: 'ended', by: 'moved' });
+    expect(world.moves).toEqual([]);
+    expect(world.on).toBe(OTHER);
+    expect(hop.poll()).toBe(false);
+  });
+});
+
+describe('two calls for one account at once', () => {
+  it('share one move: the session goes back only when the last of them is over', () => {
+    const { world, hop, ask } = setup();
+    ask('toolu_1', 'home');
+    hop.poll();
+    world.now += 500;
+    ask('toolu_2', 'home');
+    expect(hop.poll()).toBe(true);
+    expect(world.moves).toEqual(['home']);
+    expect(readState(world.dir, 'toolu_2')).toMatchObject({ state: 'applied', moved: true, from: 'work', to: 'home' });
+    // The first is over: its own hold ends, and the session stays for the second.
+    markDone(world.dir, 'toolu_1');
+    hop.tick();
+    expect(readState(world.dir, 'toolu_1')).toMatchObject({ state: 'ended', by: 'done' });
+    expect(world.moves).toEqual(['home']);
+    expect(hop.away()).toEqual({ from: WORK, to: HOME });
+    markDone(world.dir, 'toolu_2');
+    hop.tick();
+    expect(world.moves).toEqual(['home', 'work']);
+    expect(readState(world.dir, 'toolu_2')).toMatchObject({ state: 'ended', by: 'done' });
+    expect(world.logged.map((l) => l.data.calls)).toEqual([2]);
+  });
+
+  it('a later call for another account waits for the session to be back, then moves', () => {
+    const { world, hop, ask } = setup();
+    ask('toolu_1', 'home');
+    hop.poll();
+    ask('toolu_2', 'other');
+    hop.poll();
+    expect(readState(world.dir, 'toolu_2')).toBeNull();
+    markDone(world.dir, 'toolu_1');
+    hop.tick();
+    hop.poll();
+    expect(world.moves).toEqual(['home', 'work', 'other']);
+    expect(readState(world.dir, 'toolu_2')).toMatchObject({ state: 'applied', from: 'work', to: 'other' });
+  });
+
+  it('does not join a move that is on its way back, even one stuck there: it waits and moves again', () => {
+    let failing = true;
+    const { world, hop, ask } = setup({
+      activate: (account) => {
+        if (account.name === 'work' && failing) throw new Error('the login is locked');
+        world.moves.push(account.name);
+        world.on = account;
+      },
+    });
+    ask('toolu_1', 'home');
+    hop.poll();
+    markDone(world.dir, 'toolu_1');
+    hop.tick();
+    // On "home" still, but only because going back failed: no call may count on it.
+    ask('toolu_2', 'home');
+    hop.poll();
+    expect(readState(world.dir, 'toolu_2')).toBeNull();
+    failing = false;
+    hop.tick();
+    hop.poll();
+    expect(world.moves).toEqual(['home', 'work', 'home']);
+    expect(readState(world.dir, 'toolu_2')).toMatchObject({ state: 'applied', moved: true, to: 'home' });
+  });
+
+  it('stops taking new calls into a move once it has been held its full time, so the bound holds', () => {
+    const { world, hop, ask } = setup();
+    ask('toolu_1', 'home');
+    hop.poll();
+    world.now += 59_000;
+    hop.tick();
+    ask('toolu_2', 'home');
+    world.now += 2_000;
+    hop.poll();
+    expect(readState(world.dir, 'toolu_2')).toBeNull();
+    hop.tick();
+    expect(world.moves).toEqual(['home', 'work']);
+    hop.poll();
+    expect(world.moves).toEqual(['home', 'work', 'home']);
   });
 });
 
@@ -443,7 +579,7 @@ describe('what it writes down', () => {
     expect(world.logged).toEqual([
       {
         message: 'on "home" for one Artifact call, then back on "work"',
-        data: { to: 'home', from: 'work', heldMs: 1_500, endedBy: 'done', call: 'toolu_1' },
+        data: { to: 'home', from: 'work', heldMs: 1_500, endedBy: 'done', call: 'toolu_1', calls: 1 },
       },
     ]);
   });

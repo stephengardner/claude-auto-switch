@@ -75,7 +75,7 @@ describe('the page settings', () => {
       return [];
     }
   };
-  const ALL = ['PostToolUse', 'PostToolUseFailure', 'PreToolUse'];
+  const ALL = ['PostToolBatch', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse'];
 
   it('install the hooks when the first one is turned on, and remove them when the last one is turned off', async () => {
     const { context, file, claudeSettings } = pages();

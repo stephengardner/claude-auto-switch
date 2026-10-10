@@ -198,14 +198,19 @@ describe('the page settings', () => {
     expect(setting('artifacts.updates').words('owner')).toContain('owns');
   });
 
-  it('take an account name for the home account, or off', () => {
+  it('take exactly the names an account can have for the home account, or off', () => {
     const home = setting('artifacts.home');
     expect(parseSetting(home, ' work ')).toBe('work');
     expect(parseSetting(home, 'stephen.alvis-2')).toBe('stephen.alvis-2');
-    for (const off of ['off', 'OFF', 'none']) expect(parseSetting(home, off)).toBeNull();
-    expect(() => parseSetting(home, 'two words')).toThrow('an account name, or off');
-    expect(() => parseSetting(home, '../etc')).toThrow('an account name, or off');
-    expect(() => parseSetting(home, '')).toThrow('an account name, or off');
+    // Allowed for an account, so allowed here.
+    expect(parseSetting(home, '.hidden')).toBe('.hidden');
+    expect(parseSetting(home, 'a'.repeat(64))).toBe('a'.repeat(64));
+    // "off" always means off; any other word is a name, "none" included.
+    for (const off of ['off', 'OFF', 'Off']) expect(parseSetting(home, off)).toBeNull();
+    expect(parseSetting(home, 'none')).toBe('none');
+    for (const bad of ['two words', '../etc', '', '-dash-first', '..', 'con', 'a'.repeat(65)]) {
+      expect(() => parseSetting(home, bad), bad).toThrow('an account name, or off');
+    }
   });
 
   it('type the home account rather than step it, and open the box with what would be typed', () => {

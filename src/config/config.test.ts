@@ -85,6 +85,9 @@ describe('the page routing settings', () => {
       env: { CLAUDE_AUTO_SWITCH_HOME: seedHome({ artifacts: { home: 'work' } }), CAS_ARTIFACTS_HOME: 'off' },
     });
     expect(cfg.artifacts.home).toBeNull();
+    // Only "off", as when it is typed: "none" can be an account's name.
+    const named = loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: seedHome(null), CAS_ARTIFACTS_HOME: 'none' } });
+    expect(named.artifacts.home).toBe('none');
   });
 });
 

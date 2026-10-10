@@ -18,7 +18,8 @@ import type { HookWriteResult } from '../desktop/hooks.js';
 /**
  * The Claude Code hooks that let ccx decide which account a page is published
  * as: around every call of Claude's Artifact tool, before it (where the
- * session can be moved, or the call refused), after it, and after it fails.
+ * session is held or moved, or the call refused), after it, after it fails,
+ * and after each batch of tool calls.
  *
  * They are in the user's settings only while page routing is on. Every Claude
  * on the machine runs them, so the entry leaves at once in anything that is
@@ -34,12 +35,18 @@ export const ARTIFACT_TOOL = 'Artifact';
  * does not stop the call, and the page would go out on whatever account the
  * session happened to be on.
  */
-const TIMEOUT_SECONDS = { pre: 45, post: 30, fail: 30 } as const;
+const TIMEOUT_SECONDS = { pre: 45, post: 30, fail: 30, batch: 30 } as const;
 
+/**
+ * PostToolBatch runs after every batch of tool calls, before the next model
+ * request, and takes no matcher: it is how a call refused after the session
+ * was moved (which runs no after-hook) still gets the session back in time.
+ */
 const EVENTS = [
   ['PreToolUse', 'pre'],
   ['PostToolUse', 'post'],
   ['PostToolUseFailure', 'fail'],
+  ['PostToolBatch', 'batch'],
 ] as const;
 
 export type ArtifactHookEvent = (typeof EVENTS)[number][1];
@@ -77,12 +84,14 @@ export function planArtifactHooks(
     base,
     EVENTS.map(([event, word]): readonly [string, HookGroup] => [
       event,
-      { matcher: ARTIFACT_TOOL, hooks: [hookCommand(program, word, TIMEOUT_SECONDS[word])] },
+      word === 'batch'
+        ? { hooks: [hookCommand(program, word, TIMEOUT_SECONDS[word])] }
+        : { matcher: ARTIFACT_TOOL, hooks: [hookCommand(program, word, TIMEOUT_SECONDS[word])] },
     ]),
   );
 }
 
-/** Whether all three hooks are there. Fewer is a set somebody half removed. */
+/** Whether all four hooks are there. Fewer is a set somebody half removed, or one from before the fourth. */
 export function artifactHooksInstalled(settings: Settings): boolean {
   const found = new Set<string>();
   eachHook(settings, isOurs, (event, hook) => {

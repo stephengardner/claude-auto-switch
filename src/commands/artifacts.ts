@@ -27,7 +27,10 @@ function ago(at: number, now: number): string {
  * `ccx artifacts`: the pages ccx has recorded, and the account that owns each.
  */
 export function artifactsCommand(context: CliContext, now: number = Date.now()): number {
-  const pages = readPages(context.ctx).reverse();
+  // A page deleted through a ccx session is gone, and so off the list.
+  const pages = readPages(context.ctx)
+    .filter((p) => !p.deleted)
+    .reverse();
   const { home, updates } = context.config.artifacts;
 
   if (context.json) {

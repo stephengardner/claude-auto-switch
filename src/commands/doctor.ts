@@ -504,6 +504,20 @@ function auditDesktopHooks(context: CliContext): DoctorCheck | null {
 export function auditArtifactHooks(context: CliContext): DoctorCheck | null {
   const { home, updates } = context.config.artifacts;
   const on = routingOn(context.config.artifacts);
+  // Setting it again writes the hooks as the settings call for, pointed at
+  // this ccx, and touches nothing else: ccx on would also put back what a
+  // ccx off took out. A home that is no account cannot be set again.
+  let homeKnown = false;
+  try {
+    homeKnown = home !== null && getAccount(home, context.ctx) !== undefined;
+  } catch {
+    /* an unreadable account list is the accounts check's to report */
+  }
+  const reapply = homeKnown
+    ? `ccx config artifacts.home ${home}`
+    : updates === 'owner'
+      ? 'ccx config artifacts.updates owner'
+      : 'ccx config artifacts.home <account>';
   let file: string;
   try {
     file = settingsPath(context.ctx);
@@ -519,7 +533,7 @@ export function auditArtifactHooks(context: CliContext): DoctorCheck | null {
       ? {
           name: 'page-routing',
           ok: false,
-          detail: `${file} is not valid JSON, so the page routing hooks cannot be checked or installed; fix that file, then run ccx on`,
+          detail: `${file} is not valid JSON, so the page routing hooks cannot be checked or installed; fix that file, then run ${reapply}`,
         }
       : null;
   }
@@ -531,7 +545,7 @@ export function auditArtifactHooks(context: CliContext): DoctorCheck | null {
       name: 'page-routing',
       ok: false,
       detail: 'page routing is off, but its hooks are still in your Claude settings',
-      fix: ['ccx on'],
+      fix: ['ccx config artifacts.updates off'],
     };
   }
   const problem = !installed
@@ -540,7 +554,7 @@ export function auditArtifactHooks(context: CliContext): DoctorCheck | null {
         const broken = artifactHooksProblem(settings);
         return broken ? `the page routing hooks cannot run: ${broken}` : null;
       })();
-  if (problem) return { name: 'page-routing', ok: false, detail: problem, fix: ['ccx on'] };
+  if (problem) return { name: 'page-routing', ok: false, detail: problem, fix: [reapply] };
   if (home !== null && !getAccount(home, context.ctx)) {
     return {
       name: 'page-routing',

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { addAccount } from '../accounts/registry.js';
 import { installArtifactHooks, readArtifactHooksInstalled } from '../artifacts/hooks.js';
-import { appendPage, readPages } from '../artifacts/record.js';
+import { appendPage, readPages, recordDeletion } from '../artifacts/record.js';
 import { SCAN_ENV, readPlan, writeResult } from '../artifacts/scan.js';
 import { loadConfig, saveConfig } from '../config/config.js';
 import type { PartialConfig } from '../config/config.schema.js';
@@ -73,6 +73,16 @@ describe('ccx artifacts', () => {
     expect(said.join('\n')).toContain('a page is changed as: the account that owns it');
   });
 
+  it('leaves out a page deleted through a ccx session', () => {
+    const { context, ctx, said } = setup({ home: 'work' });
+    appendPage(page('kept'), ctx);
+    appendPage(page('gone'), ctx);
+    recordDeletion('https://claude.ai/artifact/gone', ctx, 1_000_001);
+    artifactsCommand(context);
+    expect(said.join('\n')).toContain('Page kept');
+    expect(said.join('\n')).not.toContain('gone');
+  });
+
   it('marks a page whose account it could not tell, and says how to find out', () => {
     const { context, ctx, said } = setup();
     appendPage(page('mystery', { owner: null, title: null }), ctx);
@@ -138,7 +148,7 @@ describe('ccx artifacts scan', () => {
       'Artifact',
     ]);
     expect(run.env).toMatchObject({ CLAUDE_CODE_ARTIFACT: '1', CLAUDE_CODE_ARTIFACT_AUTO_OPEN: '0' });
-    expect(run.hooks).toEqual(['PostToolUse', 'PostToolUseFailure', 'PreToolUse']);
+    expect(run.hooks).toEqual(['PostToolBatch', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse']);
     expect(run.brief).toContain('exactly 2 calls');
     expect(run.brief).toContain('{"action": "list", "scope": "mine", "limit": 200}');
     const said = s.said.join('\n');
@@ -299,14 +309,24 @@ describe('ccx doctor on page routing', () => {
 
   it('says so when it is on with no hooks, when the hooks cannot run, and when the home account is gone', () => {
     const s = setup({ home: 'work' });
-    expect(auditArtifactHooks(s.context)).toMatchObject({ ok: false, fix: ['ccx on'] });
+    s.account('work');
+    // Setting it again puts the hooks back, pointed at this ccx, and touches nothing else.
+    expect(auditArtifactHooks(s.context)).toMatchObject({ ok: false, fix: ['ccx config artifacts.home work'] });
     installArtifactHooks(true, s.ctx, { node: process.execPath, entry: path.join(s.home, 'gone', 'artifacts', 'hook-entry.js') });
     expect(auditArtifactHooks(s.context)?.detail).toContain('cannot run');
+    expect(auditArtifactHooks(s.context)?.fix).toEqual(['ccx config artifacts.home work']);
+    expect(auditArtifactHooks(setup({ updates: 'owner' }).context)?.fix).toEqual(['ccx config artifacts.updates owner']);
+    // A home that is no account cannot be set again, so the fix is another line.
+    expect(auditArtifactHooks(setup({ home: 'gone' }).context)?.fix).toEqual(['ccx config artifacts.home <account>']);
+    const goneWithUpdates = setup({ home: 'gone', updates: 'owner' });
+    expect(auditArtifactHooks(goneWithUpdates.context)?.fix).toEqual(['ccx config artifacts.updates owner']);
     mkdirSync(path.dirname(PROGRAM.entry), { recursive: true });
     writeFileSync(PROGRAM.entry, '', 'utf8');
-    installArtifactHooks(true, s.ctx, PROGRAM);
-    expect(auditArtifactHooks(s.context)).toMatchObject({
+    const gone = setup({ home: 'gone' });
+    installArtifactHooks(true, gone.ctx, PROGRAM);
+    expect(auditArtifactHooks(gone.context)).toMatchObject({
       ok: false,
+      detail: expect.stringContaining('"gone", which is not an account'),
       fix: ['ccx config artifacts.home <account>'],
     });
   });
@@ -334,7 +354,8 @@ describe('ccx doctor on page routing', () => {
   it('says so when hooks are still installed with routing off', () => {
     const s = setup();
     installArtifactHooks(true, s.ctx, PROGRAM);
-    expect(auditArtifactHooks(s.context)).toMatchObject({ ok: false, fix: ['ccx on'] });
+    // Not ccx on, which would also put back what ccx off took out.
+    expect(auditArtifactHooks(s.context)).toMatchObject({ ok: false, fix: ['ccx config artifacts.updates off'] });
     expect(readPages(s.ctx)).toEqual([]);
   });
 });

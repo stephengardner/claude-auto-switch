@@ -1,9 +1,13 @@
-import { readFileSync } from 'node:fs';
 import { isSessionDir } from '../session/session-dir.js';
-import { afterArtifactCall, beforeArtifactCall, type HookAnswer, type HookInput } from './hook.js';
+import { afterArtifactCall, batchArtifactCalls, beforeArtifactCall, type HookAnswer, type HookInput } from './hook.js';
 import { SCAN_ENV } from './scan.js';
 
-const EVENT_NAMES = { pre: 'PreToolUse', post: 'PostToolUse', fail: 'PostToolUseFailure' } as const;
+const EVENT_NAMES = {
+  pre: 'PreToolUse',
+  post: 'PostToolUse',
+  fail: 'PostToolUseFailure',
+  batch: 'PostToolBatch',
+} as const;
 type Event = keyof typeof EVENT_NAMES;
 
 /**
@@ -24,13 +28,13 @@ export function hookOutput(event: Event, answer: HookAnswer): string {
   return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: answer.context } });
 }
 
-/** One run of the hook: Claude's description of the call on standard input, the answer on standard output. */
-export async function runArtifactHook(event: string | undefined, sessionDir: string): Promise<void> {
-  if (event !== 'pre' && event !== 'post' && event !== 'fail') return;
+/** One run of the hook: Claude's description of the call as `text`, the answer on standard output. */
+export async function runArtifactHook(event: string | undefined, sessionDir: string, text: string): Promise<void> {
+  if (event !== 'pre' && event !== 'post' && event !== 'fail' && event !== 'batch') return;
   if (!isSessionDir(sessionDir)) return;
   let input: HookInput;
   try {
-    input = JSON.parse(readFileSync(0, 'utf8')) as HookInput;
+    input = JSON.parse(text) as HookInput;
   } catch {
     return; // nothing to go on
   }
@@ -41,10 +45,12 @@ export async function runArtifactHook(event: string | undefined, sessionDir: str
     answer =
       event === 'pre'
         ? await beforeArtifactCall(input, env)
-        : await afterArtifactCall(input, env, event === 'fail');
+        : event === 'batch'
+          ? await batchArtifactCalls(input, env)
+          : await afterArtifactCall(input, env, event === 'fail');
   } catch {
     return;
   }
-  const text = hookOutput(event, answer);
-  if (text !== '') process.stdout.write(`${text}\n`);
+  const out = hookOutput(event, answer);
+  if (out !== '') process.stdout.write(`${out}\n`);
 }

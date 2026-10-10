@@ -3,30 +3,49 @@ import { findPage, findRepublished, type Page } from './record.js';
 
 /**
  * Which account one call of Claude's Artifact tool should go out as. Pure: the
- * hook reads the call, the settings, the session and the record, and this
- * decides.
+ * hook reads the call, the settings and the record, and this decides. Whether
+ * the session is already on that account is not decided here: the session's
+ * own ccx holds it there for the call, or moves it (see hop.ts).
  *
- * What is routed, and why only these:
- * - a publish of a new page, to the home account;
- * - a publish to a page that exists (named by its link, or by this
- *   conversation publishing the same file again, or an upload to it), to the
- *   account that owns it, which is the only one that can change it;
- * - a read of a recorded page, to its owner: Claude reads a page before it
- *   updates one from another conversation, and a private page reads as
- *   missing to everyone else.
- * Listing, deleting, opening, pinning and the rest are left exactly as they
- * are: they are about the account the session is on, or ask the person first,
- * and a move held open across a question could outlast its bound.
+ * Every action Claude Code 2.1.296's tool takes is sorted here, in both of its
+ * spellings (the tool turns `publish` with `asset: true` into `upload_asset`
+ * or `copy_from`, `read` with `path` into `read_file` or `read_asset`, `read`
+ * with only `type_url` into `describe_type`, `list` with a scope into
+ * `list_files`, `list_assets` or `list_types`, `delete` with `path` into
+ * `delete_asset`, and back):
+ * - publish: a new page goes to the home account; a page that exists, named
+ *   by its link or by this conversation publishing the same file again, to
+ *   its owner. With `type_url` it is always a new page.
+ * - change (upload_asset, copy_from, delete_asset, share) and delete: to the
+ *   owner, the only account that can change the page or who sees it.
+ * - read (read, read_file, read_asset, read_page_data, list_files,
+ *   list_assets): to the owner, since a private page reads as missing to
+ *   anyone else.
+ * - everything else goes as it is: list, list_types, describe_type and
+ *   quickstart are about the session's own account; open, pin and unpin about
+ *   the person's own view; comments, reply, resolve, watch, unwatch, status,
+ *   resume_replies, read_db, write_db, verify and preview are the actions of
+ *   the comments, data and check tools; room_send, get_endpoints,
+ *   call_endpoint and run_script reach a page's live room and server code,
+ *   can ask the person and run for as long as the code does, and are left
+ *   until that is measured; sync, version and live-edit have no code in this
+ *   build, which refuses them itself; and an action this does not know is
+ *   left alone.
  */
+
+export type CallKind = 'publish' | 'change' | 'delete' | 'read' | 'other';
 
 /** The part of a call that decides where it goes. */
 export interface ArtifactCall {
-  /** `publish` when the call names none, which most do not. */
+  /** As the call named it; `publish` when it named none, as most do. */
   action: string;
+  kind: CallKind;
   /** The page the call names, when it names one. */
   url: string | null;
   /** The file it publishes, absolute. */
   file: string | null;
+  /** The type a new page is made from. */
+  typeUrl: string | null;
 }
 
 export interface RoutingSettings {
@@ -37,27 +56,19 @@ export interface RoutingSettings {
 export interface RouteInput {
   call: ArtifactCall;
   settings: RoutingSettings;
-  /** The account the session is on now. */
-  sessionAccount: string;
   /** The conversation making the call. */
   sessionId: string | null;
   pages: readonly Page[];
-  /**
-   * Whether ccx has an account by this name. Whether it is signed in is asked
-   * later, by the ccx process that would make the move: it reads logins, and
-   * the hook does not.
-   */
+  /** Whether ccx has an account by this name. Whether it is signed in is asked by the session's ccx. */
   registered: (name: string) => boolean;
 }
 
 export type Route =
   /** Nothing is configured for this call: it is not touched in any way. */
   | { kind: 'none' }
-  /** It belongs on the account the session is already on. */
-  | { kind: 'stay'; account: string; why: 'home' | 'owner' }
-  /** The session is moved to `to` for the length of the call. */
-  | { kind: 'hop'; to: string; why: 'home' | 'owner'; page: Page | null }
-  /** An update to a page nobody recorded the owner of: sent as it is, with a word on how to record owners. */
+  /** It goes out as `to`: the session is held there, or moved there, for the length of the call. */
+  | { kind: 'go'; to: string; why: 'home' | 'owner'; page: Page | null }
+  /** A call about a page nobody recorded the owner of: sent as it is, with a word on how to record owners. */
   | { kind: 'unknown-owner'; url: string }
   /** The route cannot be honoured, and the call must not go out anywhere else. */
   | { kind: 'refuse'; reason: string };
@@ -69,14 +80,34 @@ export function routingOn(settings: RoutingSettings): boolean {
 
 const word = (value: unknown): string | null => (typeof value === 'string' && value.length > 0 ? value : null);
 
+const CHANGES = new Set(['upload_asset', 'copy_from', 'delete_asset', 'share']);
+const READS = new Set(['read_file', 'read_asset', 'read_page_data', 'list_files', 'list_assets']);
+
+function kindOf(action: string, input: Record<string, unknown>, url: string | null): CallKind {
+  let kind: CallKind;
+  if (action === 'publish') kind = input.asset === true ? 'change' : 'publish';
+  else if (CHANGES.has(action)) kind = 'change';
+  else if (READS.has(action)) kind = 'read';
+  else if (action === 'read') kind = word(input.type_url) !== null && url === null ? 'other' : 'read';
+  else if (action === 'list') kind = input.scope === 'files' || input.scope === 'assets' ? 'read' : 'other';
+  else if (action === 'delete') kind = word(input.path) !== null ? 'change' : 'delete';
+  else return 'other';
+  // Only a publish can be about a page it does not name.
+  return kind === 'publish' || url !== null ? kind : 'other';
+}
+
 /** The call in a hook's `tool_input`. A relative file is Claude's, so it is resolved against Claude's folder. */
 export function readCall(toolInput: unknown, cwd: string | null): ArtifactCall {
   const input = typeof toolInput === 'object' && toolInput !== null ? (toolInput as Record<string, unknown>) : {};
+  const action = word(input.action) ?? 'publish';
+  const url = word(input.url);
   const file = word(input.file_path);
   return {
-    action: word(input.action) ?? 'publish',
-    url: word(input.url),
+    action,
+    kind: kindOf(action, input, url),
+    url,
     file: file === null ? null : path.resolve(cwd ?? '', file),
+    typeUrl: word(input.type_url),
   };
 }
 
@@ -91,39 +122,39 @@ function notAnAccount(why: 'home' | 'owner', account: string): string {
 }
 
 export function decideRoute(input: RouteInput): Route {
-  const { call, settings, sessionAccount } = input;
-  if (!routingOn(settings)) return { kind: 'none' };
-  if (call.action !== 'publish' && call.action !== 'read') return { kind: 'none' };
+  const { call, settings } = input;
+  if (!routingOn(settings) || call.kind === 'other') return { kind: 'none' };
 
   let target: { account: string; why: 'home' | 'owner'; page: Page | null };
-  if (call.action === 'read' || call.url !== null) {
-    const page = findPage(input.pages, call.url);
-    const sent = existingPage(settings, page);
+  // A page from a type is always a new one, whatever file it is given.
+  const existing =
+    call.kind !== 'publish'
+      ? findPage(input.pages, call.url)
+      : call.typeUrl !== null
+        ? null
+        : call.url !== null
+          ? findPage(input.pages, call.url)
+          : findRepublished(input.pages, input.sessionId, call.file);
+  const named = call.kind !== 'publish' || (call.typeUrl === null && call.url !== null);
+
+  if (existing === null && !named) {
+    if (settings.home === null) return { kind: 'none' };
+    target = { account: settings.home, why: 'home', page: null };
+  } else {
+    const sent = existingPage(settings, existing);
     if (sent === 'leave') return { kind: 'none' };
     if (sent === 'unknown') {
       // A page nothing is recorded about may be somebody else's, shared to
-      // read: only a publish to one is worth a word.
-      return call.action === 'publish' && call.url !== null ? { kind: 'unknown-owner', url: call.url } : { kind: 'none' };
+      // read: only a change to one is worth a word.
+      return call.kind === 'read' ? { kind: 'none' } : { kind: 'unknown-owner', url: existing?.url ?? (call.url as string) };
     }
-    target = { ...sent, page };
-  } else {
-    const page = findRepublished(input.pages, input.sessionId, call.file);
-    if (page === null) {
-      if (settings.home === null) return { kind: 'none' };
-      target = { account: settings.home, why: 'home', page: null };
-    } else {
-      const sent = existingPage(settings, page);
-      if (sent === 'leave') return { kind: 'none' };
-      if (sent === 'unknown') return { kind: 'unknown-owner', url: page.url };
-      target = { ...sent, page };
-    }
+    target = { ...sent, page: existing };
   }
 
-  if (target.account === sessionAccount) return { kind: 'stay', account: target.account, why: target.why };
   if (!input.registered(target.account)) {
     return { kind: 'refuse', reason: notAnAccount(target.why, target.account) };
   }
-  return { kind: 'hop', to: target.account, why: target.why, page: target.page };
+  return { kind: 'go', to: target.account, why: target.why, page: target.page };
 }
 
 /**

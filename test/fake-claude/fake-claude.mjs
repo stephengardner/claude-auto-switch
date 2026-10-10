@@ -411,9 +411,13 @@ if (capEvery > 0) {
 // "deny" from a before-hook stops the call. Which account's login was in the
 // session's folder when the call went out, and when it was over, goes to the
 // runs log: that is the account a page would have been published as.
-// FAKE_CLAUDE_ARTIFACT is a JSON list of calls: { afterMs, id, input,
-// response?, fail?, takesMs?, skipAfterHook?, writeResult?, refuseDuring?,
-// sayDuring? }.
+// After every call, as after every batch of tool calls, the PostToolBatch hooks
+// run before the next model request, which is noted at once with the login it
+// would go out on. FAKE_CLAUDE_ARTIFACT is a JSON list of calls: { afterMs, id,
+// input, response?, fail?, takesMs?, skipAfterHook?, writeResult?,
+// refuseDuring?, sayDuring?, deniedByOtherHook? }. deniedByOtherHook: another
+// PreToolUse hook (the person's own) refuses the call after ccx's has run, as a
+// permission rule or plan mode can, so no after-hook runs for it.
 if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
   const valueAfter = (flag) => {
     const i = args.indexOf(flag);
@@ -453,6 +457,24 @@ if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
       child.stdin.end(JSON.stringify(input));
     });
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** PostToolBatch has no matcher: every hook under it runs, after every batch. */
+  const batchHooks = () => {
+    const groups = readObject(path.join(configDir, 'settings.json')).hooks?.PostToolBatch;
+    return (Array.isArray(groups) ? groups : []).flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []));
+  };
+  const endBatch = async (call, toolResponse) => {
+    for (const hook of batchHooks()) {
+      await runHook(hook, {
+        session_id: sessionId,
+        transcript_path: transcript,
+        cwd: process.cwd(),
+        hook_event_name: 'PostToolBatch',
+        tool_calls: [{ tool_name: 'Artifact', tool_input: call.input, tool_use_id: call.id, tool_response: toolResponse }],
+      });
+    }
+    // The next model request goes out the moment the batch hooks are done.
+    note({ type: 'model-request', id: call.id, marker: readMarker() });
+  };
   const makeCall = async (call) => {
     const base = {
       session_id: sessionId,
@@ -472,6 +494,13 @@ if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
         note({ type: 'artifact-denied', id: call.id, reason: decision.permissionDecisionReason, marker: readMarker() });
         return;
       }
+    }
+    if (call.deniedByOtherHook) {
+      const refusal = 'Blocked by the person\'s own hook.';
+      note({ type: 'artifact-denied-by-other', id: call.id, marker: readMarker() });
+      record({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: call.id, is_error: true, content: refusal }] } });
+      await endBatch(call, refusal);
+      return;
     }
     // The call itself: whichever login is in the folder now is the one it goes out as.
     note({ type: 'artifact-call', id: call.id, marker: readMarker() });
@@ -493,6 +522,8 @@ if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
     if (call.writeResult) {
       record({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: call.id, content: 'ok' }] } });
     }
+    // The account it went out as, right to its end.
+    note({ type: 'artifact-end', id: call.id, marker: readMarker() });
     if (!call.skipAfterHook) {
       const event = call.fail ? 'PostToolUseFailure' : 'PostToolUse';
       for (const hook of hooksFor(event)) {
@@ -505,6 +536,7 @@ if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
         const context = said?.hookSpecificOutput?.additionalContext;
         if (context) note({ type: 'artifact-context', id: call.id, context });
       }
+      await endBatch(call, call.fail ? 'the page could not be published' : (call.response ?? {}));
     }
     note({ type: 'artifact-over', id: call.id, marker: readMarker() });
   };

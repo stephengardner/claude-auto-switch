@@ -75,7 +75,13 @@ function installHooks(home: string): void {
   writeFileSync(
     path.join(home, '.claude', 'settings.json'),
     JSON.stringify({
-      hooks: { PreToolUse: [hook('pre')], PostToolUse: [hook('post')], PostToolUseFailure: [hook('fail')] },
+      hooks: {
+        PreToolUse: [hook('pre')],
+        PostToolUse: [hook('post')],
+        PostToolUseFailure: [hook('fail')],
+        // No matcher: Claude runs these after every batch of tool calls.
+        PostToolBatch: [{ hooks: [{ type: 'command', command: process.execPath, args: [tsx, hookEntry, 'batch'], timeout: 30 }] }],
+      },
     }),
     'utf8',
   );
@@ -136,6 +142,8 @@ interface Scene {
   home: string;
   runsLog: string;
   context: CliContext;
+  /** Each time ccx asked whether the session's login is in the Keychain, which it does only to tell Claude about it. */
+  keychainAsks: string[];
 }
 
 /** Accounts A and B signed in, the session starting on A, and one run of it making `calls`. */
@@ -174,7 +182,13 @@ async function scene(
       : {}),
   });
   const context = makeContext(home, options.verifyCap ?? (() => Promise.resolve('allowed')), options.holdMs);
-  if (options.loginInKeychain) context.loginInKeychain = () => true;
+  const keychainAsks: string[] = [];
+  if (options.loginInKeychain) {
+    context.loginInKeychain = (dir) => {
+      keychainAsks.push(dir);
+      return true;
+    };
+  }
   if (options.artifacts) {
     saveConfig({ artifacts: options.artifacts }, context.ctx);
     context.config = loadConfig(context.ctx);
@@ -189,7 +203,7 @@ async function scene(
     process.env.FAKE_CLAUDE_SET_STATE = JSON.stringify({ oauthAccount: { emailAddress: options.signedInAs } });
   }
   setActive('A', context.ctx);
-  return { home, runsLog, context };
+  return { home, runsLog, context, keychainAsks };
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -264,6 +278,89 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('page routing in a running se
       expect(of(entries(s.runsLog), 'artifact-call').map((e) => e.marker)).toEqual(['B']);
       const hops = readEvents(s.home, 200).filter((e) => e.kind === 'artifact-hop');
       expect(hops.map((e) => e.data?.loginIn)).toEqual(['keychain']);
+      expectNothingLeftBehind(s);
+    },
+  );
+
+  it(
+    'tells Claude to use its login even when the page belongs on the account the session is on',
+    { timeout: 120_000 },
+    async () => {
+      // Within half a minute of an ordinary in-place move, a session whose login is
+      // in the Keychain can still be sending as the account before it.
+      const s = await scene({
+        artifacts: { home: 'A' },
+        loginInKeychain: true,
+        calls: [{ afterMs: 1500, id: 'toolu_new', input: { file_path: PAGE }, response: RESPONSE }],
+      });
+      expect(await runCommand(s.context, [])).toBe(0);
+      const log = entries(s.runsLog);
+      expect(of(log, 'artifact-call').map((e) => e.marker)).toEqual(['A']);
+      expect(of(log, 'launch')).toHaveLength(1);
+      expect(s.keychainAsks.length).toBeGreaterThan(0);
+      expect(readPages(s.context.ctx)[0]?.owner).toBe('A');
+      expectNothingLeftBehind(s);
+    },
+  );
+
+  it(
+    'keeps the session on the account for two calls there at once, until the later one is over',
+    { timeout: 120_000 },
+    async () => {
+      // A background subagent's call and the main thread's, overlapping.
+      const s = await scene({
+        artifacts: { home: 'B' },
+        thenExitMs: 1500,
+        calls: [
+          { afterMs: 1500, id: 'toolu_first', input: { file_path: PAGE }, response: RESPONSE, takesMs: 2500 },
+          {
+            afterMs: 2500,
+            id: 'toolu_second',
+            input: { file_path: path.resolve('pages', 'second.html') },
+            response: {
+              url: 'https://claude.ai/artifact/second',
+              artifact_id: '6a1e0c2b-0000-4000-8000-000000000002',
+              title: 'Second',
+            },
+            takesMs: 3000,
+          },
+        ],
+      });
+      expect(await runCommand(s.context, [])).toBe(0);
+      const log = entries(s.runsLog);
+      expect(of(log, 'launch')).toHaveLength(1);
+      expect(of(log, 'artifact-call').map((e) => [e.id, e.marker])).toEqual([
+        ['toolu_first', 'B'],
+        ['toolu_second', 'B'],
+      ]);
+      // On B to the very end of each, though the first ended while the second was out.
+      expect(of(log, 'artifact-end').map((e) => [e.id, e.marker])).toEqual([
+        ['toolu_first', 'B'],
+        ['toolu_second', 'B'],
+      ]);
+      expect(of(log, 'reread').map((e) => e.marker)).toEqual(['A']);
+      expect(readPages(s.context.ctx).map((p) => p.owner)).toEqual(['B', 'B']);
+      expectNothingLeftBehind(s);
+    },
+  );
+
+  it(
+    'is back before the next model request when the person’s own hook refuses the call after ccx moved',
+    { timeout: 120_000 },
+    async () => {
+      const s = await scene({
+        artifacts: { home: 'B' },
+        holdMs: 60_000,
+        calls: [{ afterMs: 1500, id: 'toolu_new', input: { file_path: PAGE }, deniedByOtherHook: true }],
+      });
+      expect(await runCommand(s.context, [])).toBe(0);
+      const log = entries(s.runsLog);
+      // It was moved for the call, the call never ran, and no after-hook came.
+      expect(of(log, 'artifact-denied-by-other').map((e) => e.marker)).toEqual(['B']);
+      expect(of(log, 'artifact-call')).toEqual([]);
+      // Claude's next request goes out at once, on the session's own account.
+      expect(of(log, 'model-request').map((e) => e.marker)).toEqual(['A']);
+      expect(existsSync(recordPath(s.context.ctx))).toBe(false);
       expectNothingLeftBehind(s);
     },
   );

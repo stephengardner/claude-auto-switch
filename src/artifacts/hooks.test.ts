@@ -39,9 +39,13 @@ function home(): { ctx: PathCtx; file: string } {
 }
 
 describe('the Artifact hooks in the user settings', () => {
-  it('hooks the Artifact tool before, after, and after a failure, and nothing else', () => {
+  it('hooks the Artifact tool before, after, after a failure, and after each batch of calls, and nothing else', () => {
     const hooks = planArtifactHooks({}, true, PROGRAM).hooks as Hooks;
-    expect(Object.keys(hooks).sort()).toEqual(['PostToolUse', 'PostToolUseFailure', 'PreToolUse']);
+    expect(Object.keys(hooks).sort()).toEqual(['PostToolBatch', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse']);
+    // A batch event takes no matcher: Claude runs it after every batch.
+    expect(hooks.PostToolBatch).toHaveLength(1);
+    expect(hooks.PostToolBatch?.[0]?.matcher).toBeUndefined();
+    expect(hooks.PostToolBatch?.[0]?.hooks[0]).toMatchObject({ command: PROGRAM.node, args: [PROGRAM.entry, 'batch'] });
     for (const [event, word] of [
       ['PreToolUse', 'pre'],
       ['PostToolUse', 'post'],
@@ -93,6 +97,7 @@ describe('the Artifact hooks in the user settings', () => {
     const desktopProgram = { node: PROGRAM.node, entry: PROGRAM.entry.replace('artifacts', 'desktop') };
     const both = planArtifactHooks(planDesktopHooks({}, 'credits', desktopProgram), true, PROGRAM);
     expect(Object.keys(both.hooks as Hooks).sort()).toEqual([
+      'PostToolBatch',
       'PostToolUse',
       'PostToolUseFailure',
       'PreToolUse',

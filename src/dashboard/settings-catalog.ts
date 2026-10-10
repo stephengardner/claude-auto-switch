@@ -1,5 +1,6 @@
 import { ConfigSchema, type Config } from '../config/config.schema.js';
 import { checkResumePrompt } from '../session/resume-prompt.js';
+import { assertProfileName } from '../util/names.js';
 import {
   MODEL_CHOICES,
   modelPreferenceWords,
@@ -287,7 +288,7 @@ export const SETTINGS: readonly Setting[] = [
     help:
       'A page Claude publishes with its Artifact tool is private to the account that published it. With an ' +
       'account here, every new page goes out as that account, whatever account the session is on, and later ' +
-      'changes to it follow. Enter types an account name, or off.',
+      'changes to it follow. Enter types an account name, or off (so an account called "off" cannot be chosen).',
     applies: 'hooks',
     confirm: (next) =>
       `${
@@ -517,10 +518,14 @@ export function parseSetting(setting: Setting, text: string): unknown {
       return chain;
     }
     case 'account': {
-      if (/^(off|none)$/i.test(typed)) return null;
-      // The letters an account name can have (accounts/registry.schema). Whether
-      // there is such an account is asked when it is saved.
-      if (!/^[A-Za-z0-9._-]+$/.test(typed) || typed.startsWith('.')) throw new Error('an account name, or off');
+      // Always off: an account called "off" cannot be chosen here.
+      if (/^off$/i.test(typed)) return null;
+      // Exactly the names an account can have. Whether there is one is asked when it is saved.
+      try {
+        assertProfileName(typed);
+      } catch {
+        throw new Error('an account name, or off');
+      }
       return typed;
     }
     default: {

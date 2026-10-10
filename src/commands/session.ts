@@ -1068,11 +1068,11 @@ export async function runInteractiveHotSwap(
   };
 
   /**
-   * Whether this Claude was started with a long-lived token in its
-   * environment (`ccx token`). It signs in with that whatever login is in the
-   * session's folder, so an in-place move changes nothing for it.
+   * The account whose long-lived token (`ccx token`) this Claude was started
+   * with, if any. It signs in with that whatever login is in the session's
+   * folder, so an in-place move changes nothing for it.
    */
-  let tokenInEnv = false;
+  let tokenAccount: string | null = null;
   /** Where the session's login lived at its last move for one Artifact call, for the log. */
   let visitLoginIn: 'file' | 'keychain' | null = null;
   /**
@@ -1122,21 +1122,29 @@ export async function runInteractiveHotSwap(
       };
     },
     activate: (account) => activate(account, { temporary: true }),
-    standing: () => {
-      if (tokenInEnv) {
+    // Claude may be up to 30 seconds behind an ordinary move: tell it to use
+    // the login in its folder before a call that counts on it.
+    pin: () => {
+      visitLoginIn = signalLoginChange(
+        sessionDir,
+        context.loginInKeychain ? { keychainHolds: context.loginInKeychain } : {},
+      );
+    },
+    standing: (to) => {
+      if (tokenAccount !== null && to.name !== tokenAccount) {
         return {
           refuse:
-            'this session signs in with a long-lived token (ccx token), which cannot be changed under a ' +
-            'running Claude, so it cannot be moved to another account for one call and nothing was sent',
+            `this session signs in with the long-lived token of "${tokenAccount}" (ccx token), which cannot be ` +
+            `changed under a running Claude, so it cannot send a call as "${to.name}" and nothing was sent`,
         };
       }
-      // Signed in as somebody else from inside (/login): that login is in this
-      // folder and nowhere else, and a move away would be the end of it.
+      // Signed in as somebody else from inside (/login): ccx cannot vouch for
+      // the login in this folder, and a move away would be the end of it.
       if (resolveSessionIdentity({ sessionDir, believed: current, accounts }).mismatch) {
         return {
           refuse:
             `this session was signed in as a different account from inside (/login) than "${current?.name ?? ''}", ` +
-            'the one ccx started it on, and moving it for one call would lose that login, so nothing was sent',
+            'the one ccx started it on, so ccx cannot vouch for which account a call goes out as, and nothing was sent',
         };
       }
       // Bounded, so a confirmed limit nothing acts on cannot hold visits back for the rest of the run.
@@ -1605,7 +1613,7 @@ export async function runInteractiveHotSwap(
       }
       nextStartTargeted = false;
       const token = readToken(account.dir);
-      tokenInEnv = token !== null;
+      tokenAccount = token !== null ? account.name : null;
       const env: Record<string, string> = token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
       // Watch for an operator-requested switch to a DIFFERENT, usable account.
       // Seamless (default) swaps credentials under the running process; 'restart'

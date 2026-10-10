@@ -17,7 +17,7 @@ import { writeFileAtomic } from '../util/atomic-write.js';
 
 /** Written by a ccx that answers these requests. A hook that finds none is in a session of an older ccx. */
 const READY = 'ready.json';
-export const HOP_PROTOCOL = 1;
+export const HOP_PROTOCOL = 2;
 
 export interface HopAsk {
   id: string;
@@ -38,7 +38,9 @@ export type HopEnd =
   /** Nothing said it was over, and its time ran out. */
   | 'deadline'
   /** Claude itself ended. */
-  | 'child-exit';
+  | 'child-exit'
+  /** Something else moved the session (a limit, a switch) while the call was out. */
+  | 'moved';
 
 export type HopState =
   /** The session is on `to`, and stays until the call is over. `moved` is false when it was there already. */
@@ -124,6 +126,11 @@ export function readAsks(sessionDir: string): HopAsk[] {
   return asks.sort((a, b) => a.at - b.at);
 }
 
+/** Forget every request waiting: the Claude that made them has ended. */
+export function dropAsks(sessionDir: string): void {
+  for (const ask of readAsks(sessionDir)) clearCall(sessionDir, ask.id);
+}
+
 export function removeAsk(sessionDir: string, id: string): void {
   rmSync(askFile(sessionDir, id), { force: true });
 }
@@ -143,7 +150,7 @@ export function readState(sessionDir: string, id: string): HopState | null {
     return { id, state: 'applied', to: raw.to, from: raw.from, at: raw.at, moved: raw.moved !== false };
   }
   if (raw.state === 'ended' && typeof raw.endedAt === 'number') {
-    const by = raw.by === 'done' || raw.by === 'result' || raw.by === 'child-exit' ? raw.by : 'deadline';
+    const by = raw.by === 'done' || raw.by === 'result' || raw.by === 'child-exit' || raw.by === 'moved' ? raw.by : 'deadline';
     return { id, state: 'ended', to: raw.to, from: raw.from, at: raw.at, endedAt: raw.endedAt, by };
   }
   return null;
@@ -180,7 +187,9 @@ export function clearCall(sessionDir: string, id: string): void {
 
 /**
  * Whether the session was away at any time since `since`: a move still held,
- * or one that ended at or after it. `except` leaves one call's own move out.
+ * or one that ended at or after it. A hold that kept the session where it was
+ * counts only when something else moved it. `except` leaves one call's own
+ * move out.
  */
 export function awaySince(sessionDir: string, since: number, except: string | null = null): boolean {
   let names: string[];
@@ -195,10 +204,15 @@ export function awaySince(sessionDir: string, since: number, except: string | nu
     if (id === except) continue;
     const state = readState(sessionDir, id);
     if (state?.state === 'applied' && state.moved) return true;
-    if (state?.state === 'ended' && state.endedAt >= since) return true;
+    if (state?.state === 'ended' && state.endedAt >= since && (state.from !== state.to || state.by === 'moved')) {
+      return true;
+    }
   }
   return false;
 }
+
+/** A mark that says a note was given once in this session, kept for the session's life. */
+export const NOTE_PREFIX = 'note-';
 
 /** Remove answers and marks nothing will read again: those older than `maxAgeMs`. */
 export function sweepHops(sessionDir: string, now: number, maxAgeMs: number): void {
@@ -209,7 +223,7 @@ export function sweepHops(sessionDir: string, now: number, maxAgeMs: number): vo
     return;
   }
   for (const name of names) {
-    if (name === READY || name.endsWith('.ask.json')) continue;
+    if (name === READY || name.endsWith('.ask.json') || name.startsWith(NOTE_PREFIX)) continue;
     const file = path.join(hopDir(sessionDir), name);
     try {
       if (now - statSync(file).mtimeMs > maxAgeMs) rmSync(file, { force: true });

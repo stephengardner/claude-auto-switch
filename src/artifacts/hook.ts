@@ -14,11 +14,12 @@ import {
   hopId,
   hopsOpen,
   markDone,
+  NOTE_PREFIX,
   readState,
   writeAsk,
   type HopState,
 } from './hop-files.js';
-import { appendPage, pageKey, readPages } from './record.js';
+import { appendPage, findPage, pageKey, readPages, recordDeletion } from './record.js';
 import { decideRoute, readCall, routingOn, type RoutingSettings } from './route.js';
 import { claimTurn, listedPages, turnOf, writeResult } from './scan.js';
 
@@ -26,13 +27,14 @@ import { claimTurn, listedPages, turnOf, writeResult } from './scan.js';
  * What ccx's hooks on Claude's Artifact tool do, in a ccx session with page
  * routing on.
  *
- * Before a call: work out which account it belongs on, and when that is not
- * the one the session is on, ask the ccx process that owns the session to put
- * it there for the length of the call. The call goes ahead only once that
- * process says the session is there; otherwise it is refused with the reason,
- * so a page never lands on the wrong account in silence. After a call: say it
- * is over, wait until the session is back, and write down which account a
- * published page went out as.
+ * Before a call: work out which account it belongs on, and ask the ccx process
+ * that owns the session to hold the session there for the length of the call,
+ * moving it first when it is elsewhere. The call goes ahead only once that
+ * process says it holds it there; otherwise it is refused with the reason, so
+ * a page never lands on the wrong account in silence. After a call, and after
+ * each batch of calls: say they are over, wait until the session is back, and
+ * write down which account a published page went out as, or that a page was
+ * deleted.
  *
  * The hook moves no login and reads none. It never approves a call either:
  * with nothing to refuse it says nothing, and Claude asks the person whatever
@@ -52,6 +54,8 @@ export interface HookInput {
   duration_ms?: unknown;
   /** After a failure: what went wrong. */
   error?: unknown;
+  /** After a batch: every call in it, refused ones included. */
+  tool_calls?: unknown;
 }
 
 export interface HookEnv {
@@ -59,7 +63,7 @@ export interface HookEnv {
   sessionDir: string;
   ctx: PathCtx;
   now?: () => number;
-  /** How long the hook waits for the session to be moved, and to be put back. */
+  /** How long the hook waits for the session to be held, and to be put back. */
   applyWaitMs?: number;
   returnWaitMs?: number;
   pollMs?: number;
@@ -128,11 +132,15 @@ function signedInAs(env: HookEnv, announced: string, accounts: Account[]): strin
   return identity.mismatch ? (identity.actual?.name ?? null) : announced;
 }
 
-/** Say something once per page in this session: the mark is a file in the session's folder. */
-function firstTime(env: HookEnv, what: string): boolean {
+/**
+ * True the first time `mark` is asked for in this session. The mark is a
+ * file in the session's folder: a note (NOTE_PREFIX) is kept for the
+ * session's life, anything else for ten minutes.
+ */
+function firstTime(env: HookEnv, mark: string): boolean {
   try {
     mkdirSync(hopDir(env.sessionDir), { recursive: true });
-    writeFileSync(path.join(hopDir(env.sessionDir), `said-${what}`), '', { flag: 'wx' });
+    writeFileSync(path.join(hopDir(env.sessionDir), mark), '', { flag: 'wx' });
     return true;
   } catch {
     return false;
@@ -140,15 +148,15 @@ function firstTime(env: HookEnv, what: string): boolean {
 }
 
 /**
- * Have the session put on `to` for this call. Null once it is there, and
- * otherwise why not, in words for whoever made the call: nothing was sent.
+ * Have the session held on `to` for this call. Null once it is, and otherwise
+ * why not, in words for whoever made the call: nothing was sent.
  */
 async function visit(input: HookInput, env: HookEnv, to: string): Promise<string | null> {
   const now = env.now ?? (() => Date.now());
   if (!hopsOpen(env.sessionDir)) {
     return (
       `ccx: this call belongs on "${to}", and this session was started by a ccx from before it could ` +
-      'be moved there for one call, so nothing was sent. Ask the person to quit this session and start it ' +
+      'hold it there for one call, so nothing was sent. Ask the person to quit this session and start it ' +
       'again (claude --resume picks the conversation up).'
     );
   }
@@ -173,10 +181,10 @@ async function visit(input: HookInput, env: HookEnv, to: string): Promise<string
   const state = await waitForState(env, id, (s) => s !== null, waitMs);
   if (state?.state === 'applied') return null;
   if (state?.state === 'refused') return `ccx: ${state.reason}`;
-  // Not answered. Left as given up on, so a move made late is undone at once.
+  // Not answered. Left as given up on, so a hold made late is undone at once.
   markDone(env.sessionDir, id);
   return (
-    `ccx: this call belongs on "${to}", and the session was not moved there within ` +
+    `ccx: this call belongs on "${to}", and the session was not held there within ` +
     `${Math.round(waitMs / 1000)} seconds, so nothing was sent. Try the call again.`
   );
 }
@@ -184,42 +192,45 @@ async function visit(input: HookInput, env: HookEnv, to: string): Promise<string
 export async function beforeArtifactCall(input: HookInput, env: HookEnv): Promise<HookAnswer> {
   if (input.tool_name !== 'Artifact') return null;
   if (env.scanDir) return beforeScanCall(input, env, env.scanDir);
-  let settings: RoutingSettings;
-  try {
-    settings = settingsOf(env.ctx);
-  } catch {
-    return null; // a config that does not load says nothing about pages; ccx itself reports it
-  }
-  if (!routingOn(settings)) return null;
   const lease = sessionLease(env.sessionDir, env.ctx, env.leaseOptions);
   if (!lease) return null;
   const call = readCall(input.tool_input, word(input.cwd));
-  if (call.action !== 'publish' && call.action !== 'read') return null;
+  if (call.kind === 'other') return null;
+
+  let settings: RoutingSettings;
+  try {
+    settings = settingsOf(env.ctx);
+  } catch (error) {
+    // Whether this call is routed is in that file, and the hooks are only there while it was.
+    return {
+      deny:
+        `ccx: its config.json does not load (${(error as Error).message.split('\n')[0]}), so it cannot tell which ` +
+        'account this call belongs on, and nothing was sent. Ask the person to run: ccx doctor',
+    };
+  }
+  if (!routingOn(settings)) return null;
 
   try {
     const accounts = listAccounts(env.ctx);
-    const account = signedInAs(env, lease.account, accounts);
     const route = decideRoute({
       call,
       settings,
-      // No account ccx knows: nothing is "already there", and the move is refused by the session's ccx.
-      sessionAccount: account ?? '',
       sessionId: word(input.session_id),
       pages: readPages(env.ctx),
       registered: (name) => accounts.some((a) => a.name === name),
     });
-    if (route.kind === 'none' || route.kind === 'stay') return null;
+    if (route.kind === 'none') return null;
     if (route.kind === 'refuse') return { deny: `ccx: ${route.reason}` };
     if (route.kind === 'unknown-owner') {
-      if (!firstTime(env, pageKey(route.url) ?? 'page')) return null;
+      if (!firstTime(env, `${NOTE_PREFIX}${pageKey(route.url) ?? 'page'}`)) return null;
+      const account = signedInAs(env, lease.account, accounts) ?? lease.account;
       return {
         context:
-          `ccx: nothing records which account owns ${route.url}, so this call goes out as "${account ?? lease.account}", ` +
+          `ccx: nothing records which account owns ${route.url}, so this call goes out as "${account}", ` +
           'the account this session is on, and fails if the page belongs to another one. ' +
           '"ccx artifacts scan" records the owner of every existing page.',
       };
     }
-
     const refused = await visit(input, env, route.to);
     return refused === null ? null : { deny: refused };
   } catch (error) {
@@ -229,18 +240,25 @@ export async function beforeArtifactCall(input: HookInput, env: HookEnv): Promis
   }
 }
 
+/** Say this call is over, and wait for the session to be back if it held it. The state as the call ended. */
+async function releaseCall(env: HookEnv, id: string | null): Promise<HopState | null> {
+  // Read first: whether the session was held for the call when it ended.
+  const state = id ? readState(env.sessionDir, id) : null;
+  if (id && state?.state === 'applied') {
+    // Whatever the settings say now: a hold that was made is always released.
+    markDone(env.sessionDir, id);
+    await waitForState(env, id, (s) => s?.state === 'ended', env.returnWaitMs ?? RETURN_WAIT_MS);
+  }
+  return state;
+}
+
 export async function afterArtifactCall(input: HookInput, env: HookEnv, failed: boolean): Promise<HookAnswer> {
   if (input.tool_name !== 'Artifact') return null;
   const now = env.now ?? (() => Date.now());
   const id = hopId(input.tool_use_id);
-  // Read before anything else: whether the session was still away when the call ended.
-  const state = id ? readState(env.sessionDir, id) : null;
-  const heldTo = state?.state === 'applied' && state.moved ? state.to : null;
-  if (id && heldTo !== null) {
-    // Whatever the settings say now: a move that was made is always released.
-    markDone(env.sessionDir, id);
-    await waitForState(env, id, (s) => s?.state === 'ended', env.returnWaitMs ?? RETURN_WAIT_MS);
-  }
+  const state = await releaseCall(env, id);
+  const heldTo = state?.state === 'applied' ? state.to : null;
+  const moved = state?.state === 'applied' && state.moved;
 
   const call = readCall(input.tool_input, word(input.cwd));
   if (env.scanDir) {
@@ -248,7 +266,7 @@ export async function afterArtifactCall(input: HookInput, env: HookEnv, failed: 
     return null;
   }
   if (failed) {
-    if (heldTo === null || call.action !== 'publish' || call.url !== null) return null;
+    if (!moved || call.kind !== 'publish' || call.url !== null) return null;
     return {
       context:
         `ccx: this call was sent as "${heldTo}". If it was meant to update a page that exists, ` +
@@ -262,9 +280,17 @@ export async function afterArtifactCall(input: HookInput, env: HookEnv, failed: 
   } catch {
     return null;
   }
-  if (!routingOn(settings) || call.action !== 'publish') return null;
+  if (!routingOn(settings)) return null;
   const lease = sessionLease(env.sessionDir, env.ctx, env.leaseOptions);
   if (!lease) return null;
+  // Once per call, when the hook is installed in two places and so runs twice.
+  if (id && !firstTime(env, `once-${id}`)) return null;
+
+  if (call.kind === 'delete') {
+    if (call.url) recordDeletion(call.url, env.ctx, now());
+    return null;
+  }
+  if (call.kind !== 'publish') return null;
   const response =
     typeof input.tool_response === 'object' && input.tool_response !== null
       ? (input.tool_response as Record<string, unknown>)
@@ -272,15 +298,12 @@ export async function afterArtifactCall(input: HookInput, env: HookEnv, failed: 
   const url = word(response.url);
   if (pageKey(url) === null) return null;
 
-  // Once per call, when the hook is installed in two places and so runs twice.
-  if (id && !firstTime(env, `after-${id}`)) return null;
-
   let owner: string | null;
   if (heldTo !== null) {
     owner = heldTo;
   } else {
-    // The account the session is on, unless it was somewhere else for any
-    // part of the call: then nothing here can say which one sent it.
+    // Nothing held it: the account the session is on, unless it was somewhere
+    // else for any part of the call, when nothing here can say which one sent it.
     const ran = typeof input.duration_ms === 'number' && input.duration_ms >= 0 ? input.duration_ms : UNKNOWN_DURATION_MS;
     owner = awaySince(env.sessionDir, now() - ran - START_MARGIN_MS)
       ? null
@@ -306,17 +329,34 @@ export async function afterArtifactCall(input: HookInput, env: HookEnv, failed: 
   return {
     context:
       owner === null
-        ? `ccx: this page was meant to go out as "${meantFor}", and the session's move there ended while the call ` +
+        ? `ccx: this page was meant to go out as "${meantFor}", and the session's hold there ended while the call ` +
           'was running, so ccx cannot tell which account published it. "ccx artifacts scan" finds out.'
-        : `ccx: this page was meant to go out as "${meantFor}", but the session's move there had ended before the ` +
-          `call was sent (a move is held for two minutes at most), so it was published as "${owner}". ` +
+        : `ccx: this page was meant to go out as "${meantFor}", but the session's hold there had ended before the ` +
+          `call was sent (a hold lasts two minutes at most), so it was published as "${owner}". ` +
           `Publish it again as a new page to put it on "${meantFor}".`,
   };
 }
 
 /**
+ * After every batch of tool calls, before Claude's next model request: end the
+ * holds of this batch's Artifact calls, and wait for the session to be back. A
+ * call refused after the session was moved (by the person's own hook, a
+ * permission rule, plan mode) runs no after-hook of its own, and this is what
+ * keeps the next request from going out on the account it was moved to.
+ */
+export async function batchArtifactCalls(input: HookInput, env: HookEnv): Promise<HookAnswer> {
+  const calls = Array.isArray(input.tool_calls) ? (input.tool_calls as unknown[]) : [];
+  const ids = calls
+    .filter((c) => (c as { tool_name?: unknown } | null)?.tool_name === 'Artifact')
+    .map((c) => hopId((c as { tool_use_id?: unknown }).tool_use_id))
+    .filter((id): id is string => id !== null);
+  await Promise.all(ids.map((id) => releaseCall(env, id)));
+  return null;
+}
+
+/**
  * In the scan's own Claude: each `list` is given the next account to be
- * listed, and the session is moved there for it. Whatever the page settings
+ * listed, and the session is held there for it. Whatever the page settings
  * say, since the scan is how owners get recorded before they are turned on.
  */
 async function beforeScanCall(input: HookInput, env: HookEnv, scanDir: string): Promise<HookAnswer> {
@@ -333,7 +373,6 @@ async function beforeScanCall(input: HookInput, env: HookEnv, scanDir: string): 
   if (turn === 'no-answer') {
     return { deny: 'ccx: this call could not be given an account to list. Go on to the next call.' };
   }
-  if (turn.account === lease.account) return null;
   let refused: string | null;
   try {
     refused = await visit(input, env, turn.account);
@@ -363,7 +402,7 @@ function afterScanCall(input: HookInput, env: HookEnv, scanDir: string, heldTo: 
       ? signedInAs(env, lease.account, readAccounts(env.ctx))
       : null);
   const listed = listedPages(input.tool_response);
-  if (!firstTime(env, `after-${id as string}`)) return;
+  if (!firstTime(env, `once-${id as string}`)) return;
   if (answeredBy !== turn.account || listed === null) {
     writeResult(scanDir, turn.index, {
       account: turn.account,
@@ -371,7 +410,11 @@ function afterScanCall(input: HookInput, env: HookEnv, scanDir: string, heldTo: 
     });
     return;
   }
+  const known = readPages(env.ctx);
   for (const page of listed.pages) {
+    // Already recorded as this account's, under this title: a second scan adds nothing.
+    const recorded = findPage(known, page.url);
+    if (recorded && recorded.owner === turn.account && recorded.title === page.title) continue;
     appendPage(
       { url: page.url, id: null, title: page.title, owner: turn.account, session: null, file: null, at: now(), via: 'scan' },
       env.ctx,

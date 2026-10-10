@@ -4,10 +4,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   appendPage,
+  compactRecord,
   findPage,
   findRepublished,
   pageKey,
   readPages,
+  recordDeletion,
   recordPath,
   renamePageOwner,
   type PageRow,
@@ -67,6 +69,7 @@ describe('recording published pages', () => {
         firstAt: 1_000,
         at: 1_000,
         via: 'publish',
+        deleted: false,
         sources: [{ session: 'e7a0c0de-0000-4000-8000-000000000001', file: '/work/pages/shape-lab.html', at: 1_000 }],
       },
     ]);
@@ -206,5 +209,61 @@ describe('finding the page a call is about', () => {
       'BmhXcGdEGscNbm7Pk1YSPc',
     );
     expect(findRepublished(pages, 'another-session', '/elsewhere/copy.html')?.key).toBe('BmhXcGdEGscNbm7Pk1YSPc');
+  });
+});
+
+describe('a page that is deleted', () => {
+  it('is marked deleted, by either form of its link, and found by nothing that routes calls', () => {
+    const ctx = ctxOf();
+    appendPage(row(), ctx);
+    recordDeletion('https://claude.ai/code/artifact/573916ad-1115-45ad-965e-2c91f5276edb', ctx, 2_000);
+    const pages = readPages(ctx);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.deleted).toBe(true);
+    expect(findPage(pages, 'https://claude.ai/artifact/BmhXcGdEGscNbm7Pk1YSPc')).toBeNull();
+    expect(findRepublished(pages, 'e7a0c0de-0000-4000-8000-000000000001', '/work/pages/shape-lab.html')).toBeNull();
+  });
+
+  it('is back when a listing of its account shows it again', () => {
+    const ctx = ctxOf();
+    appendPage(row(), ctx);
+    recordDeletion('https://claude.ai/artifact/BmhXcGdEGscNbm7Pk1YSPc', ctx, 2_000);
+    appendPage(row({ via: 'scan', session: null, file: null, at: 3_000 }), ctx);
+    expect(readPages(ctx)[0]?.deleted).toBe(false);
+  });
+
+  it('records nothing for a link that is not a page', () => {
+    const ctx = ctxOf();
+    recordDeletion('https://example.com/x', ctx, 2_000);
+    expect(readPages(ctx)).toEqual([]);
+  });
+});
+
+describe('keeping the record small', () => {
+  it('folds it to what each page needs, leaving what is read from it exactly as it was', () => {
+    const ctx = ctxOf();
+    for (let i = 0; i < 40; i += 1) {
+      appendPage(row({ title: `Shape Lab ${i}`, at: 1_000 + i }), ctx);
+      appendPage(row({ url: 'https://claude.ai/artifact/second', id: null, session: 'other', file: '/b.html', at: 1_000 + i }), ctx);
+    }
+    appendPage(row({ url: 'https://claude.ai/artifact/gone', id: null, at: 5_000 }), ctx);
+    recordDeletion('https://claude.ai/artifact/gone', ctx, 6_000);
+    renamePageOwner('work', 'day-job', ctx, 7_000);
+    const before = readPages(ctx).filter((p) => !p.deleted);
+    const linesBefore = readFileSync(recordPath(ctx), 'utf8').trim().split('\n').length;
+    compactRecord(ctx);
+    const linesAfter = readFileSync(recordPath(ctx), 'utf8').trim().split('\n').length;
+    expect(linesBefore).toBe(83);
+    // One line per place each page was published from, and the deleted page gone.
+    expect(linesAfter).toBe(2);
+    expect(readPages(ctx)).toEqual(before);
+    expect(readPages(ctx).map((p) => p.owner)).toEqual(['day-job', 'day-job']);
+  });
+
+  it('folds by itself once the file passes its size, so the hooks never read a long one', () => {
+    const ctx = ctxOf();
+    for (let i = 0; i < 30; i += 1) appendPage(row({ title: 'x'.repeat(200), at: 1_000 + i }), ctx, { compactAtBytes: 2_000 });
+    expect(readFileSync(recordPath(ctx), 'utf8').trim().split('\n').length).toBeLessThan(10);
+    expect(readPages(ctx)).toHaveLength(1);
   });
 });

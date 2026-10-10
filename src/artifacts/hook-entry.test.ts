@@ -62,6 +62,7 @@ function routedSession(readiness: 'ready' | 'no-login' = 'ready') {
       on = account.name;
       moves.push(account.name);
     },
+    pin: () => {},
     standing: () => 'free',
     log: () => {},
   });

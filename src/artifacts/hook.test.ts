@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { addAccount, updateAccount } from '../accounts/registry.js';
@@ -8,8 +8,8 @@ import type { PathCtx } from '../config/paths.js';
 import { releaseLease, takeLease } from '../session/lease.js';
 import { sessionLease } from '../session/session-lease.js';
 import { createHopController, type HopDeps } from './hop.js';
-import { hopDir, openHops, readState, writeState } from './hop-files.js';
-import { afterArtifactCall, beforeArtifactCall, type HookEnv, type HookInput } from './hook.js';
+import { hopDir, markDone, openHops, readState, sweepHops, writeState } from './hop-files.js';
+import { afterArtifactCall, batchArtifactCalls, beforeArtifactCall, type HookEnv, type HookInput } from './hook.js';
 import { appendPage, readPages, recordPath, type PageRow } from './record.js';
 import { readResults, writePlan } from './scan.js';
 
@@ -51,6 +51,8 @@ function setup(artifacts: { home?: string | null; updates?: 'off' | 'owner' } = 
   const env: HookEnv = { sessionDir, ctx, applyWaitMs: 400, returnWaitMs: 400, pollMs: 5 };
 
   const moves: string[] = [];
+  /** Each time the session's ccx told Claude to use the login already in its folder. */
+  const pins: string[] = [];
   /** The session's ccx: a real controller, moving the session by its announcement. */
   const wrapper = (over: Partial<HopDeps<Acct>> = {}) => {
     let on = 'work';
@@ -65,6 +67,9 @@ function setup(artifacts: { home?: string | null; updates?: 'off' | 'owner' } = 
         releaseLease(on, ctx);
         on = account.name;
         moves.push(account.name);
+      },
+      pin: (account) => {
+        pins.push(account.name);
       },
       standing: () => 'free',
       log: () => {},
@@ -92,7 +97,7 @@ function setup(artifacts: { home?: string | null; updates?: 'off' | 'owner' } = 
       { url: URL, id: RESPONSE.artifact_id, title: 'Shape Lab', owner: 'personal', session: SESSION, file: FILE, at: 1, via: 'publish', ...over },
       ctx,
     );
-  return { home, ctx, env, sessionDir, moves, wrapper, on, call, record };
+  return { home, ctx, env, sessionDir, moves, pins, wrapper, on, call, record };
 }
 
 describe('before an Artifact call', () => {
@@ -132,12 +137,28 @@ describe('before an Artifact call', () => {
     expect(s.on()).toBe('home');
   });
 
-  it('asks for nothing when the session is on the home account already', async () => {
+  it('still asks when the session is on the home account already: no move, but a hold and a word to Claude', async () => {
     const s = setup({ home: 'work' });
     s.wrapper();
     expect(await beforeArtifactCall(s.call({ file_path: FILE }), s.env)).toBeNull();
     expect(s.moves).toEqual([]);
-    expect(readdirSync(hopDir(s.sessionDir))).toEqual(['ready.json']);
+    expect(s.pins).toEqual(['work']);
+    expect(readState(s.sessionDir, 'toolu_01')).toMatchObject({ state: 'applied', moved: false, to: 'work' });
+  });
+
+  it('asks again for a call on the account the session is visiting, rather than taking the visit as proof', async () => {
+    const s = setup({ home: 'home' });
+    s.wrapper();
+    await beforeArtifactCall(s.call({ file_path: FILE }, 'toolu_01'), s.env);
+    expect(s.on()).toBe('home');
+    // The first call's after-hook has not come, so the visit could end at any moment.
+    await beforeArtifactCall(s.call({ file_path: path.resolve('pages', 'other.html') }, 'toolu_02'), s.env);
+    expect(readState(s.sessionDir, 'toolu_02')).toMatchObject({ state: 'applied', moved: true, to: 'home' });
+    // The first call over: the session stays for the second.
+    markDone(s.sessionDir, 'toolu_01');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(s.on()).toBe('home');
+    expect(s.moves).toEqual(['home']);
   });
 
   it('moves it to the owner for an update that names its page', async () => {
@@ -164,12 +185,13 @@ describe('before an Artifact call', () => {
     expect(s.moves).toEqual(['personal']);
   });
 
-  it('asks for nothing when this session is on the account that owns the page', async () => {
+  it('holds the session where it is when it is on the account that owns the page', async () => {
     const s = setup({ updates: 'owner' });
     s.wrapper();
     s.record({ owner: 'work' });
     expect(await beforeArtifactCall(s.call({ file_path: FILE, url: URL }), s.env)).toBeNull();
     expect(s.moves).toEqual([]);
+    expect(s.pins).toEqual(['work']);
   });
 
   it('lets an update to a page of unknown owner through unchanged, and says once how to record owners', async () => {
@@ -180,16 +202,31 @@ describe('before an Artifact call', () => {
     expect(first && 'context' in first && first.context).toContain('"work"');
     expect(await beforeArtifactCall(s.call({ file_path: FILE, url: URL }, 'toolu_02'), s.env)).toBeNull();
     expect(s.moves).toEqual([]);
+    // Once for the session, not once per sweep of old answers.
+    sweepHops(s.sessionDir, Date.now() + 11 * 60_000, 10 * 60_000);
+    expect(await beforeArtifactCall(s.call({ file_path: FILE, url: URL }, 'toolu_03'), s.env)).toBeNull();
   });
 
-  it('leaves listing, deleting and the rest alone', async () => {
+  it('leaves listing, opening, pinning and the rest alone', async () => {
     const s = setup({ home: 'home', updates: 'owner' });
     s.wrapper();
     s.record();
-    for (const action of ['list', 'delete', 'open', 'pin', 'quickstart']) {
+    for (const action of ['list', 'open', 'pin', 'quickstart', 'run_script', 'teleport']) {
       expect(await beforeArtifactCall(s.call({ action, url: URL }), s.env), action).toBeNull();
     }
     expect(s.moves).toEqual([]);
+    expect(s.pins).toEqual([]);
+  });
+
+  it('sends an asset upload, in either spelling, to the page’s owner', async () => {
+    const s = setup({ updates: 'owner' });
+    s.wrapper();
+    s.record();
+    const logo = path.resolve('logo.png');
+    await beforeArtifactCall(s.call({ action: 'upload_asset', url: URL, file_path: logo }, 'toolu_01'), s.env);
+    await batchArtifactCalls({ tool_calls: [{ tool_name: 'Artifact', tool_use_id: 'toolu_01' }] }, s.env);
+    await beforeArtifactCall(s.call({ url: URL, file_path: logo, asset: true }, 'toolu_02'), s.env);
+    expect(s.moves).toEqual(['personal', 'work', 'personal']);
   });
 
   it('refuses the call when the home account is not an account, rather than publish where the session is', async () => {
@@ -231,13 +268,24 @@ describe('before an Artifact call', () => {
     expect(existsSync(hopDir(s.sessionDir))).toBe(false);
   });
 
-  it('refuses the call when the settings cannot be read in a session that was being routed', async () => {
+  it('refuses the call when the account list cannot be read in a session that was being routed', async () => {
     const s = setup({ home: 'home' });
     s.wrapper();
     writeFileSync(path.join(s.home, 'accounts.json'), '{ not json', 'utf8');
     const answer = await beforeArtifactCall(s.call({ file_path: FILE }), s.env);
     expect(answer && 'deny' in answer && answer.deny).toContain('ccx could not work out');
     expect(s.moves).toEqual([]);
+  });
+
+  it('refuses a page call when the config does not load, rather than let it go wherever the session is', async () => {
+    const s = setup({ home: 'home' });
+    s.wrapper();
+    writeFileSync(path.join(s.home, 'config.json'), '{ "artifacts": ', 'utf8');
+    const answer = await beforeArtifactCall(s.call({ file_path: FILE }), s.env);
+    expect(answer && 'deny' in answer && answer.deny).toContain('config.json');
+    expect(s.moves).toEqual([]);
+    // A call no setting could ever route is not held up by it.
+    expect(await beforeArtifactCall(s.call({ action: 'list' }, 'toolu_02'), s.env)).toBeNull();
   });
 });
 
@@ -277,6 +325,21 @@ describe('after an Artifact call', () => {
     await beforeArtifactCall(s.call({ file_path: FILE }), s.env);
     await after(s, { file_path: FILE });
     expect(readPages(s.ctx)[0]).toMatchObject({ owner: 'work', file: FILE });
+  });
+
+  it('takes a hold that kept the session where it was as no time away, unless something else moved it', async () => {
+    const s = setup({ updates: 'owner' });
+    const now = Date.now();
+    const held = { state: 'ended', to: 'work', from: 'work', at: now - 1_000, endedAt: now - 500 } as const;
+    writeState(s.sessionDir, { id: 'toolu_held', ...held, by: 'done' });
+    await after(s, { file_path: FILE });
+    expect(readPages(s.ctx)[0]?.owner).toBe('work');
+    writeState(s.sessionDir, { id: 'toolu_held', ...held, by: 'moved' });
+    await after(s, { file_path: path.resolve('pages', 'other.html') }, {
+      tool_use_id: 'toolu_02',
+      tool_response: { ...RESPONSE, url: 'https://claude.ai/artifact/other', artifact_id: 'other' },
+    });
+    expect(readPages(s.ctx)[1]?.owner).toBeNull();
   });
 
   it('records nothing with both settings off', async () => {
@@ -386,23 +449,21 @@ describe('a session signed in as another account from inside (/login)', () => {
       false,
     );
 
-  it('is taken for the account it is really on: no move when the page belongs there, and the page recorded as its', async () => {
-    const s = setup({ home: 'personal' });
-    s.wrapper();
+  it('records a page nothing routed as the account it is really signed in as', async () => {
+    // Only updates are routed, and this is a new page: it goes where the session is.
+    const s = setup({ updates: 'owner' });
     signedInFromInside(s, 'personal@example.com');
     expect(await beforeArtifactCall(s.call({ file_path: FILE }), s.env)).toBeNull();
-    expect(s.moves).toEqual([]);
     await published(s);
     expect(readPages(s.ctx)[0]?.owner).toBe('personal');
   });
 
-  it('asks to be moved when the page belongs on the account ccx started it on, which it is not on', async () => {
-    const s = setup({ home: 'work' });
+  it('asks the session’s ccx for every routed call, which is the one that can refuse it', async () => {
+    const s = setup({ home: 'personal' });
     s.wrapper();
     signedInFromInside(s, 'personal@example.com');
     await beforeArtifactCall(s.call({ file_path: FILE }), s.env);
-    // Asked of the session's ccx, which is the one that refuses it (it would lose the login).
-    expect(readState(s.sessionDir, 'toolu_01')).toMatchObject({ to: 'work' });
+    expect(readState(s.sessionDir, 'toolu_01')).toMatchObject({ to: 'personal' });
   });
 
   it('records no owner when it is signed in as an account ccx does not know', async () => {
@@ -436,6 +497,60 @@ describe('after an Artifact call that failed', () => {
     expect(
       await afterArtifactCall({ ...s.call({ file_path: FILE }), error: 'not found' }, s.env, true),
     ).toBeNull();
+  });
+});
+
+describe('a page that is deleted', () => {
+  it('is recorded as deleted once the delete went through, so publishing its file again makes a new page', async () => {
+    const s = setup({ home: 'home', updates: 'owner' });
+    s.wrapper();
+    s.record();
+    await beforeArtifactCall(s.call({ action: 'delete', url: URL }), s.env);
+    expect(s.moves).toEqual(['personal']);
+    await afterArtifactCall({ ...s.call({ action: 'delete', url: URL }), tool_response: { deleted: true } }, s.env, false);
+    expect(readPages(s.ctx)[0]?.deleted).toBe(true);
+    await beforeArtifactCall(s.call({ file_path: FILE }, 'toolu_02'), s.env);
+    expect(readState(s.sessionDir, 'toolu_02')).toMatchObject({ to: 'home' });
+  });
+
+  it('is not recorded as deleted when the delete failed', async () => {
+    const s = setup({ updates: 'owner' });
+    s.wrapper();
+    s.record();
+    await beforeArtifactCall(s.call({ action: 'delete', url: URL }), s.env);
+    await afterArtifactCall({ ...s.call({ action: 'delete', url: URL }), error: 'not found' }, s.env, true);
+    expect(readPages(s.ctx)[0]?.deleted).toBe(false);
+  });
+});
+
+describe('after the batch of calls a Claude turn made', () => {
+  const batch = (s: ReturnType<typeof setup>, calls: Array<{ tool_name: string; id: string }>) =>
+    batchArtifactCalls(
+      {
+        hook_event_name: 'PostToolBatch',
+        session_id: SESSION,
+        tool_calls: calls.map((c) => ({ tool_name: c.tool_name, tool_input: { file_path: FILE }, tool_use_id: c.id })),
+      },
+      s.env,
+    );
+
+  it('puts the session back for a call no other hook said was over: one refused by the person’s own hook', async () => {
+    const s = setup({ home: 'home' });
+    s.wrapper();
+    await beforeArtifactCall(s.call({ file_path: FILE }), s.env);
+    expect(s.on()).toBe('home');
+    await batch(s, [{ tool_name: 'Artifact', id: 'toolu_01' }]);
+    // Back before Claude's next model request, which goes out the moment this returns.
+    expect(s.on()).toBe('work');
+    expect(readState(s.sessionDir, 'toolu_01')).toMatchObject({ state: 'ended', by: 'done' });
+  });
+
+  it('does nothing for a batch with no call held by ccx in it', async () => {
+    const s = setup({ home: 'home' });
+    s.wrapper();
+    await batch(s, [{ tool_name: 'Bash', id: 'toolu_09' }, { tool_name: 'Artifact', id: 'toolu_10' }]);
+    expect(s.moves).toEqual([]);
+    expect(existsSync(path.join(hopDir(s.sessionDir), 'toolu_10.done'))).toBe(false);
   });
 });
 
@@ -514,12 +629,21 @@ describe('in the one Claude ccx artifacts scan runs', () => {
 
   it('records nothing for an answer that is not a list of pages, or when it cannot tell who answered', async () => {
     const s = scanning();
-    s.wrapper();
+    s.wrapper({ holdMs: 30 });
     await s.list('toolu_a', null);
-    // The session was away for another call while this one ran.
-    writeState(s.sessionDir, { id: 'toolu_other', state: 'ended', to: 'personal', from: 'work', at: Date.now() - 50, endedAt: Date.now(), by: 'done' });
     writePlan(s.scanDir, ['work', 'work']);
-    await s.list('toolu_z', ['Whose page']);
+    await beforeArtifactCall(s.call(LIST, 'toolu_z'), s.env);
+    // Its hold ran out before it was over, and the session was away for another call meanwhile.
+    for (let i = 0; i < 100 && readState(s.sessionDir, 'toolu_z')?.state !== 'ended'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(readState(s.sessionDir, 'toolu_z')).toMatchObject({ state: 'ended', by: 'deadline' });
+    writeState(s.sessionDir, { id: 'toolu_other', state: 'ended', to: 'personal', from: 'work', at: Date.now() - 50, endedAt: Date.now(), by: 'done' });
+    await afterArtifactCall(
+      { ...s.call(LIST, 'toolu_z'), hook_event_name: 'PostToolUse', tool_response: listed(['Whose page']), duration_ms: 150 },
+      s.env,
+      false,
+    );
     expect(readPages(s.ctx)).toEqual([]);
     const results = readResults(s.scanDir).map((r) => r.result);
     expect(results[0] && 'error' in results[0] && results[0].error).toContain('not a list');
@@ -537,5 +661,17 @@ describe('in the one Claude ccx artifacts scan runs', () => {
     expect(readPages(s.ctx)).toHaveLength(1);
     // The next call still gets the second account, not the third.
     expect(await s.list('toolu_b', [])).toBe('home');
+  });
+
+  it('adds nothing for a page already recorded as that account’s, so scanning again does not grow the record', async () => {
+    const s = scanning();
+    s.wrapper();
+    await s.list('toolu_a', ['Work page', 'Second page']);
+    const lines = (): number => readFileSync(recordPath(s.ctx), 'utf8').trim().split('\n').length;
+    expect(lines()).toBe(2);
+    writePlan(s.scanDir, ['work']);
+    rmSync(path.join(s.scanDir, 'turn-0'));
+    await s.list('toolu_again', ['Work page', 'Second page']);
+    expect(lines()).toBe(2);
   });
 });
