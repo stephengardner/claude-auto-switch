@@ -4,6 +4,63 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.4.0]
+
+### Changed
+
+- **An account running out no longer ends what a session has running.** When
+  an account hit its limit, ccx ended Claude and relaunched it on the next
+  account with the carry-on prompt, because a relaunch was the only way to
+  hand a session that prompt. Ending Claude ended every subagent, background
+  command, monitor and scheduled loop the session had started, and their
+  unfinished work was lost. ccx now replaces the login under the running
+  Claude and types the prompt into it. It types only when all of these hold:
+  half a minute has passed since the login was replaced (Claude 2.1.296 reads
+  a changed login file at its next request, and holds one read from the macOS
+  Keychain for 30 seconds); Claude's own record says it is at its prompt,
+  which it does not say during a turn, while a subagent runs or while a
+  dialog is open; and the input box is empty, meaning nobody has typed in
+  this Claude, or the last key pressed was the Enter that sent a prompt
+  Claude recorded. Once you press a key after the move, ccx leaves the
+  typing to you. A prompt that is refused although the new account has room
+  is typed once more after another wait. After a second refusal, or when the
+  prompt cannot be typed (a draft is in the box, a dialog stays open for a
+  minute, or this Claude keeps no record of what it is doing), ccx relaunches
+  as before, but only while Claude is at its prompt or behind a dialog, and
+  never while a subagent's record is still growing. A limit on one model, and
+  a next account whose login must be renewed first, still relaunch. A session
+  started with a long-lived token is relaunched too: Claude reads the token
+  and never the login in its folder, so replacing the login there moved
+  nothing.
+- **A session moved without a restart is told so.** The default prompt says
+  "This session was restarted", which would be false, and a session that
+  believes it starts again the agents that are still running. In place it is
+  told that it was moved, that what was running still is, and to run again
+  whatever a usage limit ended. A prompt you set (`resume.prompt`) or a
+  session armed (`ccx resume-prompt`) is typed as written. A run launched
+  with a prompt of its own is told as well; a relaunch could not tell it
+  anything, so it used to sit idle after a move.
+- **A subagent's limit message starts the move.** ccx ignored a refused turn
+  in a subagent, so a session waiting on background subagents watched them
+  fail one by one until its main thread made a request of its own. A
+  subagent's refusal now starts the same check and the same move in place,
+  and is still one limit for the account: one entry in the ledger, one line
+  in `ccx history`. It never ends Claude. When the session cannot be moved in
+  place, nothing happens until the main thread meets the limit itself, as
+  before.
+
+### Fixed
+
+- **A running session could drop out of `ccx sessions` for good.** A session
+  that could not refresh its lease for two minutes while its process stayed
+  alive, as when the machine sleeps, had the lease deleted by whatever read
+  the leases next, and never wrote another. Until it next changed account it
+  was missing from `ccx sessions`, `ccx use --session` could not name it, and
+  its login was not protected from being renewed underneath it. A reader now
+  removes only the lease of a process that is gone, and a session writes its
+  lease again at its next tick if the file is missing or unreadable, and says
+  so in `ccx history` (#111).
+
 ## [2.3.2]
 
 ### Fixed
