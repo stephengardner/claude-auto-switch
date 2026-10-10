@@ -95,9 +95,9 @@ function drivenBy(context: CliContext): Driven | null {
  * Never the active account: that is where new sessions start, and a move aimed
  * at one session leaves it alone, so it names the wrong account in every session
  * that has been moved. What ccx gave the session is in its announcement. A live
- * session can be left without one (an announcement untouched past its freshness
- * window is cleared by whoever reads next), and then the login in the folder,
- * which ccx stamps with the account's identity at every move, still says.
+ * session can be without one that counts (it has not ticked for longer than
+ * the freshness window, as after the machine slept), and then the login in the
+ * folder, which ccx stamps with the account's identity at every move, still says.
  */
 function sessionAccount(context: CliContext, dir: string): string | null {
   const announced = sessionLease(dir, context.ctx);

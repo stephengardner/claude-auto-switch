@@ -1,5 +1,14 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  existsSync,
+  rmSync,
+} from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +18,8 @@ import { runCommand } from '../../src/commands/run.js';
 import { setActive, getActive } from '../../src/state/active.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
 import { loadConfig } from '../../src/config/config.js';
-import { liveLeases } from '../../src/session/lease.js';
+import { liveLeases, leasePath } from '../../src/session/lease.js';
+import { saveToken } from '../../src/daemon/token-store.js';
 import type { CliContext } from '../../src/context.js';
 
 const fakeClaude = fileURLToPath(new URL('../fake-claude/fake-claude.mjs', import.meta.url));
@@ -38,9 +48,11 @@ async function waitFor<T>(
 }
 
 interface RunEntry {
-  type: 'launch' | 'reread';
+  type: 'launch' | 'reread' | 'status';
   args?: string[];
   marker: string | null;
+  oauthToken?: string | null;
+  status?: string;
 }
 
 type Verdict = 'limited' | 'allowed' | 'unknown';
@@ -175,6 +187,10 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     delete process.env.FAKE_CLAUDE_EMIT_CAP;
     delete process.env.FAKE_CLAUDE_CAP_EVERY_MS;
     delete process.env.FAKE_CLAUDE_NO_CONVERSATION;
+    delete process.env.FAKE_CLAUDE_SESSION_RECORD;
+    delete process.env.FAKE_CLAUDE_RESUMED_IDLE_MS;
+    delete process.env.FAKE_CLAUDE_STATUS;
+    delete process.env.FAKE_CLAUDE_STATUS_THEN;
   });
 
   it('replayed cap text is refuted by the API check: no false cap, no cascade', async () => {
@@ -259,8 +275,10 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
       calls += 1;
       return Promise.resolve(calls === 1 ? 'limited' : 'allowed');
     });
-    // In place only when nothing is to be said on coming back: carrying on
-    // needs a relaunch to deliver the prompt (resume-prompt.test covers that).
+    // With nothing to be told on coming back. With a carry-on prompt due, this
+    // fake cannot be typed into (it keeps no status), so it would be relaunched
+    // for the prompt: resume-prompt.test covers that, carry-on-in-place.test a
+    // Claude that can be typed into.
     context.config.resume.auto = false;
     await loginAccount(context, home, 'A');
     await loginAccount(context, home, 'B');
@@ -402,6 +420,91 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     expect(caps.map((c) => c.account)).toEqual(['A']);
   });
 
+  /**
+   * A switch the session cannot make in place, because Claude was started with
+   * a long-lived token (it reads that and never the login in its folder) or
+   * because the account asked for has only a token (there is no login to put
+   * there). It is made by a restart, and a restart ends whatever Claude is
+   * doing, so it waits until Claude is idle. The fake is busy for its first 3 s
+   * and then idle; ccx is told to count 0.3 s of idle as enough.
+   */
+  async function switchWhileBusy(options: {
+    tokenOn: 'A' | 'B';
+    /** By its own request, as an early move and `ccx use --session` ask, or broadcast, as plain `ccx use`. */
+    targeted: boolean;
+    /** Claude keeps no record of what it is doing. */
+    silent?: boolean;
+  }): Promise<RunEntry[]> {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-switch-busy-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    Object.assign(process.env, {
+      FAKE_CLAUDE_RUNS_LOG: runsLog,
+      FAKE_CLAUDE_SESSION_RECORD: '1',
+      FAKE_CLAUDE_IDLE_MS: options.silent ? '4000' : '9000',
+      FAKE_CLAUDE_RESUMED_IDLE_MS: '600',
+      ...(options.silent ? {} : { FAKE_CLAUDE_STATUS: 'busy', FAKE_CLAUDE_STATUS_THEN: '3000:idle' }),
+    });
+    const context = makeContext(home);
+    context.idleBeforeRestartMs = 300;
+    await loginAccount(context, home, 'A');
+    if (options.tokenOn === 'A') {
+      await loginAccount(context, home, 'B');
+      saveToken(path.join(home, 'profiles', 'A'), 'sk-ant-oat01-not-a-real-token');
+    } else {
+      const dirB = path.join(home, 'profiles', 'B');
+      await addCommand(context, 'B', { dir: dirB, login: false });
+      mkdirSync(dirB, { recursive: true });
+      saveToken(dirB, 'sk-ant-oat01-not-a-real-token');
+    }
+    setActive('A', context.ctx);
+
+    const running = runCommand(context, []);
+    await firstLaunch(runsLog);
+    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, options.targeted ? process.pid : undefined);
+    expect(await running).toBe(0);
+    return readRuns(runsLog);
+  }
+
+  /** The launches, the first Claude going idle, and each Claude ending by itself, in order. */
+  const lifeOf = (runs: RunEntry[]): string[] =>
+    runs.flatMap((r) => (r.type === 'launch' ? ['launch'] : r.type === 'status' ? [`status ${r.status}`] : r.type === 'reread' ? ['ended by itself'] : []));
+
+  it('waits for a token-launched Claude to be idle before restarting it for an early move', async () => {
+    // An early move asks by this session's own request; so does `ccx use --session`.
+    const runs = await switchWhileBusy({ tokenOn: 'A', targeted: true });
+    // Not ended while busy: it went idle first, and was restarted then, well
+    // before it would have ended by itself.
+    expect(lifeOf(runs)).toEqual(['launch', 'status idle', 'launch', 'ended by itself']);
+    const launches = runs.filter((r) => r.type === 'launch');
+    expect(launches.map((l) => [l.marker, l.oauthToken ?? null])).toEqual([
+      ['A', 'sk-ant-oat01-not-a-real-token'],
+      ['B', null],
+    ]);
+  });
+
+  it('waits for a token-launched Claude to be idle before restarting it for ccx use', async () => {
+    const runs = await switchWhileBusy({ tokenOn: 'A', targeted: false });
+    expect(lifeOf(runs)).toEqual(['launch', 'status idle', 'launch', 'ended by itself']);
+    expect(runs.filter((r) => r.type === 'launch').map((l) => l.marker)).toEqual(['A', 'B']);
+  });
+
+  it('waits for Claude to be idle before restarting it onto an account that has only a token', async () => {
+    // Swapped in place, the folder's login was removed under the running Claude.
+    const runs = await switchWhileBusy({ tokenOn: 'B', targeted: true });
+    expect(lifeOf(runs)).toEqual(['launch', 'status idle', 'launch', 'ended by itself']);
+    expect(
+      runs.filter((r) => r.type === 'launch').map((l) => [l.marker, l.oauthToken ?? null]),
+    ).toEqual([
+      ['A', null],
+      [null, 'sk-ant-oat01-not-a-real-token'],
+    ]);
+  });
+
+  it('never ends a Claude that does not say whether it is idle for such a switch', async () => {
+    const runs = await switchWhileBusy({ tokenOn: 'A', targeted: true, silent: true });
+    expect(lifeOf(runs)).toEqual(['launch', 'ended by itself']);
+  });
+
   it('seamless (default): swaps the credential file in place, no relaunch', async () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-seamless-'));
     const runsLog = path.join(home, 'runs.jsonl');
@@ -504,6 +607,59 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     expect(await running).toBe(0);
     // Released on the way out, so an idle account is not protected forever.
     expect(liveLeases(context.ctx)).toEqual([]);
+  });
+
+  it('announces again when its announcement is removed while it runs', async () => {
+    // A reader from ccx 2.3.2 or older removes the announcement of a session
+    // that could not tick for two minutes (the machine asleep), whether or not
+    // that session is still running. The session only ever refreshed a file
+    // that was there, so it stayed unlisted until it next changed account.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-lease-restore-'));
+    process.env.FAKE_CLAUDE_IDLE_MS = '4000';
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    setActive('A', context.ctx);
+
+    const running = runCommand(context, []);
+    const before = await waitFor(
+      'the session to announce account A',
+      () => liveLeases(context.ctx),
+      (leases) => leases.length === 1 && leases[0]?.account === 'A',
+    );
+    // The session runs in this process, so this is its own file.
+    rmSync(leasePath('A', context.ctx));
+
+    const after = await waitFor(
+      'the announcement to be written again',
+      () => liveLeases(context.ctx),
+      (leases) => leases.length === 1 && leases[0]?.account === 'A',
+      3000,
+    );
+    expect(after[0]).toMatchObject({ account: 'A', pid: process.pid, configDir: before[0]?.configDir });
+    expect(readFileSync(path.join(home, 'events.jsonl'), 'utf8')).toContain('was gone; written again');
+
+    expect(await running).toBe(0);
+    // Written again while it runs, and still given up when it ends.
+    expect(liveLeases(context.ctx)).toEqual([]);
+  });
+
+  it('clears the switch request left for a session that is gone', async () => {
+    // A session clears its own request as it ends, and a killed one never
+    // does. The file then sat there for good unless a later session happened
+    // to get the same pid. The next session to start clears it.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-request-sweep-'));
+    process.env.FAKE_CLAUDE_IDLE_MS = '300';
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    setActive('A', context.ctx);
+    const gone = spawnSync(process.execPath, ['-e', '']).pid;
+    writeSwitchRequest('A', Date.now(), 'seamless', context.ctx, gone);
+    // Another process that is running keeps its own.
+    writeSwitchRequest('A', Date.now(), 'seamless', context.ctx, process.ppid);
+
+    expect(await runCommand(context, [])).toBe(0);
+    expect(readdirSync(path.join(home, 'switch-requests'))).toEqual([`${process.ppid}.json`]);
   });
 
   it('ends with the login saved back and the announcement given up', async () => {

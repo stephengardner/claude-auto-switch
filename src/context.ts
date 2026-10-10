@@ -6,6 +6,8 @@ import type { ClaudeInvoker } from './invoker.js';
 import type { LimitVerdict } from './usage/limit-probe.js';
 import type { BlockedWatchOptions } from './launcher/blocked-watch.js';
 import type { NewerInstall } from './update/newer-install.js';
+import type { CarryOnTiming } from './launcher/carry-on.js';
+import type { ConfirmCapDeps } from './usage/confirm-cap.js';
 
 /** Everything a command needs: paths context, config, output sink, and flags. */
 export interface CliContext {
@@ -16,11 +18,28 @@ export interface CliContext {
   /** Injected in tests: overrides the API limit verification (usage/limit-probe). */
   verifyCap?: (renderedText: string) => Promise<LimitVerdict>;
   /**
+   * Injected in tests: stands in for the live usage request only, keeping
+   * what `verifyCap` replaces whole (which login is asked, and whose limit it
+   * turns out to be).
+   */
+  capProbe?: ConfirmCapDeps['probe'];
+  /**
    * Injected in tests: how quickly a session counts as blocked. Production uses
    * the defaults in blocked-watch (three walls over two minutes), which no test
    * can wait for.
    */
   blockedWatch?: BlockedWatchOptions;
+  /**
+   * Injected in tests: how long each step of typing a carry-on prompt into a
+   * live session waits. Production uses the defaults in launcher/carry-on,
+   * half a minute and more, which no test can wait for.
+   */
+  carryOn?: Partial<CarryOnTiming>;
+  /**
+   * Injected in tests: how long Claude must be idle before ccx ends it for a
+   * newer ccx or a switch it cannot make in place. Production waits 20 s.
+   */
+  idleBeforeRestartMs?: number;
   /** Injected in tests: overrides the API lookup of who a stored login belongs to. */
   lookupOwner?: (dir: string) => Promise<string | null>;
   /** Injected in tests: a newer ccx installed under this one (update/newer-install). */
@@ -31,8 +50,6 @@ export interface CliContext {
    * minutes in artifacts/hop, which no test can wait for.
    */
   artifactHop?: { holdMs?: number };
-  /** Injected in tests: whether a folder's login lives in the macOS Keychain (accounts/login-change-signal). */
-  loginInKeychain?: (dir: string) => boolean;
   out: (message: string) => void;
   /** ccx's own status messages. MUST go to stderr so it never corrupts a run's stdout protocol. */
   err?: (message: string) => void;

@@ -23,6 +23,13 @@ import { configHome, type PathCtx } from '../config/paths.js';
  * behind, so a file only counts as live while its process still exists AND it has
  * been touched recently. Either test failing makes it ignorable, so a stale file
  * can never freeze renewals forever.
+ *
+ * Ignorable is not removable. A file that went quiet while its process still
+ * runs is a session that could not tick for a while (the machine asleep, the
+ * process stopped), and it counts again at its next tick. Only a file whose
+ * process is gone is removed, and a session whose file is missing writes it
+ * again (touchLease), because an older ccx still running here removes quiet
+ * files whatever their process is doing.
  */
 
 /** A file older than this is ignored even if some process still has its pid. */
@@ -109,20 +116,45 @@ export function takeLease(
 }
 
 /**
- * Say the session is still going.
+ * Say the session is still going, on `account`, reading from `configDir`.
  *
  * Only refreshes our OWN file. Touching another process's would keep its account
  * protected after it died, which is the failure this design is built to avoid.
+ *
+ * Returns true when the file had to be written again: it was missing, could
+ * not be read, or was ours and said something other than this account and
+ * folder. A session that only ever refreshed what was already there stayed
+ * unlisted for the rest of its run once anything removed or damaged its file.
  */
-export function touchLease(account: string, c: PathCtx = {}, options: LeaseOptions = {}): void {
+export function touchLease(
+  account: string,
+  configDir: string,
+  c: PathCtx = {},
+  options: LeaseOptions = {},
+): boolean {
   const now = options.now ?? (() => Date.now());
+  let raw: SessionLease | null = null;
   try {
-    const raw = JSON.parse(readFileSync(leasePath(account, c), 'utf8')) as SessionLease;
-    if (raw.pid !== process.pid) return;
+    const parsed = JSON.parse(readFileSync(leasePath(account, c), 'utf8')) as unknown;
+    if (typeof parsed === 'object' && parsed !== null) raw = parsed as SessionLease;
+  } catch {
+    /* missing, or cut short by a write that never finished */
+  }
+  if (raw === null) {
+    takeLease(account, configDir, c, options);
+    return true;
+  }
+  if (raw.pid !== process.pid) return false;
+  if (raw.account !== account || raw.configDir !== configDir) {
+    takeLease(account, configDir, c, options);
+    return true;
+  }
+  try {
     writeFileSync(leasePath(account, c), JSON.stringify({ ...raw, at: now() }), 'utf8');
   } catch {
-    /* nothing to touch */
+    /* best effort, as taking it is */
   }
+  return false;
 }
 
 /** Give up the announcement for `account`, if it is ours. */
@@ -140,7 +172,8 @@ export function releaseLease(account: string, c: PathCtx = {}): void {
  * Every account a running session is using right now.
  *
  * Files whose process is gone, or that have not been touched recently, are
- * ignored and cleaned up, so a crashed session cannot block renewals forever.
+ * ignored, so a crashed session cannot block renewals forever. Only the ones
+ * whose process is gone are removed.
  */
 export function liveLeases(c: PathCtx = {}, options: LeaseOptions = {}): SessionLease[] {
   const now = options.now ?? (() => Date.now());
@@ -171,10 +204,13 @@ export function liveLeases(c: PathCtx = {}, options: LeaseOptions = {}): Session
     // throws. A malformed lease is treated as no protection, same as an unreadable
     // one, and cleaned up if its process is gone.
     const validAccount = typeof lease.account === 'string' && lease.account.length > 0;
-    if (!validAccount || !fresh || !isAlive(lease.pid)) {
+    const alive = isAlive(lease.pid);
+    if (!validAccount || !fresh || !alive) {
       // Its own process is the only thing that could refresh it, and that is
       // gone, so the file is litter. Removing it keeps the folder from growing.
-      if (!fresh || !isAlive(lease.pid)) {
+      // A quiet file whose process still runs stays: that process refreshes it
+      // at its next tick, and until then it is only not counted.
+      if (!alive) {
         try {
           rmSync(file, { force: true });
         } catch {

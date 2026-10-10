@@ -43,13 +43,12 @@ semantic versioning.
   `CAS_ARTIFACTS_UPDATES` set the two for one session, where the hooks are
   installed.
 
-  On macOS a session's login moves into the Keychain once Claude saves it
-  itself, and Claude then goes on with the login it read for up to 30
-  seconds after a move, because a Keychain write changes no file it watches.
-  A move for one call also changes the time on the session's
-  `.credentials.json`, which Claude does watch. Measured: a read right after
-  the move went out as the old account without that, and as the new one
-  with it.
+  Claude can hold the login it read for up to 30 seconds after a move, so a
+  call already on its account changes the time on the session's
+  `.credentials.json` too, the signal every move in place gives since 2.5.2.
+  Measured on macOS with the login in the Keychain: a read right after a move
+  went out as the old account without that signal, and as the new one with
+  it.
 
 - **`ccx artifacts`** lists the pages ccx has recorded and the account that
   owns each, and **`ccx artifacts scan`** asks each signed-in account for the
@@ -66,6 +65,103 @@ semantic versioning.
   settings off, or name an account that is gone, and gives the `ccx config`
   line that fixes each. Renaming an account carries its pages and the setting
   with it.
+
+## [2.5.2]
+
+### Changed
+
+- **An account running out no longer ends what a session has running.** When
+  an account hit its limit, ccx ended Claude and relaunched it on the next
+  account with the carry-on prompt, because a relaunch was the only way to
+  hand a session that prompt. Ending Claude ended every subagent, background
+  command, monitor and scheduled loop the session had started, and their
+  unfinished work was lost. ccx now replaces the login under the running
+  Claude and types the prompt into it. It types only when all of these hold:
+  half a minute has passed since the login was replaced (Claude 2.1.296 reads
+  a changed login file at its next request, and holds one read from the macOS
+  Keychain for 30 seconds); Claude's own record says it is at its prompt,
+  which it does not say during a turn, while a subagent runs or while a
+  dialog is open; and the input box is empty, meaning nobody has typed in
+  this Claude, or the last key pressed was the Enter that sent a prompt
+  Claude recorded. Once you press a key after the move, ccx leaves the
+  typing to you. A prompt that is refused although the new account has room
+  is typed once more after another wait. After a second refusal, or when the
+  prompt cannot be typed (a draft is in the box, a dialog stays open for a
+  minute, or this Claude keeps no record of what it is doing), a session whose
+  main thread stopped on the limit is relaunched with the prompt, as before,
+  and one moved only because a subagent met the limit is left as it is. That
+  relaunch never comes while Claude says a turn or a subagent is running, or
+  while a subagent's record is still growing. Still relaunched at once, as
+  before: a limit on one model, a next account whose login must be renewed
+  first or that has only a long-lived token, and a session started with a
+  long-lived token, since Claude reads that token and never the login in its
+  folder.
+- **A session moved without a restart is told so.** The default prompt says
+  "This session was restarted", which would be false, and a session that
+  believes it starts again the agents that are still running. In place it is
+  told that it was moved, that what was running still is, and to run again
+  whatever a usage limit ended. A prompt you set (`resume.prompt`) or a
+  session armed (`ccx resume-prompt`) is typed as ccx keeps it, on one line,
+  the same text a relaunch would pass. A run launched
+  with a prompt of its own is told as well; a relaunch could not tell it
+  anything, so it used to sit idle after a move.
+- **A subagent's limit message starts the move.** ccx ignored a refused turn
+  in a subagent, so a session waiting on background subagents watched them
+  fail one by one until its main thread made a request of its own. A
+  subagent's refusal now starts the same check and the same move in place,
+  and is still one limit for the account: one entry in the ledger, one line
+  in `ccx history`. It never ends Claude. When the session cannot be moved in
+  place, nothing happens until the main thread meets the limit itself, as
+  before; a refusal the main thread meets while the subagent's is still being
+  checked gets its own check once that one is done.
+
+### Fixed
+
+- **A switch in place could do nothing, or leave a session with no login.**
+  `ccx use`, `/ccx` and an early move replace the login in the session's
+  folder. A session started with a long-lived token (`ccx token`) never reads
+  that login, so it stayed on its account while ccx said it had moved; and
+  moving a session onto an account that has only a long-lived token removed
+  the login from its folder under the running Claude. Both now restart the
+  session on the account asked for, by the same rule the move on a limit
+  follows, and so does a switch to an account whose login must be renewed
+  first, as it already did. Such a restart now waits until Claude has been
+  idle for 20 seconds, so it never cuts off a turn, a subagent or a
+  background command, where the renewal case used to restart at once; a
+  Claude that keeps no record of whether it is idle is not restarted for it.
+  `ccx use --now` still restarts at once. A worker (`ccx worker`) is never
+  idle while it runs, so it finishes on the account it is on.
+- **After a move in place, Claude could go on using the old account for up
+  to 30 seconds.** On macOS a login Claude has saved itself lives in the
+  Keychain, and replacing it there changes no file. Claude keeps the login it
+  read for up to 30 seconds and drops it early only when the time of
+  `.credentials.json` in its folder changes, so a request right after a move
+  could go out as the account the session had just left. Every move now
+  changes that file's time, never its contents, so Claude reads the new login
+  at its next request.
+- **A limit met by a login ccx does not have was recorded against a
+  registered account.** When the check found that the session's folder was
+  signed in to an address no account here has, ccx meant to move the session
+  without recording the limit against anyone. Moving it in place cleared that
+  finding before the limit was written down, so the account the session was
+  believed to be on was set aside until its reset, though it had room. A
+  move that fails part-way now leaves that finding as it was, too.
+- **A running session could drop out of `ccx sessions` for good.** A session
+  that could not refresh its lease for two minutes while its process stayed
+  alive, as when the machine sleeps, had the lease deleted by whatever read
+  the leases next, and never wrote another. Until it next changed account it
+  was missing from `ccx sessions`, `ccx use --session` could not name it, and
+  its login was not protected from being renewed underneath it. A reader now
+  removes only the lease of a process that is gone, and a session writes its
+  lease again at its next tick if the file is missing or unreadable, and says
+  so in `ccx history` (#111).
+- **A switch request left for a session that was killed stayed on disk for
+  good.** `ccx use --session`, `/ccx swap` and a session's own early move
+  each write a small request file named for the session's pid, which the
+  session removes as it takes it or as it ends. One that was killed first
+  never did, and the file was only ever looked at again if a later session
+  happened to get the same pid. Each session now removes, as it starts, the
+  requests of sessions whose process is gone.
 
 ## [2.5.1]
 

@@ -13,6 +13,7 @@ import { loadConfig } from '../../src/config/config.js';
 import { leasePath } from '../../src/session/lease.js';
 import { saveLedger } from '../../src/ledger/ledger.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
+import { saveToken } from '../../src/daemon/token-store.js';
 import type { CliContext } from '../../src/context.js';
 
 /**
@@ -214,6 +215,7 @@ const TOUCHED = [
   'FAKE_CLAUDE_PARTIAL_LINE',
   'FAKE_CLAUDE_REFUSE_ON',
   'FAKE_CLAUDE_REFUSAL_ENDS_RUN',
+  'FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS',
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_ENTRYPOINT',
   'CLAUDECODE',
@@ -279,6 +281,47 @@ describe('ccx worker (against fake-claude)', () => {
       expect(answer.ccx.moves).toBe(1);
     },
   );
+
+  it("is not ended or moved by a subagent's refusal alone", { timeout: 60_000 }, async () => {
+    // A headless run cannot be moved under a live Claude, and ending it on a
+    // subagent's refusal would throw away an answer its main thread may still
+    // give. Its own refusal, when it comes, is what moves it.
+    const { context, runsLog } = await setup(['A', 'B'], () => Promise.resolve('limited'));
+    Object.assign(process.env, {
+      FAKE_CLAUDE_IDLE_MS: '2500',
+      FAKE_CLAUDE_SESSION_RECORD: '1',
+      FAKE_CLAUDE_TRANSCRIPT: '1',
+      FAKE_CLAUDE_REFUSE_ON: 'A',
+      FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS: '600',
+    });
+    const seen = capture();
+    expect(await workerCommand(context, ['refactor', 'billing'], {}, [], seen.io)).toBe(0);
+
+    expect(launchesIn(runsLog).map((l) => l.marker)).toEqual(['A']);
+    const answer = JSON.parse(seen.out()) as { result: string; ccx: { accounts: string[]; moves: number } };
+    expect(answer.result).toBe('done: refactor billing');
+    expect(answer.ccx).toMatchObject({ accounts: ['A'], moves: 0 });
+  });
+
+  it('is not ended for a switch it can only make by a restart', { timeout: 60_000 }, async () => {
+    // Started with a long-lived token, it reads that and never the login in its
+    // folder, so a move asks for a restart. A print-mode run is idle only when
+    // it is done, so it is left to finish where it is.
+    const { context, home, runsLog } = await setup(['A', 'B']);
+    saveToken(path.join(home, 'profiles', 'A'), 'sk-ant-oat01-not-a-real-token');
+    Object.assign(process.env, { FAKE_CLAUDE_IDLE_MS: '2500' });
+    const seen = capture();
+    const running = workerCommand(context, ['refactor', 'billing'], { account: 'A' }, [], seen.io);
+    const deadline = Date.now() + 20_000;
+    while (launchesIn(runsLog).length === 0 && Date.now() < deadline) await sleep(50);
+    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, process.pid);
+    expect(await running).toBe(0);
+
+    expect(launchesIn(runsLog).map((l) => l.marker)).toEqual(['A']);
+    const answer = JSON.parse(seen.out()) as { result: string; ccx: { accounts: string[]; moves: number } };
+    expect(answer.result).toBe('done: refactor billing');
+    expect(answer.ccx).toMatchObject({ accounts: ['A'], moves: 0 });
+  });
 
   it('sends a brief too long for a command line by standard input', { timeout: 60_000 }, async () => {
     const { context, runsLog } = await setup(['A']);

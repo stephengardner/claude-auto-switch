@@ -37,6 +37,8 @@ interface Entry {
   type: string;
   id?: string;
   marker?: string | null;
+  /** At a call: whether the login file's time had changed since Claude started. */
+  loginReread?: boolean;
   reason?: string;
   context?: string;
 }
@@ -142,8 +144,6 @@ interface Scene {
   home: string;
   runsLog: string;
   context: CliContext;
-  /** Each time ccx asked whether the session's login is in the Keychain, which it does only to tell Claude about it. */
-  keychainAsks: string[];
 }
 
 /** Accounts A and B signed in, the session starting on A, and one run of it making `calls`. */
@@ -163,8 +163,6 @@ async function scene(
     tokenFor?: string;
     /** The address Claude records the session as signed in as, once it is up. A is a@example.com, B b@example.com. */
     signedInAs?: string;
-    /** The session's login lives in the Keychain (macOS, once Claude has saved it itself). */
-    loginInKeychain?: boolean;
   },
 ): Promise<Scene> {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-artifact-routing-'));
@@ -182,13 +180,6 @@ async function scene(
       : {}),
   });
   const context = makeContext(home, options.verifyCap ?? (() => Promise.resolve('allowed')), options.holdMs);
-  const keychainAsks: string[] = [];
-  if (options.loginInKeychain) {
-    context.loginInKeychain = (dir) => {
-      keychainAsks.push(dir);
-      return true;
-    };
-  }
   if (options.artifacts) {
     saveConfig({ artifacts: options.artifacts }, context.ctx);
     context.config = loadConfig(context.ctx);
@@ -203,7 +194,7 @@ async function scene(
     process.env.FAKE_CLAUDE_SET_STATE = JSON.stringify({ oauthAccount: { emailAddress: options.signedInAs } });
   }
   setActive('A', context.ctx);
-  return { home, runsLog, context, keychainAsks };
+  return { home, runsLog, context };
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -260,25 +251,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('page routing in a running se
       expectNothingLeftBehind(s);
       const hops = readEvents(s.home, 200).filter((e) => e.kind === 'artifact-hop');
       expect(hops).toHaveLength(1);
-      // Where the login is a file, writing it is what tells Claude.
-      expect(hops[0]?.data).toMatchObject({ to: 'B', from: 'A', endedBy: 'done', loginIn: 'file' });
-    },
-  );
-
-  it(
-    'tells Claude its login changed when that login lives in the Keychain, where writing it changes no file',
-    { timeout: 120_000 },
-    async () => {
-      const s = await scene({
-        artifacts: { home: 'B' },
-        loginInKeychain: true,
-        calls: [{ afterMs: 1500, id: 'toolu_new', input: { file_path: PAGE }, response: RESPONSE }],
-      });
-      expect(await runCommand(s.context, [])).toBe(0);
-      expect(of(entries(s.runsLog), 'artifact-call').map((e) => e.marker)).toEqual(['B']);
-      const hops = readEvents(s.home, 200).filter((e) => e.kind === 'artifact-hop');
-      expect(hops.map((e) => e.data?.loginIn)).toEqual(['keychain']);
-      expectNothingLeftBehind(s);
+      expect(hops[0]?.data).toMatchObject({ to: 'B', from: 'A', endedBy: 'done' });
     },
   );
 
@@ -286,18 +259,16 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('page routing in a running se
     'tells Claude to use its login even when the page belongs on the account the session is on',
     { timeout: 120_000 },
     async () => {
-      // Within half a minute of an ordinary in-place move, a session whose login is
-      // in the Keychain can still be sending as the account before it.
+      // Claude can still be on the login before an ordinary move for up to half
+      // a minute, so a call that needs no move still has it read the login again.
       const s = await scene({
         artifacts: { home: 'A' },
-        loginInKeychain: true,
         calls: [{ afterMs: 1500, id: 'toolu_new', input: { file_path: PAGE }, response: RESPONSE }],
       });
       expect(await runCommand(s.context, [])).toBe(0);
       const log = entries(s.runsLog);
-      expect(of(log, 'artifact-call').map((e) => e.marker)).toEqual(['A']);
+      expect(of(log, 'artifact-call').map((e) => [e.marker, e.loginReread])).toEqual([['A', true]]);
       expect(of(log, 'launch')).toHaveLength(1);
-      expect(s.keychainAsks.length).toBeGreaterThan(0);
       expect(readPages(s.context.ctx)[0]?.owner).toBe('A');
       expectNothingLeftBehind(s);
     },

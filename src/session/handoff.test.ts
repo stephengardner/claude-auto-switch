@@ -51,6 +51,23 @@ describe('activateWithLease', () => {
     expect(r.calls).toEqual(['take:A', 'install']);
   });
 
+  it('says the login is in only once it is, and never when the copy fails', () => {
+    // What depends on the session now running as the new account (who a
+    // limit belongs to, for one) must not be reset by a switch that failed.
+    const done = recorder();
+    activateWithLease('B', 'A', { ...done.steps, installed: () => done.calls.push('installed') });
+    expect(done.calls).toEqual(['take:B', 'install', 'installed', 'release:A']);
+
+    const failed = recorder(true);
+    expect(() =>
+      activateWithLease('B', 'A', {
+        ...failed.steps,
+        installed: () => failed.calls.push('installed'),
+      }),
+    ).toThrow();
+    expect(failed.calls).not.toContain('installed');
+  });
+
   it('keeps protecting the account when re-activating it fails', () => {
     const r = recorder(true);
     expect(() => activateWithLease('A', 'A', r.steps)).toThrow();

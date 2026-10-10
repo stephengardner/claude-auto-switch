@@ -8,6 +8,7 @@ const refusal = (at: number | null): Refusal => ({
   status: 429,
   text: 'Out of room for now.',
   at,
+  sidechain: false,
 });
 
 /** A record that hands over, on each look, whatever was written since the last one. */
@@ -20,7 +21,7 @@ function recordOf(): { follower: RefusalFollower; write: (r: Refusal) => void; l
         looks += 1;
         const refusals = waiting;
         waiting = [];
-        return { readable: true, refusals };
+        return { readable: true, refusals, promptAt: null, subagentsWrote: false };
       },
     },
     write: (r) => waiting.push(r),
@@ -40,7 +41,7 @@ describe('holding refused turns back', () => {
     const gate: RefusalGate = { held: () => held, ignores: () => false };
     const gated = gateRefusals(record.follower, gate);
     record.write(refusal(1_000));
-    expect(gated.poll('id')).toEqual({ readable: false, refusals: [] });
+    expect(gated.poll('id')).toEqual({ readable: false, refusals: [], promptAt: null, subagentsWrote: false });
     expect(record.looks()).toBe(0);
     held = false;
     expect(gated.poll('id').refusals).toEqual([refusal(1_000)]);
@@ -52,7 +53,8 @@ describe('holding refused turns back', () => {
     const gated = gateRefusals(record.follower, { held: () => held, ignores: () => false });
     expect(gated.poll('id').readable).toBe(true);
     held = true;
-    expect(gated.poll('id')).toEqual({ readable: true, refusals: [] });
+    // Nor a prompt or a subagent's writing: those are read on the first look after it.
+    expect(gated.poll('id')).toEqual({ readable: true, refusals: [], promptAt: null, subagentsWrote: false });
   });
 
   it('drops the turns the gate says to pass over, and keeps the rest in order', () => {

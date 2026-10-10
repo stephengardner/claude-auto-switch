@@ -3,7 +3,7 @@
 // claude-auto-switch drives: `auth status`, `auth login`, and a generic run.
 // Behavior is driven by a scenario JSON, resolved from FAKE_CLAUDE_SCENARIO or
 // <CLAUDE_CONFIG_DIR>/fake-scenario.json. No network, no model spend, no logins.
-import { readFileSync, writeFileSync, writeSync, existsSync, mkdirSync, appendFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, writeSync, existsSync, mkdirSync, appendFileSync, rmSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
@@ -290,19 +290,85 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
   };
   const record = path.join(configDir, 'sessions', `${process.pid}.json`);
   const startedAt = Date.now();
-  // Idle a minute already when asked: the status Claude keeps while it waits
-  // for the next message.
-  const idle = process.env.FAKE_CLAUDE_IDLE_STATUS
+  // What Claude says it is doing, as 2.1.296 keeps it (measured): "idle" at
+  // an empty prompt, "shell" there while a background command runs, "busy"
+  // during a turn or while a subagent runs, "waiting" behind a dialog.
+  // FAKE_CLAUDE_STATUS is what it rests in; with FAKE_CLAUDE_IDLE_STATUS it
+  // has been idle a minute already. With neither set it says nothing.
+  let resting = process.env.FAKE_CLAUDE_STATUS ?? null;
+  /** A turn started by a typed prompt is running. */
+  let turnRunning = false;
+  let doing = process.env.FAKE_CLAUDE_IDLE_STATUS
     ? { status: 'idle', statusUpdatedAt: Date.now() - 60_000 }
-    : {};
-  const writeRecord = (sessionId) =>
-    writeJson(record, { pid: process.pid, sessionId, cwd: process.cwd(), startedAt, kind: 'interactive', ...idle });
-  const recordedId =
+    : resting
+      ? { status: resting, statusUpdatedAt: Date.now() }
+      : {};
+  let recordedId =
     valueAfter('--session-id') ??
     valueAfter('--resume') ??
     process.env.FAKE_CLAUDE_LANDS_ON ??
     '00000000-0000-4000-8000-000000000000';
+  const writeRecord = (sessionId) => {
+    recordedId = sessionId;
+    writeJson(record, { pid: process.pid, sessionId, cwd: process.cwd(), startedAt, kind: 'interactive', ...doing });
+  };
+  const setStatus = (status) => {
+    if (!status) return;
+    doing = { status, statusUpdatedAt: Date.now() };
+    writeRecord(recordedId);
+    if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'status', status })}\n`, 'utf8');
+  };
   writeRecord(recordedId);
+  // A change of what it rests in, "<ms>:<status>": a subagent finishing
+  // ("1500:idle"), a dialog opening.
+  if (process.env.FAKE_CLAUDE_STATUS_THEN) {
+    const [after, next] = process.env.FAKE_CLAUDE_STATUS_THEN.split(':');
+    const t = setTimeout(() => {
+      resting = next;
+      if (!turnRunning) setStatus(next);
+    }, Number(after));
+    if (t.unref) t.unref();
+  }
+
+  // The login this process is using. Claude reads the login in its config
+  // folder again before a request once the file has changed; with
+  // FAKE_CLAUDE_OLD_LOGIN_REQUESTS it goes on using the one it had for that
+  // many requests first, as a login it still holds in a cache.
+  const credentialStamp = () => {
+    try {
+      return statSync(path.join(configDir, '.credentials.json')).mtimeMs;
+    } catch {
+      return 0;
+    }
+  };
+  let login = { marker: readMarker(), stamp: credentialStamp() };
+  let staleRequests = Number(process.env.FAKE_CLAUDE_OLD_LOGIN_REQUESTS) || 0;
+  const loginForRequest = () => {
+    const stamp = credentialStamp();
+    if (stamp !== login.stamp) {
+      if (staleRequests > 0) staleRequests -= 1;
+      else login = { marker: readMarker(), stamp };
+    }
+    return login.marker;
+  };
+  const refusedOn = (marker) =>
+    (process.env.FAKE_CLAUDE_REFUSE_ON ?? '').split(',').filter(Boolean).includes(marker ?? '');
+  /** A refused turn as Claude writes one; a subagent's carries its own marks. */
+  const refusalEntry = (extra = {}) => ({
+    type: 'assistant',
+    isSidechain: false,
+    isApiErrorMessage: true,
+    error: 'rate_limit',
+    apiError: 'model_requires_usage_credits',
+    apiErrorStatus: 429,
+    timestamp: new Date().toISOString(),
+    message: {
+      model: '<synthetic>',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Out of room on this account for now.' }],
+    },
+    ...extra,
+  });
 
   // The conversation's own record, at <config dir>/projects/<folder>/<id>.jsonl
   // where the real CLI keeps it. A refused turn is written the way Claude
@@ -318,22 +384,7 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
     const refusesHere = !refuseOn || refuseOn.split(',').includes(readMarker() ?? '');
     const refuse = () => {
       if (!refusesHere) return;
-      appendFileSync(
-        transcript,
-        `${JSON.stringify({
-          type: 'assistant',
-          isSidechain: false,
-          isApiErrorMessage: true,
-          error: 'rate_limit',
-          apiError: 'model_requires_usage_credits',
-          apiErrorStatus: 429,
-          message: {
-            model: '<synthetic>',
-            role: 'assistant',
-            content: [{ type: 'text', text: 'Out of room on this account for now.' }],
-          },
-        })}\n`,
-      );
+      appendFileSync(transcript, `${JSON.stringify(refusalEntry())}\n`);
       // Print mode ends the run on a refused turn, with an error result and
       // exit 1, where the terminal app stays up and waits.
       if (process.env.FAKE_CLAUDE_REFUSAL_ENDS_RUN && outputFormat) {
@@ -358,6 +409,135 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
     if (again > 0) {
       const t = setTimeout(refuse, again);
       if (t.unref) t.unref();
+    }
+
+    // A subagent's turn refused, in the record Claude 2.1.296 keeps for each
+    // subagent beside the conversation's own (measured). Only on an account
+    // FAKE_CLAUDE_REFUSE_ON names, by the login in use at that moment. A
+    // second subagent can meet it too, later.
+    for (const [variable, agentId] of [
+      ['FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS', 'afake01'],
+      ['FAKE_CLAUDE_SUBAGENT_REFUSE_AGAIN_AFTER_MS', 'afake02'],
+    ]) {
+      const after = Number(process.env[variable]) || 0;
+      if (after <= 0) continue;
+      const t = setTimeout(() => {
+        const marker = loginForRequest();
+        if (!refusedOn(marker)) return;
+        const file = path.join(path.dirname(transcript), recordedId, 'subagents', `agent-${agentId}.jsonl`);
+        mkdirSync(path.dirname(file), { recursive: true });
+        appendFileSync(file, `${JSON.stringify(refusalEntry({ isSidechain: true, agentId }))}\n`);
+        if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'subagent-refusal', marker })}\n`, 'utf8');
+      }, after);
+      if (t.unref) t.unref();
+    }
+
+    // A subagent at work: its record grows every 300ms until the given time,
+    // and the log says when it finished, which it only can if nothing ended it.
+    const workingUntil = Number(process.env.FAKE_CLAUDE_SUBAGENT_WRITES_UNTIL_MS) || 0;
+    if (workingUntil > 0) {
+      const file = path.join(path.dirname(transcript), recordedId, 'subagents', 'agent-aworker.jsonl');
+      mkdirSync(path.dirname(file), { recursive: true });
+      const working = setInterval(() => {
+        const step = { type: 'assistant', isSidechain: true, agentId: 'aworker', timestamp: new Date().toISOString() };
+        appendFileSync(file, `${JSON.stringify(step)}\n`);
+        if (Date.now() - startedAt < workingUntil) return;
+        clearInterval(working);
+        if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'subagent-done' })}\n`, 'utf8');
+      }, 300);
+      if (working.unref) working.unref();
+    }
+
+    // What is typed at it. Like Claude it asks the terminal to mark pastes,
+    // takes a marked paste as text, and sends what is in its input box on
+    // Enter: recorded as a prompt somebody typed, then answered, or refused
+    // when the login in use is one FAKE_CLAUDE_REFUSE_ON names.
+    if (process.env.FAKE_CLAUDE_READS_INPUT) {
+      process.stdout.write('\x1b[?2004h');
+      const PASTE_START = '\x1b[200~';
+      const PASTE_END = '\x1b[201~';
+      let box = '';
+      let pending = '';
+      let pasting = false;
+      let answered = 0;
+      const submit = () => {
+        const text = box;
+        box = '';
+        if (text === '') return;
+        const marker = loginForRequest();
+        const refused = refusedOn(marker);
+        appendFileSync(
+          transcript,
+          `${JSON.stringify({
+            type: 'user',
+            isSidechain: false,
+            origin: { kind: 'human' },
+            timestamp: new Date().toISOString(),
+            message: { role: 'user', content: text },
+          })}\n`,
+        );
+        if (runsLog) {
+          appendFileSync(runsLog, `${JSON.stringify({ type: 'prompt', text, marker, refused, pid: process.pid })}\n`, 'utf8');
+        }
+        turnRunning = true;
+        setStatus('busy');
+        setTimeout(() => {
+          const answer = refused
+            ? refusalEntry()
+            : {
+                type: 'assistant',
+                isSidechain: false,
+                timestamp: new Date().toISOString(),
+                message: { role: 'assistant', content: [{ type: 'text', text: 'carrying on' }] },
+              };
+          appendFileSync(transcript, `${JSON.stringify(answer)}\n`);
+          turnRunning = false;
+          setStatus(resting);
+          if (!refused) answered += 1;
+          // Done once it has answered as many prompts as the test waits for,
+          // after a moment for whoever is watching to see the answer.
+          if (answered === Number(process.env.FAKE_CLAUDE_EXIT_AFTER_PROMPTS)) {
+            setTimeout(() => {
+              if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'reread', marker: readMarker() })}\n`, 'utf8');
+              process.exit(0);
+            }, Number(process.env.FAKE_CLAUDE_EXIT_DELAY_MS) || 300);
+          }
+        }, Number(process.env.FAKE_CLAUDE_TURN_MS) || 100);
+      };
+      const read = () => {
+        for (;;) {
+          if (pasting) {
+            const end = pending.indexOf(PASTE_END);
+            if (end === -1) return; // the rest of the paste is still to come
+            box += pending.slice(0, end);
+            pending = pending.slice(end + PASTE_END.length);
+            pasting = false;
+            continue;
+          }
+          if (pending === '') return;
+          if (pending.startsWith(PASTE_START)) {
+            pending = pending.slice(PASTE_START.length);
+            pasting = true;
+            continue;
+          }
+          // A marker cut in two by the read: wait for the rest of it.
+          if (PASTE_START.startsWith(pending)) return;
+          const key = pending[0];
+          pending = pending.slice(1);
+          if (key === '\r') submit();
+          else if (key >= ' ' && key !== '\x7f') box += key;
+        }
+      };
+      try {
+        process.stdin.setRawMode?.(true);
+      } catch {
+        /* not a terminal */
+      }
+      process.stdin.on('data', (chunk) => {
+        pending += chunk.toString('utf8');
+        read();
+      });
+      process.stdin.resume();
     }
   }
   // A conversation switch made inside the session, at human speed.
@@ -428,6 +608,16 @@ if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
   const note = (entry) => {
     if (runsLog) appendFileSync(runsLog, `${JSON.stringify(entry)}\n`, 'utf8');
   };
+  // A later time on the login file at a call than at the start means ccx told
+  // Claude to read the login again in between.
+  const loginTime = () => {
+    try {
+      return statSync(path.join(configDir, '.credentials.json')).mtimeMs;
+    } catch {
+      return 0;
+    }
+  };
+  const loginTimeAtStart = loginTime();
   const record = (entry) => {
     mkdirSync(path.dirname(transcript), { recursive: true });
     appendFileSync(transcript, `${JSON.stringify({ ...entry, timestamp: new Date().toISOString() })}\n`, 'utf8');
@@ -503,7 +693,7 @@ if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
       return;
     }
     // The call itself: whichever login is in the folder now is the one it goes out as.
-    note({ type: 'artifact-call', id: call.id, marker: readMarker() });
+    note({ type: 'artifact-call', id: call.id, marker: readMarker(), loginReread: loginTime() > loginTimeAtStart });
     // Words on the screen while the call is out, as when a subagent is refused.
     if (call.sayDuring) process.stdout.write(`${call.sayDuring}\n`);
     if (call.refuseDuring) {
@@ -568,7 +758,10 @@ if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
 // real run never does).
 const runsUntilEnded =
   firstLaunch && (process.env.FAKE_CLAUDE_IGNORE_TERM || process.env.FAKE_CLAUDE_PARTIAL_LINE);
-const idleMs = runsUntilEnded ? 60_000 : Number(process.env.FAKE_CLAUDE_IDLE_MS) || 0;
+// A launch that resumes can be given a shorter stay of its own, so a test
+// that ends on a relaunch does not wait out the first launch's time again.
+const stayMs = (!firstLaunch && process.env.FAKE_CLAUDE_RESUMED_IDLE_MS) || process.env.FAKE_CLAUDE_IDLE_MS;
+const idleMs = runsUntilEnded ? 60_000 : Number(stayMs) || 0;
 if (idleMs > 0) {
   setTimeout(() => {
     // Simulate Claude re-reading its credential file from disk (its ~30s cache
