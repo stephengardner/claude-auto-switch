@@ -53,6 +53,15 @@ describe('toSnapshot', () => {
     expect(a.plan).toBe('team');
   });
 
+  it('carries the next move in both wordings, and neither when there is none', () => {
+    const whenOut = { account: 'b', words: 'b (a full 5-hour window)' };
+    const s = toSnapshot(input({ nextUp: 'over on b, on opus', whenOut }));
+    expect(s.nextUp).toBe('over on b, on opus');
+    expect(s.whenOut).toEqual(whenOut);
+    expect('whenOut' in toSnapshot(input())).toBe(false);
+    expect('whenOut' in toSnapshot(input({ whenOut: null }))).toBe(false);
+  });
+
   it('passes through events, now, and refreshMs', () => {
     const s = toSnapshot(input({ events: ['swap a->b'] }));
     expect(s.events).toEqual(['swap a->b']);

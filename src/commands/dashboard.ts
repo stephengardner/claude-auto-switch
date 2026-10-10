@@ -46,7 +46,8 @@ import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
-import { describeNextUp } from '../dashboard/next-up.js';
+import { describeNextUp, describeWhenOut, type NextUpInput, type WhenOut } from '../dashboard/next-up.js';
+import { inDisplayOrder, keepSelection } from '../dashboard/arrange.js';
 import type { CapacityWindows } from '../usage/usable-capacity.js';
 import { orderComparator } from '../selector/selector.js';
 import { roomOfFromSnapshot } from '../usage/account-room.js';
@@ -60,6 +61,7 @@ import {
   holdBackOf,
   modelUsageFor,
   numberPicks,
+  pickAside,
   pickReason,
   rankAccounts,
   reorder,
@@ -292,6 +294,7 @@ export async function dashboardCommand(
   ): {
     model?: string;
     nextUp?: string;
+    whenOut?: WhenOut;
     picks: Map<string, NonNullable<DashboardAccount['pick']>>;
   } {
     const rotation = ctx.config.rotation;
@@ -314,7 +317,7 @@ export async function dashboardCommand(
     const candidates = ordered.map((a) => modelUsageFor(a.name, usage.get(a.name), knownSpent, at));
     const picks = numberPicks(candidates, rotation.modelPreference, model !== null, standing);
     const current = getActive(ctx.ctx);
-    const nextUp = describeNextUp({
+    const move: NextUpInput = {
       candidates,
       current,
       modelInUse: model,
@@ -325,10 +328,19 @@ export async function dashboardCommand(
       spentThisRun: new Set(
         current ? knownSpent.filter((c) => c.account === current).map((c) => spentKey(c.account, c.model)) : [],
       ),
-      // Why that account, in the terms the smart order decides by.
-      ...(rotation.accountOrder === 'smart' ? { reasonFor: (name: string) => pickReason(standing(name), at) } : {}),
+    };
+    // Why that account, in the terms the smart order decides by. One move,
+    // worded once for other programs and once for the screen.
+    const smart = rotation.accountOrder === 'smart';
+    const nextUp = describeNextUp({
+      ...move,
+      ...(smart ? { reasonFor: (name: string) => pickReason(standing(name), at) } : {}),
     });
-    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}), picks };
+    const whenOut = describeWhenOut({
+      ...move,
+      ...(smart ? { reasonFor: (name: string) => pickAside(standing(name), at) } : {}),
+    });
+    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}), ...(whenOut ? { whenOut } : {}), picks };
   }
 
   if (options.json) {
@@ -341,7 +353,14 @@ export async function dashboardCommand(
     return 0;
   }
 
-  await runLiveLoop(build, {
+  // The live loop's cursor counts rows, so it is handed the accounts in the
+  // order the screen draws them. `ccx state` above keeps the order ccx stores.
+  const drawn = (): ReturnType<typeof toSnapshot> => {
+    const snapshot = build();
+    return { ...snapshot, accounts: inDisplayOrder(snapshot.accounts, snapshot.model ?? null, snapshot.now) };
+  };
+
+  await runLiveLoop(drawn, {
     refreshMs,
     color,
     reprobe: async () => {
@@ -596,6 +615,17 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
 
   const clamp = (): void => {
     selected = Math.max(0, Math.min(selected, snap.accounts.length - 1));
+  };
+  /**
+   * Read the state again and keep the cursor on the account it was on. The
+   * rows follow the pick order, which moves as usage is read, and a key must
+   * act on the account that was highlighted, not on whichever slid into its
+   * row.
+   */
+  const rebuild = (): void => {
+    const held = snap.accounts[selected]?.name;
+    snap = build();
+    selected = keepSelection(snap.accounts, held, selected);
   };
   const stop = (): void => {
     running = false;
@@ -866,13 +896,13 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       // themselves rather than have it cleared below.
       if (r.action === 'model-preference' || r.action === 'pick-order') {
         ui.notice = r.action === 'model-preference' ? deps.onModelPreference() : deps.onPickOrder();
-        snap = build();
+        rebuild();
         if (wake) wake();
         return;
       }
       if ((r.action === 'move-up' || r.action === 'move-down') && target) {
         ui.notice = deps.onReorder(target, r.action === 'move-up' ? -1 : 1);
-        // The rows follow the priority order, so the cursor follows the account.
+        // The cursor follows the account to wherever its row is now.
         snap = build();
         selected = Math.max(0, snap.accounts.findIndex((a) => a.name === target.name));
         if (wake) wake();
@@ -1028,7 +1058,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
           ui.notice = signInFailureNotice(target.name, err);
         }
       }
-      snap = build();
+      rebuild();
       clamp();
       // Paint over the previous frame from the top: home, then each line clears
       // its own tail, then clear anything left below. No full-screen erase.

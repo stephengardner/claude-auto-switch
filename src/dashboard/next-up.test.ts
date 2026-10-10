@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { describeNextUp } from './next-up.js';
+import { describeNextUp, describeWhenOut } from './next-up.js';
 import { spentKey } from '../usage/rotation-plan.js';
 import type { AccountModelUsage } from '../usage/model-preference.js';
 
@@ -125,5 +125,78 @@ describe('saying where rotation goes next', () => {
     });
     expect(said).toContain('staying here');
     expect(said).toContain('opus');
+  });
+});
+
+describe('saying it on the dashboard, under the table', () => {
+  it('names the account and why, with the model left unsaid while it stays the same', () => {
+    // The line reads after "when one runs out", and the title already says
+    // which model comes first, so the account and the reason are what is new.
+    const said = describeWhenOut({
+      candidates: [account('phx', { Fable: 0.2 })],
+      current: 'main',
+      modelInUse: 'fable',
+      ...policy,
+      reasonFor: () => 'a full 5-hour window; its week resets in 2d 3h',
+    });
+    expect(said).toEqual({
+      account: 'phx',
+      words: 'phx (a full 5-hour window; its week resets in 2d 3h)',
+    });
+  });
+
+  it('says how much of the model is left when there is no other reason to give', () => {
+    const said = describeWhenOut({
+      candidates: [account('phx', { Fable: 0.2 })],
+      current: 'main',
+      modelInUse: 'fable',
+      ...policy,
+    });
+    expect(said).toEqual({ account: 'phx', words: 'phx (80% of Fable left)' });
+  });
+
+  it('says so when the model is what changes', () => {
+    const said = describeWhenOut({
+      candidates: [account('solo', { Fable: 1, Opus: 0.1 })],
+      current: 'solo',
+      modelInUse: 'fable',
+      ...policy,
+      spentThisRun: new Set([spentKey('solo', 'fable')]),
+    });
+    expect(said).toEqual({ account: 'solo', words: 'solo, on Opus instead (90% of Opus left)' });
+  });
+
+  it('names the same account the line for other programs names', () => {
+    // Two wordings of one plan. If they could name different accounts, the
+    // screen and `ccx state` would disagree about where a session goes.
+    const input = {
+      candidates: [account('spent', { Fable: 1 }, true), account('phx', { Fable: 0.2 })],
+      current: 'main',
+      modelInUse: 'fable',
+      ...policy,
+    };
+    expect(describeNextUp(input)).toContain('over on phx');
+    expect(describeWhenOut(input)?.account).toBe('phx');
+  });
+
+  it('names no account when there is nowhere left to go', () => {
+    const said = describeWhenOut({
+      candidates: [account('a', { Fable: 1, Opus: 1 })],
+      current: 'a',
+      modelInUse: 'fable',
+      ...policy,
+    });
+    expect(said?.account).toBeUndefined();
+    expect(said?.words).toContain('out of');
+  });
+
+  it('names just the account when nothing pins a model', () => {
+    const said = describeWhenOut({
+      candidates: [account('first', {})],
+      current: null,
+      modelInUse: null,
+      ...policy,
+    });
+    expect(said).toEqual({ account: 'first', words: 'first' });
   });
 });

@@ -15,9 +15,8 @@ export interface DashboardAccount {
   cappedUntil?: number;
   priority: number;
   /**
-   * Subscription usage (0..1 per window), including per-model weekly windows and
-   * when each window comes back. The reset times are carried through so the
-   * detail line can answer "when can I use this again" without another lookup.
+   * Subscription usage (0..1 USED per window), including per-model weekly
+   * windows and when each window resets. The screen shows what is left.
    */
   usage?: {
     fiveHour: number | null;
@@ -88,14 +87,20 @@ export interface DashboardSnapshot {
   /** Which ccx is drawing this, shown in the title. */
   version?: string;
   /**
-   * Where rotation would go next, already in words.
+   * Where rotation would go next, in the words `ccx state` hands to other
+   * programs. Carried for them; the screen draws `whenOut`.
+   */
+  nextUp?: string;
+  /**
+   * The same move in the screen's words: what follows "when one runs out",
+   * and the account it names, which the table marks as next in line.
    *
    * Computed by the caller, which has the policy and the ledger, so this
    * renderer stays a pure function of what it is given. It is the one thing on
    * this screen that no other tool can show: not the state, but the
    * consequence of it.
    */
-  nextUp?: string;
+  whenOut?: { account?: string; words: string };
   /**
    * Claude Desktop, when it is in use here: which account it spends and its
    * open conversations (`line`), and the keys that act on it (`keys`).
@@ -103,7 +108,7 @@ export interface DashboardSnapshot {
   desktop?: { line: string; keys: string };
   /** The rotation settings, shown with the keys that change them. */
   settings?: DashboardSettings;
-  /** The ccx sessions running now, and the account each is on. */
+  /** The ccx sessions running now, and the account each is on. Counted per account. */
   sessions?: DashboardSession[];
 }
 
@@ -111,7 +116,10 @@ export interface RenderOptions {
   color?: boolean;
   /** Interactive key hints in the footer (off for a plain one-shot print). */
   interactive?: boolean;
-  /** Index of the currently-selected row (for the live cursor). */
+  /**
+   * Index of the currently-selected row (for the live cursor), counted in the
+   * order the rows are drawn, which `inDisplayOrder` gives.
+   */
   selected?: number;
   /** A message to show above the key hints (an error, or what just happened). */
   notice?: string;
@@ -128,35 +136,23 @@ export interface RenderOptions {
    */
   height?: number;
   /**
-   * How many columns there are to draw in.
-   *
-   * The table fitted an 80-column terminal with one character to spare, which
-   * is not fitting, it is luck: a longer account name or a longer wait pushed
-   * it over and the whole row wrapped. The bars are the elastic part, so they
-   * give up width first and the numbers, names and statuses stay whole.
+   * How many columns there are to draw in. A row never wraps: the table gives
+   * things up to fit, in the order `table.ts` sets out.
    */
   width?: number;
+  /**
+   * A time of day in words, shown beside a wait of under a day. The local
+   * 12-hour clock unless a test passes its own.
+   */
+  clock?: (epochMs: number) => string;
 }
 
-import { codes, paint, shadeForUsed } from '../ui/style.js';
-import { bar } from '../usage/report.js';
-import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
-import { accountStatus } from './account-status.js';
-
-/**
- * How wide each window's bar is drawn.
- *
- * Short on purpose: this table carries three of them per row plus a status,
- * and the bar is here to be read at a glance rather than measured. The precise
- * number is printed beside it for anyone who wants it.
- */
-const BAR = 10;
-
-/** Below this a bar says nothing useful, so the number stands on its own. */
-const BAR_MIN = 4;
-
-/** The pick-order cell before each name: two digits and a space. */
-const RANK_W = 3;
+import { codes, paint } from '../ui/style.js';
+import { effectiveUtilization } from '../usage/window-open.js';
+import { normalizeModel } from '../usage/model-preference.js';
+import { arrange, type Block } from './arrange.js';
+import { plainRecent } from './recent.js';
+import { clockTime, drawTable, fit, hhmm } from './table.js';
 
 /** Runway in words: how much of a 5-hour window, and which window binds. */
 function runwayWords(pick: NonNullable<DashboardAccount['pick']>): string {
@@ -173,30 +169,6 @@ function runwayWords(pick: NonNullable<DashboardAccount['pick']>): string {
 function pickWords(pick: NonNullable<DashboardAccount['pick']>): string {
   const held = pick.heldBack ? ` (held back: ${Math.round(pick.heldBack.weekLeft * 100)}% of its week left)` : '';
   return `pick #${pick.rank}${held}, ${runwayWords(pick)}`;
-}
-
-/** Everything in a gauge that is not the bar: a space and a padded percent. */
-const GAUGE_EXTRA = 5;
-
-/**
- * The widest bar that still lets a row fit.
- *
- * Shrinks rather than wraps, and disappears entirely rather than squeezing the
- * numbers out: a row that wraps is unreadable, whereas a row of bare
- * percentages is merely plainer.
- */
-function barWidthFor(width: number | undefined, nameW: number, statusW: number): number {
-  if (!width || width <= 0) return BAR;
-  const fixed = 3 + RANK_W + nameW + 2 + 2 * 2 + 2 + statusW + GAUGE_EXTRA * 3;
-  const each = Math.floor((width - fixed) / 3);
-  if (each >= BAR) return BAR;
-  return each >= BAR_MIN ? each : 0;
-}
-
-/** Shorten a label to fit, marking that something was cut. */
-function fit(text: string, width: number): string {
-  if (width <= 0) return '';
-  return text.length <= width ? text : `${text.slice(0, Math.max(1, width - 1))}…`;
 }
 
 /** Text broken into lines of at most `width`, at spaces; a word too long for one is cut. */
@@ -226,339 +198,174 @@ function fitTail(head: string, text: string, width: number): string {
   return room > 0 ? `${head}…${text.slice(text.length - room)}` : fit(head + text, width);
 }
 
-/**
- * A wait, at the coarsest useful precision: minutes within the hour, hours
- * within the day, then days. Weekly windows are days away, and printing those as
- * "72h0m" is technically right and useless to read.
- */
-function hhmm(epochMs: number, now: number): string {
-  const mins = Math.max(0, Math.round((epochMs - now) / 60000));
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ${mins % 60}m`;
-  const days = Math.floor(hours / 24);
-  const restHours = hours % 24;
-  return restHours === 0 ? `${days}d` : `${days}d ${restHours}h`;
+/** What the title calls this program, with the build drawing it. */
+function titled(version: string | undefined): string {
+  return version ? `ccx ${version}` : 'ccx';
 }
+
+/** The heading each block after the first is drawn under. */
+const BLOCK_HEADING: Record<Block, string | null> = {
+  usable: null,
+  out: 'out of room',
+  off: 'not in rotation',
+};
 
 /**
- * The status as a line of text, from the shared rule.
- *
- * `maxWidth` bounds it because the label can be a model name, which comes from
- * the API and can be any length. Unbounded it sets the column width itself and
- * pushes the whole row past the edge of the terminal. What gets shortened is
- * the LABEL, never the time: "how long until it comes back" is the reason to
- * read this at all, and a truncated wait would be worse than a truncated name.
- */
-function statusText(
-  a: DashboardAccount,
-  now: number,
-  model: string | null = null,
-  maxWidth = Number.MAX_SAFE_INTEGER,
-): string {
-  const status = accountStatus(a, model, now);
-  if (status.state === 'disabled') return 'disabled';
-  if (status.state === 'logged-out') return 'logged out';
-  if (status.state === 'ready') return 'ready';
-
-  const when = status.until ? ` ${hhmm(status.until, now)}` : '';
-  const capped = status.label === 'capped';
-  const tail = capped ? when : ` spent${when}`;
-  const head = capped ? 'capped' : (status.label as string);
-  return `${fit(head, Math.max(3, maxWidth - tail.length))}${tail}`;
-}
-
-/** A colored status dot: green only when the account can actually be used now. */
-function statusColor(a: DashboardAccount, now: number, model: string | null = null): string {
-  const state = accountStatus(a, model, now).state;
-  if (state === 'disabled') return codes.dim;
-  if (state === 'logged-out') return codes.red;
-  return state === 'blocked' ? codes.yellow : codes.green;
-}
-
-
-/**
- * The same scale as `ccx usage`, deliberately.
- *
- * The two pages describe the same numbers, and having one call 90% "amber" and
- * the other call it green taught the operator to distrust both. One function,
- * one meaning, everywhere.
- */
-const shadeFor = shadeForUsed;
-
-/**
- * A window drawn the way the usage page draws it: bar, then the number.
- *
- * A zero-width bar is a real answer, not a failure: on a narrow terminal the
- * number alone still says everything, and it is the wrapping that would make
- * the screen unreadable.
- */
-function gauge(used: number | null, color: boolean, barWidth: number): string {
-  const drawn = barWidth > 0 ? `${paint(bar(used, barWidth), shadeFor(used), color)} ` : '';
-  return `${drawn}${pct(used).padStart(4)}`;
-}
-
-/** Printable width of a gauge, which is what the header has to line up with. */
-function gaugeWidth(barWidth: number): number {
-  return barWidth > 0 ? barWidth + 1 + 4 : 4;
-}
-
-/**
- * A window's utilization as a whole percent, or `?` when nobody has read it.
- *
- * `?` and not `0%`, and not a blank: zero would claim the account is entirely
- * free when the truth is that it has not been measured, and a blank reads as a
- * rendering fault. The usage page says `?` for the same thing, so the two
- * pages answer "unknown" the same way.
- */
-function pct(used: number | null | undefined): string {
-  return typeof used === 'number' ? `${Math.round(used * 100)}%` : '?';
-}
-
-/**
- * Which model the model column is about.
- *
- * ONE model for the whole column, chosen as the one that binds hardest across
- * the accounts. Naming the column after each account's own worst model was
- * worse than naming it "MODEL": the header said FABLE while a row underneath
- * showed that account's Opus number, so the table quietly compared two
- * different things and looked like it was comparing one.
- */
-function columnModel(accounts: DashboardAccount[], now: number): string | null {
-  let best: { name: string; utilization: number; resetsAt?: number | null } | null = null;
-  for (const a of accounts) {
-    for (const m of a.usage?.models ?? []) {
-      if (typeof m.utilization !== 'number') continue;
-      const measured = (x: { utilization: number; resetsAt?: number | null }) => ({
-        used: x.utilization,
-        resetsAt: x.resetsAt,
-      });
-      if (best === null || bindsHarder(measured(m), measured(best), now)) best = m;
-    }
-  }
-  return best?.name ?? null;
-}
-
-/** THAT model's usage for this account, or null when it has no such window. */
-function modelUsedNow(a: DashboardAccount, name: string | null, now: number): number | null {
-  if (!name) return null;
-  const key = name.toLowerCase();
-  const found = (a.usage?.models ?? []).find((m) => m.name.toLowerCase() === key);
-  return found ? effectiveUtilization(found.utilization, found.resetsAt, now) : null;
-}
-
-/** The account-wide numbers as they stand now, so a reset window reads empty. */
-function fiveHourNow(a: DashboardAccount, now: number): number | null {
-  return effectiveUtilization(a.usage?.fiveHour, a.usage?.fiveHourReset, now);
-}
-function weekNow(a: DashboardAccount, now: number): number | null {
-  return effectiveUtilization(a.usage?.sevenDay, a.usage?.sevenDayReset, now);
-}
-
-/**
- * Everything known about the highlighted account, on one line: each window, what
- * it is at, and when it comes back. The table gives the numbers at a glance; this
- * answers "and when can I use it again" without a second command.
+ * What the table has no column for about the highlighted account: who it is,
+ * why it stands where it does in the pick order, and each of its per-model
+ * windows. The 5-hour and week windows are in its row.
  */
 function detailLine(a: DashboardAccount, now: number): string {
-  // Who this account IS, which the table no longer has room to say. The bars
-  // took the width the email and plan columns used to hold, and those are
-  // worth more here anyway: one account at a time, where you are looking.
   const who = [a.email, a.plan, `priority ${a.priority}`].filter(Boolean).join(' · ');
-  const heading = who ? `${a.name} (${who})` : a.name;
+  const heading = `${a.name} (${who})`;
   const u = a.usage;
   if (!u) return `${heading}: no usage read yet`;
-  const picked = a.pick ? [pickWords(a.pick)] : [];
-  const parts = [
-    ...picked,
-    `5h ${pct(effectiveUtilization(u.fiveHour, u.fiveHourReset, now))}${resetSuffix(u.fiveHourReset, now)}`,
-    `week ${pct(effectiveUtilization(u.sevenDay, u.sevenDayReset, now))}${resetSuffix(u.sevenDayReset, now)}`,
-  ];
+  const parts = a.pick ? [pickWords(a.pick)] : [];
   for (const m of u.models ?? []) {
-    parts.push(
-      `${m.name} ${pct(effectiveUtilization(m.utilization, m.resetsAt, now))}${resetSuffix(m.resetsAt, now)}`,
-    );
+    const used = effectiveUtilization(m.utilization, m.resetsAt, now);
+    const left = used === null ? '?' : `${Math.round(Math.max(0, 1 - used) * 100)}%`;
+    const resets = typeof m.resetsAt === 'number' && m.resetsAt > now ? `, resets in ${hhmm(m.resetsAt, now)}` : '';
+    parts.push(`${m.name} ${left} left${resets}`);
   }
-  return `${heading}: ${parts.join('   ')}`;
-}
-
-/** " (back in 3h)" for a window that is in the future, otherwise nothing. */
-function resetSuffix(resetsAt: number | null | undefined, now: number): string {
-  if (typeof resetsAt !== 'number' || resetsAt <= now) return '';
-  return ` (back in ${hhmm(resetsAt, now)})`;
+  return parts.length > 0 ? `${heading}: ${parts.join('   ')}` : heading;
 }
 
 /** Render the full dashboard frame for the given snapshot. */
 export function renderDashboard(snapshot: DashboardSnapshot, options: RenderOptions = {}): string {
   if (options.panel) return renderPanel(snapshot, options.panel, options);
   const color = options.color ?? true;
-  const { accounts, events, now } = snapshot;
-
-  const fullNameW = Math.max('ACCOUNT'.length, ...accounts.map((a) => a.name.length));
-  const nameW0 = fullNameW; // before the width clamp below, for sizing the bars
-  // The model column is named after the model it is showing, so the header
-  // says FABLE rather than MODEL and the row underneath is just a bar.
-  const modelName = columnModel(accounts, now);
-  // A share of the row, not whatever the longest model name happens to be.
-  const statusCap = options.width
-    ? Math.max('logged out'.length, Math.floor(options.width / 3))
-    : Number.MAX_SAFE_INTEGER;
-  const status = (a: DashboardAccount): string => statusText(a, now, modelName, statusCap);
-  const statusW = Math.max('STATUS'.length, ...accounts.map((a) => status(a).length + 2));
-  // The bars give up width before anything else does.
-  const barW = barWidthFor(options.width, nameW0, statusW);
-  const GAUGE_W = gaugeWidth(barW);
-
-  // A column is as wide as the wider of its heading and its contents, so the
-  // two line up at every terminal width. Once the bars are gone the headings
-  // shorten too, rather than pushing the row back over the edge they were just
-  // shrunk to fit inside.
-  // The model name comes from the API and can be any length. Padded without a
-  // bound it set the column width itself, pushing the row past the terminal
-  // and squeezing the account names to nothing.
-  const modelLabel = fit((modelName ?? 'MODEL').toUpperCase(), GAUGE_W);
-  const labels = barW > 0 ? ['5-HOUR', 'WEEK', modelLabel] : ['5H', 'WK', modelLabel];
-  const colW = labels.map((l) => Math.max(GAUGE_W, l.length));
-
-
-  // The NAME is elastic too, once the bars have already gone. A long account
-  // name in a narrow terminal would otherwise push the row over on its own,
-  // and a wrapped row is the thing all of this exists to prevent.
-  const others = 3 + RANK_W + 2 + colW.reduce((a, b) => a + b, 0) + 4 + 2 + statusW;
-  const nameW = Math.min(
-    fullNameW,
-    options.width ? Math.max(3, options.width - others) : fullNameW,
-  );
-
-  // Two-char gutter: selection cursor then active marker, both plain-text
-  // visible so the active row is clear even without color.
-  const rowWidth = Math.min(
-    options.width ?? Number.MAX_SAFE_INTEGER,
-    nameW + others,
-  );
-  const rule = paint('─'.repeat(rowWidth), codes.dim, color);
+  const { now } = snapshot;
   /** What a line of free text has to fit inside: the window, not the table. */
-  const maxLine = options.width ?? Number.MAX_SAFE_INTEGER;
+  const maxLine = options.width && options.width > 0 ? options.width : Number.MAX_SAFE_INTEGER;
+  const placed = arrange(snapshot.accounts, snapshot.model ?? null, now);
+
+  const sessions = new Map<string, number>();
+  for (const s of snapshot.sessions ?? []) sessions.set(s.account, (sessions.get(s.account) ?? 0) + 1);
+  // The account the line under the table names, so the two cannot point at
+  // different rows. With no such line, the first pick.
+  const next = snapshot.whenOut
+    ? snapshot.whenOut.account
+    : placed.find((p) => p.account.pick?.rank === 1)?.account.name;
+  const table = drawTable(
+    { placed, now, model: snapshot.model ?? null, sessions, next },
+    {
+      color,
+      clock: options.clock ?? clockTime,
+      ...(options.width ? { width: options.width } : {}),
+      ...(options.selected !== undefined ? { selected: options.selected } : {}),
+    },
+  );
 
   // The build is on screen, not just in the log. A report of "it did X" has to
   // be tied to the code that did X, and the live view is where someone is
   // looking when they notice the X.
-  const named = snapshot.version ? `claude-auto-switch ${snapshot.version}` : 'claude-auto-switch';
-  // Measured, not assumed to be a fixed 21 columns. The version made the title
-  // longer, and a hard-coded width would have let a narrow terminal wrap the
-  // one line that says what this screen is.
-  const shownTitle = fit(named, maxLine);
-  const title = paint(shownTitle, codes.bold, color);
-  const active = accounts.find((a) => a.active);
-  // "prefers", not "on": the dashboard is not inside a session and cannot know
-  // which model one is actually running. After a fallback the session can be on
-  // Opus while the preference is still Fable, and the title would have said so
-  // with confidence.
-  const onModel = snapshot.model ? ` · prefers ${snapshot.model}` : '';
-  const subtitle = fit(
-    `active: ${active?.name ?? 'none'}${onModel}`,
-    Math.max(0, maxLine - shownTitle.length - 3),
-  );
-  const titleLine = `${title}   ${paint(subtitle, codes.dim, color)}`;
+  const named = fit(titled(snapshot.version), maxLine);
+  const active = snapshot.accounts.find((a) => a.active);
+  // "first", not "on": the dashboard is not inside a session and cannot know
+  // which model one is actually running. After a fallback a session can be on
+  // Opus while the preference still puts Fable first.
+  const model = snapshot.model ? normalizeModel(snapshot.model) : '';
+  const first = model ? ` · ${model.charAt(0).toUpperCase()}${model.slice(1)} first` : '';
+  const starts = active ? `new sessions start on ${active.name}` : 'no account chosen for new sessions';
+  // The frame is as wide as the table, or the title when that is wider, and
+  // the right-hand side of the title ends where the rules do.
+  const frameW = Math.min(maxLine, Math.max(table.width, named.length + 3 + starts.length + first.length));
+  const room = Math.max(0, frameW - named.length - 3);
+  const subtitle = (starts + first).length <= room ? starts + first : fit(starts, room);
+  const title = paint(named, codes.bold, color);
+  const titleLine =
+    subtitle === ''
+      ? title
+      : `${title}${' '.repeat(frameW - named.length - subtitle.length)}${paint(subtitle, codes.dim, color)}`;
+  const rule = paint('─'.repeat(frameW), codes.dim, color);
 
-  const header = paint(
-    `   ${'#'.padStart(RANK_W - 1)} ${fit('ACCOUNT', nameW).padEnd(nameW)}  ${labels
-      .map((l, i) => l.padEnd(colW[i] as number))
-      .join('  ')}  STATUS`,
-    codes.dim,
-    color,
-  );
-
-  const rows = accounts.map((a, i) => {
-    const cursor = i === options.selected ? paint('▸', codes.cyan, color) : ' ';
-    const marker = a.active ? paint('*', codes.cyan, color) : ' ';
-    const shown = fit(a.name, nameW).padEnd(nameW);
-    const name = a.active ? paint(shown, `${codes.bold}${codes.cyan}`, color) : shown;
-    // Each window drawn on its own, so a spent model window is visible even
-    // when the hour and the week are healthy. Collapsing them into one number
-    // hid exactly the one that stops you.
-    // Padded by VISIBLE width: a gauge carries colour codes, so padding by
-    // string length would count the escape bytes and leave every coloured
-    // cell short.
-    const pad = (text: string, i: number): string =>
-      text + ' '.repeat(Math.max(0, (colW[i] as number) - GAUGE_W));
-    const five = pad(gauge(fiveHourNow(a, now), color, barW), 0);
-    const week = pad(gauge(weekNow(a, now), color, barW), 1);
-    const model = pad(gauge(modelUsedNow(a, modelName, now), color, barW), 2);
-    const dot = paint('●', statusColor(a, now, modelName), color);
-    // Where rotation would pick it, 1 being next; a dot when it would not.
-    const rankText = (a.pick ? String(a.pick.rank) : '·').padStart(RANK_W - 1);
-    const rank = paint(rankText, a.pick?.rank === 1 ? codes.cyan : codes.dim, color);
-    return `${cursor}${marker} ${rank} ${name}  ${five}  ${week}  ${model}  ${dot} ${status(a)}`;
-  });
-
-  const lines = [titleLine, rule, header, ...rows, rule];
-
-  // An empty table is not an answer. Someone seeing this has just installed
-  // ccx, and the screen should say what to do rather than showing a header
-  // with nothing under it and leaving them to guess whether it is broken.
-  if (accounts.length === 0) {
-    lines.push(paint(fit('  no accounts yet. add one with:  ccx add <name>', maxLine), codes.yellow, color));
-    lines.push(rule);
+  const lines = [titleLine, rule];
+  if (placed.length === 0) {
+    // An empty table is not an answer. Someone seeing this has just installed
+    // ccx, and the screen should say what to do rather than showing a header
+    // with nothing under it and leaving them to guess whether it is broken.
+    lines.push(paint(fit(' no accounts yet. add one with:  ccx add <name>', maxLine), codes.yellow, color));
+  } else {
+    lines.push(table.header);
+    let block: Block = 'usable';
+    for (const row of table.rows) {
+      const heading = row.block === block ? null : BLOCK_HEADING[row.block];
+      block = row.block;
+      if (heading) {
+        const lead = fit(`── ${heading} `, frameW);
+        lines.push(paint(`${lead}${'─'.repeat(Math.max(0, frameW - lead.length))}`, codes.dim, color));
+      }
+      lines.push(row.line);
+    }
   }
+  lines.push(rule);
 
-  // What the table cannot show: where rotation will actually send this session
-  // when the current account runs out. Every other tool can only report the
-  // state it is in; ccx knows the policy and the numbers, so it can say what
-  // happens next before it happens.
-  if (snapshot.nextUp) {
-    lines.push(paint(fit(`  next → ${snapshot.nextUp}`, maxLine), codes.cyan, color));
+  // What the table cannot show: where a session goes when its account runs
+  // out. Every other tool can only report the state it is in; ccx knows the
+  // policy and the numbers, so it can say what happens next before it happens.
+  if (snapshot.whenOut) {
+    lines.push(paint(fit(` when one runs out → ${snapshot.whenOut.words}`, maxLine), codes.cyan, color));
   }
 
   // The settings rotation runs on, with the keys that change them, so they can
   // be seen and changed here rather than looked up.
   if (snapshot.settings) {
     const held = snapshot.settings.holdBack ? `  ·  held back: ${snapshot.settings.holdBack}` : '';
-    const now = `model: ${snapshot.settings.model}  ·  pick: ${snapshot.settings.order}${held}`;
+    const values = `model: ${snapshot.settings.model}  ·  pick: ${snapshot.settings.order}${held}`;
     if (options.interactive) {
       // Led by the key that opens every setting, in bright, where a narrow
       // terminal cannot cut it off: at the end of the line, in grey like the
       // rest, it was there and nobody saw it. (M and o still change the model
       // and the pick rule from here.)
-      const line = fit(`  s settings  ·  ${now}`, maxLine);
+      const line = fit(` s settings  ·  ${values}`, maxLine);
       lines.push(
-        line.length > 3 ? `  ${paint('s', codes.bold, color)}${paint(line.slice(3), codes.dim, color)}` : line,
+        line.length > 2 ? ` ${paint('s', codes.bold, color)}${paint(line.slice(2), codes.dim, color)}` : line,
       );
     } else {
-      lines.push(paint(fit(`  ${now}`, maxLine), codes.dim, color));
+      lines.push(paint(fit(` ${values}`, maxLine), codes.dim, color));
     }
   }
 
-  // Which session is on which account, numbered the way Enter and f ask
-  // about them when more than one is running.
-  if (snapshot.sessions && snapshot.sessions.length > 0) {
-    const each = snapshot.sessions.map((s) => `${s.number} ${s.where} on ${s.account}`).join('  ·  ');
-    lines.push(paint(fit(`  sessions: ${each}`, maxLine), codes.dim, color));
+  // A session keeps running on an account that was removed until it next
+  // moves. It has no row to be counted in, so it is said here.
+  const listed = new Set(snapshot.accounts.map((a) => a.name));
+  const stray = [...sessions].filter(([name]) => !listed.has(name));
+  if (stray.length > 0) {
+    const count = stray.reduce((n, [, running]) => n + running, 0);
+    const where = stray.length === 1 ? 'an account' : 'accounts';
+    lines.push(
+      paint(
+        fit(
+          ` ${count} session${count === 1 ? '' : 's'} on ${where} no longer here: ${stray.map(([name]) => name).join(', ')}`,
+          maxLine,
+        ),
+        codes.yellow,
+        color,
+      ),
+    );
   }
 
   // Claude Desktop runs on its own account, which ccx cannot switch, so it gets
   // a line of its own: what it is spending, and the keys that move its
   // conversations somewhere ccx can.
   if (snapshot.desktop) {
-    lines.push(paint(fit(`  ${snapshot.desktop.line}`, maxLine), codes.magenta, color));
+    lines.push(paint(fit(` ${snapshot.desktop.line}`, maxLine), codes.magenta, color));
     if (options.interactive) {
-      lines.push(paint(fit(`    ${snapshot.desktop.keys}`, maxLine), codes.dim, color));
+      lines.push(paint(fit(`   ${snapshot.desktop.keys}`, maxLine), codes.dim, color));
     }
   }
 
-  // Everything about the highlighted account, including when each window returns.
-  const highlighted = accounts[options.selected ?? 0];
+  const highlighted = placed[options.selected ?? 0]?.account;
   if (options.interactive && highlighted) {
-    lines.push(paint(fit(`  ${detailLine(highlighted, now)}`, maxLine), codes.dim, color));
-    lines.push(rule);
+    lines.push(paint(fit(` ${detailLine(highlighted, now)}`, maxLine), codes.dim, color));
   }
 
-  if (events.length > 0) {
-    for (const e of events.slice(-5)) lines.push(paint(fit(`  ${e}`, maxLine), codes.dim, color));
-    lines.push(rule);
-  }
+  plainRecent(snapshot.events).forEach((event, i) => {
+    lines.push(paint(fit(`${i === 0 ? ' recent  ' : '         '}${event}`, maxLine), codes.dim, color));
+  });
 
-  lines.push(...footer(options, maxLine, color, MAIN_HINTS));
+  const bottom = footer(options, maxLine, color, MAIN_HINTS);
+  if (bottom.length > 0) lines.push(rule, ...bottom);
   return lines.join('\n');
 }
 
@@ -679,7 +486,7 @@ function renderPanel(snapshot: DashboardSnapshot, panel: SettingsPanel, options:
   const color = options.color ?? true;
   const maxLine = options.width ?? Number.MAX_SAFE_INTEGER;
   const rule = paint('─'.repeat(Math.min(maxLine, 100)), codes.dim, color);
-  const named = snapshot.version ? `claude-auto-switch ${snapshot.version}` : 'claude-auto-switch';
+  const named = titled(snapshot.version);
   const title = `${paint(fit(named, maxLine), codes.bold, color)}   ${paint(fit('settings', Math.max(0, maxLine - named.length - 3)), codes.dim, color)}`;
 
   // The labels give up width only on a terminal too narrow for them and a
