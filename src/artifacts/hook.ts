@@ -364,7 +364,7 @@ export async function batchArtifactCalls(input: HookInput, env: HookEnv): Promis
  * say, since the scan is how owners get recorded before they are turned on.
  */
 async function beforeScanCall(input: HookInput, env: HookEnv, scanDir: string): Promise<HookAnswer> {
-  if (!sessionLease(env.sessionDir, env.ctx, env.leaseOptions) && !hopsOpen(env.sessionDir)) return null;
+  // Only the scan's own Claude has a scan folder, so no call in it goes out unassigned.
   if (readCall(input.tool_input, word(input.cwd)).action !== 'list') {
     return { deny: 'ccx: this session only lists pages, for ccx artifacts scan. No other Artifact action is allowed in it.' };
   }

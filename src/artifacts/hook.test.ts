@@ -617,6 +617,16 @@ describe('in the one Claude ccx artifacts scan runs', () => {
     ]);
   });
 
+  it('refuses its calls even when neither its lease nor a ccx answering for its folder can be seen', async () => {
+    const s = scanning();
+    releaseLease('work', s.ctx);
+    rmSync(hopDir(s.sessionDir), { recursive: true, force: true });
+    const list = await beforeArtifactCall(s.call(LIST, 'toolu_a'), s.env);
+    expect(list && 'deny' in list && list.deny).toContain('Go on to the next call');
+    const publish = await beforeArtifactCall(s.call({ file_path: FILE }, 'toolu_b'), s.env);
+    expect(publish && 'deny' in publish && publish.deny).toContain('only lists pages');
+  });
+
   it('refuses a list call it could not give an account, rather than let it list whichever the session is on', async () => {
     const s = scanning();
     s.wrapper();
