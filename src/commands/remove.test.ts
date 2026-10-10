@@ -230,6 +230,32 @@ describe('ccx remove --purge', () => {
     expect(getAccount('custom', ctx)).toBeDefined();
   });
 
+  it('never deletes a folder it reaches through a link out of the profiles tree: clears the login, leaves the rest', () => {
+    const { context, ctx, said, home } = setup();
+    const outside = path.join(home, 'outside');
+    const child = path.join(outside, 'child');
+    mkdirSync(child, { recursive: true });
+    writeFileSync(path.join(child, 'keep.txt'), 'keep', 'utf8');
+    writeFileSync(credentialPath(child), login('escaped'), 'utf8');
+    setTarget(path.join(home, 'profiles', 'link'), outside);
+    const registered = path.join(home, 'profiles', 'link', 'child');
+    addAccount({ name: 'escaped', dir: registered }, ctx);
+
+    expect(removeCommand(context, 'escaped', { purge: true }, nothingRunning)).toBe(0);
+    expect(existsSync(path.join(child, 'keep.txt'))).toBe(true);
+    expect(existsSync(credentialPath(child))).toBe(false);
+    expect(getAccount('escaped', ctx)).toBeUndefined();
+    expect(said.join('\n')).toContain(`deregistered "escaped", but did NOT purge ${registered}`);
+  });
+
+  it('purges an account whose folder is already gone, as one of its own', () => {
+    const { context, ctx, said, dirOf } = setup();
+    rmSync(dirOf('spare'), { recursive: true, force: true });
+    expect(removeCommand(context, 'spare', { purge: true }, nothingRunning)).toBe(0);
+    expect(getAccount('spare', ctx)).toBeUndefined();
+    expect(said).toEqual([`removed "spare" and purged ${dirOf('spare')}`]);
+  });
+
   it('waits for sessions because one saving its login back recreates a deleted folder', () => {
     // What a running session does when its login is renewed and when it ends:
     // the purge would be undone, and the account it restored no longer listed.

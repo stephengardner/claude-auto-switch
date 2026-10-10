@@ -171,6 +171,36 @@ describe('what removing an account would touch', () => {
     addAccount({ name: 'custom', dir: elsewhere }, ctx);
     expect(standing('custom')?.folderIsOurs).toBe(false);
   });
+
+  it('knows a folder reached through a link out of the profiles tree is not one ccx deletes', () => {
+    // Its path reads as inside the tree; a delete would follow the link out of it.
+    const { standing, home, ctx } = setup();
+    const outside = path.join(home, 'outside');
+    mkdirSync(path.join(outside, 'child'), { recursive: true });
+    setTarget(path.join(home, 'profiles', 'link'), outside);
+    addAccount({ name: 'escaped', dir: path.join(home, 'profiles', 'link', 'child') }, ctx);
+    expect(standing('escaped')?.folderIsOurs).toBe(false);
+  });
+
+  it('still takes a folder for ours when the profiles tree is itself reached through a link', () => {
+    const { home, ctx } = setup();
+    const real = path.join(home, 'real-profiles');
+    mkdirSync(path.join(real, 'moved'), { recursive: true });
+    const linked = path.join(home, 'linked-profiles');
+    setTarget(linked, real);
+    addAccount({ name: 'moved', dir: path.join(linked, 'moved') }, ctx);
+    expect(removalStanding('moved', { profilesDir: linked }, ctx, () => [])?.folderIsOurs).toBe(
+      true,
+    );
+  });
+
+  it('still takes a folder that is not there for ours by where it would be', () => {
+    // Nothing to follow at the last step, so it is placed under where its
+    // parent lands: the temp folder is itself reached through a link on a Mac.
+    const { standing, home, ctx } = setup();
+    addAccount({ name: 'ghost', dir: path.join(home, 'profiles', 'ghost') }, ctx);
+    expect(standing('ghost')?.folderIsOurs).toBe(true);
+  });
 });
 
 describe('when an account folder may be deleted', () => {

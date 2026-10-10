@@ -63,21 +63,33 @@ export function removalStanding(
     editor: taken(editorLinkPath(c)),
     daemon: taken(activeLinkPath(configHome(c))),
     others: accounts.filter((a) => a.name !== name && taken(a.dir)).map((a) => a.name),
-    folderIsOurs: isInside(profilesDir(config, c), account.dir),
+    // Where it lands, not how its path reads: a delete follows a link in the
+    // path, so one that reads as inside the tree can land outside it.
+    folderIsOurs: isInside(landsOn(profilesDir(config, c)), here),
   };
 }
 
 /**
  * The folder a path lands on, through any links. Two paths are one folder when
  * they land on the same place, which their text cannot tell: one may be a link
- * to the other, or another spelling of it. A path with nothing at it lands
- * nowhere, and stands as its own text.
+ * to the other, or another spelling of it.
+ *
+ * A path with nothing at its end is placed under wherever the last part of it
+ * that exists lands, so a folder that is gone still compares with its
+ * neighbours, and a link left pointing at nothing counts as where the link is.
  */
 function landsOn(target: string): string {
-  try {
-    return realpathSync.native(target);
-  } catch {
-    return path.resolve(target);
+  const missing: string[] = [];
+  let existing = path.resolve(target);
+  for (;;) {
+    try {
+      return path.join(realpathSync.native(existing), ...missing);
+    } catch {
+      const parent = path.dirname(existing);
+      if (parent === existing) return path.resolve(target);
+      missing.unshift(path.basename(existing));
+      existing = parent;
+    }
   }
 }
 
