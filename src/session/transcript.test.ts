@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRefusalFollower, findTranscript, refusalIn } from './transcript.js';
@@ -268,6 +268,53 @@ describe('following the subagents of a conversation', () => {
     appendFileSync(file, line(answered));
     expect(follow.poll(ID).subagentsWrote).toBe(false);
   });
+
+  // Unreadable by permission, which only POSIX enforces, and not for root.
+  const canDenyReading = process.platform !== 'win32' && process.getuid?.() !== 0;
+
+  it.skipIf(!canDenyReading)(
+    "counts a subagent's record it cannot read as one that may be working",
+    () => {
+      // Not knowing must not read as quiet: ccx ends Claude only once its
+      // subagents have been quiet for a while.
+      const { dir, file } = config();
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, line(answered));
+      const follow = createRefusalFollower(dir);
+      follow.poll(ID);
+      const record = subagent(file, 'a1');
+      mkdirSync(path.dirname(record), { recursive: true });
+      writeFileSync(record, line(answered));
+      chmodSync(record, 0o000);
+      try {
+        expect(follow.poll(ID).subagentsWrote).toBe(true);
+      } finally {
+        chmodSync(record, 0o600);
+      }
+    },
+  );
+
+  it.skipIf(!canDenyReading)(
+    'counts a conversation record it cannot read as one whose subagents may be working',
+    () => {
+      const { dir, file } = config();
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, line(answered));
+      const follow = createRefusalFollower(dir);
+      follow.poll(ID);
+      appendFileSync(file, line(answered));
+      chmodSync(file, 0o000);
+      try {
+        expect(follow.poll(ID)).toMatchObject({ readable: false, subagentsWrote: true });
+      } finally {
+        chmodSync(file, 0o600);
+      }
+      // No conversation record yet is not a failure to read one.
+      expect(
+        createRefusalFollower(dir).poll('99999999-8888-4777-8666-555555555555').subagentsWrote,
+      ).toBe(false);
+    },
+  );
 
   it('does not follow the subagents of another conversation', () => {
     const { dir, file } = config();

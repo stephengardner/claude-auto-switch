@@ -438,9 +438,15 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
     if (workingUntil > 0) {
       const file = path.join(path.dirname(transcript), recordedId, 'subagents', 'agent-aworker.jsonl');
       mkdirSync(path.dirname(file), { recursive: true });
+      const step = () =>
+        appendFileSync(
+          file,
+          `${JSON.stringify({ type: 'assistant', isSidechain: true, agentId: 'aworker', timestamp: new Date().toISOString() })}\n`,
+        );
+      // At once, so the record is there before anyone first looks at it.
+      step();
       const working = setInterval(() => {
-        const step = { type: 'assistant', isSidechain: true, agentId: 'aworker', timestamp: new Date().toISOString() };
-        appendFileSync(file, `${JSON.stringify(step)}\n`);
+        step();
         if (Date.now() - startedAt < workingUntil) return;
         clearInterval(working);
         if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'subagent-done' })}\n`, 'utf8');

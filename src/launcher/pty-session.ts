@@ -15,7 +15,7 @@ import type { SessionOutcome } from './hot-swap.js';
 import { wantsExistingConversation, conversationIdIn } from './conversation.js';
 import { idleForMs, readLiveConversation, readLiveStatus } from '../session/live-conversation.js';
 import { ACCOUNT_ENV, withoutEnv } from './child-env.js';
-import { createCarryOn, type CarryOn, type CarryOnTiming } from './carry-on.js';
+import { createCarryOn, inputBoxEmpty, type CarryOn, type CarryOnTiming } from './carry-on.js';
 import { createKeyboardWatch } from './keyboard-watch.js';
 import { createPasteModeWatch, pasteAndSend } from './paste-mode.js';
 
@@ -56,6 +56,15 @@ export type CarryOnEvent =
 
 type Hit = { reason?: string; resetAt?: number };
 
+/**
+ * Why Claude cannot be ended now without cutting something off. `silent`:
+ * Claude keeps no record of what it is doing, so ccx never knows.
+ */
+export interface RestartBlocker {
+  kind: 'silent' | 'working' | 'draft' | 'subagent' | 'headless';
+  why: string;
+}
+
 export interface PtySessionOptions {
   claude: ClaudeInvoker;
   args: string[];
@@ -69,12 +78,14 @@ export interface PtySessionOptions {
    * Polled periodically; return an account name when the operator has picked a
    * different account mid-session, and the child is ended so the swap loop
    * relaunches, resuming this conversation on it. Return null to keep running.
-   * `claudeIdle` says whether Claude has been idle long enough to be ended
-   * without cutting off a turn, a subagent or a background command.
+   * `restartBlocker` says what ending Claude now would cut off, or null when
+   * nothing would: a turn, a subagent, a background command or monitor, or a
+   * prompt somebody is writing.
    */
-  switchWatch?: (claudeIdle: () => boolean) => string | null;
+  switchWatch?: (restartBlocker: () => RestartBlocker | null) => string | null;
   /**
-   * How long Claude must have been idle before ccx ends it for anything but
+   * How long Claude must have been idle, nobody must have pressed a key, and
+   * no subagent's record must have grown, before ccx ends it for anything but
    * a limit: a newer ccx taking over, or a switch it cannot make in place.
    * Injected in tests; production waits 20 s.
    */
@@ -254,6 +265,15 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     /** When a subagent's record was last seen to grow: it was running then. */
     let subagentWroteAt = 0;
     /**
+     * The conversation whose subagents are being watched, and since when. A
+     * record that was already there when watching began is not news, so
+     * until it has been watched for a while ccx cannot say no subagent is
+     * at work.
+     */
+    let watched: { conversation: string | null; since: number } = { conversation: null, since: 0 };
+    /** When the records were last read: a subagent is known to be quiet only up to then. */
+    let recordCheckedAt = 0;
+    /**
      * How long an UNPROVEN limit holds a pairing out of rotation.
      *
      * Nothing was measured, so there is no window to report. Long enough to
@@ -346,12 +366,19 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      * is what decides whether a session hit a wall, whatever the screen says.
      */
     const checkRecord = (): void => {
-      if (options.ignoreLimits || cap.isSet() || switching || pendingCapRelief || noConversation) return;
+      if (cap.isSet() || switching || pendingCapRelief || noConversation) return;
       const seen = record.poll(lastConversation);
+      recordCheckedAt = Date.now();
       recordReadable = seen.readable;
+      // Read in every run, limits watched or not: whether the input box is
+      // empty and whether a subagent is working decide when Claude may be ended.
       // Before the refusals: one that follows a prompt is judged against it.
       if (seen.promptAt !== null) lastPromptAt = Math.max(lastPromptAt, seen.promptAt);
       if (seen.subagentsWrote) subagentWroteAt = Date.now();
+      if (lastConversation !== null && lastConversation !== watched.conversation) {
+        watched = { conversation: lastConversation, since: Date.now() };
+      }
+      if (options.ignoreLimits) return;
       for (const refusal of seen.refusals) {
         const { text, hit } = hitOf(refusal);
         onLimitEvidence(hit, text, refusal.sidechain);
@@ -404,11 +431,42 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      * turn in progress is never ended for an update or a requested switch.
      */
     const RESTART_IDLE_MS = options.idleBeforeRestartMs ?? 20_000;
-    /** Whether Claude says it has been idle that long; never when it does not say. */
-    const claudeIdle = (): boolean => {
-      if (!child.pid) return false;
+    /**
+     * What ending Claude now would cut off, or null when nothing would. Its
+     * own status covers a turn, a subagent (busy) and a background command or
+     * monitor (shell), measured on 2.1.296; a subagent's record still growing
+     * is checked as well, in case a status says idle with one at work. And a
+     * person: a draft in the input box, however long ago it was typed, which
+     * a restart throws away.
+     */
+    const restartBlocker = (): RestartBlocker | null => {
+      if (!child.pid) return { kind: 'working', why: 'Claude has not started yet' };
       const idle = idleForMs(options.configDir, child.pid, startedAt);
-      return idle !== null && idle >= RESTART_IDLE_MS;
+      if (idle === null && readLiveStatus(options.configDir, child.pid, startedAt) === null) {
+        return { kind: 'silent', why: 'Claude does not say whether it is idle' };
+      }
+      if (idle === null || idle < RESTART_IDLE_MS) return { kind: 'working', why: 'Claude is working' };
+      // A person: anything in the box but a prompt Claude has recorded since
+      // the last key. A key that sent a prompt started a turn, which the idle
+      // time above already waited out, so only what is left in the box counts.
+      if (
+        !inputBoxEmpty({
+          lastKeyAt: keyboard.lastKeyAt(),
+          endedOnEnter: keyboard.endedOnEnter(),
+          promptAt: lastPromptAt,
+        })
+      ) {
+        return { kind: 'draft', why: 'something is typed in its input box' };
+      }
+      // Measured up to the last read of the records, not to now: a write
+      // since then has not been seen yet.
+      if (subagentWroteAt > 0 && recordCheckedAt - subagentWroteAt < RESTART_IDLE_MS) {
+        return { kind: 'subagent', why: 'a subagent is still working' };
+      }
+      if (watched.since === 0 || recordCheckedAt - watched.since < RESTART_IDLE_MS) {
+        return { kind: 'subagent', why: 'its subagents have not been watched long enough to tell' };
+      }
+      return null;
     };
     let handover = false;
     const checkHandover = (): void => {
@@ -416,7 +474,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // A session that has not yet been told to carry on is idle because it is
       // waiting for that, and the newer ccx would resume it with nothing said.
       if (carryOn) return;
-      if (!options.handoverWhenIdle?.() || !claudeIdle()) return;
+      if (!options.handoverWhenIdle?.() || restartBlocker() !== null) return;
       handover = true;
       safeKill();
     };
@@ -555,7 +613,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
           }
           stepCarryOn();
           if (!options.switchWatch || cap.isSet() || switching || noConversation) return;
-          const target = options.switchWatch(claudeIdle);
+          const target = options.switchWatch(restartBlocker);
           if (target) {
             switching = target;
             setTimeout(safeKill, 80);

@@ -34,8 +34,13 @@ logins on renewal, so ccx refuses such a sign-in and keeps the previous login.
 **A config folder per session.** Claude reads its login from its config folder
 (`CLAUDE_CONFIG_DIR`). ccx runs each session on its own folder,
 `~/.claude-auto-switch/sessions/<pid>`, holding that session's login. Changing
-account means replacing that login; Claude picks it up at its next request,
-without a restart.
+account means replacing that login, without a restart. Claude picks it up at
+its next request, because ccx then changes the time on the folder's
+`.credentials.json`, which Claude watches. When Claude has moved the session's
+login into the macOS Keychain itself, which leaves no such file, ccx creates
+it as `{}`, which holds no login, for the same reason. Only if that cannot be
+done may Claude keep using the previous login for up to about 30 seconds after
+a move.
 
 **Everything else is your `~/.claude`.** The session folder links your projects
 and transcripts, prompt history, `/rewind` checkpoints, plugins, skills, agents,

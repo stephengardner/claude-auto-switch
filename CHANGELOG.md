@@ -50,18 +50,6 @@ semantic versioning.
   went out as the old account without that signal, and as the new one with
   it.
 
-### Fixed
-
-- **A move in place on a Mac whose session login Claude had saved to the
-  Keychain itself could still go out as the old account for 30 seconds.**
-  Claude removes the session's `.credentials.json` once it saves the login
-  there, so the time 2.5.2 changes after a move had no file to change, and
-  requests in those 30 seconds (a page published for one call among them)
-  went out on the login Claude still held. ccx now creates that file as `{}` in that
-  case, which Claude takes as a change and which holds no login: Claude and
-  ccx read the Keychain first, and on its own `{}` reads as signed out, so it
-  is never saved over a login.
-
 - **`ccx artifacts`** lists the pages ccx has recorded and the account that
   owns each, and **`ccx artifacts scan`** asks each signed-in account for the
   pages it already has, with one headless Claude. The scan is best effort:
@@ -77,6 +65,49 @@ semantic versioning.
   settings off, or name an account that is gone, and gives the `ccx config`
   line that fixes each. Renaming an account carries its pages and the setting
   with it.
+
+### Fixed
+
+- **A moved session on a Mac could still go out as the old account for 30
+  seconds when Claude had saved its login to the Keychain itself.** That
+  leaves the session folder with no `.credentials.json` (as 2.5.3 noted), so
+  the time ccx changes after a move had no file to change, and requests in
+  those 30 seconds, a page published for one call among them, went out on
+  the login Claude still held. ccx now creates the file as `{}` in that case,
+  which Claude takes as a change and which holds no login: Claude and ccx
+  read the Keychain first, and on its own `{}` reads as signed out, so it is
+  never saved over a login.
+
+## [2.5.3]
+
+### Fixed
+
+- **Ending an idle Claude could throw away a prompt being written, or a
+  subagent at work.** ccx ends Claude without a limit in two cases: a newer
+  ccx taking the session over, and a switch it cannot make in place (a
+  session started with a long-lived token, or an account with only a
+  token). It waited for Claude's own record to say it had been idle for 20
+  seconds, and nothing else. Now it also waits until the input box is empty
+  (nobody has typed in this Claude, or the last key sent a prompt Claude
+  recorded), so a draft is never lost, however long ago it was typed; and
+  until no subagent's record has grown for 20 seconds, counted only after
+  ccx has watched them that long; a record it cannot read counts as one
+  that may be working. Measured on Claude 2.1.296: a running
+  background subagent already keeps Claude's record at "busy", and a
+  background command or a Monitor at "shell", so neither was ended; the
+  subagent check is there in case a status says idle with one at work. Not
+  measured: a scheduled task waiting to fire.
+- **A switch that will not happen said it would.** For a Claude that keeps
+  no record of whether it is idle, ccx said it would restart the session
+  "once Claude is idle", which never comes. It now says the session is not
+  restarted for it, and that `ccx use <name> --now` does.
+- **The README, and the 2.5.2 notes, said a moved session picks up its new
+  login at its next request.** That holds while the login is in the session
+  folder's `.credentials.json`, whose time ccx changes after a move. When
+  Claude has moved the session's login into the macOS Keychain itself, the
+  folder has no such file (every Keychain session folder on one machine,
+  checked), and Claude may keep using the previous login for up to about 30
+  seconds after a move.
 
 ## [2.5.2]
 
