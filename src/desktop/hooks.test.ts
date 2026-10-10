@@ -12,8 +12,8 @@ import {
   readInstalledHandoff,
   refreshDesktopHooks,
   withoutDesktopHooks,
-  type HookProgram,
 } from './hooks.js';
+import type { HookProgram } from '../claude/settings-hooks.js';
 import type { PathCtx } from '../config/paths.js';
 
 /** The user's own hook, which must survive everything ccx does. */

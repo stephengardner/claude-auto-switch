@@ -19,6 +19,7 @@ import {
   clearCredential,
   keepForRollback,
   nudgeLoginReread,
+  REREAD_PLACEHOLDER,
 } from './credential-vault.js';
 
 function dir(): string {
@@ -217,10 +218,48 @@ describe('nudgeLoginReread', () => {
     expect(readFileSync(file).equals(before)).toBe(true);
   });
 
-  it('creates nothing when there is no login file', () => {
+  it('creates nothing when there is no login at all', () => {
     const d = dir();
-    nudgeLoginReread(d);
+    const none = { keychainHolds: () => false };
+    expect(nudgeLoginReread(d, new Date(), none)).toBe(true);
     expect(existsSync(path.join(d, '.credentials.json'))).toBe(false);
-    expect(() => nudgeLoginReread(path.join(d, 'no-such-folder'))).not.toThrow();
+    expect(nudgeLoginReread(path.join(d, 'no-such-folder'), new Date(), none)).toBe(true);
+  });
+
+  it('makes the file appear, holding no login, when the login is in the Keychain and the file is gone', () => {
+    // Measured on macOS: once Claude saves the login to the Keychain the file goes,
+    // and a session moved then goes on as the account it left.
+    const d = dir();
+    const file = path.join(d, '.credentials.json');
+    expect(nudgeLoginReread(d, new Date(), { keychainHolds: () => true })).toBe(true);
+    expect(readFileSync(file, 'utf8')).toBe(REREAD_PLACEHOLDER);
+    expect(JSON.parse(REREAD_PLACEHOLDER)).toEqual({});
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('moves the time on every nudge after that, and never writes over the file', () => {
+    const d = dir();
+    const file = path.join(d, '.credentials.json');
+    const keychain = { keychainHolds: () => true };
+    nudgeLoginReread(d, new Date(1_000_000), keychain);
+    nudgeLoginReread(d, new Date(5_000_000), keychain);
+    expect(statSync(file).mtimeMs).toBe(5_000_000);
+    nudgeLoginReread(d, new Date(9_000_000), keychain);
+    expect(statSync(file).mtimeMs).toBe(9_000_000);
+    expect(readFileSync(file, 'utf8')).toBe(REREAD_PLACEHOLDER);
+  });
+
+  it('says so, without throwing, when the time cannot be changed', () => {
+    const d = dir();
+    const blocked = path.join(d, 'a-file-not-a-folder');
+    writeFileSync(blocked, 'x', 'utf8');
+    expect(nudgeLoginReread(blocked, new Date(), { keychainHolds: () => true })).toBe(false);
+    expect(
+      nudgeLoginReread(d, new Date(), {
+        keychainHolds: () => {
+          throw new Error('locked');
+        },
+      }),
+    ).toBe(false);
   });
 });

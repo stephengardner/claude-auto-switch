@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fetchTokenOwner, verifyAccountIdentities } from './identity-check.js';
 import {
+  clearCredential,
+  credentialFileFingerprint,
   credentialFingerprint,
   credentialPath,
+  hasUsableLogin,
   installCredential,
+  isUsableCredential,
+  nudgeLoginReread,
+  REREAD_PLACEHOLDER,
   rollbackCredential,
 } from './credential-vault.js';
 import { hasLogin } from './account-login.js';
@@ -405,5 +411,76 @@ describe('Keychain-only profiles', () => {
       }),
     ).toEqual(['sibling']);
     expect(readOauthToken(credentialPath(sibling))).toBe('renewed');
+  });
+});
+
+/**
+ * A session whose login Claude has saved to the Keychain has no login file,
+ * and a file has to appear for a running Claude to read the login again (see
+ * nudgeLoginReread). What appears must never pass for a login.
+ */
+describe('the empty file that makes Claude read a Keychain login again', () => {
+  let session: string;
+  beforeEach(() => {
+    session = path.join(home, 'sessions', '4242');
+    mkdirSync(session, { recursive: true });
+    keychain.set(session, credential('session-token'));
+  });
+
+  it('appears where the Keychain holds the login and the file is gone, and holds no login', () => {
+    expect(existsSync(credentialPath(session))).toBe(false);
+    expect(nudgeLoginReread(session)).toBe(true);
+    expect(readFileSync(credentialPath(session), 'utf8')).toBe(REREAD_PLACEHOLDER);
+    // On its own, it is no login.
+    keychain.delete(session);
+    expect(isUsableCredential(credentialPath(session))).toBe(false);
+  });
+
+  it('does not sign the session out: every reader still finds the Keychain login', () => {
+    const before = credentialFingerprint(session);
+    const wholeBefore = credentialFileFingerprint(session);
+    nudgeLoginReread(session);
+    expect(credentialFileFingerprint(session)).toBe(wholeBefore);
+    expect(hasUsableLogin(session)).toBe(true);
+    expect(hasLogin(session)).toBe(true);
+    expect(hasCredential(credentialPath(session))).toBe(true);
+    expect(readOauthToken(credentialPath(session))).toBe('session-token');
+    expect(credentialFingerprint(session)).toBe(before);
+  });
+
+  it('is never saved over a login in the profile store', () => {
+    nudgeLoginReread(session);
+    // Saved back while the Keychain holds the session's login: that login goes, not the file.
+    expect(installCredential(dir, credentialPath(session))).toBe(true);
+    expect(readOauthToken(credentialPath(dir))).toBe('session-token');
+    // With the session's Keychain login gone, the file alone is refused.
+    keychain.delete(session);
+    expect(installCredential(dir, credentialPath(session))).toBe(false);
+    expect(readOauthToken(credentialPath(dir))).toBe('session-token');
+  });
+
+  it('leaves a move into the session to the Keychain, and goes with the session', () => {
+    nudgeLoginReread(session);
+    expect(installCredential(session, credentialPath(dir))).toBe(true);
+    expect(readOauthToken(credentialPath(session))).toBe('work-token');
+    expect(readFileSync(credentialPath(session), 'utf8')).toBe(REREAD_PLACEHOLDER);
+    // The next nudge only moves its time.
+    expect(nudgeLoginReread(session, new Date(5_000_000))).toBe(true);
+    expect(statSync(credentialPath(session)).mtimeMs).toBe(5_000_000);
+    clearCredential(session);
+    expect(existsSync(credentialPath(session))).toBe(false);
+    expect(keychain.has(session)).toBe(false);
+  });
+
+  it('is not written where there is no login at all, nor anywhere the Keychain cannot be read', () => {
+    keychain.delete(session);
+    expect(nudgeLoginReread(session)).toBe(true);
+    expect(existsSync(credentialPath(session))).toBe(false);
+    keychain.set(session, credential('session-token'));
+    vi.mocked(readKeychainCredential).mockImplementationOnce(() => {
+      throw new Error('locked');
+    });
+    expect(nudgeLoginReread(session)).toBe(false);
+    expect(existsSync(credentialPath(session))).toBe(false);
   });
 });

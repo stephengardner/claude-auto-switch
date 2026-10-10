@@ -4,6 +4,81 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.0]
+
+### Added
+
+- **Pages published with Claude's Artifact tool can stay on one account.** A
+  page is private to the account that published it, and only that account
+  can change it, so with several accounts pages scattered and a session on
+  one account could not update a page another had published. Two settings,
+  both off by default:
+  - `ccx config artifacts.home <account>`: every new page is published as
+    that account, whatever account the session is on.
+  - `ccx config artifacts.updates owner`: a change to a page (an update, an
+    asset upload or copy, sharing it, deleting it), or a read of it, goes out
+    as the account that owns it.
+
+  Every such call is held on its account for its length. When the session is
+  on another account, ccx moves it in place to that account and straight
+  back, through the same move `ccx use --session` makes, so the login it
+  leaves is saved home first and nothing restarts. When it is on that account
+  already, ccx still holds it there and has Claude pick up the login in its
+  folder, which can lag an ordinary move by up to 30 seconds. Two calls for
+  one account at once share the move, and the session goes back after the
+  later one. The session's own ccx ends a hold when the call is over, when its
+  result shows up in the conversation, before Claude's next request after the
+  call (Claude Code 2.1.294 or later, the oldest version checked), when Claude
+  ends, or after two minutes, so it never depends on the
+  hook after the call running (a call refused by a question, a permission
+  rule or another hook runs none). A usage limit hit during the move belongs
+  to the other account and is not counted against the session's. A call that
+  cannot be held there is refused with the reason rather than published on
+  the wrong account: the account is not signed in, the session signs in with
+  another account's `ccx token`, it was signed in as someone else from inside
+  with `/login`, or `config.json` does not load.
+
+  A page made from an Artifact type is always new, and goes to the home
+  account. A page deleted through a ccx session leaves `ccx artifacts`, and
+  publishing its file again makes a new page. `CAS_ARTIFACTS_HOME` and
+  `CAS_ARTIFACTS_UPDATES` set the two for one session, where the hooks are
+  installed.
+
+  Claude can hold the login it read for up to 30 seconds after a move, so a
+  call already on its account changes the time on the session's
+  `.credentials.json` too, the signal every move in place gives since 2.5.2.
+  Measured on macOS with the login in the Keychain: a read right after a move
+  went out as the old account without that signal, and as the new one with
+  it.
+
+- **`ccx artifacts`** lists the pages ccx has recorded and the account that
+  owns each, and **`ccx artifacts scan`** asks each signed-in account for the
+  pages it already has, with one headless Claude. The scan is best effort:
+  a headless Claude has the Artifact tool only with a variable Claude Code
+  does not document.
+
+- With either setting on, `ccx on` adds four hooks to
+  `~/.claude/settings.json` (three on the Artifact tool, one after each batch
+  of tool calls); with both off it removes them, as `ccx off` always does.
+  With both off, ccx installs nothing for this. The dashboard asks before it
+  edits that file; `ccx config` edits it as soon as the value is set. `ccx
+  doctor` says when the hooks are missing, cannot run, are left with both
+  settings off, or name an account that is gone, and gives the `ccx config`
+  line that fixes each. Renaming an account carries its pages and the setting
+  with it.
+
+### Fixed
+
+- **A moved session on a Mac could still go out as the old account for 30
+  seconds when Claude had saved its login to the Keychain itself.** That
+  leaves the session folder with no `.credentials.json` (as 2.5.3 noted), so
+  the time ccx changes after a move had no file to change, and requests in
+  those 30 seconds, a page published for one call among them, went out on
+  the login Claude still held. ccx now creates the file as `{}` in that case,
+  which Claude takes as a change and which holds no login: Claude and ccx
+  read the Keychain first, and on its own `{}` reads as signed out, so it is
+  never saved over a login.
+
 ## [2.5.3]
 
 ### Fixed

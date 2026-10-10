@@ -10,6 +10,8 @@ import { assertProfileName } from '../util/names.js';
 import { leaseFor } from '../session/lease.js';
 import { profilesDir } from '../config/paths.js';
 import type { PathCtx } from '../config/paths.js';
+import { loadConfigFile, saveConfig } from '../config/config.js';
+import { renamePageOwner } from '../artifacts/record.js';
 
 /**
  * Renaming an account.
@@ -127,6 +129,18 @@ export function renameAccount(
     usage.accounts[target] = entry;
     delete usage.accounts[from];
     writeUsageSnapshot(usage, c);
+  }
+
+  // The pages published as it, and the setting that publishes new ones as it.
+  // Best effort, like the rest after the registry: the account is renamed by now.
+  renamePageOwner(from, target, c);
+  try {
+    const settings = loadConfigFile(c);
+    if (settings.artifacts?.home === from) {
+      saveConfig({ ...settings, artifacts: { ...settings.artifacts, home: target } }, c);
+    }
+  } catch {
+    /* a config that does not parse is left as it is; ccx doctor reports it */
   }
 
   return { from, to: target, folderMoved, ...(folderNote ? { folderNote } : {}) };

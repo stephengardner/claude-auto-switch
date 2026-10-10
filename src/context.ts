@@ -44,6 +44,14 @@ export interface CliContext {
   lookupOwner?: (dir: string) => Promise<string | null>;
   /** Injected in tests: a newer ccx installed under this one (update/newer-install). */
   newerInstall?: () => NewerInstall | null;
+  /**
+   * Injected in tests: how long a session stays on another account for one
+   * Artifact call when nothing reports the call over. Production uses the two
+   * minutes in artifacts/hop, which no test can wait for.
+   */
+  artifactHop?: { holdMs?: number };
+  /** Injected in tests: whether a folder's login lives in the macOS Keychain (see nudgeLoginReread). */
+  loginInKeychain?: (dir: string) => boolean;
   out: (message: string) => void;
   /** ccx's own status messages. MUST go to stderr so it never corrupts a run's stdout protocol. */
   err?: (message: string) => void;

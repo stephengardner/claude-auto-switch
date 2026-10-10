@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { renameAccount } from './rename.js';
@@ -8,6 +8,8 @@ import { getActive, setActive } from '../state/active.js';
 import { loadLedger, saveLedger } from '../ledger/ledger.js';
 import { readUsageSnapshot, writeUsageSnapshot } from '../usage/usage-store.js';
 import { takeLease } from '../session/lease.js';
+import { loadConfigFile, saveConfig } from '../config/config.js';
+import { appendPage, readPages } from '../artifacts/record.js';
 
 const config = {};
 
@@ -51,6 +53,40 @@ describe('renameAccount', () => {
     expect(loadLedger(c).caps.map((x) => x.account)).toEqual(['new']);
     expect(readUsageSnapshot(c).accounts['new']?.fiveHour).toBe(0.4);
     expect(readUsageSnapshot(c).accounts['old']).toBeUndefined();
+  });
+
+  it('carries its pages and the page home setting across', () => {
+    // Left under the old name, its pages would belong to an account that no
+    // longer exists, and every new page would be refused for the same reason.
+    const { c } = setup(['old', 'other']);
+    saveConfig({ artifacts: { home: 'old', updates: 'owner' }, rotation: { holdBackAtPercent: 90 } }, c);
+    appendPage(
+      { url: 'https://claude.ai/artifact/abc', id: null, title: 'A page', owner: 'old', session: 's', file: null, at: 1, via: 'publish' },
+      c,
+    );
+    renameAccount('old', 'new', config, c);
+    expect(readPages(c)[0]?.owner).toBe('new');
+    expect(loadConfigFile(c)).toEqual({
+      artifacts: { home: 'new', updates: 'owner' },
+      rotation: { holdBackAtPercent: 90 },
+    });
+  });
+
+  it('leaves the page home setting alone when it names another account, and writes no config when there is none', () => {
+    const { c, home } = setup(['old', 'other']);
+    renameAccount('old', 'new', config, c);
+    expect(existsSync(path.join(home, 'config.json'))).toBe(false);
+    saveConfig({ artifacts: { home: 'other' } }, c);
+    renameAccount('new', 'newer', config, c);
+    expect(loadConfigFile(c)).toEqual({ artifacts: { home: 'other' } });
+  });
+
+  it('still renames when the config file does not parse, and leaves that file as it was', () => {
+    const { c, home } = setup(['old']);
+    writeFileSync(path.join(home, 'config.json'), '{ "artifacts": ', 'utf8');
+    expect(renameAccount('old', 'new', config, c).to).toBe('new');
+    expect(getAccount('new', c)).toBeDefined();
+    expect(readFileSync(path.join(home, 'config.json'), 'utf8')).toBe('{ "artifacts": ');
   });
 
   it('follows the rename with the active pointer', () => {

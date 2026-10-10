@@ -1,10 +1,24 @@
-import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { describe, it, expect, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadConfig, configFilePath, saveConfig } from '../config/config.js';
+
+/** When on, config.json cannot be written, as on a full disk. */
+const failingSave = vi.hoisted(() => ({ on: false }));
+vi.mock('../config/config.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../config/config.js')>();
+  return {
+    ...real,
+    saveConfig: (...args: Parameters<typeof real.saveConfig>): void => {
+      if (failingSave.on) throw new Error('no space left on device');
+      real.saveConfig(...args);
+    },
+  };
+});
 import { applySetting, configCommand } from './settings.js';
 import { SETTINGS, type Setting } from '../dashboard/settings-catalog.js';
+import { addAccount } from '../accounts/registry.js';
 import type { CliContext } from '../context.js';
 
 function setup(env: Record<string, string> = {}): { context: CliContext; file: string; said: string[] } {
@@ -54,6 +68,110 @@ describe('changing one setting', () => {
     expect(said).toContain('continues itself');
     expect(written(file)).toEqual({ desktop: { mode: 'same' } });
     expect(context.config.desktop.mode).toBe('same');
+  });
+});
+
+describe('the page settings', () => {
+  /** A home folder for Claude's settings beside the ccx one, and two accounts. */
+  function pages(): ReturnType<typeof setup> & { claudeSettings: string } {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-settings-pages-'));
+    const made = setup({ HOME: home, USERPROFILE: home });
+    for (const name of ['work', 'personal']) {
+      addAccount({ name, dir: path.join(home, 'profiles', name) }, made.context.ctx);
+    }
+    return { ...made, claudeSettings: path.join(home, '.claude', 'settings.json') };
+  }
+  const hookEvents = (file: string): string[] => {
+    try {
+      return Object.keys((written(file).hooks ?? {}) as Record<string, unknown>).sort();
+    } catch {
+      return [];
+    }
+  };
+  const ALL = ['PostToolBatch', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse'];
+
+  it('install the hooks when the first one is turned on, and remove them when the last one is turned off', async () => {
+    const { context, file, claudeSettings } = pages();
+    expect(await applySetting(context, setting('artifacts.home'), 'work')).toContain('Publish new pages as: work');
+    expect(written(file)).toEqual({ artifacts: { home: 'work' } });
+    expect(context.config.artifacts.home).toBe('work');
+    expect(hookEvents(claudeSettings)).toEqual(ALL);
+
+    await applySetting(context, setting('artifacts.updates'), 'owner');
+    expect(hookEvents(claudeSettings)).toEqual(ALL);
+
+    // One of the two is still on.
+    await applySetting(context, setting('artifacts.home'), null);
+    expect(written(file)).toEqual({ artifacts: { home: null, updates: 'owner' } });
+    expect(hookEvents(claudeSettings)).toEqual(ALL);
+
+    const off = await applySetting(context, setting('artifacts.updates'), 'off');
+    expect(off).toContain('removed');
+    expect(written(claudeSettings)).toEqual({});
+    expect(context.config.artifacts).toEqual({ home: null, updates: 'off' });
+  });
+
+  it('leave the hooks somebody else put there exactly as they were', async () => {
+    const { context, claudeSettings } = pages();
+    const theirs = { model: 'opus', hooks: { PreToolUse: [{ matcher: 'Artifact', hooks: [{ type: 'command', command: 'audit' }] }] } };
+    mkdirSync(path.dirname(claudeSettings), { recursive: true });
+    writeFileSync(claudeSettings, JSON.stringify(theirs), 'utf8');
+    await applySetting(context, setting('artifacts.updates'), 'owner');
+    expect(hookEvents(claudeSettings)).toEqual(ALL);
+    await applySetting(context, setting('artifacts.updates'), 'off');
+    expect(written(claudeSettings)).toEqual(theirs);
+  });
+
+  it('refuse a home account that is not an account, and change nothing', async () => {
+    const { context, file, claudeSettings } = pages();
+    await expect(applySetting(context, setting('artifacts.home'), 'nobody')).rejects.toThrow('no account called "nobody"');
+    expect(() => readFileSync(file)).toThrow();
+    expect(() => readFileSync(claudeSettings)).toThrow();
+  });
+
+  it('save nothing when the hooks cannot be written, so the setting never says on with nothing behind it', async () => {
+    const { context, file, claudeSettings } = pages();
+    mkdirSync(path.dirname(claudeSettings), { recursive: true });
+    writeFileSync(claudeSettings, '{ broken', 'utf8');
+    await expect(applySetting(context, setting('artifacts.home'), 'work')).rejects.toThrow('not valid JSON');
+    expect(() => readFileSync(file)).toThrow();
+    expect(readFileSync(claudeSettings, 'utf8')).toBe('{ broken');
+  });
+
+  it('put the hooks back when turning the last one off cannot be saved, so on is never left with none', async () => {
+    const { context, file, claudeSettings } = pages();
+    await applySetting(context, setting('artifacts.updates'), 'owner');
+    failingSave.on = true;
+    try {
+      await expect(applySetting(context, setting('artifacts.updates'), 'off')).rejects.toThrow('no space left');
+    } finally {
+      failingSave.on = false;
+    }
+    expect(written(file)).toEqual({ artifacts: { updates: 'owner' } });
+    expect(hookEvents(claudeSettings)).toEqual(ALL);
+  });
+
+  it('touch nothing in Claude settings when a setting is put back to off with none installed', async () => {
+    const { context, claudeSettings } = pages();
+    await applySetting(context, setting('artifacts.updates'), 'off');
+    expect(() => readFileSync(claudeSettings)).toThrow();
+  });
+
+  it('work from ccx config, by name, with off and default both turning the home account off', async () => {
+    const { context, file, said, claudeSettings } = pages();
+    expect(await configCommand(context, 'artifacts.home', ['personal'])).toBe(0);
+    expect(context.config.artifacts.home).toBe('personal');
+    expect(said.join('\n')).toContain('when its Claude next starts');
+    expect(await configCommand(context, 'artifacts.home', ['off'])).toBe(0);
+    expect(written(file)).toEqual({ artifacts: { home: null } });
+    expect(written(claudeSettings)).toEqual({});
+    expect(await configCommand(context, 'artifacts.home', ['work'])).toBe(0);
+    expect(await configCommand(context, 'artifacts.home', ['default'])).toBe(0);
+    expect(context.config.artifacts.home).toBeNull();
+    expect(await configCommand(context, 'artifacts.home', ['no body'])).toBe(1);
+    expect(said.at(-1)).toBe('artifacts.home: an account name, or off');
+    expect(await configCommand(context, 'artifacts.home')).toBe(0);
+    expect(said.join('\n')).toContain('takes: an account name, or off');
   });
 });
 

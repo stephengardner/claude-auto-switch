@@ -6,6 +6,8 @@ import { installStatusline, removeStatusline } from '../statusline/settings-inst
 import { thrownReason } from '../util/thrown-reason.js';
 import { installSkill, removeSkill, type SkillOutcome } from '../skill/install-skill.js';
 import { installDesktopHooks, readInstalledHandoff, refreshDesktopHooks } from '../desktop/hooks.js';
+import { refreshArtifactHooks } from '../artifacts/hooks.js';
+import { routingOn } from '../artifacts/route.js';
 import type { CliContext } from '../context.js';
 
 export interface ShimOptions {
@@ -62,6 +64,19 @@ export function onCommand(context: CliContext, options: ShimOptions = {}): numbe
   if (hooks?.ok && hooks.changed) context.out('claude: Claude Desktop handoff hooks set up');
   else if (hooks && !hooks.ok) {
     context.out(`claude: Claude Desktop handoff hooks not set up: ${hooks.reason}`);
+  }
+
+  // The same for the hooks on Claude's Artifact tool, which are only ever
+  // there while page routing is on.
+  const pageHooks = refreshArtifactHooks(routingOn(context.config.artifacts), context.ctx);
+  if (pageHooks?.ok && pageHooks.changed) {
+    context.out(
+      routingOn(context.config.artifacts)
+        ? 'claude: page routing hooks set up'
+        : 'claude: page routing is off, so its hooks are removed',
+    );
+  } else if (pageHooks && !pageHooks.ok) {
+    context.out(`claude: page routing hooks not set up: ${pageHooks.reason}`);
   }
 
   let editorFailed = false;
@@ -168,6 +183,15 @@ export function offCommand(context: CliContext, options: ShimOptions = {}): numb
       hooks.ok
         ? 'claude: Claude Desktop handoff hooks removed (ccx on puts them back)'
         : `claude: could not remove the Claude Desktop handoff hooks: ${hooks.reason}`,
+    );
+  }
+
+  const pageHooks = refreshArtifactHooks(false, context.ctx);
+  if (pageHooks) {
+    context.out(
+      pageHooks.ok
+        ? 'claude: page routing hooks removed (ccx on puts them back)'
+        : `claude: could not remove the page routing hooks: ${pageHooks.reason}`,
     );
   }
 

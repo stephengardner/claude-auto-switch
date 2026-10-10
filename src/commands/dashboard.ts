@@ -559,7 +559,7 @@ function settingsPanel(config: CliContext['config'], selected: number): Settings
 
 /** Why a step left a setting as it was, said instead of doing nothing silently. */
 function stepRefused(setting: Setting): string {
-  if (setting.kind === 'text') return `${setting.label}: enter edits it`;
+  if (setting.kind === 'text' || setting.kind === 'account') return `${setting.label}: enter edits it`;
   if (setting.kind === 'models') {
     return 'that model chain is your own, so the arrows leave it alone; enter types a new one';
   }

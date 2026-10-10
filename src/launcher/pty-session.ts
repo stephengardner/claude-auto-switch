@@ -4,6 +4,7 @@ import type { IPty } from 'node-pty';
 import { nodePty } from '../util/native-pty.js';
 import { matchesCapText, resetAtIn } from './cap-detect.js';
 import { createRefusalFollower, type Refusal } from '../session/transcript.js';
+import { gateRefusals, type RefusalGate } from '../session/refusal-gate.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { normalizeExitCode } from './exit-code.js';
@@ -151,6 +152,11 @@ export interface PtySessionOptions {
   /** How long each step of typing that prompt waits. Injected in tests; production uses the defaults in carry-on. */
   carryOnTiming?: Partial<CarryOnTiming>;
   /**
+   * Which refused turns are held back or passed over (see session/refusal-gate).
+   * While it holds, limit text on the screen is not read either.
+   */
+  limitGate?: RefusalGate;
+  /**
    * Thresholds for deciding the session is blocked. Injected in tests so the
    * pattern can be reached in seconds instead of minutes; production uses the
    * defaults in blocked-watch.
@@ -289,7 +295,10 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     /** The conversation's own record, read as it grows (see session/transcript). */
     // A launch that starts a new conversation reads its record whole; one that
     // resumes skips the history it brings with it.
-    const record = createRefusalFollower(options.configDir, !wantsExistingConversation(options.args));
+    const record = gateRefusals(
+      createRefusalFollower(options.configDir, !wantsExistingConversation(options.args)),
+      options.limitGate,
+    );
     /** Whether that record can be read yet. Until it can, the screen stands in for it. */
     let recordReadable = false;
     let window = '';
@@ -663,6 +672,12 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // The conversation's own record decides once it can be read (see
       // checkRecord): the screen only stands in for it until then.
       if (options.ignoreLimits || recordReadable) return;
+      // Dropped, not kept for later: what is on screen while the gate holds
+      // can be another account talking, and nothing on it says which.
+      if (options.limitGate?.held()) {
+        window = '';
+        return;
+      }
       const hit = matchesCapText(window);
       if (!hit) return;
       // Cleared HERE, before anything can return early. One message is one

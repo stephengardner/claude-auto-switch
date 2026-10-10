@@ -6,7 +6,7 @@ import { hasUsableLogin, credentialFileFingerprint } from '../accounts/credentia
 import { loginIsKnownDead } from '../usage/dead-login-store.js';
 import { configHome } from '../config/paths.js';
 import { isSessionDir } from '../session/session-dir.js';
-import { liveLeases } from '../session/lease.js';
+import { sameFolder, sessionLease } from '../session/session-lease.js';
 import { resolveSessionIdentity } from '../session/session-identity.js';
 import { rememberReport } from '../session/claude-report.js';
 import { effectiveUtilization, bindsHarder } from '../usage/window-open.js';
@@ -71,10 +71,6 @@ function windowsOf(usage: {
   return windows;
 }
 
-function samePath(a: string, b: string): boolean {
-  return path.resolve(a).replace(/\\/g, '/').toLowerCase() === path.resolve(b).replace(/\\/g, '/').toLowerCase();
-}
-
 type Driven = { kind: 'session'; dir: string } | { kind: 'editor' };
 
 /**
@@ -89,7 +85,7 @@ function drivenBy(context: CliContext): Driven | null {
   if (!configDir) return null; // plain `claude` on the default config
   // A terminal session, one folder each.
   if (isSessionDir(configDir, context.ctx)) return { kind: 'session', dir: configDir };
-  if (samePath(configDir, path.join(configHome(context.ctx), 'editor-active'))) return { kind: 'editor' };
+  if (sameFolder(configDir, path.join(configHome(context.ctx), 'editor-active'))) return { kind: 'editor' };
   return null;
 }
 
@@ -104,12 +100,7 @@ function drivenBy(context: CliContext): Driven | null {
  * folder, which ccx stamps with the account's identity at every move, still says.
  */
 function sessionAccount(context: CliContext, dir: string): string | null {
-  // Oldest first, so the last match is the newest: a move announces the account
-  // it is moving onto before it gives up the old one.
-  const mine = liveLeases(context.ctx).filter(
-    (lease) => typeof lease.configDir === 'string' && samePath(lease.configDir, dir),
-  );
-  const announced = mine[mine.length - 1];
+  const announced = sessionLease(dir, context.ctx);
   if (announced) return announced.account;
   const signedInAs = resolveSessionIdentity({
     sessionDir: dir,

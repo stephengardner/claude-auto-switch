@@ -1,7 +1,8 @@
-import { readFileSync, utimesSync } from 'node:fs';
+import { readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import path from 'node:path';
 import { CREDENTIALS_FILE, readCredential, copyCredential, removeCredential } from './credential-storage.js';
+import { readKeychainCredential } from './keychain.js';
 export { CREDENTIALS_FILE } from './credential-storage.js';
 
 /**
@@ -157,23 +158,57 @@ export function identityKey(configDir: string): string | null {
   }
 }
 
+/** What is written where there is no login file, so that one appears: no login, to Claude or to ccx. */
+export const REREAD_PLACEHOLDER = '{}';
+
 /**
  * Make a running Claude read the login in its config folder `configDir` again
- * at its next request, after the login there was replaced under it.
+ * at its next request, after the login there was replaced under it, or before
+ * a request that counts on the one already there.
  *
  * Claude keeps the login it read for up to 30 seconds and drops it early only
  * when the time of `.credentials.json` in that folder changes (read from the
  * 2.1.296 binary, and measured live on macOS). A login that lives in the
- * Keychain is replaced without touching that file, so until then requests go
- * out as the account the session just left. Changing the time is enough: the
- * file's contents are never read or written here, and a missing file is left
- * missing.
+ * Keychain is replaced without touching that file, so its time is changed
+ * here; the contents of a file that is there are never read or written.
+ *
+ * Once Claude has saved the login to the Keychain itself, the file is gone
+ * (measured on macOS), and then a file appearing is the change: when the
+ * Keychain holds this folder's login, REREAD_PLACEHOLDER is created, never
+ * over a file. It carries no login. Claude and every reader in ccx read the
+ * Keychain first, and on its own it reads as signed out (isUsableCredential),
+ * so it is never saved over a login. With neither a file nor a Keychain login
+ * there is nothing to read again, and nothing is written.
+ *
+ * True once Claude will read the login again or has none to read; false when
+ * that could not be made sure of. Never throws.
  */
-export function nudgeLoginReread(configDir: string, now: Date = new Date()): void {
+export function nudgeLoginReread(
+  configDir: string,
+  now: Date = new Date(),
+  deps: { keychainHolds?: (dir: string) => boolean } = {},
+): boolean {
+  const file = credentialPath(configDir);
   try {
-    utimesSync(path.join(configDir, CREDENTIALS_FILE), now, now);
-  } catch {
-    /* no file to nudge */
+    utimesSync(file, now, now);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') return false;
+  }
+  try {
+    const keychainHolds = deps.keychainHolds ?? ((dir: string) => readKeychainCredential(dir) !== null);
+    if (!keychainHolds(configDir)) return true;
+    writeFileSync(file, REREAD_PLACEHOLDER, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    return true;
+  } catch (error) {
+    // Made meanwhile, by Claude or a move: its time is the change, as above.
+    if ((error as NodeJS.ErrnoException | null)?.code !== 'EEXIST') return false;
+    try {
+      utimesSync(file, now, now);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 

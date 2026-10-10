@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decideSaveBack } from './save-back.js';
+import { decideSaveBack, savesOnLeaving } from './save-back.js';
 
 const base = {
   sessionEmail: null as string | null,
@@ -142,5 +142,30 @@ describe('decideSaveBack', () => {
     if (d.save) throw new Error('unreachable');
     expect(d.reason).toContain('work');
     expect(d.reason).toContain('cannot confirm');
+  });
+});
+
+describe('savesOnLeaving', () => {
+  it('always saves the login a session leaves for good, as before, without reading either copy', () => {
+    const unread = (): number => {
+      throw new Error('read');
+    };
+    expect(savesOnLeaving({ temporary: false }, unread, unread)).toBe(true);
+    expect(savesOnLeaving({ temporary: false }, () => 1_000, () => 2_000)).toBe(true);
+    expect(savesOnLeaving({ temporary: false }, () => 0, () => 0)).toBe(true);
+  });
+
+  it('saves a login left for a moment only when this session renewed it', () => {
+    expect(savesOnLeaving({ temporary: true }, () => 2_000, () => 1_000)).toBe(true);
+  });
+
+  it('never writes one left for a moment over a copy that is as new, or newer', () => {
+    // Renewed by another session on that account while this one visited: the
+    // older copy here is retired, and writing it home would retire the stored one.
+    expect(savesOnLeaving({ temporary: true }, () => 1_000, () => 2_000)).toBe(false);
+    expect(savesOnLeaving({ temporary: true }, () => 1_000, () => 1_000)).toBe(false);
+    // A copy that cannot be dated is never taken for the newer one.
+    expect(savesOnLeaving({ temporary: true }, () => 0, () => 0)).toBe(false);
+    expect(savesOnLeaving({ temporary: true }, () => 0, () => 1_000)).toBe(false);
   });
 });
