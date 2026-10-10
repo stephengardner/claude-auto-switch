@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,7 @@ import { runCommand } from '../../src/commands/run.js';
 import { setActive, getActive } from '../../src/state/active.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
 import { loadConfig } from '../../src/config/config.js';
-import { liveLeases } from '../../src/session/lease.js';
+import { liveLeases, leasePath } from '../../src/session/lease.js';
 import type { CliContext } from '../../src/context.js';
 
 const fakeClaude = fileURLToPath(new URL('../fake-claude/fake-claude.mjs', import.meta.url));
@@ -503,6 +503,41 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
 
     expect(await running).toBe(0);
     // Released on the way out, so an idle account is not protected forever.
+    expect(liveLeases(context.ctx)).toEqual([]);
+  });
+
+  it('announces again when its announcement is removed while it runs', async () => {
+    // A reader from ccx 2.3.2 or older removes the announcement of a session
+    // that could not tick for two minutes (the machine asleep), whether or not
+    // that session is still running. The session only ever refreshed a file
+    // that was there, so it stayed unlisted until it next changed account.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-lease-restore-'));
+    process.env.FAKE_CLAUDE_IDLE_MS = '4000';
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    setActive('A', context.ctx);
+
+    const running = runCommand(context, []);
+    const before = await waitFor(
+      'the session to announce account A',
+      () => liveLeases(context.ctx),
+      (leases) => leases.length === 1 && leases[0]?.account === 'A',
+    );
+    // The session runs in this process, so this is its own file.
+    rmSync(leasePath('A', context.ctx));
+
+    const after = await waitFor(
+      'the announcement to be written again',
+      () => liveLeases(context.ctx),
+      (leases) => leases.length === 1 && leases[0]?.account === 'A',
+      3000,
+    );
+    expect(after[0]).toMatchObject({ account: 'A', pid: process.pid, configDir: before[0]?.configDir });
+    expect(readFileSync(path.join(home, 'events.jsonl'), 'utf8')).toContain('was gone; written again');
+
+    expect(await running).toBe(0);
+    // Written again while it runs, and still given up when it ends.
     expect(liveLeases(context.ctx)).toEqual([]);
   });
 

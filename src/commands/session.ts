@@ -1482,7 +1482,15 @@ export async function runInteractiveHotSwap(
        */
       const onTick = (): void => {
         if (!current) return;
-        touchLease(current.name, context.ctx);
+        if (touchLease(current.name, sessionDir, context.ctx)) {
+          // Nothing else records that an announcement went missing, and
+          // without a record the next report of an unlisted session starts
+          // from a guess again.
+          logEvent(`this session's announcement that it is on "${current.name}" was gone; written again`, {
+            kind: 'lease-restored',
+            data: { account: current.name },
+          });
+        }
         mirrorSessionLoginToProfile(current);
         pullRenewedLogin(current);
       };

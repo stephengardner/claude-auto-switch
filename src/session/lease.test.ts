@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -87,9 +87,61 @@ describe('session leases', () => {
     let clock = 1_000;
     takeLease('work', '/session', c, { now: () => clock });
     clock += LEASE_STALE_MS - 5;
-    touchLease('work', c, { now: () => clock });
+    expect(touchLease('work', '/session', c, { now: () => clock })).toBe(false);
     clock += LEASE_STALE_MS - 5; // would be stale without the touch
     expect(liveLeases(c, { now: () => clock, isAlive: () => true })).toHaveLength(1);
+  });
+
+  it('leaves the announcement of a session that went quiet while its process still runs', () => {
+    // A laptop asleep for ten minutes: nothing ticked, so the announcement is
+    // long past fresh, and on waking a reader can run before the session does.
+    // Removing it there lost the session for good, because nothing wrote it
+    // again until the session next changed account.
+    const c = home();
+    takeLease('work', '/session', c, { now: () => 1_000 });
+    const awake = 1_000 + 10 * 60_000;
+    expect(liveLeases(c, { now: () => awake, isAlive: () => true })).toEqual([]);
+    expect(existsSync(leasePath('work', c))).toBe(true);
+
+    // The session's next tick, and it is listed again.
+    touchLease('work', '/session', c, { now: () => awake + 400 });
+    const seen = liveLeases(c, { now: () => awake + 500, isAlive: () => true });
+    expect(seen.map((l) => l.account)).toEqual(['work']);
+  });
+
+  it('still removes a quiet announcement once its process is gone', () => {
+    const c = home();
+    takeLease('work', '/session', c, { now: () => 1_000 });
+    liveLeases(c, { now: () => 1_000 + LEASE_STALE_MS + 1, isAlive: () => false });
+    expect(existsSync(leasePath('work', c))).toBe(false);
+  });
+
+  it('announces again when its announcement was removed while it runs', () => {
+    // A reader from ccx 2.3.2 or older, still running on the same machine,
+    // removes a quiet announcement whether or not its process is alive.
+    const c = home();
+    takeLease('work', '/session', c, { now: () => 1_000, cwd: '/project' });
+    rmSync(leasePath('work', c));
+
+    expect(touchLease('work', '/session', c, { now: () => 2_000, cwd: '/project' })).toBe(true);
+    expect(leaseFor('work', c, { now: () => 2_100 })).toEqual({
+      account: 'work',
+      pid: process.pid,
+      configDir: '/session',
+      cwd: '/project',
+      at: 2_000,
+    });
+  });
+
+  it('announces again over an announcement of its own that cannot be read', () => {
+    // Its own file, cut short by a write that never finished: unreadable to
+    // every reader, so the session would stay unlisted while it ran.
+    const c = home();
+    takeLease('work', '/session', c, { now: () => 1_000 });
+    writeFileSync(leasePath('work', c), '{"account":"wor', 'utf8');
+
+    expect(touchLease('work', '/session', c, { now: () => 2_000 })).toBe(true);
+    expect(leaseFor('work', c, { now: () => 2_100 })?.configDir).toBe('/session');
   });
 
   it('releasing it stops the protection', () => {
@@ -154,7 +206,7 @@ describe('session leases', () => {
       'utf8',
     );
 
-    touchLease('work', c, { now: () => 9_999 });
+    expect(touchLease('work', '/mine', c, { now: () => 9_999 })).toBe(false);
     releaseLease('work', c);
 
     // Still there, and still stamped with ITS time, not ours. Otherwise one
