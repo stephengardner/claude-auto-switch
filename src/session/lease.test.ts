@@ -144,6 +144,26 @@ describe('session leases', () => {
     expect(leaseFor('work', c, { now: () => 2_100 })?.configDir).toBe('/session');
   });
 
+  it('announces again over an announcement of its own that no reader can use', () => {
+    // Its own file, readable but wrong: no account a reader accepts, or a
+    // folder that is not the one it reads its login from. Refreshing only the
+    // time left the session unlisted, or listed with the wrong folder, for as
+    // long as it ran.
+    const c = home();
+    mkdirSync(path.dirname(leasePath('work', c)), { recursive: true });
+    const write = (lease: Record<string, unknown>): void =>
+      writeFileSync(leasePath('work', c), JSON.stringify({ pid: process.pid, at: 1_000, ...lease }), 'utf8');
+
+    write({ account: 42, configDir: '/session' });
+    expect(liveLeases(c, { now: () => 1_100 })).toEqual([]);
+    expect(touchLease('work', '/session', c, { now: () => 2_000 })).toBe(true);
+    expect(leaseFor('work', c, { now: () => 2_100 })).toMatchObject({ account: 'work', configDir: '/session' });
+
+    write({ account: 'work', configDir: '/somewhere-else' });
+    expect(touchLease('work', '/session', c, { now: () => 3_000 })).toBe(true);
+    expect(leaseFor('work', c, { now: () => 3_100 })?.configDir).toBe('/session');
+  });
+
   it('releasing it stops the protection', () => {
     const c = home();
     takeLease('work', '/session', c);

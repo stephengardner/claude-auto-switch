@@ -1707,6 +1707,7 @@ export async function runInteractiveHotSwap(
         verifyCap,
         onCapConfirmed,
         onCarryOn,
+        currentAccount: () => current?.name ?? account.name,
         ...(context.blockedWatch ? { blockedWatch: context.blockedWatch } : {}),
         ...(context.carryOn ? { carryOnTiming: context.carryOn } : {}),
         ...(terminalInput ? { input: terminalInput } : {}),

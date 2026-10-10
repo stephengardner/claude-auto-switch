@@ -5,6 +5,7 @@ import path from 'node:path';
 import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive } from '../../src/state/active.js';
+import { writeSwitchRequest } from '../../src/state/switch-request.js';
 import { loadConfig } from '../../src/config/config.js';
 import { liveLeases } from '../../src/session/lease.js';
 import { saveToken } from '../../src/daemon/token-store.js';
@@ -293,6 +294,45 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)(
           expect.objectContaining({ text: IN_PLACE_PROMPT, marker: 'B' }),
         ]);
         expect(eventsIn(home).filter((e) => e.kind === 'cap-relief')).toHaveLength(1);
+      },
+    );
+
+    it(
+      'relaunches for the prompt on the account the person moved it to meanwhile',
+      { timeout: 60_000 },
+      async () => {
+        // The limit moves it to B. While the prompt waits, the person moves it
+        // to C from another terminal. A draft is in the box, so the prompt
+        // goes by relaunch, and that relaunch must not put it back on B.
+        const { home, runsLog, context } = await twoAccounts('cas-in-place-moved-');
+        await loginAccount(context, home, 'C');
+        // Long enough for the person's move to land before the prompt is due.
+        context.carryOn = { ...QUICK, pickupMs: 3000 };
+        Object.assign(process.env, {
+          ...TYPEABLE,
+          FAKE_CLAUDE_RUNS_LOG: runsLog,
+          FAKE_CLAUDE_IDLE_MS: '20000',
+          FAKE_CLAUDE_RESUMED_IDLE_MS: '600',
+          FAKE_CLAUDE_REFUSE_AFTER_MS: '1500',
+        });
+
+        const running = runCommand(context, []);
+        await waitFor(
+          'the launch',
+          () => launches(readLog(runsLog)),
+          (l) => l.length === 1,
+        );
+        // Typed and left unsent, as the person's keys reach a session.
+        process.stdin.emit('data', Buffer.from('half a thought'));
+        await waitFor(
+          'the move to B',
+          () => (existsSync(path.join(home, 'events.jsonl')) ? eventsIn(home) : []),
+          (events) => events.some((e) => e.kind === 'cap-relief'),
+        );
+        writeSwitchRequest('C', Date.now(), 'seamless', context.ctx);
+
+        expect(await running).toBe(0);
+        expect(launches(readLog(runsLog)).map((l) => l.marker)).toEqual(['A', 'C']);
       },
     );
 

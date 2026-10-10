@@ -164,6 +164,8 @@ export function live(options: {
   verify?: (asked: number) => boolean;
   /** Whether a newer ccx is waiting to take the session over, asked on each look. */
   newerInstall?: (moved: boolean) => boolean;
+  /** The account the session is on now, when something moved it since the limit. */
+  accountNow?: () => string;
 }): {
   log: () => Entry[];
   events: CarryOnEvent[];
@@ -202,6 +204,7 @@ export function live(options: {
     },
     onCarryOn: (event) => events.push(event),
     carryOnTiming: { ...QUICK, ...options.timing },
+    ...(options.accountNow ? { currentAccount: options.accountNow } : {}),
     ...(options.newerInstall
       ? { handoverWhenIdle: () => options.newerInstall?.(decisions.length > 0) ?? false }
       : {}),

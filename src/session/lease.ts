@@ -121,9 +121,10 @@ export function takeLease(
  * Only refreshes our OWN file. Touching another process's would keep its account
  * protected after it died, which is the failure this design is built to avoid.
  *
- * Returns true when the file was missing or unreadable and had to be written
- * again: a session that only ever refreshed what was already there stayed
- * unlisted for the rest of its run once anything removed its file.
+ * Returns true when the file had to be written again: it was missing, could
+ * not be read, or was ours and said something other than this account and
+ * folder. A session that only ever refreshed what was already there stayed
+ * unlisted for the rest of its run once anything removed or damaged its file.
  */
 export function touchLease(
   account: string,
@@ -144,6 +145,10 @@ export function touchLease(
     return true;
   }
   if (raw.pid !== process.pid) return false;
+  if (raw.account !== account || raw.configDir !== configDir) {
+    takeLease(account, configDir, c, options);
+    return true;
+  }
   try {
     writeFileSync(leasePath(account, c), JSON.stringify({ ...raw, at: now() }), 'utf8');
   } catch {

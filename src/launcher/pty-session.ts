@@ -122,6 +122,13 @@ export interface PtySessionOptions {
   onCapConfirmed?: (hit: Hit, context: CapContext) => CapDecision;
   /** Told what became of a prompt handed over with a relief. */
   onCarryOn?: (event: CarryOnEvent) => void;
+  /**
+   * The account the session is on right now. Asked when a session is ended to
+   * be relaunched with its prompt, which can be minutes after the move that
+   * left the prompt: a switch somebody made in between (it is not told to this
+   * layer) must not be undone by relaunching on the account the move went to.
+   */
+  currentAccount?: () => string;
   /** How long each step of typing that prompt waits. Injected in tests; production uses the defaults in carry-on. */
   carryOnTiming?: Partial<CarryOnTiming>;
   /**
@@ -214,7 +221,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     let sidechainQuietUntil = 0;
     /** A prompt waiting to be typed into this child, after a move in place. */
     let carryOn: CarryOn | null = null;
-    /** The account that move went to, which a relaunch for the prompt stays on. */
+    /** The account that move went to, for a caller that does not say where the session is now. */
     let carryOnAccount = '';
     /** What the person has typed into this child, from what the relay forwards. */
     const keyboard = createKeyboardWatch();
@@ -361,9 +368,9 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         return;
       }
       // Ended at its prompt or behind a dialog, never during a turn, and
-      // relaunched on the account it was moved to, with the prompt.
+      // relaunched on the account it is on now, with the prompt.
       options.onCarryOn?.({ kind: 'relaunch', why: step.why });
-      switching = carryOnAccount;
+      switching = options.currentAccount?.() || carryOnAccount;
       setTimeout(safeKill, 80);
     };
 

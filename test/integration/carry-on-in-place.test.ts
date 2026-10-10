@@ -111,6 +111,24 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)(
     );
 
     it(
+      'is relaunched on the account the session is on now, not the one the move went to',
+      { timeout: 60_000 },
+      async () => {
+        // Moved to B by the limit, then to C by the person from another
+        // terminal, while the prompt waited. A relaunch for the prompt that
+        // went to B would undo their move.
+        const session = live({
+          env: { FAKE_CLAUDE_IDLE_MS: '20000', FAKE_CLAUDE_REFUSE_AFTER_MS: '1500' },
+          accountNow: () => 'C',
+        });
+        await waitFor('the launch', session.log, (log) => launches(log).length === 1);
+        session.press('half a thought');
+
+        expect(await session.outcome).toMatchObject({ kind: 'switch', switchTo: 'C' });
+      },
+    );
+
+    it(
       'is left to the person once they press a key after the move',
       { timeout: 60_000 },
       async () => {
