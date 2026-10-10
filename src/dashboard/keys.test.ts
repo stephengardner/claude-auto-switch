@@ -49,6 +49,13 @@ describe('dispatchKey', () => {
   it('does not move the selection when asking to sign in', () => {
     expect(dispatchKey('l', 108, 2, 4).selected).toBe(2);
   });
+
+  it('asks to remove the highlighted account on x, in either case, without moving', () => {
+    // Either case, like l: what keeps it safe is the typed answer the question
+    // wants, not a key that caps lock turns into nothing.
+    expect(dispatchKey('x', 120, 2, 4)).toEqual({ selected: 2, action: 'remove' });
+    expect(dispatchKey('X', 88, 2, 4)).toEqual({ selected: 2, action: 'remove' });
+  });
 });
 
 describe('confirmKey', () => {

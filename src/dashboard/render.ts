@@ -581,6 +581,7 @@ const MAIN_HINTS: ReadonlyArray<readonly [string, string]> = [
   ['r', 'rotate'],
   ['f', 'now'],
   ['a', 'add'],
+  ['x', 'remove'],
   ['l', 'sign in'],
   ['n', 'rename'],
   ['e', 'enable'],

@@ -1,9 +1,10 @@
 import { clearCredential } from '../accounts/credential-vault.js';
 import { rmSync } from 'node:fs';
-import { getAccount, removeAccount } from '../accounts/registry.js';
+import { removeAccount } from '../accounts/registry.js';
+import { purgeRefusal, removalStanding } from '../accounts/removal.js';
 import { getActive, setActive } from '../state/active.js';
 import { profilesDir } from '../config/paths.js';
-import { isInside } from '../util/names.js';
+import { liveLeases, type SessionLease } from '../session/lease.js';
 import type { CliContext } from '../context.js';
 
 export interface RemoveOptions {
@@ -11,17 +12,22 @@ export interface RemoveOptions {
   purge?: boolean;
 }
 
-/** Deregister an account. Keeps its profile folder unless --purge is given. */
+/**
+ * Deregister an account. Keeps its profile folder unless --purge is given, and
+ * --purge removes nothing while that folder is in use (see purgeRefusal).
+ */
 export function removeCommand(
   context: CliContext,
   name: string,
   options: RemoveOptions = {},
+  leases: () => SessionLease[] = () => liveLeases(context.ctx),
 ): number {
-  const account = getAccount(name, context.ctx);
-  if (!account) {
+  const standing = removalStanding(name, context.config, context.ctx, leases);
+  if (!standing) {
     context.out(`account "${name}" not found`);
     return 1;
   }
+  const { dir } = standing;
 
   const deregister = (): void => {
     removeAccount(name, context.ctx);
@@ -29,38 +35,48 @@ export function removeCommand(
   };
 
   if (options.purge) {
+    // Not a lock. A session that announces itself between this check and the
+    // delete below is not seen, the same gap a renewal has; closing either
+    // takes the reservation described in issue #37.
+    const refusal = purgeRefusal(standing);
+    if (refusal) {
+      context.out(
+        `"${name}" was not removed: ${refusal}. Run this again once nothing is using it, ` +
+          'or without --purge to keep the folder.',
+      );
+      return 1;
+    }
     // Never recursively delete a path outside the profiles tree, even if the
     // registry entry was crafted or a custom --dir escaped it.
-    const profiles = profilesDir(context.config, context.ctx);
-    if (!isInside(profiles, account.dir)) {
+    if (!standing.folderIsOurs) {
       try {
-        clearCredential(account.dir);
+        clearCredential(dir);
       } catch {
         context.out(
-          `could not clear credentials for "${name}" at ${account.dir}; account remains registered; retry --purge`,
+          `could not clear credentials for "${name}" at ${dir}; account remains registered; retry --purge`,
         );
         return 1;
       }
       deregister();
       context.out(
-        `deregistered "${name}", but did NOT purge ${account.dir} (outside ${profiles}); delete it yourself if intended`,
+        `deregistered "${name}", but did NOT purge ${dir} (outside ${profilesDir(context.config, context.ctx)}); delete it yourself if intended`,
       );
       return 0;
     }
     try {
-      clearCredential(account.dir);
-      rmSync(account.dir, { recursive: true, force: true });
+      clearCredential(dir);
+      rmSync(dir, { recursive: true, force: true });
     } catch {
       context.out(
-        `could not fully purge "${name}" at ${account.dir}; account remains registered, but credentials or files may have been removed; retry --purge`,
+        `could not fully purge "${name}" at ${dir}; account remains registered, but credentials or files may have been removed; retry --purge`,
       );
       return 1;
     }
     deregister();
-    context.out(`removed "${name}" and purged ${account.dir}`);
+    context.out(`removed "${name}" and purged ${dir}`);
   } else {
     deregister();
-    context.out(`removed "${name}" (profile folder kept at ${account.dir})`);
+    context.out(`removed "${name}" (profile folder kept at ${dir})`);
   }
   return 0;
 }
