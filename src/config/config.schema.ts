@@ -1,5 +1,9 @@
 import { z } from 'zod';
 
+/** What `resume.prompt` is until somebody sets it. */
+export const DEFAULT_RESUME_PROMPT =
+  'This session was restarted. If you were in the middle of something, carry on exactly where you stopped. If your work was already finished, say so in one line and wait.';
+
 /**
  * User configuration (spec section 7). Every key is optional in the file; the
  * schema fills defaults so `loadConfig` always returns a fully-populated object.
@@ -123,12 +127,7 @@ export const ConfigSchema = z.object({
        * Worded for both cases, since a restart can find the work finished as
        * easily as half done. A prompt a session armed itself wins over this.
        */
-      prompt: z
-        .string()
-        .min(1)
-        .default(
-          'This session was restarted. If you were in the middle of something, carry on exactly where you stopped. If your work was already finished, say so in one line and wait.',
-        ),
+      prompt: z.string().min(1).default(DEFAULT_RESUME_PROMPT),
     })
     .default({}),
   /** What a running session does when a newer ccx is installed under it. */

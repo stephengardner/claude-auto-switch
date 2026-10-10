@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -8,6 +8,7 @@ import {
   clearSwitchRequest,
   decideSwitch,
   requestMoves,
+  sweepDeadSwitchRequests,
 } from './switch-request.js';
 
 function ctx() {
@@ -96,5 +97,40 @@ describe('requestMoves', () => {
     expect(readSwitchRequest(c, 13)).toEqual({ account: 'b', at: 5, mode: 'restart' });
     expect(readSwitchRequest(c, 12)).toBeNull();
     expect(readSwitchRequest(c)).toBeNull();
+  });
+});
+
+describe('requests left for sessions that are gone', () => {
+  const requestsDir = (c: { env: { CLAUDE_AUTO_SWITCH_HOME: string } }): string =>
+    path.join(c.env.CLAUDE_AUTO_SWITCH_HOME, 'switch-requests');
+
+  it('removes the request of a session whose process is gone, and no other', () => {
+    // A session clears its own request as it ends. One that is killed never
+    // does, and nothing read that file again unless its pid came round.
+    const c = ctx();
+    writeSwitchRequest('phx', 1, 'seamless', c, 4242);
+    writeSwitchRequest('phx', 1, 'seamless', c, 4243);
+    writeSwitchRequest('phx', 1, 'seamless', c);
+
+    expect(sweepDeadSwitchRequests(c, (pid) => pid === 4243)).toBe(1);
+    expect(readSwitchRequest(c, 4242)).toBeNull();
+    // A running session's request, and the one any session may take, stay.
+    expect(readSwitchRequest(c, 4243)).toEqual({ account: 'phx', at: 1, mode: 'seamless' });
+    expect(readSwitchRequest(c)).toEqual({ account: 'phx', at: 1, mode: 'seamless' });
+  });
+
+  it('touches nothing that is not a session request', () => {
+    const c = ctx();
+    writeSwitchRequest('phx', 1, 'seamless', c, 4242);
+    writeFileSync(path.join(requestsDir(c), 'notes.json'), '{}', 'utf8');
+    writeFileSync(path.join(requestsDir(c), '12abc.json'), '{}', 'utf8');
+    expect(sweepDeadSwitchRequests(c, () => false)).toBe(1);
+    expect(readdirSync(requestsDir(c)).sort()).toEqual(['12abc.json', 'notes.json']);
+  });
+
+  it('does nothing when no request was ever made', () => {
+    const c = ctx();
+    expect(sweepDeadSwitchRequests(c, () => false)).toBe(0);
+    expect(existsSync(requestsDir(c))).toBe(false);
   });
 });

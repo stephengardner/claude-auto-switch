@@ -21,6 +21,7 @@ import {
   clearSwitchRequest,
   decideSwitch,
   writeSwitchRequest,
+  sweepDeadSwitchRequests,
 } from '../state/switch-request.js';
 import { startProactiveRotation } from '../usage/proactive.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
@@ -43,7 +44,12 @@ import {
   retireKeptSettings,
   retireLeftoverSessionDir,
 } from '../session/session-dir.js';
-import { runPtySession } from '../launcher/pty-session.js';
+import {
+  runPtySession,
+  type CapContext,
+  type CapDecision,
+  type CarryOnEvent,
+} from '../launcher/pty-session.js';
 import { runHeadlessSession } from '../launcher/headless-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
 import {
@@ -77,7 +83,9 @@ import {
   checkStartPrompt,
   resumePromptOff,
   START_PROMPT_MAX_CHARS,
+  IN_PLACE_PROMPT,
 } from '../session/resume-prompt.js';
+import { DEFAULT_RESUME_PROMPT } from '../config/config.schema.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
 import { secureMkdir, writeSecretFile } from '../util/secret-file.js';
@@ -88,6 +96,8 @@ import {
   identityKey,
   sessionIdentityEmail,
   credentialFingerprint,
+  hasUsableLogin,
+  nudgeLoginReread,
 } from '../accounts/credential-vault.js';
 import { hasLogin, hasWorkingLogin } from '../accounts/account-login.js';
 import {
@@ -111,7 +121,13 @@ import {
   type SaveOutcome,
 } from '../session/mirror-state.js';
 import { fetchTokenOwner } from '../accounts/identity-check.js';
-import { takeLease, touchLease, releaseLease, liveLeases } from '../session/lease.js';
+import {
+  takeLease,
+  touchLease,
+  releaseLease,
+  liveLeases,
+  processIsAlive,
+} from '../session/lease.js';
 import { claimedElsewhere, pickAndClaim, releaseClaim } from '../session/worker-claim.js';
 import type { Interruption } from '../launcher/interruption.js';
 import { spreadWorkers } from '../usage/spread.js';
@@ -415,6 +431,9 @@ export async function runInteractiveHotSwap(
   // request carries no generation, so clearing it here is what bounds its age.
   clearSwitchRequest(context.ctx);
   clearSwitchRequest(context.ctx, process.pid);
+  // And the requests of sessions that were killed before they could clear
+  // their own, which nothing else removes.
+  sweepDeadSwitchRequests(context.ctx, processIsAlive);
   if (startPrompt !== null) writeResumePrompt(sessionDir, startPrompt);
 
   /**
@@ -663,7 +682,7 @@ export async function runInteractiveHotSwap(
         renderedText,
         // Scoped to what this session is actually running: a spent window for
         // a model it is not on is not a limit on it.
-        { modelInUse: runningModel() },
+        { modelInUse: runningModel(), ...(context.capProbe ? { probe: context.capProbe } : {}) },
       );
       verdict = decision.limited ? 'limited' : 'allowed';
       limitedModel = decision.model;
@@ -990,11 +1009,6 @@ export async function runInteractiveHotSwap(
    * instead of leaving the session on a half-applied account.
    */
   const activate = (account: Account): void => {
-    // A fresh activation installs this account's own login, so whatever
-    // identity drift the previous session had is corrected here and the cap
-    // attribution starts clean.
-    capOwner = null;
-    capUnregisteredEmail = null;
     // The ORDER of announce / copy / release is the safety property, so it lives
     // in activateWithLease where tests pin it: announce first, copy second,
     // release the old one last. Any gap between a login being in use and being
@@ -1002,6 +1016,14 @@ export async function runInteractiveHotSwap(
     announced = activateWithLease(account.name, announced, {
       takeLease: (name) => takeLease(name, sessionDir, context.ctx),
       releaseLease: (name) => releaseLease(name, context.ctx),
+      // This account's own login is in now, so whatever identity drift the
+      // previous one had is gone and the cap attribution starts clean. Not
+      // before: when the copy fails, the session is still on the old login,
+      // and a limit it met still belongs to whoever the check found.
+      installed: () => {
+        capOwner = null;
+        capUnregisteredEmail = null;
+      },
       install: () => {
         withCredentialLock(sessionDir, () => {
           if (current && current.name !== account.name) saveBack(current);
@@ -1024,6 +1046,9 @@ export async function runInteractiveHotSwap(
             // What we just put there is by definition already in the profile, so it
             // is not a change to mirror back.
             mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
+            // A Claude already running here keeps the login it read until the
+            // file's time changes, which a Keychain write does not do.
+            nudgeLoginReread(sessionDir);
           } catch (e) {
             rollbackCredential(sessionDir);
             throw e;
@@ -1114,7 +1139,33 @@ export async function runInteractiveHotSwap(
    * The just-capped account is excluded both explicitly and through the ledger
    * cap recorded a moment earlier.
    */
-  const reliefAccount = (capName: string): Account | null => {
+  /**
+   * Why the login under a running Claude cannot be replaced with `target`'s
+   * right now, or null when it can. The one rule for every move in place: the
+   * one a limit makes and the one somebody asks for (`ccx use`, `/ccx`, an
+   * early move). `launchToken` is the long-lived token that Claude was started
+   * with, if any.
+   *
+   * A replaced login is only used by a Claude that reads the one in its
+   * folder, and one started with a token reads the token instead. The target
+   * has to have a login to put there: a long-lived token alone reaches Claude
+   * only through a new launch's environment, and installing nothing empties
+   * the folder under the running Claude. And it has to be good for a while:
+   * the swap cannot renew anything first, so a login due for renewal is left
+   * to a relaunch, which renews before handing over.
+   */
+  const inPlaceRefusal = (target: Account, launchToken: string | null): string | null => {
+    if (launchToken !== null) {
+      return 'this session was started with a long-lived token, which Claude uses instead of the login in its folder';
+    }
+    if (!hasUsableLogin(target.dir)) {
+      return `"${target.name}" has only a long-lived token, which reaches Claude only when it starts`;
+    }
+    const mode = swapMode({ hasLogin: () => true, renewalDue: () => renewalIsDue(target.dir) });
+    return mode === 'restart' ? `"${target.name}" needs its login refreshed first` : null;
+  };
+
+  const reliefAccount = (capName: string, launchToken: string | null): Account | null => {
     refreshSettings();
     const now = Date.now();
     const capped = cappedNames(loadLedger(context.ctx), now);
@@ -1125,16 +1176,9 @@ export async function runInteractiveHotSwap(
           a.name !== capName &&
           !capped.has(a.name) &&
           hasWorkingLogin(a.dir, context.ctx) &&
-          // Only an account whose login can be swapped in place RIGHT NOW is an
-          // in-place destination. `hasWorkingLogin` says the login is not
-          // rejected, but not whether it is due for renewal; a renewal-due login
-          // installed under the live child would land the session on a token
-          // about to expire. The same gate switchWatch uses: a renewal-due target
-          // is left to the restart path, which renews before handing over.
-          swapMode({
-            hasLogin: () => hasLogin(a.dir),
-            renewalDue: () => renewalIsDue(a.dir),
-          }) !== 'restart',
+          // `hasWorkingLogin` says the login is not rejected; this says it can
+          // go under the running Claude now, by the rule switchWatch uses too.
+          inPlaceRefusal(a, launchToken) === null,
       )
       // Same account order as everywhere else, judged for the model this
       // session is running (a model with a weekly window of its own counts it).
@@ -1482,11 +1526,21 @@ export async function runInteractiveHotSwap(
        */
       const onTick = (): void => {
         if (!current) return;
-        touchLease(current.name, context.ctx);
+        if (touchLease(current.name, sessionDir, context.ctx)) {
+          // Nothing else records that an announcement went missing, and
+          // without a record the next report of an unlisted session starts
+          // from a guess again.
+          logEvent(`this session's announcement that it is on "${current.name}" was gone; written again`, {
+            kind: 'lease-restored',
+            data: { account: current.name },
+          });
+        }
         mirrorSessionLoginToProfile(current);
         pullRenewedLogin(current);
       };
-      const switchWatch = (): string | null => {
+      /** The switch this launch is waiting to make by a restart, once said. */
+      let restartAwaited: string | null = null;
+      const switchWatch = (claudeIdle: () => boolean): string | null => {
         // A request can name an account added since this session started.
         refreshAccounts();
         // This session's OWN request (written by `ccx use --session <pid>` or
@@ -1501,29 +1555,39 @@ export async function runInteractiveHotSwap(
           const t = accounts.find((a) => a.name === name);
           return !!t && hasLogin(t.dir);
         });
-        if (decision.consume) clearSwitchRequest(context.ctx, targeted ? process.pid : undefined);
-        if (!decision.switchTo) return null;
-        const target = accounts.find((a) => a.name === decision.switchTo);
-        if (!target) return null;
+        const consume = (): void => clearSwitchRequest(context.ctx, targeted ? process.pid : undefined);
+        const target = decision.switchTo ? accounts.find((a) => a.name === decision.switchTo) : undefined;
+        if (!target) {
+          if (decision.consume) consume();
+          return null;
+        }
         if (request?.mode === 'restart') {
+          consume();
           if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
           return target.name; // end child, resume this conversation
         }
-        // Seamless only when the target's login is usable right now. This swap is
-        // synchronous, so there is no chance to renew anything first, and swapping
-        // in an expired login lands the running session on a dead token. When it
-        // needs work, relaunch instead: resuming by id keeps the same conversation and
-        // the start path renews before handing it over.
-        if (
-          swapMode({
-            hasLogin: () => hasLogin(target.dir),
-            renewalDue: () => renewalIsDue(target.dir),
-          }) === 'restart'
-        ) {
-          notice(`"${target.name}" needs its login refreshed first; continuing it there`);
+        // In place only by the same rule a limit's move follows. Otherwise
+        // relaunch: resuming by id keeps the same conversation, and the start
+        // path renews a login, or passes a token, before handing it over.
+        // Asked for in place, so not at the cost of a turn, a subagent or a
+        // background command: the request stays until Claude is idle (or is
+        // replaced by another), which an early move and `/ccx`, asked in the
+        // middle of a turn, rely on. `--now` is the way to restart at once.
+        const refusal = inPlaceRefusal(target, token);
+        if (refusal !== null) {
+          if (!claudeIdle()) {
+            if (restartAwaited !== target.name) {
+              restartAwaited = target.name;
+              notice(`${refusal}; moving it to "${target.name}" by a restart once Claude is idle`);
+            }
+            return null;
+          }
+          consume();
+          notice(`restarting this session on "${target.name}" now that Claude is idle`);
           if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
           return target.name;
         }
+        consume();
         activate(target);
         // A TARGETED switch (`ccx use --here/--session`) moves only this session:
         // it must not touch the global active account or the editor pointer, which
@@ -1546,35 +1610,40 @@ export async function runInteractiveHotSwap(
        * 'restart' (end and relaunch, resuming the conversation) when a model-only
        * limit is in play, when there is no healthy account, or when the only move
        * would need a model change.
+       *
+       * The turn the limit refused has ended, so a moved session sits at its
+       * prompt until it is told to carry on. That prompt is typed into the live
+       * child (see launcher/carry-on) rather than handed over by a relaunch,
+       * which ends every subagent, background command and scheduled loop the
+       * session has running.
        */
-      const onCapConfirmed = (
-        hit: { reason?: string; resetAt?: number },
-        opts: { relieve: boolean; switching: boolean },
-      ): 'relieved' | 'restart' => {
+      const onCapConfirmed = (hit: { reason?: string; resetAt?: number }, opts: CapContext): CapDecision => {
         const capName = capOwner ?? current?.name ?? account.name;
+
+        const carryOn = relaunchPrompt();
+        // Whether a relaunch would hand the prompt over at all: a run launched
+        // with a prompt of its own keeps that one (see withResumePrompt).
+        const relaunchDelivers =
+          carryOn !== null &&
+          withResumePrompt(relaunchArgs(args, conversationId()), carryOn.prompt).applied;
+        // A session stopped on the limit, with a prompt due that cannot be typed
+        // into this Claude, is relaunched as before: left in place it would sit
+        // idle, exactly the stall the prompt exists to end. One whose subagent
+        // met the limit has not stopped, so that is never a reason to end it.
+        const relaunchForPrompt = relaunchDelivers && !opts.canType && !opts.sidechain;
 
         // Decide (and perform) the in-place move FIRST, so recording can key off
         // what actually happened rather than a caller's guess. Relief is possible
         // only when the caller allows it, the limit is account-wide (a model-only
         // limit leaves the account usable on other models, so the planner handles
         // it), there is a same-model renewal-ready destination, and the swap
-        // applies cleanly.
+        // applies cleanly (see inPlaceRefusal for what can go under it).
         let relievedTo: Account | null = null;
-        // A session that armed a resume prompt is RELAUNCHED rather than relieved
-        // in place. An in-place swap keeps the child alive, but the turn the limit
-        // interrupted has already ended, so the session sits idle at its prompt:
-        // exactly the stall an unattended session armed a prompt to avoid. Only a
-        // relaunch can hand the prompt over (see withResumePrompt), and only when
-        // the relaunch will really use it: a run launched with a prompt of its own
-        // keeps that one, and relaunching it anyway would end the child, sub-agents
-        // and all, for nothing. So this asks the same question the relaunch does.
-        // The default prompt counts too: it is what keeps a session working.
-        const carryOn = relaunchPrompt();
-        const armedForRelaunch =
-          carryOn !== null &&
-          withResumePrompt(relaunchArgs(args, conversationId()), carryOn.prompt).applied;
-        if (opts.relieve && limitedModel === undefined && !armedForRelaunch) {
-          const next = reliefAccount(capName);
+        // Whose limit this is, as the check found. A move starts the new
+        // login's attribution afresh, but this limit was met before it.
+        const unregistered = capUnregisteredEmail;
+        if (opts.relieve && limitedModel === undefined && !relaunchForPrompt) {
+          const next = reliefAccount(capName, token);
           if (next) {
             try {
               activate(next); // seamless swap under the live child; updates `current`
@@ -1596,17 +1665,32 @@ export async function runInteractiveHotSwap(
         // believed account after the first cleared the unregistered-identity
         // guard). limitedModel/limitedResetAt scope it to a model when model-only.
         if (relievedTo !== null || opts.switching) {
+          capUnregisteredEmail = unregistered;
           recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt);
+          // Said about the login the session had; the one it has now is new.
+          if (relievedTo !== null) capUnregisteredEmail = null;
         }
 
         if (relievedTo === null) {
-          if (opts.relieve && limitedModel === undefined && armedForRelaunch) {
-            logEvent('relaunching instead of relieving in place: this session armed a resume prompt', {
-              kind: 'resume-prompt',
-              data: { from: capName, relaunch: true },
-            });
+          if (opts.sidechain) {
+            // Nothing is done on a subagent's refusal but the move in place.
+            // Unless a switch already under way owns what happens next (it was
+            // recorded above), nothing is recorded either: the main thread
+            // meets the same limit at its next request, and that refusal is the
+            // one acted on and written down, once. What this check learned
+            // about a model belongs to the subagent, which may not be on the
+            // main thread's.
+            limitedModel = undefined;
+            limitedResetAt = undefined;
+            return { kind: 'left' };
           }
-          return 'restart';
+          if (opts.relieve && limitedModel === undefined && relaunchForPrompt) {
+            logEvent(
+              'relaunching instead of relieving in place: the carry-on prompt cannot be typed into this Claude',
+              { kind: 'resume-prompt', data: { from: capName, relaunch: true } },
+            );
+          }
+          return { kind: 'restart' };
         }
 
         // Auto-rotation, not a targeted user switch: the global active account
@@ -1619,9 +1703,42 @@ export async function runInteractiveHotSwap(
         notifyAccountSwitch(relievedTo.name, 'switched in place');
         logEvent(`seamless cap relief: ${capName} -> ${relievedTo.name}`, {
           kind: 'cap-relief',
-          data: { from: capName, to: relievedTo.name },
+          data: { from: capName, to: relievedTo.name, ...(opts.sidechain ? { metBy: 'subagent' } : {}) },
         });
-        return 'relieved';
+        if (carryOn === null) return { kind: 'relieved', account: relievedTo.name };
+        // Handed over even when this Claude cannot be typed into. A session
+        // moved on a subagent's refusal has not stopped, but its main thread
+        // can still be refused by a request already on its way, and then it is
+        // stalled with nothing to tell it so: the prompt is what gets it
+        // relaunched in that case.
+        //
+        // The default says the session was restarted, which is what a relaunch
+        // does. In place it gets the wording for that; a prompt the session
+        // armed, or one the person set, is theirs and is typed as written.
+        const unchangedDefault = carryOn.source === 'default' && carryOn.prompt === DEFAULT_RESUME_PROMPT;
+        return {
+          kind: 'relieved',
+          account: relievedTo.name,
+          carryOn: { prompt: unchangedDefault ? IN_PLACE_PROMPT : carryOn.prompt, canRelaunch: relaunchDelivers },
+        };
+      };
+      /** What became of a prompt typed into the live session, for `ccx history`. */
+      const onCarryOn = (event: CarryOnEvent): void => {
+        const on = current?.name ?? account.name;
+        const message =
+          event.kind === 'typed'
+            ? 'typed the carry-on prompt into the live session'
+            : event.kind === 'refused'
+              ? 'the turn was refused again after the move; Claude may still be on the login it had'
+              : event.kind === 'relaunch'
+                ? `relaunching to hand the carry-on prompt over: ${event.why}`
+                : event.outcome === 'delivered'
+                  ? 'the session took the carry-on prompt in place and carried on'
+                  : `carry-on prompt dropped: ${event.why}`;
+        logEvent(message, {
+          kind: 'carry-on',
+          data: { step: event.kind === 'done' ? event.outcome : event.kind, account: on },
+        });
       };
       const base = {
         claude,
@@ -1631,7 +1748,11 @@ export async function runInteractiveHotSwap(
         onTick,
         verifyCap,
         onCapConfirmed,
+        onCarryOn,
+        currentAccount: () => current?.name ?? account.name,
         ...(context.blockedWatch ? { blockedWatch: context.blockedWatch } : {}),
+        ...(context.carryOn ? { carryOnTiming: context.carryOn } : {}),
+        ...(context.idleBeforeRestartMs !== undefined ? { idleBeforeRestartMs: context.idleBeforeRestartMs } : {}),
         ...(terminalInput ? { input: terminalInput } : {}),
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
         ...(debugLog ? { debugLog } : {}),

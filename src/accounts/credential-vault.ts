@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, utimesSync } from 'node:fs';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import path from 'node:path';
 import { CREDENTIALS_FILE, readCredential, copyCredential, removeCredential } from './credential-storage.js';
@@ -154,6 +154,26 @@ export function identityKey(configDir: string): string | null {
     return parts.length > 0 ? parts.join('|') : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Make a running Claude read the login in its config folder `configDir` again
+ * at its next request, after the login there was replaced under it.
+ *
+ * Claude keeps the login it read for up to 30 seconds and drops it early only
+ * when the time of `.credentials.json` in that folder changes (read from the
+ * 2.1.296 binary, and measured live on macOS). A login that lives in the
+ * Keychain is replaced without touching that file, so until then requests go
+ * out as the account the session just left. Changing the time is enough: the
+ * file's contents are never read or written here, and a missing file is left
+ * missing.
+ */
+export function nudgeLoginReread(configDir: string, now: Date = new Date()): void {
+  try {
+    utimesSync(path.join(configDir, CREDENTIALS_FILE), now, now);
+  } catch {
+    /* no file to nudge */
   }
 }
 

@@ -26,6 +26,15 @@ import { writeSecretFile } from '../util/secret-file.js';
 
 export const RESUME_PROMPT_FILE = 'resume-prompt.txt';
 
+/**
+ * What a session is told when ccx moved it to another account WITHOUT
+ * restarting it, in place of the default prompt, which says it was restarted.
+ * That would be false here, and a session that believes it tends to start
+ * again the agents and commands that are in fact still running.
+ */
+export const IN_PLACE_PROMPT =
+  'ccx moved this session to another account because the one it was on ran out of usage. Nothing was restarted: agents and background tasks that were running still are. Carry on exactly where you stopped, and run again anything a usage limit error ended. If nothing was cut short, say so in one line and wait.';
+
 /** Long enough for a real instruction, short enough to stay a sane argument. */
 export const RESUME_PROMPT_MAX_CHARS = 2000;
 

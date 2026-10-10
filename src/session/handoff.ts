@@ -28,6 +28,11 @@ export interface HandoffSteps {
   releaseLease: (account: string) => void;
   /** Copy the account's login into the shared session folder. May throw. */
   install: () => void;
+  /**
+   * Run once the login is in, and never when installing it failed: for what
+   * holds only while the session runs as the new account.
+   */
+  installed?: () => void;
 }
 
 /**
@@ -49,6 +54,7 @@ export function activateWithLease(
     if (previouslyAnnounced !== account) steps.releaseLease(account);
     throw err;
   }
+  steps.installed?.();
   // Only now is the previous account genuinely no longer in use.
   if (previouslyAnnounced !== null && previouslyAnnounced !== account) {
     steps.releaseLease(previouslyAnnounced);

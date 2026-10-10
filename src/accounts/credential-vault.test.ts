@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  statSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -11,6 +18,7 @@ import {
   previousCredentialPath,
   clearCredential,
   keepForRollback,
+  nudgeLoginReread,
 } from './credential-vault.js';
 
 function dir(): string {
@@ -192,5 +200,27 @@ describe('keepForRollback', () => {
 
     expect(rollbackCredential(d)).toBe(false);
     expect(existsSync(previousCredentialPath(d))).toBe(false);
+  });
+});
+
+describe('nudgeLoginReread', () => {
+  it("changes the login file's time and nothing in it", () => {
+    // Claude drops the login it holds early only when this file's time changes.
+    const d = dir();
+    const file = path.join(d, '.credentials.json');
+    writeCred(file, 'a');
+    const before = readFileSync(file);
+    utimesSync(file, new Date(1_000_000), new Date(1_000_000));
+
+    nudgeLoginReread(d, new Date(2_000_000));
+    expect(statSync(file).mtimeMs).toBe(2_000_000);
+    expect(readFileSync(file).equals(before)).toBe(true);
+  });
+
+  it('creates nothing when there is no login file', () => {
+    const d = dir();
+    nudgeLoginReread(d);
+    expect(existsSync(path.join(d, '.credentials.json'))).toBe(false);
+    expect(() => nudgeLoginReread(path.join(d, 'no-such-folder'))).not.toThrow();
   });
 });

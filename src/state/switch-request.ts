@@ -1,4 +1,4 @@
-import { rmSync } from 'node:fs';
+import { readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { configHome, type PathCtx } from '../config/paths.js';
@@ -102,6 +102,35 @@ export function clearSwitchRequest(c: PathCtx = {}, pid?: number): void {
   } catch {
     /* best effort */
   }
+}
+
+/**
+ * Remove the per-session requests of sessions whose process is gone, and say
+ * how many. A session clears its own request as it ends; one that is killed
+ * never does, and that file was then read again only if a later session
+ * happened to get the same pid. `isAlive` must answer true for a process that
+ * exists but belongs to someone else.
+ */
+export function sweepDeadSwitchRequests(c: PathCtx, isAlive: (pid: number) => boolean): number {
+  const dir = path.join(configHome(c), PER_SESSION_DIR);
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0; // no session has ever been asked by name
+  }
+  let removed = 0;
+  for (const name of names) {
+    const pid = /^(\d+)\.json$/.exec(name)?.[1];
+    if (pid === undefined || isAlive(Number(pid))) continue;
+    try {
+      rmSync(path.join(dir, name), { force: true });
+      removed += 1;
+    } catch {
+      /* best effort: the next start tries again */
+    }
+  }
+  return removed;
 }
 
 export interface SwitchDecision {

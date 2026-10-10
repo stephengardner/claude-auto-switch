@@ -297,8 +297,8 @@ describe('statuslineCommand', () => {
     });
 
     it('goes by who the folder is signed in as when no announcement names it', async () => {
-      // A live session can lose its announcement (one left untouched past its
-      // freshness window is cleared by the next reader). The folder's own login
+      // A live session can be without an announcement that counts (it has not
+      // ticked for longer than the freshness window). The folder's own login
       // still says which account Claude is running on.
       const { context, lines, sessionDir } = setup('work', usage, {
         accounts: ['work', 'side'],
