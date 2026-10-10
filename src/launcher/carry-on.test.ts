@@ -86,6 +86,15 @@ describe('when a carry-on prompt may be typed into a live session', () => {
     expect(step).toMatchObject({ do: 'done', outcome: 'attended' });
   });
 
+  it('counts a key pressed in the very millisecond of the move as somebody there', () => {
+    // Taken for a draft left behind instead, it would have the session
+    // relaunched under the hands of the person typing.
+    expect(carryOn().step(view(READY, { lastKeyAt: MOVED }))).toMatchObject({
+      do: 'done',
+      outcome: 'attended',
+    });
+  });
+
   it('types into a box emptied by the prompt the person last sent', () => {
     const c = carryOn();
     expect(c.step(view(READY, { lastKeyAt: 9_000, endedOnEnter: true, promptAt: 9_004 }))).toEqual({

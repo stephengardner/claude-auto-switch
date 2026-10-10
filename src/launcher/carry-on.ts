@@ -148,7 +148,7 @@ export function createCarryOn(options: CarryOnOptions): CarryOn {
         ? { do: 'done', outcome: 'delivered', why: 'Claude took it and was not refused' }
         : wait;
     }
-    if (view.lastKeyAt > options.movedAt) {
+    if (view.lastKeyAt >= options.movedAt) {
       return { do: 'done', outcome: 'attended', why: 'somebody is at the keyboard' };
     }
     if (refusedTooOften)
