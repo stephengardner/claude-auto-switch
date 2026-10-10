@@ -81,6 +81,18 @@ export interface CarryOnView {
   subagentWroteAt: number;
 }
 
+/**
+ * Whether the input box is empty, as far as the keys pressed can say: nobody
+ * has typed in this Claude, or the last key was the Enter that sends a prompt
+ * and Claude recorded a prompt since. Anything else may be a draft, which
+ * typing into it or ending Claude would lose.
+ */
+export function inputBoxEmpty(
+  view: Pick<CarryOnView, 'lastKeyAt' | 'endedOnEnter' | 'promptAt'>,
+): boolean {
+  return view.lastKeyAt === 0 || (view.endedOnEnter && view.promptAt >= view.lastKeyAt);
+}
+
 export type CarryOnStep =
   | { do: 'wait' }
   /** Type the prompt now, then call `typed`. */
@@ -167,8 +179,7 @@ export function createCarryOn(options: CarryOnOptions): CarryOn {
     blockedSince = null;
     const atPrompt = view.status.status === 'idle' || view.status.status === 'shell';
     if (!atPrompt || view.status.forMs < t.settleMs) return wait;
-    const boxEmpty = view.lastKeyAt === 0 || (view.endedOnEnter && view.promptAt >= view.lastKeyAt);
-    if (!boxEmpty) return giveUp('something is typed in the input box');
+    if (!inputBoxEmpty(view)) return giveUp('something is typed in the input box');
     return view.readsPastes ? { do: 'type' } : giveUp('Claude is not reading marked pastes');
   };
 

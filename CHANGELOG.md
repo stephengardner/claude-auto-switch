@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.5.3]
+
+### Fixed
+
+- **Ending an idle Claude could throw away a prompt being written, or a
+  subagent at work.** ccx ends Claude without a limit in two cases: a newer
+  ccx taking the session over, and a switch it cannot make in place (a
+  session started with a long-lived token, or an account with only a
+  token). It waited for Claude's own record to say it had been idle for 20
+  seconds, and nothing else. Now it also waits until the input box is empty
+  (nobody has typed in this Claude, or the last key sent a prompt Claude
+  recorded), so a draft is never lost, however long ago it was typed; and
+  until no subagent's record has grown for 20 seconds, counted only after
+  ccx has watched them that long. Measured on Claude 2.1.296: a running
+  background subagent already keeps Claude's record at "busy", and a
+  background command or a Monitor at "shell", so neither was ended; the
+  subagent check is there in case a status says idle with one at work. Not
+  measured: a scheduled task waiting to fire.
+- **A switch that will not happen said it would.** For a Claude that keeps
+  no record of whether it is idle, ccx said it would restart the session
+  "once Claude is idle", which never comes. It now says the session is not
+  restarted for it, and that `ccx use <name> --now` does.
+- **The README said a moved session picks up its new login at its next
+  request.** That holds while the login is in the session folder's
+  `.credentials.json`. Once Claude has moved it into the macOS Keychain,
+  which leaves no such file (every Keychain session folder on one machine,
+  checked), it takes up to about 30 seconds, as before.
+
 ## [2.5.2]
 
 ### Changed
