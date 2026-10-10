@@ -23,10 +23,12 @@ semantic versioning.
   4h 16m (3:15 AM)`, with the clock time for a wait under a day. Only
   accounts that were out had a time, and only one. The cell is blank while no
   5-hour window is running, since one starts at first use.
-- **One word for out.** An account that is out reads `back in 2d 8h` under
-  the window that is blocking it: when the last thing blocking it lifts, the
-  same `status.until` that `ccx state` publishes. "capped" and "week spent"
-  were two words for that one thing. An account ccx is holding back because
+- **One word for out.** An account that is out reads `back in 2d 8h`: when
+  the last thing blocking it lifts, the same `status.until` that `ccx state`
+  publishes. It is said under the window that is blocking it, or at the end
+  of the row when what it waits for is ccx's own record of being refused,
+  which has no column. "capped" and "week spent" were two words for that one
+  thing. An account ccx is holding back because
   its week is nearly spent now says `held back`, where it said "ready".
 - **Every column lines up.** Each is as wide as its widest cell in the frame,
   blank cells included, so the bars form straight columns whatever the

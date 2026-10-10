@@ -523,6 +523,27 @@ describe('when each window resets', () => {
     expect(rowOf(out, 'refused')).toMatch(/resets in 2h 0m +[█░]+ +80% {2}resets in 3d {3}back in 30m$/);
   });
 
+  it('says back in under a spent window only when that window is what it waits for', () => {
+    // The 5-hour window is spent and resets in 3 hours, but ccx's record of a
+    // refusal runs for 40. Under the 5-hour bar, "back in 1d 16h" would say
+    // that window lasts 40 hours. The bar keeps its own reset, and the wait,
+    // which has no column, goes at the end of the row.
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'refused',
+          pick: pick(2, { runway: 0, binding: '5-hour' }),
+          cappedUntil: NOW + 40 * HOUR,
+          usage: { fiveHour: 1, sevenDay: 0.2, fiveHourReset: NOW + 3 * HOUR, sevenDayReset: NOW + 100 * HOUR },
+        }),
+      ]),
+      { ...opts, width: 100 },
+    );
+    const row = rowOf(out, 'refused');
+    expect(row).toMatch(/ {3}0% {2}resets in 3h 0m +[█░]+ +80% {2}resets in 4d 4h {3}back in 1d 16h$/);
+    expect(row.match(/back in/g)?.length).toBe(1);
+  });
+
   it('says out when nothing says when it comes back', () => {
     const out = renderDashboard(
       snapshot([account({ name: 'unknown', usage: { fiveHour: 0, sevenDay: 1 } })]),

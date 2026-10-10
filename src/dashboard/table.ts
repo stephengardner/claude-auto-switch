@@ -188,24 +188,24 @@ function columnOf(label: string, model: string | null): number | null {
 }
 
 /**
- * Where a row out of room says when it is back: under the spent window that
- * lifts last, or null when no window in a column is spent (ccx was refused and
- * the numbers do not show why), and then the row says it at its end.
+ * Where a row out of room says when it is back: under the spent window whose
+ * own reset reads the same as that wait, or null when no window does, and then
+ * the row says it at its end. That is the case when ccx was refused and the
+ * numbers do not show why, or its record of the refusal runs past every spent
+ * window, where saying the wait under one would misstate when it resets.
  *
  * The TIME it gives is always the status's own `until`, which is when the
  * last thing blocking lifts, including ccx's record of the refusal. Only the
  * place is chosen here.
  */
-function backColumn(placed: Placed, model: string | null): number | null {
+function backColumn(placed: Placed, model: string | null, now: number): number | null {
+  const said = (until: number | null | undefined): string =>
+    typeof until === 'number' && until > now ? hhmm(until, now) : 'out';
+  const wait = said(placed.status.until);
   let at: number | null = null;
-  let latest = Number.NEGATIVE_INFINITY;
   for (const constraint of placed.status.constraints) {
     const column = columnOf(constraint.label, model);
-    const until = constraint.until ?? Number.POSITIVE_INFINITY;
-    if (column !== null && until >= latest) {
-      at = column;
-      latest = until;
-    }
+    if (column !== null && said(constraint.until) === wait) at = column;
   }
   return at;
 }
@@ -216,7 +216,7 @@ const ahead = (resetsAt: number | null | undefined, now: number): number | null 
 
 function windowsOf(placed: Placed, model: string | null, now: number): WindowView[] {
   const usage = placed.account.usage;
-  const back = placed.block === 'out' ? backColumn(placed, model) : null;
+  const back = placed.block === 'out' ? backColumn(placed, model, now) : null;
   const windows: WindowView[] = [
     {
       used: effectiveUtilization(usage?.fiveHour, usage?.fiveHourReset, now),

@@ -125,9 +125,10 @@ in your settings); otherwise ccx rotates on account capacity alone.
     line: a full bar is an untouched window.
   - When a window resets is beside its own bar: `resets in 4h 16m (3:15 AM)`,
     with the clock time for a wait under a day. The cell is blank while no
-    5-hour window is running (one starts at first use). On an account that is
-    out, the window blocking it reads `back in ...`, which is when the last
-    thing blocking it lifts.
+    5-hour window is running (one starts at first use). An account that is
+    out says `back in ...`, which is when the last thing blocking it lifts,
+    under the window blocking it, or at the end of the row when it waits on
+    ccx's own record of being refused.
   - The end of a row says what else matters about the account: `next in
     line`, `held back` (its week is nearly spent, so it waits behind healthier
     accounts), and how many sessions are running on it. `*` marks the account
