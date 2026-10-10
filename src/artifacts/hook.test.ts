@@ -617,6 +617,16 @@ describe('in the one Claude ccx artifacts scan runs', () => {
     ]);
   });
 
+  it('refuses a list call it could not give an account, rather than let it list whichever the session is on', async () => {
+    const s = scanning();
+    s.wrapper();
+    // Where the call's account is written down cannot be written.
+    mkdirSync(path.join(s.scanDir, 'call-toolu_a.json'), { recursive: true });
+    const answer = await beforeArtifactCall(s.call(LIST, 'toolu_a'), s.env);
+    expect(answer && 'deny' in answer && answer.deny).toContain('could not be given an account');
+    expect(s.moves).toEqual([]);
+  });
+
   it('refuses a call past the last account, and anything that is not a list', async () => {
     const s = scanning();
     s.wrapper();

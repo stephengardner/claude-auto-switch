@@ -369,7 +369,13 @@ async function beforeScanCall(input: HookInput, env: HookEnv, scanDir: string): 
     return { deny: 'ccx: this session only lists pages, for ccx artifacts scan. No other Artifact action is allowed in it.' };
   }
   const id = hopId(input.tool_use_id);
-  const turn = id === null ? 'no-answer' : await claimTurn(scanDir, id);
+  let turn: Awaited<ReturnType<typeof claimTurn>>;
+  try {
+    turn = id === null ? 'no-answer' : await claimTurn(scanDir, id);
+  } catch {
+    // A hook that fails says nothing, and the call would list whichever account the session is on.
+    turn = 'no-answer';
+  }
   if (turn === 'none-left') {
     return { deny: 'ccx: every account has been listed. Make no more calls, and reply with only: done' };
   }
