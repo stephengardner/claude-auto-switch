@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.3.2]
+
+### Fixed
+
+- **The status line named the wrong account in a session that had been
+  moved.** It showed the account new sessions start on, with that account's
+  usage, rather than the account of the session drawing it. A move aimed at
+  one session (`/ccx swap`, `ccx use --session` or `--here`, or ccx moving a
+  session off a capped account) leaves that account alone, so every moved
+  session reported somebody else's room, and a session close to its limit
+  could read as having plenty. Each terminal session's line now names the
+  account ccx gave that session, and its usage and sign-in warning are that
+  account's. When ccx has no record of a session's account it goes by the
+  account the session's folder is signed in as, and failing that says
+  `ccx: account unknown` rather than guess. The editor's line still follows
+  the active account, which is the one the editor uses.
+
 ## [2.3.1]
 
 ### Changed
