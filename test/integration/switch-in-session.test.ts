@@ -19,6 +19,7 @@ import { setActive, getActive } from '../../src/state/active.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
 import { loadConfig } from '../../src/config/config.js';
 import { liveLeases, leasePath } from '../../src/session/lease.js';
+import { saveToken } from '../../src/daemon/token-store.js';
 import type { CliContext } from '../../src/context.js';
 
 const fakeClaude = fileURLToPath(new URL('../fake-claude/fake-claude.mjs', import.meta.url));
@@ -50,6 +51,7 @@ interface RunEntry {
   type: 'launch' | 'reread';
   args?: string[];
   marker: string | null;
+  oauthToken?: string | null;
 }
 
 type Verdict = 'limited' | 'allowed' | 'unknown';
@@ -411,6 +413,58 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
       caps: Array<{ account: string }>;
     }).caps;
     expect(caps.map((c) => c.account)).toEqual(['A']);
+  });
+
+  it('restarts a session started with a token to switch it, which the folder login cannot', async () => {
+    // Claude uses the token it was started with whatever its folder holds, so
+    // replacing the login there moved nothing while ccx said it had.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-seamless-token-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    saveToken(path.join(home, 'profiles', 'A'), 'sk-ant-oat01-not-a-real-token');
+    setActive('A', context.ctx);
+
+    const running = runCommand(context, []);
+    await firstLaunch(runsLog);
+    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, process.pid);
+    expect(await running).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches.map((l) => [l.marker, l.oauthToken ?? null])).toEqual([
+      ['A', 'sk-ant-oat01-not-a-real-token'],
+      ['B', null],
+    ]);
+  });
+
+  it('restarts a session to switch it onto an account that has only a token', async () => {
+    // There is no login to put in the session's folder: the swap emptied the
+    // folder under the running Claude, which then had no login at all.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-seamless-token-only-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    const dirB = path.join(home, 'profiles', 'B');
+    await addCommand(context, 'B', { dir: dirB, login: false });
+    mkdirSync(dirB, { recursive: true });
+    saveToken(dirB, 'sk-ant-oat01-not-a-real-token');
+    setActive('A', context.ctx);
+
+    const running = runCommand(context, []);
+    await firstLaunch(runsLog);
+    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, process.pid);
+    expect(await running).toBe(0);
+
+    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+    expect(launches.map((l) => [l.marker, l.oauthToken ?? null])).toEqual([
+      ['A', null],
+      [null, 'sk-ant-oat01-not-a-real-token'],
+    ]);
   });
 
   it('seamless (default): swaps the credential file in place, no relaunch', async () => {

@@ -1132,7 +1132,33 @@ export async function runInteractiveHotSwap(
    * The just-capped account is excluded both explicitly and through the ledger
    * cap recorded a moment earlier.
    */
-  const reliefAccount = (capName: string): Account | null => {
+  /**
+   * Why the login under a running Claude cannot be replaced with `target`'s
+   * right now, or null when it can. The one rule for every move in place: the
+   * one a limit makes and the one somebody asks for (`ccx use`, `/ccx`, an
+   * early move). `launchToken` is the long-lived token that Claude was started
+   * with, if any.
+   *
+   * A replaced login is only used by a Claude that reads the one in its
+   * folder, and one started with a token reads the token instead. The target
+   * has to have a login to put there: a long-lived token alone reaches Claude
+   * only through a new launch's environment, and installing nothing empties
+   * the folder under the running Claude. And it has to be good for a while:
+   * the swap cannot renew anything first, so a login due for renewal is left
+   * to a relaunch, which renews before handing over.
+   */
+  const inPlaceRefusal = (target: Account, launchToken: string | null): string | null => {
+    if (launchToken !== null) {
+      return 'this session was started with a long-lived token, which Claude uses instead of the login in its folder';
+    }
+    if (!hasUsableLogin(target.dir)) {
+      return `"${target.name}" has only a long-lived token, which reaches Claude only when it starts`;
+    }
+    const mode = swapMode({ hasLogin: () => true, renewalDue: () => renewalIsDue(target.dir) });
+    return mode === 'restart' ? `"${target.name}" needs its login refreshed first` : null;
+  };
+
+  const reliefAccount = (capName: string, launchToken: string | null): Account | null => {
     refreshSettings();
     const now = Date.now();
     const capped = cappedNames(loadLedger(context.ctx), now);
@@ -1143,18 +1169,9 @@ export async function runInteractiveHotSwap(
           a.name !== capName &&
           !capped.has(a.name) &&
           hasWorkingLogin(a.dir, context.ctx) &&
-          // Only an account whose login can be swapped in place RIGHT NOW is an
-          // in-place destination. `hasWorkingLogin` says the login is not
-          // rejected, but not whether it is due for renewal; a renewal-due login
-          // installed under the live child would land the session on a token
-          // about to expire. The same gate switchWatch uses: a renewal-due target
-          // is left to the restart path, which renews before handing over. And a
-          // login to put in the session's folder, which a long-lived token alone
-          // is not: that only reaches Claude through a new launch's environment.
-          swapMode({
-            hasLogin: () => hasUsableLogin(a.dir),
-            renewalDue: () => renewalIsDue(a.dir),
-          }) !== 'restart',
+          // `hasWorkingLogin` says the login is not rejected; this says it can
+          // go under the running Claude now, by the rule switchWatch uses too.
+          inPlaceRefusal(a, launchToken) === null,
       )
       // Same account order as everywhere else, judged for the model this
       // session is running (a model with a weekly window of its own counts it).
@@ -1537,18 +1554,12 @@ export async function runInteractiveHotSwap(
           if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
           return target.name; // end child, resume this conversation
         }
-        // Seamless only when the target's login is usable right now. This swap is
-        // synchronous, so there is no chance to renew anything first, and swapping
-        // in an expired login lands the running session on a dead token. When it
-        // needs work, relaunch instead: resuming by id keeps the same conversation and
-        // the start path renews before handing it over.
-        if (
-          swapMode({
-            hasLogin: () => hasLogin(target.dir),
-            renewalDue: () => renewalIsDue(target.dir),
-          }) === 'restart'
-        ) {
-          notice(`"${target.name}" needs its login refreshed first; continuing it there`);
+        // In place only by the same rule a limit's move follows. Otherwise
+        // relaunch: resuming by id keeps the same conversation, and the start
+        // path renews a login, or passes a token, before handing it over.
+        const refusal = inPlaceRefusal(target, token);
+        if (refusal !== null) {
+          notice(`${refusal}; continuing it on "${target.name}" with a restart`);
           if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
           return target.name;
         }
@@ -1601,12 +1612,10 @@ export async function runInteractiveHotSwap(
         // only when the caller allows it, the limit is account-wide (a model-only
         // limit leaves the account usable on other models, so the planner handles
         // it), there is a same-model renewal-ready destination, and the swap
-        // applies cleanly. And only when this Claude reads the login in its
-        // folder: one started with a token in its environment uses that token
-        // whatever the folder holds, so a swap there moves nothing.
+        // applies cleanly (see inPlaceRefusal for what can go under it).
         let relievedTo: Account | null = null;
-        if (opts.relieve && limitedModel === undefined && !relaunchForPrompt && token === null) {
-          const next = reliefAccount(capName);
+        if (opts.relieve && limitedModel === undefined && !relaunchForPrompt) {
+          const next = reliefAccount(capName, token);
           if (next) {
             try {
               activate(next); // seamless swap under the live child; updates `current`
@@ -1633,11 +1642,13 @@ export async function runInteractiveHotSwap(
 
         if (relievedTo === null) {
           if (opts.sidechain) {
-            // Nothing is done on a subagent's refusal but the move in place, and
-            // nothing is recorded: the main thread meets the same limit at its
-            // next request, and that refusal is the one that is acted on and
-            // written down, once. What this check learned about a model belongs
-            // to the subagent, which may not be on the main thread's.
+            // Nothing is done on a subagent's refusal but the move in place.
+            // Unless a switch already under way owns what happens next (it was
+            // recorded above), nothing is recorded either: the main thread
+            // meets the same limit at its next request, and that refusal is the
+            // one acted on and written down, once. What this check learned
+            // about a model belongs to the subagent, which may not be on the
+            // main thread's.
             limitedModel = undefined;
             limitedResetAt = undefined;
             return { kind: 'left' };
