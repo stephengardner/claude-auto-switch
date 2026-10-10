@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { appendFileSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -258,6 +258,13 @@ describe('keeping the record small', () => {
     expect(linesAfter).toBe(2);
     expect(readPages(ctx)).toEqual(before);
     expect(readPages(ctx).map((p) => p.owner)).toEqual(['day-job', 'day-job']);
+  });
+
+  it('still records a page when the lock is not free within its wait, rather than lose the line for certain', () => {
+    const ctx = ctxOf();
+    mkdirSync(`${recordPath(ctx)}.lock`, { recursive: true });
+    appendPage(row(), ctx);
+    expect(readPages(ctx)).toHaveLength(1);
   });
 
   it('folds by itself once the file passes its size, so the hooks never read a long one', () => {

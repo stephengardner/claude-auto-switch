@@ -122,6 +122,20 @@ describe('before an Artifact call', () => {
     expect(existsSync(hopDir(elsewhere.sessionDir))).toBe(false);
   });
 
+  it('routes and records a call in a ccx session whose announcement has lapsed, through the ccx that answers for it', async () => {
+    const s = setup({ home: 'work' });
+    s.wrapper();
+    releaseLease('work', s.ctx);
+    expect(await beforeArtifactCall(s.call({ file_path: FILE }), s.env)).toBeNull();
+    expect(s.pins).toEqual(['work']);
+    await afterArtifactCall(
+      { ...s.call({ file_path: FILE }), hook_event_name: 'PostToolUse', tool_response: RESPONSE, duration_ms: 100 },
+      s.env,
+      false,
+    );
+    expect(readPages(s.ctx)[0]?.owner).toBe('work');
+  });
+
   it('does nothing for any other tool', async () => {
     const s = setup({ home: 'home' });
     s.wrapper();

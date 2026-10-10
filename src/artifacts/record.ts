@@ -79,6 +79,9 @@ function appendLines(lines: unknown[], c: PathCtx, compactAtBytes: number): void
     const file = recordPath(c);
     mkdirSync(path.dirname(file), { recursive: true });
     lock = acquireLockDir(`${file}.lock`, { waitMs: 2_000 });
+    // Appended even when the wait ran out (a lock left by a crashed process
+    // stands for a minute): skipping loses the line for certain, and appending
+    // loses it only if a fold is running at that moment.
     appendFileSync(file, lines.map((line) => `${JSON.stringify(line)}\n`).join(''), { encoding: 'utf8', mode: 0o600 });
     // Without the lock a fold could drop what another session is appending.
     if (lock.held && statSync(file).size > compactAtBytes) compactLocked(c);

@@ -192,8 +192,10 @@ async function visit(input: HookInput, env: HookEnv, to: string): Promise<string
 export async function beforeArtifactCall(input: HookInput, env: HookEnv): Promise<HookAnswer> {
   if (input.tool_name !== 'Artifact') return null;
   if (env.scanDir) return beforeScanCall(input, env, env.scanDir);
+  // The announcement is written best effort. A ccx that answers requests is
+  // the one that knows the account, so its session is routed without one.
   const lease = sessionLease(env.sessionDir, env.ctx, env.leaseOptions);
-  if (!lease) return null;
+  if (!lease && !hopsOpen(env.sessionDir)) return null;
   const call = readCall(input.tool_input, word(input.cwd));
   if (call.kind === 'other') return null;
 
@@ -223,12 +225,12 @@ export async function beforeArtifactCall(input: HookInput, env: HookEnv): Promis
     if (route.kind === 'refuse') return { deny: `ccx: ${route.reason}` };
     if (route.kind === 'unknown-owner') {
       if (!firstTime(env, `${NOTE_PREFIX}${pageKey(route.url) ?? 'page'}`)) return null;
-      const account = signedInAs(env, lease.account, accounts) ?? lease.account;
+      const account = lease ? (signedInAs(env, lease.account, accounts) ?? lease.account) : null;
       return {
         context:
-          `ccx: nothing records which account owns ${route.url}, so this call goes out as "${account}", ` +
-          'the account this session is on, and fails if the page belongs to another one. ' +
-          '"ccx artifacts scan" records the owner of every existing page.',
+          `ccx: nothing records which account owns ${route.url}, so this call goes out as ` +
+          `${account === null ? '' : `"${account}", `}the account this session is on, and fails if the page ` +
+          'belongs to another one. "ccx artifacts scan" records the owner of every existing page.',
       };
     }
     const refused = await visit(input, env, route.to);
@@ -282,7 +284,8 @@ export async function afterArtifactCall(input: HookInput, env: HookEnv, failed: 
   }
   if (!routingOn(settings)) return null;
   const lease = sessionLease(env.sessionDir, env.ctx, env.leaseOptions);
-  if (!lease) return null;
+  // A call the session's ccx held is that session's, announced or not.
+  if (!lease && heldTo === null) return null;
   // Once per call, when the hook is installed in two places and so runs twice.
   if (id && !firstTime(env, `once-${id}`)) return null;
 
@@ -305,9 +308,10 @@ export async function afterArtifactCall(input: HookInput, env: HookEnv, failed: 
     // Nothing held it: the account the session is on, unless it was somewhere
     // else for any part of the call, when nothing here can say which one sent it.
     const ran = typeof input.duration_ms === 'number' && input.duration_ms >= 0 ? input.duration_ms : UNKNOWN_DURATION_MS;
-    owner = awaySince(env.sessionDir, now() - ran - START_MARGIN_MS)
-      ? null
-      : signedInAs(env, lease.account, readAccounts(env.ctx));
+    owner =
+      !lease || awaySince(env.sessionDir, now() - ran - START_MARGIN_MS)
+        ? null
+        : signedInAs(env, lease.account, readAccounts(env.ctx));
   }
   appendPage(
     {
@@ -360,8 +364,7 @@ export async function batchArtifactCalls(input: HookInput, env: HookEnv): Promis
  * say, since the scan is how owners get recorded before they are turned on.
  */
 async function beforeScanCall(input: HookInput, env: HookEnv, scanDir: string): Promise<HookAnswer> {
-  const lease = sessionLease(env.sessionDir, env.ctx, env.leaseOptions);
-  if (!lease) return null;
+  if (!sessionLease(env.sessionDir, env.ctx, env.leaseOptions) && !hopsOpen(env.sessionDir)) return null;
   if (readCall(input.tool_input, word(input.cwd)).action !== 'list') {
     return { deny: 'ccx: this session only lists pages, for ccx artifacts scan. No other Artifact action is allowed in it.' };
   }
