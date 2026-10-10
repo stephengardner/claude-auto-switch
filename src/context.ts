@@ -7,6 +7,7 @@ import type { LimitVerdict } from './usage/limit-probe.js';
 import type { BlockedWatchOptions } from './launcher/blocked-watch.js';
 import type { NewerInstall } from './update/newer-install.js';
 import type { CarryOnTiming } from './launcher/carry-on.js';
+import type { ConfirmCapDeps } from './usage/confirm-cap.js';
 
 /** Everything a command needs: paths context, config, output sink, and flags. */
 export interface CliContext {
@@ -16,6 +17,12 @@ export interface CliContext {
   claude?: ClaudeInvoker;
   /** Injected in tests: overrides the API limit verification (usage/limit-probe). */
   verifyCap?: (renderedText: string) => Promise<LimitVerdict>;
+  /**
+   * Injected in tests: stands in for the live usage request only, keeping
+   * what `verifyCap` replaces whole (which login is asked, and whose limit it
+   * turns out to be).
+   */
+  capProbe?: ConfirmCapDeps['probe'];
   /**
    * Injected in tests: how quickly a session counts as blocked. Production uses
    * the defaults in blocked-watch (three walls over two minutes), which no test

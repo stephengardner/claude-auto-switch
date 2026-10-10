@@ -5,6 +5,8 @@ import path from 'node:path';
 import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive } from '../../src/state/active.js';
+import { updateAccount } from '../../src/accounts/registry.js';
+import { sessionDirFor } from '../../src/session/session-dir.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
 import { loadConfig } from '../../src/config/config.js';
 import { liveLeases } from '../../src/session/lease.js';
@@ -418,6 +420,57 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)(
         ]);
         expect(prompts(log)).toEqual([]);
         expect(eventsIn(home).filter((e) => e.kind === 'cap-relief')).toEqual([]);
+      },
+    );
+
+    it(
+      'records no limit against its account when the login that met it is not one ccx has',
+      { timeout: 60_000 },
+      async () => {
+        // The session's folder turned out to be signed in to an address no
+        // account here has (a /login inside Claude, say). The limit is that
+        // login's, not A's: A must stay usable, though the session still moves.
+        const { home, runsLog, context } = await twoAccounts('cas-in-place-stranger-');
+        delete context.verifyCap;
+        let probes = 0;
+        context.capProbe = () => {
+          probes += 1;
+          return Promise.resolve(
+            probes === 1
+              ? { verdict: 'limited', fiveHour: 1, fiveHourReset: Date.now() + 3_600_000 }
+              : { verdict: 'allowed', fiveHour: 0.1 },
+          );
+        };
+        for (const name of ['A', 'B']) {
+          updateAccount(name, { email: `${name.toLowerCase()}@example.com` }, context.ctx);
+        }
+        Object.assign(process.env, {
+          ...TYPEABLE,
+          FAKE_CLAUDE_RUNS_LOG: runsLog,
+          FAKE_CLAUDE_IDLE_MS: '6000',
+          FAKE_CLAUDE_REFUSE_AFTER_MS: '1500',
+        });
+
+        const running = runCommand(context, []);
+        await waitFor(
+          'the launch',
+          () => launches(readLog(runsLog)),
+          (l) => l.length === 1,
+        );
+        const state = path.join(sessionDirFor(process.pid, context.ctx), '.claude.json');
+        const signedIn = JSON.parse(readFileSync(state, 'utf8')) as Record<string, unknown>;
+        writeFileSync(
+          state,
+          JSON.stringify({ ...signedIn, oauthAccount: { emailAddress: 'stranger@example.com' } }),
+          'utf8',
+        );
+
+        expect(await running).toBe(0);
+        const events = eventsIn(home);
+        expect(events.filter((e) => e.kind === 'cap-relief')).toHaveLength(1);
+        expect(events.filter((e) => e.kind === 'cap-skipped')).toHaveLength(1);
+        expect(events.filter((e) => e.kind === 'capped')).toEqual([]);
+        expect(existsSync(path.join(home, 'ledger.json')) ? capsIn(home) : []).toEqual([]);
       },
     );
   },

@@ -77,6 +77,12 @@ semantic versioning.
   could go out as the account the session had just left. Every move now
   changes that file's time, never its contents, so Claude reads the new login
   at its next request.
+- **A limit met by a login ccx does not have was recorded against a
+  registered account.** When the check found that the session's folder was
+  signed in to an address no account here has, ccx meant to move the session
+  without recording the limit against anyone. Moving it in place cleared that
+  finding before the limit was written down, so the account the session was
+  believed to be on was set aside until its reset, though it had room.
 - **A running session could drop out of `ccx sessions` for good.** A session
   that could not refresh its lease for two minutes while its process stayed
   alive, as when the machine sleeps, had the lease deleted by whatever read

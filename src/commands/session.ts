@@ -682,7 +682,7 @@ export async function runInteractiveHotSwap(
         renderedText,
         // Scoped to what this session is actually running: a spent window for
         // a model it is not on is not a limit on it.
-        { modelInUse: runningModel() },
+        { modelInUse: runningModel(), ...(context.capProbe ? { probe: context.capProbe } : {}) },
       );
       verdict = decision.limited ? 'limited' : 'allowed';
       limitedModel = decision.model;
@@ -1636,6 +1636,9 @@ export async function runInteractiveHotSwap(
         // it), there is a same-model renewal-ready destination, and the swap
         // applies cleanly (see inPlaceRefusal for what can go under it).
         let relievedTo: Account | null = null;
+        // Whose limit this is, as the check found. `activate` starts the new
+        // login's attribution afresh, but this limit was met before the move.
+        const unregistered = capUnregisteredEmail;
         if (opts.relieve && limitedModel === undefined && !relaunchForPrompt) {
           const next = reliefAccount(capName, token);
           if (next) {
@@ -1659,7 +1662,10 @@ export async function runInteractiveHotSwap(
         // believed account after the first cleared the unregistered-identity
         // guard). limitedModel/limitedResetAt scope it to a model when model-only.
         if (relievedTo !== null || opts.switching) {
+          capUnregisteredEmail = unregistered;
           recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt);
+          // Said about the login the session had; the one it has now is new.
+          if (relievedTo !== null) capUnregisteredEmail = null;
         }
 
         if (relievedTo === null) {
