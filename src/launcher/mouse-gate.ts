@@ -38,7 +38,7 @@ export interface MouseModes {
 export const NO_MOUSE: MouseModes = { click: false, drag: false, motion: false };
 
 /** Every `ESC [ ? <params> h|l` in some output, as (mode, enabled) pairs. */
-function privateModeChanges(text: string): Array<{ mode: number; on: boolean }> {
+export function privateModeChanges(text: string): Array<{ mode: number; on: boolean }> {
   const out: Array<{ mode: number; on: boolean }> = [];
   // Params may be combined ("?1000;1006h"), which is why this cannot be a
   // lookup for whole strings: a combined enable would be missed entirely.

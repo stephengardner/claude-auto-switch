@@ -6,6 +6,7 @@ import type { ClaudeInvoker } from './invoker.js';
 import type { LimitVerdict } from './usage/limit-probe.js';
 import type { BlockedWatchOptions } from './launcher/blocked-watch.js';
 import type { NewerInstall } from './update/newer-install.js';
+import type { CarryOnTiming } from './launcher/carry-on.js';
 
 /** Everything a command needs: paths context, config, output sink, and flags. */
 export interface CliContext {
@@ -21,6 +22,12 @@ export interface CliContext {
    * can wait for.
    */
   blockedWatch?: BlockedWatchOptions;
+  /**
+   * Injected in tests: how long each step of typing a carry-on prompt into a
+   * live session waits. Production uses the defaults in launcher/carry-on,
+   * half a minute and more, which no test can wait for.
+   */
+  carryOn?: Partial<CarryOnTiming>;
   /** Injected in tests: overrides the API lookup of who a stored login belongs to. */
   lookupOwner?: (dir: string) => Promise<string | null>;
   /** Injected in tests: a newer ccx installed under this one (update/newer-install). */

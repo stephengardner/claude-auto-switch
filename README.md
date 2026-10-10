@@ -50,9 +50,17 @@ conversation's transcript, with error codes. ccx reads that record, never the
 screen, and confirms against the account's real usage before it acts. Text on
 screen that talks about usage limits never moves a session.
 
-**Moving.** A refused turn has already ended, so ccx relaunches Claude on the
-next account with `--resume <conversation>` and a short carry-on prompt (set it
-with `ccx resume-prompt`, or `resume` in the config). A switch you make yourself
+**Moving.** A refused turn has already ended, so the session needs another
+account and to be told to carry on. ccx replaces the login under the running
+Claude, so its subagents, background commands and scheduled loops keep running,
+then types a short carry-on prompt into it once Claude is back at its prompt
+with nothing typed in the input box (set the prompt with `ccx resume-prompt`, or
+`resume` in the config). A subagent's refused turn starts the same move, before
+the main thread meets the limit. ccx relaunches Claude with
+`--resume <conversation>` and the prompt instead when the limit is one model's,
+when the next account's login has to be renewed first, or when the prompt
+cannot be typed safely: something is typed in the input box, a dialog stays
+open, or Claude does not say what it is doing. A switch you make yourself
 (`ccx use`, `/ccx`) happens in place.
 
 **One session at a time.** Each session moves on its own: a refused turn moves
@@ -248,7 +256,7 @@ definitions and parallel coders in git worktrees.
 | `ccx enable` / `disable <name>`          | include / exclude an account                                                                                             |
 | `ccx proactive on\|off`                  | move before an account runs out (off by default)                                                                         |
 | `ccx auto`                               | run that check once (`--once`, `--json`)                                                                                 |
-| `ccx resume-prompt "<text>"`             | what a session is told after a relaunch (`--clear`)                                                                      |
+| `ccx resume-prompt "<text>"`             | what a session is told after ccx moves or relaunches it (`--clear`)                                                      |
 | `ccx run -- <args>`                      | run one Claude session through ccx without `ccx on`                                                                      |
 | `ccx desktop [...]`                      | Claude Desktop: status, `move`, `handoff`, `mode`, `prompt`                                                              |
 | `ccx login <name>` / `--all`             | sign a stale account back in                                                                                             |
@@ -286,8 +294,8 @@ usage check, as `ccx config <key>` says.
 | `rotation.defaultBackoffMinutes`       | `300`                           | how long an account counts as out when no reset time is known     |
 | `rotation.autoRotateHeadless`          | `true`                          | headless runs (`claude -p`) rotate too                            |
 | `rotation.capThresholdPercent`         | `95`                            | the daemon's threshold for treating an account as out             |
-| `resume.auto`                          | `true`                          | send the carry-on prompt after a relaunch                         |
-| `resume.prompt`                        | "This session was restarted..." | the carry-on prompt                                               |
+| `resume.auto`                          | `true`                          | tell a session to carry on after ccx moves or relaunches it       |
+| `resume.prompt`                        | "This session was restarted..." | the carry-on prompt; a move without a restart says so instead     |
 | `update.follow`                        | `true`                          | running sessions move to a newer installed ccx                    |
 | `desktop.handoff`                      | `"off"`                         | `off`, `limit` or `credits`                                       |
 | `desktop.mode`                         | `"fork"`                        | `fork` or `same`                                                  |

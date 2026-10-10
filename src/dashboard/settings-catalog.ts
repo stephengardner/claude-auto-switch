@@ -159,8 +159,8 @@ export const SETTINGS: readonly Setting[] = [
     label: 'Carry on after a restart',
     kind: 'toggle',
     words: onOff,
-    help: 'A restarted session is sent the restart prompt, so it picks the work up by itself.',
-    applies: 'next-restart',
+    help: 'A session ccx moves to another account, or restarts, is told to carry on, so it picks the work up by itself.',
+    applies: 'next-move',
   },
   {
     key: 'resume.prompt',
@@ -168,8 +168,8 @@ export const SETTINGS: readonly Setting[] = [
     label: 'Restart prompt',
     kind: 'text',
     words: (value) => String(value),
-    help: 'What a restarted session is told. Enter edits it; d puts the default back.',
-    applies: 'next-restart',
+    help: 'What a restarted session is told. One moved without a restart is told so instead, unless you change this. Enter edits it; d puts the default back.',
+    applies: 'next-move',
   },
   {
     key: 'update.follow',

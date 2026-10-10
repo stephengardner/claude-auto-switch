@@ -43,7 +43,12 @@ import {
   retireKeptSettings,
   retireLeftoverSessionDir,
 } from '../session/session-dir.js';
-import { runPtySession } from '../launcher/pty-session.js';
+import {
+  runPtySession,
+  type CapContext,
+  type CapDecision,
+  type CarryOnEvent,
+} from '../launcher/pty-session.js';
 import { runHeadlessSession } from '../launcher/headless-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
 import {
@@ -77,7 +82,9 @@ import {
   checkStartPrompt,
   resumePromptOff,
   START_PROMPT_MAX_CHARS,
+  IN_PLACE_PROMPT,
 } from '../session/resume-prompt.js';
+import { DEFAULT_RESUME_PROMPT } from '../config/config.schema.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
 import { secureMkdir, writeSecretFile } from '../util/secret-file.js';
@@ -88,6 +95,7 @@ import {
   identityKey,
   sessionIdentityEmail,
   credentialFingerprint,
+  hasUsableLogin,
 } from '../accounts/credential-vault.js';
 import { hasLogin, hasWorkingLogin } from '../accounts/account-login.js';
 import {
@@ -1130,9 +1138,11 @@ export async function runInteractiveHotSwap(
           // rejected, but not whether it is due for renewal; a renewal-due login
           // installed under the live child would land the session on a token
           // about to expire. The same gate switchWatch uses: a renewal-due target
-          // is left to the restart path, which renews before handing over.
+          // is left to the restart path, which renews before handing over. And a
+          // login to put in the session's folder, which a long-lived token alone
+          // is not: that only reaches Claude through a new launch's environment.
           swapMode({
-            hasLogin: () => hasLogin(a.dir),
+            hasLogin: () => hasUsableLogin(a.dir),
             renewalDue: () => renewalIsDue(a.dir),
           }) !== 'restart',
       )
@@ -1554,34 +1564,38 @@ export async function runInteractiveHotSwap(
        * 'restart' (end and relaunch, resuming the conversation) when a model-only
        * limit is in play, when there is no healthy account, or when the only move
        * would need a model change.
+       *
+       * The turn the limit refused has ended, so a moved session sits at its
+       * prompt until it is told to carry on. That prompt is typed into the live
+       * child (see launcher/carry-on) rather than handed over by a relaunch,
+       * which ends every subagent, background command and scheduled loop the
+       * session has running.
        */
-      const onCapConfirmed = (
-        hit: { reason?: string; resetAt?: number },
-        opts: { relieve: boolean; switching: boolean },
-      ): 'relieved' | 'restart' => {
+      const onCapConfirmed = (hit: { reason?: string; resetAt?: number }, opts: CapContext): CapDecision => {
         const capName = capOwner ?? current?.name ?? account.name;
+
+        const carryOn = relaunchPrompt();
+        // Whether a relaunch would hand the prompt over at all: a run launched
+        // with a prompt of its own keeps that one (see withResumePrompt).
+        const relaunchDelivers =
+          carryOn !== null &&
+          withResumePrompt(relaunchArgs(args, conversationId()), carryOn.prompt).applied;
+        // A session stopped on the limit, with a prompt due that cannot be typed
+        // into this Claude, is relaunched as before: left in place it would sit
+        // idle, exactly the stall the prompt exists to end. One whose subagent
+        // met the limit has not stopped, so that is never a reason to end it.
+        const relaunchForPrompt = relaunchDelivers && !opts.canType && !opts.sidechain;
 
         // Decide (and perform) the in-place move FIRST, so recording can key off
         // what actually happened rather than a caller's guess. Relief is possible
         // only when the caller allows it, the limit is account-wide (a model-only
         // limit leaves the account usable on other models, so the planner handles
         // it), there is a same-model renewal-ready destination, and the swap
-        // applies cleanly.
+        // applies cleanly. And only when this Claude reads the login in its
+        // folder: one started with a token in its environment uses that token
+        // whatever the folder holds, so a swap there moves nothing.
         let relievedTo: Account | null = null;
-        // A session that armed a resume prompt is RELAUNCHED rather than relieved
-        // in place. An in-place swap keeps the child alive, but the turn the limit
-        // interrupted has already ended, so the session sits idle at its prompt:
-        // exactly the stall an unattended session armed a prompt to avoid. Only a
-        // relaunch can hand the prompt over (see withResumePrompt), and only when
-        // the relaunch will really use it: a run launched with a prompt of its own
-        // keeps that one, and relaunching it anyway would end the child, sub-agents
-        // and all, for nothing. So this asks the same question the relaunch does.
-        // The default prompt counts too: it is what keeps a session working.
-        const carryOn = relaunchPrompt();
-        const armedForRelaunch =
-          carryOn !== null &&
-          withResumePrompt(relaunchArgs(args, conversationId()), carryOn.prompt).applied;
-        if (opts.relieve && limitedModel === undefined && !armedForRelaunch) {
+        if (opts.relieve && limitedModel === undefined && !relaunchForPrompt && token === null) {
           const next = reliefAccount(capName);
           if (next) {
             try {
@@ -1608,13 +1622,23 @@ export async function runInteractiveHotSwap(
         }
 
         if (relievedTo === null) {
-          if (opts.relieve && limitedModel === undefined && armedForRelaunch) {
-            logEvent('relaunching instead of relieving in place: this session armed a resume prompt', {
-              kind: 'resume-prompt',
-              data: { from: capName, relaunch: true },
-            });
+          if (opts.sidechain) {
+            // Nothing is done on a subagent's refusal but the move in place, and
+            // nothing is recorded: the main thread meets the same limit at its
+            // next request, and that refusal is the one that is acted on and
+            // written down, once. What this check learned about a model belongs
+            // to the subagent, which may not be on the main thread's.
+            limitedModel = undefined;
+            limitedResetAt = undefined;
+            return { kind: 'left' };
           }
-          return 'restart';
+          if (opts.relieve && limitedModel === undefined && relaunchForPrompt) {
+            logEvent(
+              'relaunching instead of relieving in place: the carry-on prompt cannot be typed into this Claude',
+              { kind: 'resume-prompt', data: { from: capName, relaunch: true } },
+            );
+          }
+          return { kind: 'restart' };
         }
 
         // Auto-rotation, not a targeted user switch: the global active account
@@ -1627,9 +1651,42 @@ export async function runInteractiveHotSwap(
         notifyAccountSwitch(relievedTo.name, 'switched in place');
         logEvent(`seamless cap relief: ${capName} -> ${relievedTo.name}`, {
           kind: 'cap-relief',
-          data: { from: capName, to: relievedTo.name },
+          data: { from: capName, to: relievedTo.name, ...(opts.sidechain ? { metBy: 'subagent' } : {}) },
         });
-        return 'relieved';
+        if (carryOn === null) return { kind: 'relieved', account: relievedTo.name };
+        // Handed over even when this Claude cannot be typed into. A session
+        // moved on a subagent's refusal has not stopped, but its main thread
+        // can still be refused by a request already on its way, and then it is
+        // stalled with nothing to tell it so: the prompt is what gets it
+        // relaunched in that case.
+        //
+        // The default says the session was restarted, which is what a relaunch
+        // does. In place it gets the wording for that; a prompt the session
+        // armed, or one the person set, is theirs and is typed as written.
+        const unchangedDefault = carryOn.source === 'default' && carryOn.prompt === DEFAULT_RESUME_PROMPT;
+        return {
+          kind: 'relieved',
+          account: relievedTo.name,
+          carryOn: { prompt: unchangedDefault ? IN_PLACE_PROMPT : carryOn.prompt, canRelaunch: relaunchDelivers },
+        };
+      };
+      /** What became of a prompt typed into the live session, for `ccx history`. */
+      const onCarryOn = (event: CarryOnEvent): void => {
+        const on = current?.name ?? account.name;
+        const message =
+          event.kind === 'typed'
+            ? 'typed the carry-on prompt into the live session'
+            : event.kind === 'refused'
+              ? 'the turn was refused again after the move; Claude may still be on the login it had'
+              : event.kind === 'relaunch'
+                ? `relaunching to hand the carry-on prompt over: ${event.why}`
+                : event.outcome === 'delivered'
+                  ? 'the session took the carry-on prompt in place and carried on'
+                  : `carry-on prompt dropped: ${event.why}`;
+        logEvent(message, {
+          kind: 'carry-on',
+          data: { step: event.kind === 'done' ? event.outcome : event.kind, account: on },
+        });
       };
       const base = {
         claude,
@@ -1639,7 +1696,9 @@ export async function runInteractiveHotSwap(
         onTick,
         verifyCap,
         onCapConfirmed,
+        onCarryOn,
         ...(context.blockedWatch ? { blockedWatch: context.blockedWatch } : {}),
+        ...(context.carryOn ? { carryOnTiming: context.carryOn } : {}),
         ...(terminalInput ? { input: terminalInput } : {}),
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
         ...(debugLog ? { debugLog } : {}),

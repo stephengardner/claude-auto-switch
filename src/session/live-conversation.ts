@@ -50,13 +50,32 @@ export function readLiveConversation(configDir: string, pid: number, spawnedAt =
   }
 }
 
+/** What Claude says it is doing, and for how long it has said so. */
+export interface LiveStatus {
+  status: string;
+  forMs: number;
+}
+
 /**
- * How long the Claude process `pid` has been idle, waiting for its next
- * message, from the same record: Claude keeps `status` ("busy" while a turn
- * runs, "idle" once it ends) and when it last changed. Null while busy, or
- * when the record cannot be read, so a caller only ever acts on a definite idle.
+ * What the Claude process `pid` says it is doing, from the same record. Read
+ * from the 2.1.296 binary and measured against it:
+ *
+ * - "idle": at its prompt, no dialog open, nothing running.
+ * - "shell": the same, while a background shell command runs.
+ * - "busy": a turn is running, or a subagent, teammate or workflow is.
+ * - "waiting": a dialog is open (a permission request, a picker, the choice
+ *   Claude offers on some limits); `waitingFor` says which kind.
+ *
+ * Null when the record cannot be read or carries no status (Claude writes the
+ * record about a second before it first adds one), so a caller only ever acts
+ * on what Claude definitely said.
  */
-export function idleForMs(configDir: string, pid: number, spawnedAt = 0, now = Date.now()): number | null {
+export function readLiveStatus(
+  configDir: string,
+  pid: number,
+  spawnedAt = 0,
+  now = Date.now(),
+): LiveStatus | null {
   try {
     const record = JSON.parse(readFileSync(path.join(configDir, 'sessions', `${pid}.json`), 'utf8')) as unknown;
     if (typeof record !== 'object' || record === null) return null;
@@ -68,9 +87,19 @@ export function idleForMs(configDir: string, pid: number, spawnedAt = 0, now = D
     };
     if (recordedPid !== pid) return null;
     if (typeof startedAt !== 'number' || startedAt < spawnedAt - 1000) return null;
-    if (status !== 'idle' || typeof statusUpdatedAt !== 'number') return null;
-    return Math.max(0, now - statusUpdatedAt);
+    if (typeof status !== 'string' || typeof statusUpdatedAt !== 'number') return null;
+    return { status, forMs: Math.max(0, now - statusUpdatedAt) };
   } catch {
     return null;
   }
+}
+
+/**
+ * How long the Claude process `pid` has been idle with nothing running at
+ * all. Null in every other state, so a caller that ends Claude on this never
+ * ends a turn, a subagent or a background command with it.
+ */
+export function idleForMs(configDir: string, pid: number, spawnedAt = 0, now = Date.now()): number | null {
+  const live = readLiveStatus(configDir, pid, spawnedAt, now);
+  return live?.status === 'idle' ? live.forMs : null;
 }

@@ -259,8 +259,10 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
       calls += 1;
       return Promise.resolve(calls === 1 ? 'limited' : 'allowed');
     });
-    // In place only when nothing is to be said on coming back: carrying on
-    // needs a relaunch to deliver the prompt (resume-prompt.test covers that).
+    // With nothing to be told on coming back. With a carry-on prompt due, this
+    // fake cannot be typed into (it keeps no status), so it would be relaunched
+    // for the prompt: resume-prompt.test covers that, carry-on-in-place.test a
+    // Claude that can be typed into.
     context.config.resume.auto = false;
     await loginAccount(context, home, 'A');
     await loginAccount(context, home, 'B');

@@ -294,6 +294,10 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
     const seen = record.poll(conversation);
     recordReadable = recordReadable || seen.readable;
     for (const refusal of seen.refusals) {
+      // A subagent's refusal ends nothing here: a headless run cannot be moved
+      // under a live Claude, and its main thread meets the same limit at its
+      // own next request, which is the refusal the run ends on.
+      if (refusal.sidechain) continue;
       const { text, hit } = hitOf(refusal);
       evidence(text, hit);
     }

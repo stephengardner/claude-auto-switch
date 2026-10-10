@@ -173,11 +173,12 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a resume prompt the session 
     expect(events).toContain('relaunched with the resume prompt this session armed');
   });
 
-  it('is RELAUNCHED on a verified cap instead of relieved in place, so the prompt is delivered', async () => {
-    // Unarmed, a verified cap on a live session swaps the account in place and the
-    // child keeps running (switch-in-session.test.ts proves that). But the turn the
-    // limit interrupted has ended, so an unattended session would sit idle. Armed,
-    // it must take the relaunch path, which is the only one that hands it a prompt.
+  it('is RELAUNCHED on a verified cap when the prompt cannot be typed into this Claude', async () => {
+    // A verified cap on a live session swaps the account in place, and the
+    // prompt is typed into the live Claude (carry-on-in-place.test.ts). This
+    // one cannot be typed into: it keeps no record of what it is doing, so ccx
+    // cannot tell when it is at its prompt. Moved in place it would sit idle, so
+    // it takes the relaunch, which hands the prompt over on the command line.
     const home = mkdtempSync(path.join(tmpdir(), 'cas-resume-cap-'));
     const runsLog = path.join(home, 'runs.jsonl');
     process.env.FAKE_CLAUDE_IDLE_MS = '2500'; // stays alive: the stay-on-screen flavor
@@ -215,8 +216,9 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a resume prompt the session 
   it('stays in place on a cap when the run has a prompt of its own, since the armed one would not be used', async () => {
     // Ending the child is only worth it when the relaunch delivers the armed
     // prompt. A run launched with a task of its own keeps that one, so the armed
-    // prompt would stand aside: the session is relieved in place like an unarmed
-    // one. The task follows a flag that takes no value, the usual unattended shape.
+    // prompt would stand aside: the session is relieved in place, even though
+    // this Claude cannot be typed into. The task follows a flag that takes no
+    // value, the usual unattended shape.
     const home = mkdtempSync(path.join(tmpdir(), 'cas-resume-own-'));
     const runsLog = path.join(home, 'runs.jsonl');
     process.env.FAKE_CLAUDE_IDLE_MS = '2500';
