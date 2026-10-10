@@ -311,6 +311,26 @@ describe('ccx doctor on page routing', () => {
     });
   });
 
+  it('says the settings file does not parse, rather than prescribing a ccx on that refuses it', () => {
+    const s = setup({ home: 'work' });
+    s.account('work');
+    mkdirSync(path.dirname(s.claudeSettings), { recursive: true });
+    writeFileSync(s.claudeSettings, '{ "hooks": ', 'utf8');
+    const check = auditArtifactHooks(s.context);
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain('not valid JSON');
+    expect(check?.fix ?? []).not.toContain('ccx on');
+    // Nothing to report when routing is off: no page routing is waiting on that file.
+    expect(auditArtifactHooks(setup().context)).toBeNull();
+  });
+
+  it('reports a home folder it cannot find as one failed check, not a doctor that fails whole', () => {
+    const s = setup({ updates: 'owner' });
+    const homeless: typeof s.context = { ...s.context, ctx: { env: { CLAUDE_AUTO_SWITCH_HOME: path.join(s.home, 'ccx') } } };
+    expect(() => auditArtifactHooks(homeless)).not.toThrow();
+    expect(auditArtifactHooks(homeless)).toMatchObject({ name: 'page-routing', ok: false });
+  });
+
   it('says so when hooks are still installed with routing off', () => {
     const s = setup();
     installArtifactHooks(true, s.ctx, PROGRAM);

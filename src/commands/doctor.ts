@@ -504,8 +504,26 @@ function auditDesktopHooks(context: CliContext): DoctorCheck | null {
 export function auditArtifactHooks(context: CliContext): DoctorCheck | null {
   const { home, updates } = context.config.artifacts;
   const on = routingOn(context.config.artifacts);
-  const read = readSettings(settingsPath(context.ctx));
-  const settings = read.ok ? read.settings : {};
+  let file: string;
+  try {
+    file = settingsPath(context.ctx);
+  } catch {
+    return on
+      ? { name: 'page-routing', ok: false, detail: 'could not find your Claude settings folder, so page routing cannot be checked' }
+      : null;
+  }
+  const read = readSettings(file);
+  if (!read.ok) {
+    // ccx on refuses to rewrite a file that does not parse, so it is no fix here.
+    return on
+      ? {
+          name: 'page-routing',
+          ok: false,
+          detail: `${file} is not valid JSON, so the page routing hooks cannot be checked or installed; fix that file, then run ccx on`,
+        }
+      : null;
+  }
+  const settings = read.settings;
   const installed = artifactHooksInstalled(settings);
   if (!on) {
     if (JSON.stringify(withoutArtifactHooks(settings)) === JSON.stringify(settings)) return null;

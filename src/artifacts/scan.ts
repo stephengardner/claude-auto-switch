@@ -52,15 +52,33 @@ export function readPlan(dir: string): string[] {
   return Array.isArray(plan?.accounts) ? plan.accounts.filter((a): a is string => typeof a === 'string') : [];
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
- * Give call `id` the next account nobody has taken, or null when every one
- * has been. Taking is creating a file that must not exist yet, so two calls
- * made at once never get the same account.
+ * Give call `id` the next account nobody has taken. Taking is creating a file
+ * that must not exist yet, so two calls never get the same account, and one
+ * call never gets two: its hook can run twice at once (installed in the
+ * user's settings and in the scan's), and only the run that creates the
+ * call's claim takes a turn, while the other waits to be told which.
  */
-export function claimTurn(dir: string, id: string): ScanTurn | null {
-  // A hook run twice for one call (it can be installed in two places) gets the turn it already has.
+export async function claimTurn(
+  dir: string,
+  id: string,
+  timing: { waitMs?: number; pollMs?: number } = {},
+): Promise<ScanTurn | 'none-left' | 'no-answer'> {
   const mine = turnOf(dir, id);
   if (mine) return mine;
+  try {
+    writeFileSync(path.join(dir, `claim-${safe(id)}`), '', { encoding: 'utf8', flag: 'wx' });
+  } catch {
+    const deadline = Date.now() + (timing.waitMs ?? 3_000);
+    for (;;) {
+      const theirs = turnOf(dir, id);
+      if (theirs) return theirs;
+      if (Date.now() >= deadline) return 'no-answer';
+      await sleep(timing.pollMs ?? 20);
+    }
+  }
   const accounts = readPlan(dir);
   for (let index = 0; index < accounts.length; index += 1) {
     try {
@@ -72,7 +90,7 @@ export function claimTurn(dir: string, id: string): ScanTurn | null {
     writeFileSync(path.join(dir, `call-${safe(id)}.json`), JSON.stringify(turn), 'utf8');
     return turn;
   }
-  return null;
+  return 'none-left';
 }
 
 /** The turn call `id` was given before it was made. */

@@ -326,9 +326,12 @@ async function beforeScanCall(input: HookInput, env: HookEnv, scanDir: string): 
     return { deny: 'ccx: this session only lists pages, for ccx artifacts scan. No other Artifact action is allowed in it.' };
   }
   const id = hopId(input.tool_use_id);
-  const turn = id === null ? null : claimTurn(scanDir, id);
-  if (turn === null) {
+  const turn = id === null ? 'no-answer' : await claimTurn(scanDir, id);
+  if (turn === 'none-left') {
     return { deny: 'ccx: every account has been listed. Make no more calls, and reply with only: done' };
+  }
+  if (turn === 'no-answer') {
+    return { deny: 'ccx: this call could not be given an account to list. Go on to the next call.' };
   }
   if (turn.account === lease.account) return null;
   let refused: string | null;

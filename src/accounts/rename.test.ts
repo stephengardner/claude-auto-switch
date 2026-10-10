@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { renameAccount } from './rename.js';
@@ -79,6 +79,14 @@ describe('renameAccount', () => {
     saveConfig({ artifacts: { home: 'other' } }, c);
     renameAccount('new', 'newer', config, c);
     expect(loadConfigFile(c)).toEqual({ artifacts: { home: 'other' } });
+  });
+
+  it('still renames when the config file does not parse, and leaves that file as it was', () => {
+    const { c, home } = setup(['old']);
+    writeFileSync(path.join(home, 'config.json'), '{ "artifacts": ', 'utf8');
+    expect(renameAccount('old', 'new', config, c).to).toBe('new');
+    expect(getAccount('new', c)).toBeDefined();
+    expect(readFileSync(path.join(home, 'config.json'), 'utf8')).toBe('{ "artifacts": ');
   });
 
   it('follows the rename with the active pointer', () => {

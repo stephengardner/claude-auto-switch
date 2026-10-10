@@ -132,10 +132,15 @@ export function renameAccount(
   }
 
   // The pages published as it, and the setting that publishes new ones as it.
+  // Best effort, like the rest after the registry: the account is renamed by now.
   renamePageOwner(from, target, c);
-  const settings = loadConfigFile(c);
-  if (settings.artifacts?.home === from) {
-    saveConfig({ ...settings, artifacts: { ...settings.artifacts, home: target } }, c);
+  try {
+    const settings = loadConfigFile(c);
+    if (settings.artifacts?.home === from) {
+      saveConfig({ ...settings, artifacts: { ...settings.artifacts, home: target } }, c);
+    }
+  } catch {
+    /* a config that does not parse is left as it is; ccx doctor reports it */
   }
 
   return { from, to: target, folderMoved, ...(folderNote ? { folderNote } : {}) };
