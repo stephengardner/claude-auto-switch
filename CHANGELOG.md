@@ -17,7 +17,8 @@ semantic versioning.
   (nobody has typed in this Claude, or the last key sent a prompt Claude
   recorded), so a draft is never lost, however long ago it was typed; and
   until no subagent's record has grown for 20 seconds, counted only after
-  ccx has watched them that long. Measured on Claude 2.1.296: a running
+  ccx has watched them that long; a record it cannot read counts as one
+  that may be working. Measured on Claude 2.1.296: a running
   background subagent already keeps Claude's record at "busy", and a
   background command or a Monitor at "shell", so neither was ended; the
   subagent check is there in case a status says idle with one at work. Not

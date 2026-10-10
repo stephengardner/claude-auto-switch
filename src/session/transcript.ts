@@ -208,8 +208,9 @@ export interface RecordNews {
    */
   promptAt: number | null;
   /**
-   * Whether any subagent's record grew since the last look. A subagent that
-   * is writing is running, whatever else can or cannot be known about it.
+   * Whether any subagent's record grew since the last look, or could not be
+   * read. A subagent that is writing is running, whatever else can or cannot
+   * be known about it, and one that cannot be seen may be.
    */
   subagentsWrote: boolean;
 }
@@ -276,7 +277,9 @@ export function createRefusalFollower(configDir: string, firstFromStart = false)
         main = tailOf(file, 0);
       }
       const lines = newLines(main);
-      if (lines === null) return none(false);
+      // There, but not readable: its subagents cannot be seen either, and
+      // not seeing them must not pass for their being quiet.
+      if (lines === null) return { ...none(false), subagentsWrote: true };
 
       const refusals: Refusal[] = [];
       let promptAt: number | null = null;
@@ -298,9 +301,10 @@ export function createRefusalFollower(configDir: string, firstFromStart = false)
           subagents.set(record, tail);
         }
         const readTo = tail.offset;
-        const lines = newLines(tail) ?? [];
-        if (tail.offset !== readTo) subagentsWrote = true;
-        for (const line of lines) {
+        const lines = newLines(tail);
+        // Unreadable counts as written: it may be working.
+        if (lines === null || tail.offset !== readTo) subagentsWrote = true;
+        for (const line of lines ?? []) {
           if (!line.includes('"isApiErrorMessage":true')) continue;
           const refusal = refusalIn(parsed(line));
           // The file is a subagent's, whatever the entry says of itself.
