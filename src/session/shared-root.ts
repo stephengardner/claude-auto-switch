@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -178,7 +179,9 @@ const baseOf = (sessionDir: string, name: string): string => path.join(sessionDi
  * never linked at all. See planWhole for what goes back.
  *
  * Written whole or not at all, so a failed write never leaves the user's own
- * file half done. What cannot go back, or must not because the user changed
+ * file half done. Prompt history is only added to instead, because every Claude
+ * session appends to it, and replacing it would drop a line one of them wrote
+ * meanwhile. What cannot go back, or must not because the user changed
  * the same file meanwhile, is kept in `rescued/` in the ccx folder instead.
  * False only when even that failed: the session folder must then stay,
  * because it holds the only copy.
@@ -195,11 +198,11 @@ export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): bool
     const from = path.join(sessionDir, name);
     const to = path.join(root, name);
     if (!existsSync(from)) continue;
-    let plan: { write: string | null; keepAside: boolean };
+    let plan: { write: string | null; keepAside: boolean; append?: boolean };
     try {
       plan =
         merge === 'lines'
-          ? { write: missingLines(from, to), keepAside: false }
+          ? { write: missingLines(from, to), keepAside: false, append: true }
           : planWhole(from, to, baseOf(sessionDir, name));
     } catch {
       // Could not even be compared: it may hold the only copy of an edit, so
@@ -210,7 +213,12 @@ export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): bool
     if (plan.keepAside && !rescue(from, name, c)) kept = false;
     if (plan.write === null) continue;
     try {
-      writeFileAtomic(to, plan.write);
+      if (plan.append) {
+        mkdirSync(root, { recursive: true });
+        appendFileSync(to, plan.write);
+      } else {
+        writeFileAtomic(to, plan.write);
+      }
     } catch {
       if (!rescue(from, name, c)) kept = false;
     }
@@ -234,9 +242,9 @@ export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): bool
 }
 
 /**
- * The user's history with the session's lines it does not have added at the
- * end, or null when there is nothing to add. History only grows, so a session
- * whose link broke holds the user's lines plus its own.
+ * The session's lines the user's history lacks, ready to append, or null when
+ * there are none. History only grows, so a session whose link broke holds the
+ * user's lines plus its own.
  */
 function missingLines(from: string, to: string): string | null {
   if (existsSync(to)) {
@@ -251,7 +259,7 @@ function missingLines(from: string, to: string): string | null {
     .filter((line) => line.trim() !== '' && !known.has(line));
   if (added.length === 0) return null;
   const sep = theirs === '' || theirs.endsWith('\n') ? '' : '\n';
-  return `${theirs}${sep}${added.join('\n')}\n`;
+  return `${sep}${added.join('\n')}\n`;
 }
 
 /**

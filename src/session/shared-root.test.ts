@@ -10,6 +10,8 @@ import {
   rmSync,
   symlinkSync,
   utimesSync,
+  openSync,
+  closeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -304,6 +306,29 @@ describe('returnSharedUserFiles', () => {
     expect(readFileSync(theirs, 'utf8')).toBe('{"display":"a"}\n{"display":"b"}\n{"display":"s1"}\n{"display":"s2"}\n');
     returnSharedUserFiles(sessionDir, c);
     expect(readFileSync(theirs, 'utf8').match(/s1/g)).toHaveLength(1);
+  });
+
+  it('keeps a prompt another Claude writes to the history while the session hands back', () => {
+    // Every Claude session appends to ~/.claude/history.jsonl. One that has the
+    // file open as the hand-back runs, and writes after it, must still land in
+    // the user's history rather than in a copy that was replaced.
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    const theirs = path.join(home, '.claude', 'history.jsonl');
+    writeFileSync(theirs, '{"display":"a"}\n', 'utf8');
+    writeFileSync(path.join(sessionDir, 'history.jsonl'), '{"display":"a"}\n{"display":"s1"}\n', 'utf8');
+
+    const otherClaude = openSync(theirs, 'a');
+    try {
+      returnSharedUserFiles(sessionDir, c);
+      writeFileSync(otherClaude, '{"display":"elsewhere"}\n');
+    } finally {
+      closeSync(otherClaude);
+    }
+
+    expect(readFileSync(theirs, 'utf8')).toBe(
+      '{"display":"a"}\n{"display":"s1"}\n{"display":"elsewhere"}\n',
+    );
   });
 
   it('leaves a history that is still one file with the user alone', () => {
