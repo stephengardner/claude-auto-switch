@@ -185,6 +185,24 @@ describe('following the subagents of a conversation', () => {
     expect(follow.poll(ID).refusals).toHaveLength(1);
   });
 
+  it("reads only the agents' own records, not the other files a workflow keeps there", () => {
+    // A workflow writes its journal of results beside its agents' records.
+    // That is not a subagent at work, and nothing in it is a refused turn.
+    const { dir, file } = config();
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, line(answered));
+    const follow = createRefusalFollower(dir);
+    follow.poll(ID);
+
+    const journal = path.join(
+      path.dirname(subagent(file, 'w1', 'workflows', 'wf_1')),
+      'journal.jsonl',
+    );
+    mkdirSync(path.dirname(journal), { recursive: true });
+    writeFileSync(journal, line(subRefused()));
+    expect(follow.poll(ID)).toMatchObject({ refusals: [], subagentsWrote: false });
+  });
+
   it('leaves alone what the subagents of a resumed conversation met before', () => {
     const { dir, file } = config();
     const record = subagent(file, 'old');

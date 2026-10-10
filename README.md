@@ -58,10 +58,12 @@ with nothing typed in the input box (set the prompt with `ccx resume-prompt`, or
 `resume` in the config). A subagent's refused turn starts the same move, before
 the main thread meets the limit. ccx relaunches Claude with
 `--resume <conversation>` and the prompt instead when the limit is one model's,
-when the next account's login has to be renewed first, or when the prompt
-cannot be typed safely: something is typed in the input box, a dialog stays
-open, or Claude does not say what it is doing. A switch you make yourself
-(`ccx use`, `/ccx`) happens in place.
+when the next account's login has to be renewed first or is only a long-lived
+token, when the session was started with a long-lived token, or when the
+session has stopped and the prompt cannot be typed safely: something is typed
+in the input box, a dialog stays open, or Claude does not say what it is doing.
+A switch you make yourself (`ccx use`, `/ccx`) happens in place, by the same
+rule.
 
 **One session at a time.** Each session moves on its own: a refused turn moves
 that session and no other. A switch you make from the dashboard or with

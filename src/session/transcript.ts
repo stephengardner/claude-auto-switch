@@ -106,9 +106,10 @@ export function findTranscript(configDir: string, id: string): string | null {
 }
 
 /**
- * Every subagent record under a conversation's `subagents` folder: the agent
- * files in it, and those in the folders below it, two deep at most
- * (`workflows/<run>/`).
+ * Every subagent record under a conversation's `subagents` folder: the
+ * `agent-<id>.jsonl` files in it, and those in the folders below it, two deep
+ * at most (`workflows/<run>/`). A workflow keeps other files there too, such
+ * as its `journal.jsonl` of results, which are not any subagent's record.
  */
 function subagentRecords(dir: string, deeper = 2): string[] {
   let entries: Array<{ name: string; isDirectory(): boolean }>;
@@ -122,7 +123,7 @@ function subagentRecords(dir: string, deeper = 2): string[] {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (deeper > 0) files.push(...subagentRecords(full, deeper - 1));
-    } else if (entry.name.endsWith('.jsonl')) {
+    } else if (entry.name.startsWith('agent-') && entry.name.endsWith('.jsonl')) {
       files.push(full);
     }
   }
