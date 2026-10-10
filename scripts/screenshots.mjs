@@ -21,11 +21,12 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderUsageReport } from '../dist/usage/report.js';
 import { renderDashboard } from '../dist/dashboard/render.js';
-import { describeNextUp } from '../dist/dashboard/next-up.js';
+import { describeWhenOut } from '../dist/dashboard/next-up.js';
+import { inDisplayOrder } from '../dist/dashboard/arrange.js';
 import {
   modelUsageFor,
   numberPicks,
-  pickReason,
+  pickAside,
   rankAccounts,
   settingsWords,
 } from '../dist/dashboard/rotation-settings.js';
@@ -125,19 +126,32 @@ const candidates = ranked.map((a) => modelUsageFor(a.name, usageOf(a.name), [], 
 const standing = (name) => standingOf(usageOf(name), NOW, 'opus', POLICY.holdBackAtPercent);
 const picks = numberPicks(candidates, PREFERENCE, true, standing);
 
+const dashboardAccounts = ACCOUNTS.map((a, i) => ({
+  name: a.name,
+  email: a.email,
+  plan: a.plan,
+  loggedIn: true,
+  active: a.active,
+  enabled: true,
+  priority: i,
+  usage: usageOf(a.name),
+  ...(picks.has(a.name) ? { pick: picks.get(a.name) } : {}),
+}));
+// Clock times read in UTC here, so the picture is the same on every machine.
+// The dashboard itself reads them in the local zone.
+const utcClock = (epochMs) => {
+  const at = new Date(epochMs);
+  const hour = at.getUTCHours();
+  return `${hour % 12 === 0 ? 12 : hour % 12}:${String(at.getUTCMinutes()).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`;
+};
+// The cursor sits on the held-back account, so the line that explains a row
+// is shown explaining the one that most needs it. Rows are counted in the
+// order the dashboard draws them.
+const HIGHLIGHTED = inDisplayOrder(dashboardAccounts, 'opus', NOW).findIndex((a) => a.name === 'old');
+
 const dashboardAnsi = renderDashboard(
   {
-    accounts: ACCOUNTS.map((a, i) => ({
-      name: a.name,
-      email: a.email,
-      plan: a.plan,
-      loggedIn: true,
-      active: a.active,
-      enabled: true,
-      priority: i,
-      usage: usageOf(a.name),
-      ...(picks.has(a.name) ? { pick: picks.get(a.name) } : {}),
-    })),
+    accounts: dashboardAccounts,
     events: [
       '08:41  session on work',
       '09:12  saved to your settings.json: permissions.allow',
@@ -146,13 +160,13 @@ const dashboardAnsi = renderDashboard(
     now: NOW,
     refreshMs: 3000,
     model: 'opus',
-    nextUp: describeNextUp({
+    whenOut: describeWhenOut({
       candidates,
       current: ACCOUNTS.find((a) => a.active)?.name ?? null,
       modelInUse: 'opus',
       preference: PREFERENCE,
       strategy: 'model-first',
-      reasonFor: (name) => pickReason(standing(name), NOW),
+      reasonFor: (name) => pickAside(standing(name), NOW),
     }),
     settings: settingsWords({ modelPreference: PREFERENCE, ...POLICY }),
     sessions: [
@@ -160,7 +174,7 @@ const dashboardAnsi = renderDashboard(
       { number: 2, where: 'web', account: 'spare' },
     ],
   },
-  { color: true, interactive: true, selected: 3, width: COLS },
+  { color: true, interactive: true, selected: HIGHLIGHTED, width: COLS, clock: utcClock },
 );
 
 // The settings panel over the defaults, with the hold-back highlighted.

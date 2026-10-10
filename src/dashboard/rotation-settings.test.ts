@@ -8,6 +8,7 @@ import {
   modelUsageFor,
   numberPicks,
   orderWords,
+  pickAside,
   pickReason,
   rankAccounts,
   reorder,
@@ -64,6 +65,17 @@ describe('pick rule', () => {
     const held = standingOf({ fiveHour: 0, sevenDay: 0.89, sevenDayReset: NOW + 24 * HOUR }, NOW);
     expect(pickReason(held, NOW)).toBe(
       'room for 73% of a 5-hour window, 11% of its week left (held back; no healthy account can run half a window)',
+    );
+  });
+
+  it('says the same reason as an aside, for the line under the dashboard table', () => {
+    const fresh = standingOf({ fiveHour: 0, sevenDay: 0.5, sevenDayReset: NOW + 30 * HOUR }, NOW);
+    expect(pickAside(fresh, NOW)).toBe('a full 5-hour window; its week resets in 1d 6h');
+    const thin = standingOf({ fiveHour: 0.6, sevenDay: null }, NOW);
+    expect(pickAside(thin, NOW)).toBe('40% of a 5-hour window');
+    const held = standingOf({ fiveHour: 0, sevenDay: 0.89, sevenDayReset: NOW + 24 * HOUR }, NOW);
+    expect(pickAside(held, NOW)).toBe(
+      '73% of a 5-hour window; held back with 11% of its week left, as no healthy account can run half a window',
     );
   });
 

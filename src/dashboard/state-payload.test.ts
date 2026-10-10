@@ -180,6 +180,61 @@ describe('the state another program reads', () => {
     expect(payload.nextUp).toBeNull();
   });
 
+  it('keeps its shape and its order, whatever the screen draws from the same snapshot', () => {
+    // The screen sorts its rows and words the next move its own way. A reader
+    // of `ccx state` was promised these fields, in the order ccx keeps the
+    // accounts, and nothing the screen needs is allowed to leak into them.
+    const payload = toStatePayload(
+      snapshot(
+        [
+          account({
+            name: 'spent',
+            email: 'e',
+            plan: 'max',
+            cappedUntil: NOW + HOUR,
+            usage: { fiveHour: 0, sevenDay: 1, sevenDayReset: NOW + HOUR },
+          }),
+          account({ name: 'next', active: true, pick: { rank: 1, runway: 1, binding: 'none' } }),
+        ],
+        {
+          version: '2.4.0',
+          model: 'opus',
+          nextUp: 'over on next, on opus',
+          whenOut: { account: 'next', words: 'next (a full 5-hour window)' },
+          settings: { model: 'Opus only', order: 'longest run first' },
+          sessions: [{ number: 1, where: 'api', account: 'next' }],
+          events: ['09:00  session on next'],
+        },
+      ),
+    );
+    expect(Object.keys(payload)).toEqual([
+      'schemaVersion',
+      'ccxVersion',
+      'now',
+      'active',
+      'preferredModel',
+      'nextUp',
+      'accounts',
+      'events',
+    ]);
+    expect(payload.accounts.map((a) => a.name)).toEqual(['spent', 'next']);
+    expect(Object.keys(payload.accounts[0] ?? {})).toEqual([
+      'name',
+      'email',
+      'plan',
+      'loggedIn',
+      'enabled',
+      'active',
+      'priority',
+      'cappedUntil',
+      'usage',
+      'status',
+    ]);
+    expect(Object.keys(payload.accounts[0]?.status ?? {})).toEqual(['state', 'label', 'until', 'blockedBy']);
+    expect(payload.nextUp).toBe('over on next, on opus');
+    expect(payload.events).toEqual(['09:00  session on next']);
+  });
+
   it('survives an account with no usage read yet', () => {
     // First run, or a probe that has not happened. Unmeasured is not spent.
     const payload = toStatePayload(snapshot([account({ name: 'fresh' })]));
