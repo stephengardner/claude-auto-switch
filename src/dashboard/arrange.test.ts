@@ -85,6 +85,47 @@ describe('the order the dashboard draws accounts in', () => {
     expect(placed[0]?.block).toBe('usable');
   });
 
+  it('lists a ranked account as out of room when one of its own windows is spent', () => {
+    // With models switched off, rotation numbers every signed-in account it
+    // was not refused by, a spent one included. Its row shows an empty bar,
+    // and an empty bar among the usable accounts is what this layout ends.
+    for (const usage of [
+      { fiveHour: 1, sevenDay: 0.2, fiveHourReset: NOW + 3 * HOUR },
+      { fiveHour: 0, sevenDay: 1, sevenDayReset: NOW + 30 * HOUR },
+    ]) {
+      const placed = arrange(
+        [account({ name: 'spent', pick: pick(1), usage }), account({ name: 'fine', pick: pick(2) })],
+        null,
+        NOW,
+      );
+      expect(placed.map((p) => [p.account.name, p.block])).toEqual([
+        ['fine', 'usable'],
+        ['spent', 'out'],
+      ]);
+    }
+  });
+
+  it("keeps a ranked account usable when all that is against it is ccx's record of a refusal", () => {
+    // ccx records a limit on one model against the account, and the shared
+    // status reads any record as the account being capped. Rotation does not:
+    // it ranks the account, for the models it can still run. No window on the
+    // row is spent, so the row belongs with the ones rotation would use.
+    const placed = arrange(
+      [
+        account({
+          name: 'one-model-refused',
+          pick: pick(1),
+          cappedUntil: NOW + 40 * HOUR,
+          usage: { fiveHour: 0.1, sevenDay: 0.3 },
+        }),
+      ],
+      'opus',
+      NOW,
+    );
+    expect(placed[0]?.status.label).toBe('capped');
+    expect(placed[0]?.block).toBe('usable');
+  });
+
   it('lists an account nothing is stopping as usable even when it has no place in the pick order', () => {
     const placed = arrange([account({ name: 'unranked' }), account({ name: 'ranked', pick: pick(1) })], null, NOW);
     expect(placed.map((p) => [p.account.name, p.block])).toEqual([

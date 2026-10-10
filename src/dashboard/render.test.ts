@@ -644,6 +644,31 @@ describe('usable accounts first, the rest below', () => {
     expect(rowOf(out, 'ninetynine')).toContain('back in 3h 0m');
   });
 
+  it('does the same for an account rotation still numbers, and draws it without the number', () => {
+    // With models switched off, rotation numbers every account it was not
+    // refused by, so a spent one can carry a place in the pick order. A number
+    // beside an empty bar would read as "this one is next".
+    const out = renderDashboard(
+      snapshot([
+        account({
+          name: 'spent',
+          pick: pick(1),
+          usage: { fiveHour: 1, sevenDay: 0.2, fiveHourReset: NOW + 3 * HOUR, sevenDayReset: NOW + 40 * HOUR },
+        }),
+        account({ name: 'fine', pick: pick(2), usage: { fiveHour: 0.1, sevenDay: 0.1 } }),
+      ]),
+      opts,
+    );
+    const lines = out.split('\n');
+    const divider = lines.findIndex((l) => l.startsWith('── out of room '));
+    expect(divider).toBeGreaterThan(lines.findIndex((l) => l.includes(' fine ')));
+    expect(lines.findIndex((l) => l.includes(' spent '))).toBeGreaterThan(divider);
+    expect(rowOf(out, 'spent')).toMatch(/^ {5}spent /);
+    expect(rowOf(out, 'spent')).toContain('back in 3h 0m');
+    expect(rowOf(out, 'fine')).toMatch(/^ 2 {3}fine /);
+    expect(out).not.toContain('next in line');
+  });
+
   it('lists signed-out and disabled accounts under a heading of their own', () => {
     // Neither is out of room, and no reset brings either back.
     const out = renderDashboard(

@@ -10,8 +10,9 @@ import type { DashboardAccount } from './render.js';
  */
 
 /**
- * `usable`: rotation ranks it, or nothing is stopping it.
- * `out`: something is stopping it and rotation does not rank it.
+ * `usable`: nothing is stopping it, or rotation ranks it and none of its own
+ * windows is spent.
+ * `out`: something is stopping it, until a time.
  * `off`: disabled or signed out, which no reset brings back.
  */
 export type Block = 'usable' | 'out' | 'off';
@@ -22,12 +23,20 @@ export interface Placed {
   block: Block;
 }
 
+/** The account's own windows, as the shared status labels them. A spent one stops every model. */
+const OWN_WINDOWS: ReadonlySet<string> = new Set(['5h', 'week']);
+
 function blockOf(account: DashboardAccount, status: AccountStatus): Block {
   if (status.state === 'disabled' || status.state === 'logged-out') return 'off';
-  // An account rotation ranks is one it would move a session to, even when the
-  // shared status calls it blocked (its preferred model is spent, and it can
-  // run the next one in the chain).
-  return account.pick || status.state === 'ready' ? 'usable' : 'out';
+  if (status.state === 'ready') return 'usable';
+  // Blocked, and rotation may rank it all the same. With only its preferred
+  // model spent it can run the next one in the chain, and ccx's record of a
+  // limit on one model reads to the shared status as the account being capped.
+  // Those rows go with the ones rotation would use. A spent window of its own
+  // is different: rotation numbers such an account only with models switched
+  // off, and its row shows an empty bar, so it is out whatever its number.
+  const ownWindowSpent = status.constraints.some((c) => OWN_WINDOWS.has(c.label));
+  return account.pick && !ownWindowSpent ? 'usable' : 'out';
 }
 
 /**
