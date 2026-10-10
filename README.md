@@ -149,8 +149,9 @@ uses another account), whether new sessions start on it, and whether your
 editor is on it. Enter alone or `esc` leaves the account as it is. `y` removes
 it from ccx and keeps its folder and login. `purge <name>` also deletes the
 folder: the login in it is deleted, and the account must be signed in again to
-come back. A folder is not deleted while a session is running on the account or
-your editor is on it. `ccx remove` follows the same rule.
+come back. A folder is not deleted while something is using it: a session
+running on the account, your editor, or the link `ccx daemon install` keeps.
+`ccx remove --purge` follows the same rule.
 
 ## Claude Desktop
 
@@ -274,7 +275,7 @@ definitions and parallel coders in git worktrees.
 | `ccx setup`                              | the next setup step, wherever you are                                                                                    |
 | `ccx editor on\|off`                     | set up / remove just the editor                                                                                          |
 | `ccx daemon install`                     | always-on rotation outside a terminal                                                                                    |
-| `ccx remove <name>`                      | remove an account (`--purge` also deletes its folder and login, once no session or editor is using them)                 |
+| `ccx remove <name>`                      | remove an account (`--purge` also deletes its folder and login, once nothing is using them)                              |
 
 ## Configuration
 

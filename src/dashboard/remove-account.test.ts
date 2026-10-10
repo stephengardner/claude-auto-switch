@@ -39,6 +39,7 @@ const standing = (over: Partial<RemovalStanding> = {}): RemovalStanding => ({
   active: false,
   last: false,
   editor: false,
+  daemon: false,
   folderIsOurs: true,
   ...over,
 });
@@ -92,6 +93,12 @@ describe('the question x asks', () => {
     expect(removeQuestion(standing({ editor: true }))).toBe(
       'remove "old"? Your editor is on it, and stays on it until the next switch. ' +
         `${KEEP}. Its folder cannot be deleted while your editor is on it.`,
+    );
+  });
+
+  it("offers no deleting of the folder the daemon's link is on", () => {
+    expect(removeQuestion(standing({ daemon: true }))).toBe(
+      `remove "old"? ${KEEP}. Its folder cannot be deleted while the daemon's link is on it.`,
     );
   });
 

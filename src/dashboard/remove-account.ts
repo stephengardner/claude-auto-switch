@@ -14,8 +14,7 @@ import { numberSessions } from './session-choice.js';
  *
  * Nothing is removed by default: enter alone or esc closes the box. `y` keeps
  * the folder and the login in it, so the account can be added back. Deleting
- * them takes `purge <name>`, and is not offered while a session or the editor
- * is using the folder.
+ * them takes `purge <name>`, and is not offered while the folder is in use.
  *
  * Pure, so the wording and the reading of an answer are tested without a
  * terminal.

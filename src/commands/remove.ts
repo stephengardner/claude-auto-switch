@@ -14,7 +14,7 @@ export interface RemoveOptions {
 
 /**
  * Deregister an account. Keeps its profile folder unless --purge is given, and
- * --purge removes nothing while a session or the editor is using that folder.
+ * --purge removes nothing while that folder is in use (see purgeRefusal).
  */
 export function removeCommand(
   context: CliContext,

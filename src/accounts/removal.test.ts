@@ -43,6 +43,7 @@ describe('what removing an account would touch', () => {
       active: false,
       last: false,
       editor: false,
+      daemon: false,
       folderIsOurs: true,
     });
   });
@@ -84,6 +85,15 @@ describe('what removing an account would touch', () => {
     expect(standing('spare')?.editor).toBe(false);
   });
 
+  it("knows the account the daemon's link points at", () => {
+    // `ccx daemon install` points every Claude outside ccx at this link.
+    const { standing, home, dirOf } = setup();
+    setTarget(path.join(home, 'active'), dirOf('work'));
+    expect(standing('work')?.daemon).toBe(true);
+    expect(standing('spare')?.daemon).toBe(false);
+    expect(standing('work')?.editor).toBe(false);
+  });
+
   it('knows a folder outside the profiles tree is not one ccx deletes', () => {
     const { standing, home, ctx } = setup();
     const elsewhere = path.join(home, 'elsewhere');
@@ -122,11 +132,29 @@ describe('when an account folder may be deleted', () => {
     );
   });
 
-  it('names both when both are using it', () => {
+  it("may not be while the daemon's link is on it", () => {
+    const { standing, home, dirOf } = setup();
+    setTarget(path.join(home, 'active'), dirOf('work'));
+    expect(purgeRefusal(standing('work')!)).toBe(
+      "its folder cannot be deleted while the daemon's link is on it",
+    );
+  });
+
+  it('names both when two are using it', () => {
     const { standing, home, dirOf } = setup();
     setTarget(path.join(home, 'editor-active'), dirOf('work'));
     expect(purgeRefusal(standing('work', [lease(11, 'work', '/w/api')])!)).toBe(
       'its folder cannot be deleted while 1 session is running on it and your editor is on it',
+    );
+  });
+
+  it('names all three when all are using it', () => {
+    const { standing, home, dirOf } = setup();
+    setTarget(path.join(home, 'editor-active'), dirOf('work'));
+    setTarget(path.join(home, 'active'), dirOf('work'));
+    expect(purgeRefusal(standing('work', [lease(11, 'work', '/w/api')])!)).toBe(
+      'its folder cannot be deleted while 1 session is running on it, your editor is on it ' +
+        "and the daemon's link is on it",
     );
   });
 });

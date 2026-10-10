@@ -29,10 +29,11 @@ semantic versioning.
   use.** A running session saves its login back into that folder when the
   login is renewed and when the session ends, creating the folder again, so a
   purge under a running session came back holding a login for an account ccx
-  no longer listed. The editor reads the folder directly, and a purge left its
-  pointer on nothing until the next switch. `--purge` now says which of the
-  two is using the folder and exits 1 with the account still registered. Run
-  it again once nothing is, or without `--purge` to keep the folder. Removing
+  no longer listed. The editor reads the folder directly, as does every Claude
+  outside ccx through the link `ccx daemon install` keeps, and a purge left
+  either pointing at nothing until the next switch. `--purge` now says what
+  is using the folder and exits 1 with the account still registered. Run it
+  again once nothing is, or without `--purge` to keep the folder. Removing
   without `--purge` is unchanged.
 
 ## [2.3.2]

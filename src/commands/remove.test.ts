@@ -152,6 +152,18 @@ describe('ccx remove --purge', () => {
     expect(said.join('\n')).toContain('its folder cannot be deleted while your editor is on it.');
   });
 
+  it("removes nothing while the daemon's link is on the account, which every Claude outside ccx reads", () => {
+    const { context, ctx, said, home, dirOf } = setup();
+    const daemonLink = path.join(home, 'active');
+    setTarget(daemonLink, dirOf('work'));
+    expect(removeCommand(context, 'work', { purge: true }, nothingRunning)).toBe(1);
+    expect(getAccount('work', ctx)?.dir).toBe(dirOf('work'));
+    expect(existsSync(path.resolve(readTarget(daemonLink)!))).toBe(true);
+    expect(said.join('\n')).toContain(
+      "its folder cannot be deleted while the daemon's link is on it.",
+    );
+  });
+
   it('refuses the same way for a folder outside the profiles tree, whose login it would clear', () => {
     const { context, ctx, home } = setup();
     const elsewhere = path.join(home, 'elsewhere');
