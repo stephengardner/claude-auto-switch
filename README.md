@@ -300,7 +300,10 @@ one. The session never restarts, and the account new sessions start on is not
 touched. A hold ends when the call is over, when its result shows up in the
 conversation, before Claude's next request after the call (even one refused
 by your own hook or a permission rule), or after two minutes, whichever comes
-first. If the call cannot be held there (the account is not signed in, the
+first. Ending it before that next request for a refused call needs Claude Code
+2.1.294 or later (the oldest version checked); an older Claude may send that
+request on the account the session was visiting, until the refusal shows up
+in the conversation or the two minutes run out. If the call cannot be held there (the account is not signed in, the
 session signs in with a `ccx token` of another account, it was signed in as
 someone else from inside with `/login`, or `config.json` does not load), it is
 refused with the reason, so a page never lands on the wrong account without
@@ -310,8 +313,12 @@ counted against the session's own.
 ccx records each page a ccx session publishes while either setting is on, and
 each page it deletes: a deleted page leaves `ccx artifacts`, and publishing
 its file again makes a new page, on the home account when one is set. Past
-512 KiB the record is folded to half that, and the pages used least recently
-go first; one of those reads as unknown again until a scan. An update to a page
+512 KiB the record is folded to half that, dropping first the pages published
+or listed least recently. A page dropped that way is unknown again: a call that
+names its link goes out as the session's account until a scan records its
+owner, and publishing its file again from the conversation that made it makes
+a new page, as above, since no scan can tell which conversation and file it
+came from. An update to a page
 published before that goes out as the session's account, and ccx says so,
 once for each page. `ccx artifacts scan` asks each signed-in account for the
 pages it already has, with one headless Claude. It is best effort: it relies

@@ -1,14 +1,23 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 
-/** When on, Claude cannot be made to read its login again (the login file's time could not be changed). */
-const nudge = vi.hoisted(() => ({ fails: false }));
+/**
+ * When `fails` is on, or for the next `failures` tries, Claude cannot be made
+ * to read its login again (the login file's time could not be changed).
+ */
+const nudge = vi.hoisted(() => ({ fails: false, failures: 0 }));
 vi.mock('../../src/accounts/credential-vault.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../src/accounts/credential-vault.js')>();
   return {
     ...real,
-    nudgeLoginReread: (...args: Parameters<typeof real.nudgeLoginReread>): boolean =>
-      nudge.fails ? false : real.nudgeLoginReread(...args),
+    nudgeLoginReread: (...args: Parameters<typeof real.nudgeLoginReread>): boolean => {
+      if (nudge.fails) return false;
+      if (nudge.failures > 0) {
+        nudge.failures -= 1;
+        return false;
+      }
+      return real.nudgeLoginReread(...args);
+    },
   };
 });
 import { tmpdir } from 'node:os';
@@ -50,6 +59,8 @@ interface Entry {
   marker?: string | null;
   /** At a call: whether the login file's time had changed since Claude started. */
   loginReread?: boolean;
+  /** At a refusal: the address the session's .claude.json says it is signed in as. */
+  identity?: string | null;
   reason?: string;
   context?: string;
 }
@@ -179,6 +190,8 @@ async function scene(
     loginInKeychain?: boolean;
     /** How long a relaunched Claude stays; the first one's length is set above. */
     resumedIdleMs?: number;
+    /** A and B each with the identity a sign-in leaves, which a move stamps into the session. */
+    identities?: boolean;
   },
 ): Promise<Scene> {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-artifact-routing-'));
@@ -207,6 +220,17 @@ async function scene(
   await loginAccount(context, home, 'B');
   for (const extra of options.extraAccounts ?? []) await loginAccount(context, home, extra.name, extra.signedIn);
   if (options.tokenFor) saveToken(path.join(home, 'profiles', options.tokenFor), 'a-long-lived-token');
+  if (options.identities) {
+    for (const name of ['A', 'B']) {
+      const email = `${name.toLowerCase()}@example.com`;
+      updateAccount(name, { email }, context.ctx);
+      writeFileSync(
+        path.join(home, 'profiles', name, '.claude.json'),
+        JSON.stringify({ oauthAccount: { emailAddress: email, accountUuid: `uuid-${name}` }, userID: `user-${name}` }),
+        'utf8',
+      );
+    }
+  }
   if (options.signedInAs) {
     for (const name of ['A', 'B']) updateAccount(name, { email: `${name.toLowerCase()}@example.com` }, context.ctx);
     process.env.FAKE_CLAUDE_SET_STATE = JSON.stringify({ oauthAccount: { emailAddress: options.signedInAs } });
@@ -248,6 +272,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('page routing in a running se
   afterEach(() => {
     for (const name of TEST_ENV) delete process.env[name];
     nudge.fails = false;
+    nudge.failures = 0;
   });
 
   it(
@@ -577,6 +602,61 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('page routing in a running se
       expect(of(log, 'artifact-call')).toEqual([]);
       expect(of(log, 'artifact-denied')[0]?.reason).toContain('could not make Claude use the "A" login');
       expectNothingLeftBehind(stayed);
+    },
+  );
+
+  it(
+    'undoing a move for one call puts back who the session is signed in as, so the next call is not refused',
+    { timeout: 120_000 },
+    async () => {
+      const s = await scene({
+        artifacts: { home: 'B' },
+        identities: true,
+        calls: [
+          { afterMs: 1500, id: 'toolu_first', input: { file_path: PAGE }, response: RESPONSE },
+          {
+            afterMs: 4000,
+            id: 'toolu_second',
+            input: { file_path: path.resolve('pages', 'second.html') },
+            response: { url: 'https://claude.ai/artifact/second', artifact_id: '6a1e0c2b-0000-4000-8000-000000000002', title: 'Second' },
+          },
+        ],
+      });
+      const run = runCommand(s.context, []);
+      // Only the move for the first call fails to tell Claude: the session has started by now.
+      await waitFor('the launch', () => of(entries(s.runsLog), 'launch').length, (n) => n > 0);
+      nudge.failures = 1;
+      expect(await run).toBe(0);
+      const log = entries(s.runsLog);
+      expect(of(log, 'artifact-denied').map((e) => [e.id, e.marker, e.identity])).toEqual([
+        ['toolu_first', 'A', 'a@example.com'],
+      ]);
+      expect(of(log, 'artifact-denied')[0]?.reason).toContain('could not put this session on "B"');
+      // Not taken for a /login as B: the next call goes out, as B, and is recorded as B's.
+      expect(of(log, 'artifact-call').map((e) => [e.id, e.marker])).toEqual([['toolu_second', 'B']]);
+      expect(readPages(s.context.ctx).map((p) => p.owner)).toEqual(['B']);
+      expectNothingLeftBehind(s);
+    },
+  );
+
+  it(
+    'goes back to its own account after a call even when Claude cannot be told to read that login',
+    { timeout: 120_000 },
+    async () => {
+      const s = await scene({
+        artifacts: { home: 'B' },
+        calls: [{ afterMs: 1500, id: 'toolu_new', input: { file_path: PAGE }, response: RESPONSE, takesMs: 1500 }],
+      });
+      const run = runCommand(s.context, []);
+      await waitFor('the call to go out', () => of(entries(s.runsLog), 'artifact-call').length, (n) => n > 0);
+      nudge.fails = true;
+      expect(await run).toBe(0);
+      const log = entries(s.runsLog);
+      expect(of(log, 'artifact-call').map((e) => e.marker)).toEqual(['B']);
+      // Home at once, told or not: staying on the visited account is worse.
+      expect(of(log, 'artifact-over').map((e) => e.marker)).toEqual(['A']);
+      expect(of(log, 'model-request').map((e) => e.marker)).toEqual(['A']);
+      expect(readPages(s.context.ctx)[0]?.owner).toBe('B');
     },
   );
 

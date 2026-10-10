@@ -28,7 +28,8 @@ semantic versioning.
   one account at once share the move, and the session goes back after the
   later one. The session's own ccx ends a hold when the call is over, when its
   result shows up in the conversation, before Claude's next request after the
-  call, when Claude ends, or after two minutes, so it never depends on the
+  call (Claude Code 2.1.294 or later, the oldest version checked), when Claude
+  ends, or after two minutes, so it never depends on the
   hook after the call running (a call refused by a question, a permission
   rule or another hook runs none). A usage limit hit during the move belongs
   to the other account and is not counted against the session's. A call that

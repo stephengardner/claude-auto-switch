@@ -41,8 +41,8 @@ export interface HopDeps<A extends { name: string }> {
   readiness: (account: A) => 'ready' | 'renewal-due' | 'no-login';
   /** Renew a login that is due, the way ccx renews an idle one. */
   renew: (account: A) => Promise<{ ok: true } | { ok: false; reason: string }>;
-  /** The session's in-place move. Throws when it could not be made. */
-  activate: (account: A) => void;
+  /** The session's in-place move, for a call (`away`) or back after it. Throws when it could not be made. */
+  activate: (account: A, trip: 'away' | 'back') => void;
   /** Make the running Claude use the login already in its folder from its next call. Throws when it cannot. */
   pin: (account: A) => void;
   /**
@@ -175,7 +175,7 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
     }
     const moved = from.name !== to.name;
     try {
-      if (moved) deps.activate(to);
+      if (moved) deps.activate(to, 'away');
       else deps.pin(to);
     } catch (error) {
       refuse(
@@ -211,7 +211,7 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
     // Something else moved it meanwhile, and that move stands.
     if (v.moved && deps.current()?.name === v.to.name) {
       try {
-        deps.activate(v.from);
+        deps.activate(v.from, 'back');
       } catch (error) {
         if (!v.returnFailed) {
           v.returnFailed = true;

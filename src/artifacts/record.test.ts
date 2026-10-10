@@ -320,6 +320,21 @@ describe('keeping the record small', () => {
     expect(lines()).toBe(before + 1);
   });
 
+  it('forgets a page a fold drops, and a scan brings back its owner but not the file it came from', () => {
+    const ctx = ctxOf();
+    const page = (i: number): PageRow =>
+      row({ url: `https://claude.ai/artifact/page${i}`, id: null, title: `Page ${i} ${'x'.repeat(150)}`, file: `/p/${i}.html`, at: 1_000 + i });
+    for (let i = 0; i < 12; i += 1) appendPage(page(i), ctx);
+    compactRecord(ctx, { compactToBytes: 2_000 });
+    const pages = (): ReturnType<typeof readPages> => readPages(ctx);
+    expect(findPage(pages(), 'https://claude.ai/artifact/page0')).toBeNull();
+    expect(findRepublished(pages(), row().session, '/p/0.html')).toBeNull();
+    appendPage(row({ url: 'https://claude.ai/artifact/page0', id: null, owner: 'personal', session: null, file: null, at: 9_000, via: 'scan' }), ctx);
+    expect(findPage(pages(), 'https://claude.ai/artifact/page0')?.owner).toBe('personal');
+    // Publishing that file again from its conversation still makes a new page.
+    expect(findRepublished(pages(), row().session, '/p/0.html')).toBeNull();
+  });
+
   it('still records a page when the lock is not free within its wait, rather than lose the line for certain', () => {
     const ctx = ctxOf();
     mkdirSync(`${recordPath(ctx)}.lock`, { recursive: true });

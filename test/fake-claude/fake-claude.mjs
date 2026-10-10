@@ -689,7 +689,14 @@ if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
       const decision = said?.hookSpecificOutput;
       if (decision?.additionalContext) note({ type: 'artifact-context', id: call.id, context: decision.additionalContext });
       if (decision?.permissionDecision === 'deny') {
-        note({ type: 'artifact-denied', id: call.id, reason: decision.permissionDecisionReason, marker: readMarker() });
+        note({
+          type: 'artifact-denied',
+          id: call.id,
+          reason: decision.permissionDecisionReason,
+          marker: readMarker(),
+          // Who the session's own record says it is signed in as.
+          identity: readObject(path.join(configDir, '.claude.json')).oauthAccount?.emailAddress ?? null,
+        });
         return;
       }
     }

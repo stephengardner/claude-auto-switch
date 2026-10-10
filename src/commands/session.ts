@@ -187,14 +187,33 @@ function readJsonSafe(file: string): Record<string, unknown> | null {
   }
 }
 
+const IDENTITY_KEYS = ['oauthAccount', 'userID'] as const;
+
 /** The account-identity fields that must follow the active account across swaps. */
 function identityFields(accountDir: string): Record<string, unknown> {
   const account = readJsonSafe(path.join(accountDir, '.claude.json')) ?? {};
   const id: Record<string, unknown> = {};
-  for (const key of ['oauthAccount', 'userID']) {
+  for (const key of IDENTITY_KEYS) {
     if (key in account) id[key] = account[key];
   }
   return id;
+}
+
+/**
+ * Put the identity fields of a session's .claude.json back to `before`, what
+ * identityFields read from the session folder ahead of a move that failed.
+ * Only those fields: Claude may have written the rest of the file meanwhile.
+ */
+function restoreSessionIdentity(sessionDir: string, before: Record<string, unknown>): void {
+  const file = path.join(sessionDir, '.claude.json');
+  const now = readJsonSafe(file);
+  if (!now) return;
+  const next = { ...now };
+  for (const key of IDENTITY_KEYS) {
+    if (key in before) next[key] = before[key];
+    else delete next[key];
+  }
+  writeJsonSafe(file, next);
 }
 
 /**
@@ -1020,7 +1039,7 @@ export async function runInteractiveHotSwap(
    * token refresh, and a failure part-way rolls the session credential back
    * instead of leaving the session on a half-applied account.
    */
-  const activate = (account: Account, how: { temporary?: boolean } = {}): void => {
+  const activate = (account: Account, how: { temporary?: boolean; mustReread?: boolean } = {}): void => {
     // The ORDER of announce / copy / release is the safety property, so it lives
     // in activateWithLease where tests pin it: announce first, copy second,
     // release the old one last. Any gap between a login being in use and being
@@ -1051,6 +1070,8 @@ export async function runInteractiveHotSwap(
             saveBack(leaving);
           }
           const src = path.join(account.dir, CREDS);
+          // Who the session says it is signed in as, put back with the login if this fails.
+          const identityBefore = identityFields(sessionDir);
           // Always replace (or clear) the session credential so one account's login
           // can never linger into another account's session.
           try {
@@ -1071,13 +1092,14 @@ export async function runInteractiveHotSwap(
             mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
             // A Claude already running here keeps the login it read until the
             // file's time changes, which a Keychain write does not do. A move
-            // for one call is undone when that cannot be made sure of, since
-            // the call goes out at once. Any other move stands: Claude reads
-            // the new login within 30 seconds regardless.
-            if (!nudgeLoginReread(sessionDir, new Date(), loginStore) && how.temporary) {
+            // away for one call is undone when that cannot be made sure of,
+            // since the call goes out at once. Any other move stands: Claude
+            // reads the new login within 30 seconds regardless.
+            if (!nudgeLoginReread(sessionDir, new Date(), loginStore) && how.mustReread) {
               throw new Error('the time of its login file could not be changed');
             }
           } catch (e) {
+            restoreSessionIdentity(sessionDir, identityBefore);
             rollbackCredential(sessionDir);
             throw e;
           }
@@ -1143,7 +1165,9 @@ export async function runInteractiveHotSwap(
             : `the "${account.name}" login could not be renewed just now (${renewal.detail ?? 'no answer'}), so the call was not sent. Try again in a minute`,
       };
     },
-    activate: (account) => activate(account, { temporary: true }),
+    // Only a move away has a call counting on Claude reading the new login at
+    // once. Going back is better done unconfirmed than not done.
+    activate: (account, trip) => activate(account, { temporary: true, mustReread: trip === 'away' }),
     // A call that counts on the login already here: Claude reads it again
     // before the call, in case it was still on the one before it.
     pin: () => {
