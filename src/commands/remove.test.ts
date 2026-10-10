@@ -173,7 +173,24 @@ describe('ccx remove --purge', () => {
       expect(getAccount('twin', ctx)).toBeDefined();
       expect(existsSync(credentialPath(dirOf('work')))).toBe(true);
     }
-    expect(said.join('\n')).toContain('its folder cannot be deleted while "work" shares it.');
+    expect(said.join('\n')).toContain(
+      'its folder cannot be deleted while "work" keeps its login there.',
+    );
+  });
+
+  it('removes nothing while another account keeps its folder inside this one, and deletes the inner one alone', () => {
+    const { context, ctx, dirOf } = setup();
+    const inside = path.join(dirOf('work'), 'nested');
+    mkdirSync(inside);
+    writeFileSync(credentialPath(inside), login('nested'), 'utf8');
+    addAccount({ name: 'nested', dir: inside }, ctx);
+    expect(removeCommand(context, 'work', { purge: true }, nothingRunning)).toBe(1);
+    expect(getAccount('work', ctx)).toBeDefined();
+    expect(existsSync(credentialPath(inside))).toBe(true);
+
+    expect(removeCommand(context, 'nested', { purge: true }, nothingRunning)).toBe(0);
+    expect(existsSync(inside)).toBe(false);
+    expect(existsSync(credentialPath(dirOf('work')))).toBe(true);
   });
 
   it('removes nothing when the two share a folder through a link, from either side', () => {

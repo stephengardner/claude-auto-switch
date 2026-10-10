@@ -40,7 +40,7 @@ const standing = (over: Partial<RemovalStanding> = {}): RemovalStanding => ({
   last: false,
   editor: false,
   daemon: false,
-  sharedWith: [],
+  others: [],
   folderIsOurs: true,
   ...over,
 });
@@ -103,9 +103,9 @@ describe('the question x asks', () => {
     );
   });
 
-  it('offers no deleting of a folder another account is registered on', () => {
-    expect(removeQuestion(standing({ sharedWith: ['work'] }))).toBe(
-      `remove "old"? ${KEEP}. Its folder cannot be deleted while "work" shares it.`,
+  it('offers no deleting of a folder another account keeps its login in', () => {
+    expect(removeQuestion(standing({ others: ['work'] }))).toBe(
+      `remove "old"? ${KEEP}. Its folder cannot be deleted while "work" keeps its login there.`,
     );
   });
 

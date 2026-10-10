@@ -44,7 +44,7 @@ describe('what removing an account would touch', () => {
       last: false,
       editor: false,
       daemon: false,
-      sharedWith: [],
+      others: [],
       folderIsOurs: true,
     });
   });
@@ -99,9 +99,9 @@ describe('what removing an account would touch', () => {
     // `ccx add <name> --dir` takes a folder another account already has.
     const { standing, ctx, dirOf } = setup();
     addAccount({ name: 'twin', dir: dirOf('work') }, ctx);
-    expect(standing('twin')?.sharedWith).toEqual(['work']);
-    expect(standing('work')?.sharedWith).toEqual(['twin']);
-    expect(standing('spare')?.sharedWith).toEqual([]);
+    expect(standing('twin')?.others).toEqual(['work']);
+    expect(standing('work')?.others).toEqual(['twin']);
+    expect(standing('spare')?.others).toEqual([]);
   });
 
   it('sees the editor on a shared folder from either account, since it is the folder that would go', () => {
@@ -118,9 +118,29 @@ describe('what removing an account would touch', () => {
     const alias = path.join(home, 'profiles', 'twin');
     setTarget(alias, dirOf('work'));
     addAccount({ name: 'twin', dir: alias }, ctx);
-    expect(standing('twin')?.sharedWith).toEqual(['work']);
-    expect(standing('work')?.sharedWith).toEqual(['twin']);
-    expect(standing('spare')?.sharedWith).toEqual([]);
+    expect(standing('twin')?.others).toEqual(['work']);
+    expect(standing('work')?.others).toEqual(['twin']);
+    expect(standing('spare')?.others).toEqual([]);
+  });
+
+  it('counts an account whose folder is inside it, since a delete takes everything in the folder', () => {
+    const { standing, ctx, home, dirOf } = setup();
+    const inside = path.join(dirOf('work'), 'nested');
+    mkdirSync(inside);
+    addAccount({ name: 'nested', dir: inside }, ctx);
+    setTarget(path.join(home, 'editor-active'), inside);
+    expect(standing('work')).toMatchObject({ others: ['nested'], editor: true });
+    // Deleting the inner folder takes nothing of the outer account's.
+    expect(standing('nested')).toMatchObject({ others: [], editor: true });
+    expect(standing('spare')).toMatchObject({ others: [], editor: false });
+  });
+
+  it('does not take a folder that only starts with the same name for one inside it', () => {
+    const { standing, ctx, home } = setup();
+    const lookalike = path.join(home, 'profiles', 'work-2');
+    mkdirSync(lookalike);
+    addAccount({ name: 'work-2', dir: lookalike }, ctx);
+    expect(standing('work')?.others).toEqual([]);
   });
 
   it("sees the editor and the daemon's link on a folder they reach through a link to it", () => {
@@ -194,11 +214,11 @@ describe('when an account folder may be deleted', () => {
     const { standing, ctx, dirOf } = setup();
     addAccount({ name: 'twin', dir: dirOf('work') }, ctx);
     expect(purgeRefusal(standing('twin')!)).toBe(
-      'its folder cannot be deleted while "work" shares it',
+      'its folder cannot be deleted while "work" keeps its login there',
     );
     addAccount({ name: 'triplet', dir: dirOf('work') }, ctx);
     expect(purgeRefusal(standing('work')!)).toBe(
-      'its folder cannot be deleted while "twin" and "triplet" share it',
+      'its folder cannot be deleted while "twin" and "triplet" keep their logins there',
     );
   });
 

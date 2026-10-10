@@ -31,8 +31,8 @@ export interface RemovalStanding {
   editor: boolean;
   /** So does every Claude outside ccx, through the link `ccx daemon install` keeps. */
   daemon: boolean;
-  /** The other accounts registered on this same folder (`ccx add --dir` allows it). */
-  sharedWith: string[];
+  /** The other accounts whose folder is this one or inside it (`ccx add --dir` allows both). */
+  others: string[];
   /** Its folder is inside the profiles tree, the only place ccx deletes one. */
   folderIsOurs: boolean;
 }
@@ -47,15 +47,12 @@ export function removalStanding(
   const accounts = listAccounts(c);
   const account = accounts.find((a) => a.name === name);
   if (!account) return null;
-  // By folder, not by name: the folder is what a delete takes, and two
-  // accounts can be registered on one.
+  // By folder, not by name: the folder, and everything in it, is what a
+  // delete takes, and another account can be registered on it or inside it.
   const here = landsOn(account.dir);
-  const sameFolder = (other: string): boolean => {
+  const taken = (other: string): boolean => {
     const there = landsOn(other);
-    // A folder that is not there lands nowhere, so it is matched by its path.
-    return here !== null && there !== null
-      ? here === there
-      : path.resolve(other) === path.resolve(account.dir);
+    return there === here || isInside(here, there);
   };
   return {
     name,
@@ -63,24 +60,24 @@ export function removalStanding(
     leases: leases().filter((l) => l.account === name),
     active: getActive(c) === name,
     last: accounts.length === 1,
-    editor: sameFolder(editorLinkPath(c)),
-    daemon: sameFolder(activeLinkPath(configHome(c))),
-    sharedWith: accounts.filter((a) => a.name !== name && sameFolder(a.dir)).map((a) => a.name),
+    editor: taken(editorLinkPath(c)),
+    daemon: taken(activeLinkPath(configHome(c))),
+    others: accounts.filter((a) => a.name !== name && taken(a.dir)).map((a) => a.name),
     folderIsOurs: isInside(profilesDir(config, c), account.dir),
   };
 }
 
 /**
- * The folder a path lands on, through any links, or null when nothing is
- * there. Two paths are one folder when they land on the same place, which
- * their text cannot tell: one may be a link to the other, or another spelling
- * of it.
+ * The folder a path lands on, through any links. Two paths are one folder when
+ * they land on the same place, which their text cannot tell: one may be a link
+ * to the other, or another spelling of it. A path with nothing at it lands
+ * nowhere, and stands as its own text.
  */
-function landsOn(target: string): string | null {
+function landsOn(target: string): string {
   try {
     return realpathSync.native(target);
   } catch {
-    return null;
+    return path.resolve(target);
   }
 }
 
@@ -97,19 +94,19 @@ function listed(parts: string[]): string {
  * renewed and when the session ends, creating the folder again if it is gone,
  * so a delete under it is undone. The editor and the daemon's link read the
  * folder directly, and would be left pointing at nothing. Another account
- * registered on the folder would lose its login with it, and so would any
+ * with its folder there would lose its login with it, and so would any
  * session running on that account.
  */
 export function purgeRefusal(standing: RemovalStanding): string | null {
   const running = new Set(standing.leases.map((l) => l.pid)).size;
-  const sharers = standing.sharedWith.map((other) => `"${other}"`);
+  const others = standing.others.map((other) => `"${other}"`);
   const using = [
     ...(running === 1 ? ['1 session is running on it'] : []),
     ...(running > 1 ? [`${running} sessions are running on it`] : []),
     ...(standing.editor ? ['your editor is on it'] : []),
     ...(standing.daemon ? ["the daemon's link is on it"] : []),
-    ...(sharers.length === 1 ? [`${sharers[0]} shares it`] : []),
-    ...(sharers.length > 1 ? [`${listed(sharers)} share it`] : []),
+    ...(others.length === 1 ? [`${others[0]} keeps its login there`] : []),
+    ...(others.length > 1 ? [`${listed(others)} keep their logins there`] : []),
   ];
   return using.length > 0 ? `its folder cannot be deleted while ${listed(using)}` : null;
 }
