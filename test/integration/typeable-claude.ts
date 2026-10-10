@@ -162,6 +162,8 @@ export function live(options: {
   timing?: Partial<typeof QUICK>;
   decide?: (context: CapContext, moveTo: (name: string) => void) => CapDecision;
   verify?: (asked: number) => boolean;
+  /** How long the account takes to answer each check; at once when not given. */
+  verifyDelayMs?: number;
   /** Whether a newer ccx is waiting to take the session over, asked on each look. */
   newerInstall?: (moved: boolean) => boolean;
   /** The account the session is on now, when something moved it since the limit. */
@@ -193,7 +195,9 @@ export function live(options: {
     verifyCap: () => {
       asked += 1;
       // A is out; B, where it moves, has room.
-      return Promise.resolve(options.verify ? options.verify(asked) : asked === 1);
+      const answer = options.verify ? options.verify(asked) : asked === 1;
+      if (!options.verifyDelayMs) return Promise.resolve(answer);
+      return new Promise((resolve) => setTimeout(() => resolve(answer), options.verifyDelayMs));
     },
     onCapConfirmed: (_hit, context) => {
       decisions.push(context);

@@ -16,6 +16,93 @@ import {
  * claude, which keeps each subagent's record where Claude 2.1.296 does.
  */
 
+/**
+ * The main thread refused while the account is still being asked about a
+ * subagent's refusal. The live check is a request with an eight-second
+ * timeout, so the main thread's refusal can land inside it or after it, and
+ * what happens next must not depend on which.
+ */
+describe.skipIf(!PTY_AVAILABLE && !process.env.CI)(
+  'a main-thread refusal that comes while a subagent refusal is being checked',
+  () => {
+    afterEach(() => {
+      for (const name of FAKE_ENV) delete process.env[name];
+    });
+
+    // Subagent refused at 0.8 s, main thread at 2 s; Claude ends by itself at
+    // 20 s, which the log shows as a "reread" the tests require to be absent.
+    const env = {
+      FAKE_CLAUDE_IDLE_MS: '20000',
+      FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS: '800',
+      FAKE_CLAUDE_REFUSE_AFTER_MS: '2000',
+    };
+
+    for (const [speed, verifyDelayMs] of [
+      ['at once', 0],
+      ['in 3 s', 3000],
+    ] as const) {
+      it(
+        `gets its own decision when the session cannot be moved in place (account answers ${speed})`,
+        { timeout: 60_000 },
+        async () => {
+          // No in-place destination: a model-only limit, a token launch, a
+          // next account that must be renewed first. The subagent's refusal
+          // ends nothing; the main thread's must still end and relaunch.
+          const session = live({
+            env,
+            verifyDelayMs,
+            verify: () => true,
+            decide: (context) => (context.sidechain ? { kind: 'left' } : { kind: 'restart' }),
+          });
+          const outcome = await session.outcome;
+          expect(outcome.kind).toBe('capped');
+          expect(session.decisions.map((d) => d.sidechain)).toEqual([true, false]);
+          // Ended by ccx on the refusal, not by Claude running out its time.
+          expect(session.log().filter((e) => e.type === 'reread')).toEqual([]);
+        },
+      );
+
+      it(
+        `gets its own check when the subagent's is not confirmed (account answers ${speed})`,
+        { timeout: 60_000 },
+        async () => {
+          // The subagent's refusal was about something the account does not
+          // confirm (its own model, say). The main thread's is.
+          const session = live({
+            env,
+            verifyDelayMs,
+            verify: (asked) => asked > 1,
+            decide: (context) => (context.sidechain ? { kind: 'left' } : { kind: 'restart' }),
+          });
+          expect((await session.outcome).kind).toBe('capped');
+          expect(session.asked()).toBe(2);
+          expect(session.decisions.map((d) => d.sidechain)).toEqual([false]);
+          expect(session.log().filter((e) => e.type === 'reread')).toEqual([]);
+        },
+      );
+
+      it(
+        `is relaunched with the prompt when moved and it cannot be typed into (account answers ${speed})`,
+        { timeout: 60_000 },
+        async () => {
+          // Moved on the subagent's refusal; the main thread was refused on
+          // the old account too, so it is stalled, and this Claude cannot be
+          // told so by typing.
+          const session = live({
+            env: { ...env, FAKE_CLAUDE_STATUS: '' },
+            verifyDelayMs,
+            verify: () => true,
+          });
+          expect(await session.outcome).toMatchObject({ kind: 'switch', switchTo: 'B' });
+          expect(session.decisions.map((d) => d.sidechain)).toEqual([true]);
+          expect(session.events.at(-1)).toMatchObject({ kind: 'relaunch' });
+          expect(session.log().filter((e) => e.type === 'reread')).toEqual([]);
+        },
+      );
+    }
+  },
+);
+
 describe.skipIf(!PTY_AVAILABLE && !process.env.CI)("a subagent's refusal starts the move", () => {
   afterEach(() => {
     for (const name of FAKE_ENV) delete process.env[name];

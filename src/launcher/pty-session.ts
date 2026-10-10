@@ -219,6 +219,14 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      * it must not make the main thread's own refusal wait.
      */
     let sidechainQuietUntil = 0;
+    /**
+     * The main thread was refused while a subagent's refusal was being checked,
+     * and that refusal is held in `unprobed`. It is not settled by the
+     * subagent's answer: if the session is moved, its main thread has stopped
+     * on the old account and must be told to carry on; if it is not moved,
+     * the main thread's refusal gets a check and a decision of its own.
+     */
+    let mainRefusedMeanwhile = false;
     /** A prompt waiting to be typed into this child, after a move in place. */
     let carryOn: CarryOn | null = null;
     /** The account that move went to, for a caller that does not say where the session is now. */
@@ -465,12 +473,15 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
               prompt: decision.carryOn.prompt,
               movedAt: Date.now(),
               // The main thread stopped on the limit unless only a subagent met
-              // it, now or at the move this one follows.
-              stalled: !pending.sidechain || (carryOn?.isStalled() ?? false),
+              // it: now, while the subagent's was checked, or at the move this
+              // one follows.
+              stalled: !pending.sidechain || mainRefusedMeanwhile || (carryOn?.isStalled() ?? false),
               canRelaunch: decision.carryOn.canRelaunch,
               ...(options.carryOnTiming ? { timing: options.carryOnTiming } : {}),
             })
           : null;
+        // Settled by the move: it was refused on the account the session left.
+        mainRefusedMeanwhile = false;
         return;
       }
       // A subagent met it and the session could not be moved in place. Nothing
@@ -478,6 +489,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // next request, and that refusal takes the path below.
       if (decision.kind === 'left' || pending.sidechain) {
         sidechainQuietUntil = Date.now() + refuteBackoffMs;
+        checkMainRefusedMeanwhile();
         return;
       }
       // Not relieved. A manual switch owns the teardown and relaunch, so leave it
@@ -631,9 +643,30 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
           return;
         }
       }
+      checkRefusal(hit, snapshot, sidechain);
+    };
 
+    /**
+     * The main thread's refusal held while a subagent's was checked, now that
+     * that check ended without moving the session: it gets its own check and
+     * its own decision, as if it had come just now. Without this it waited
+     * for Claude to exit, and the session sat on the spent account.
+     */
+    const checkMainRefusedMeanwhile = (): void => {
+      if (!mainRefusedMeanwhile) return;
+      mainRefusedMeanwhile = false;
+      const held = unprobed;
+      if (!held || exited || switching || cap.isSet()) return;
+      checkRefusal(held.hit, held.text, false);
+    };
+
+    /** Ask the account about a refusal, or hold it while that cannot be done yet. */
+    const checkRefusal = (hit: Hit, snapshot: string, sidechain: boolean): void => {
       if (verifying || Date.now() < suppressUntil) {
-        if (!sidechain) unprobed = { text: snapshot, hit };
+        if (!sidechain) {
+          unprobed = { text: snapshot, hit };
+          if (verifying && lastHit?.sidechain) mainRefusedMeanwhile = true;
+        }
         return;
       }
       if (!sidechain) unprobed = null;
@@ -692,6 +725,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
               // ends nothing.
               if (sidechain) {
                 backOff();
+                checkMainRefusedMeanwhile();
                 return confirmed;
               }
               cap.confirm({ reason: hit.reason, resetAt: hit.resetAt });
@@ -711,12 +745,14 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
             }
           } else {
             backOff();
+            if (sidechain) checkMainRefusedMeanwhile();
           }
           return confirmed;
         })
         .catch(() => {
           verifying = false;
           backOff();
+          if (sidechain) checkMainRefusedMeanwhile();
           return false;
         });
     };
