@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
-## [2.4.1]
+## [2.5.1]
 
 ### Changed
 
@@ -79,6 +79,62 @@ semantic versioning.
   never did, and the file was only ever looked at again if a later session
   happened to get the same pid. Each session now removes, as it starts, the
   requests of sessions whose process is gone.
+
+## [2.5.0]
+
+### Changed
+
+- **The dashboard is redrawn to be read at a glance.** `ccx dashboard`, and
+  the frame a bare `ccx` prints, now list the accounts you can use first, in
+  the order ccx would pick them, with the next one marked `next in line`.
+  Accounts that are out of room come under their own heading, soonest back
+  first, and signed-out or disabled accounts under another. Rows used to be
+  in the order the accounts were added, so the pick order had to be hunted
+  for in a column and spent accounts sat among the usable ones.
+- **Bars and numbers show what is left.** They showed what was used, while
+  the status line shows what is left, so a full bar meant "spent" in one
+  place and "plenty" in the other. The columns are now `5-HOUR LEFT` and
+  `WEEK LEFT`, and a full bar is an untouched window.
+- **Every window's reset is beside its own bar, on every row**: `resets in
+  4h 16m (3:15 AM)`, with the clock time for a wait under a day. Only
+  accounts that were out had a time, and only one. The cell is blank while no
+  5-hour window is running, since one starts at first use.
+- **One word for out.** An account that is out reads `back in 2d 8h`: when
+  the last thing blocking it lifts, the same `status.until` that `ccx state`
+  publishes. It is said under the window that is blocking it, or at the end
+  of the row when what it waits for is ccx's own record of being refused,
+  which has no column. "capped" and "week spent" were two words for that one
+  thing. An account ccx is holding back because
+  its week is nearly spent now says `held back`, where it said "ready".
+- **Every column lines up.** Each is as wide as its widest cell in the frame,
+  blank cells included, so the bars form straight columns whatever the
+  account names and reset texts are.
+- **Sessions are counted in each account's row** (`5 sessions`) instead of
+  listed on one long line that wrapped. Enter and `f` still ask which session
+  to move, as before. A session still running on an account that was removed
+  has no row, so it gets a line under the table.
+- **A model column appears only when it matters.** `FABLE LEFT`, or whichever
+  model has a weekly limit of its own, is drawn only while that limit is in
+  play: the model is spent on some account, or has less left there than the
+  account's week. It took a third of the width and was almost always zeros.
+- **Recent activity is in plain words**, three lines at most, with repeats
+  folded into one: `a session moved to work` where it said `switching to
+  "work" (no restart; takes effect within ~30s)`. `ccx history` keeps the
+  lines as they are logged.
+- **A row never wraps.** As a terminal narrows, the table gives up the clock
+  times, then the bars, then the words `resets in`, keeping every number and
+  reset time. Narrower still, the notes go, then the reset times, and long
+  names are shortened last.
+- The title reads `ccx <version>`, with the account new sessions start on and
+  the model that comes first. The line under the table reads `when one runs
+  out`, then the account a session would go to and why.
+- The cursor stays on its account when the rows reorder under it, so a key
+  acts on the account that was highlighted.
+
+Nothing ccx decides has changed: this is how the dashboard is drawn. `ccx
+dashboard --json` and `ccx state` keep their fields, their wording and the
+order of their accounts. The keys, the questions they ask and the settings
+screen work as they did.
 
 ## [2.4.0]
 

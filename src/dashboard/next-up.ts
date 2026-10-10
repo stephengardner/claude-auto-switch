@@ -1,4 +1,4 @@
-import { planRotation, type RotationStrategy } from '../usage/rotation-plan.js';
+import { planRotation, type RotationPlan, type RotationStrategy } from '../usage/rotation-plan.js';
 import { normalizeModel, type AccountModelUsage } from '../usage/model-preference.js';
 
 /**
@@ -29,14 +29,48 @@ export interface NextUpInput {
   reasonFor?: (account: string) => string | null;
 }
 
-export function describeNextUp(input: NextUpInput): string | null {
-  const plan = planRotation({
+/** The one plan both wordings below describe. */
+function planFor(input: NextUpInput): RotationPlan {
+  return planRotation({
     candidates: input.candidates,
     modelInUse: input.modelInUse,
     preference: input.preference,
     strategy: input.strategy,
     spentThisRun: input.spentThisRun ?? new Set<string>(),
   });
+}
+
+/** The same move as the dashboard says it, and the account it names. */
+export interface WhenOut {
+  /** The account a session would go to. Absent when there is nowhere to go. */
+  account?: string;
+  /** What follows "when one runs out" on the dashboard. */
+  words: string;
+}
+
+/**
+ * Where a session goes when its account runs out, in the dashboard's words.
+ *
+ * A second wording of the plan `describeNextUp` words, because that one is
+ * read by other programs through `ccx state` and has to stay as it is. Here
+ * `reasonFor` gives the reason as an aside, to go in brackets after the name,
+ * and is asked even when the plan stays put: the line describes the account.
+ */
+export function describeWhenOut(input: NextUpInput): WhenOut | null {
+  const plan = planFor(input);
+  if (plan.kind === 'exhausted') return { words: plan.reason };
+  if (!plan.model) return { account: plan.account, words: plan.account };
+
+  const model = normalizeModel(plan.model);
+  const named = `${model.charAt(0).toUpperCase()}${model.slice(1)}`;
+  const room = roomLeft(input.candidates, plan.account, plan.model);
+  const aside = input.reasonFor?.(plan.account) ?? (room === null ? null : `${room}% of ${named} left`);
+  const where = plan.changedModel ? `${plan.account}, on ${named} instead` : plan.account;
+  return { account: plan.account, words: aside ? `${where} (${aside})` : where };
+}
+
+export function describeNextUp(input: NextUpInput): string | null {
+  const plan = planFor(input);
 
   if (plan.kind === 'exhausted') return plan.reason;
   if (!plan.model) return `${plan.account}`;

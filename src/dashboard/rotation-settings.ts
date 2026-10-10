@@ -181,12 +181,14 @@ export interface Pick {
   heldBack?: { weekLeft: number };
 }
 
+/** How much of a 5-hour window an account can run, in words. */
+function roomWords(standing: Standing): string {
+  return standing.runway >= 0.995 ? 'a full 5-hour window' : `${Math.round(standing.runway * 100)}% of a 5-hour window`;
+}
+
 /** Why the smart order picks an account, in words. */
 export function pickReason(standing: Standing, now: number): string {
-  const room =
-    standing.runway >= 0.995
-      ? 'room for a full 5-hour window'
-      : `room for ${Math.round(standing.runway * 100)}% of a 5-hour window`;
+  const room = `room for ${roomWords(standing)}`;
   // A held-back account is only ever next when nothing healthier is worth a
   // move, which is the part worth saying: it is the fallback, not the choice.
   if (standing.heldBack && standing.weekLeft !== null) {
@@ -194,6 +196,20 @@ export function pickReason(standing: Standing, now: number): string {
   }
   const wait = humanWait(standing.weeklyResetAt, now);
   return wait ? `${room}, its week resets in ${wait}` : room;
+}
+
+/**
+ * The same reason as `pickReason`, worded to sit in brackets after the
+ * account's name on the dashboard. `pickReason` keeps its wording because
+ * `ccx state` hands it to other programs.
+ */
+export function pickAside(standing: Standing, now: number): string {
+  const room = roomWords(standing);
+  if (standing.heldBack && standing.weekLeft !== null) {
+    return `${room}; held back with ${Math.round(standing.weekLeft * 100)}% of its week left, as no healthy account can run half a window`;
+  }
+  const wait = humanWait(standing.weeklyResetAt, now);
+  return wait ? `${room}; its week resets in ${wait}` : room;
 }
 
 /**
