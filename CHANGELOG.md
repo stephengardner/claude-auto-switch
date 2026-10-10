@@ -62,7 +62,13 @@ semantic versioning.
   moving a session onto an account that has only a long-lived token removed
   the login from its folder under the running Claude. Both now restart the
   session on the account asked for, by the same rule the move on a limit
-  follows.
+  follows, and so does a switch to an account whose login must be renewed
+  first, as it already did. Such a restart now waits until Claude has been
+  idle for 20 seconds, so it never cuts off a turn, a subagent or a
+  background command, where the renewal case used to restart at once; a
+  Claude that keeps no record of whether it is idle is not restarted for it.
+  `ccx use --now` still restarts at once. A worker (`ccx worker`) is never
+  idle while it runs, so it finishes on the account it is on.
 - **A running session could drop out of `ccx sessions` for good.** A session
   that could not refresh its lease for two minutes while its process stayed
   alive, as when the machine sleeps, had the lease deleted by whatever read

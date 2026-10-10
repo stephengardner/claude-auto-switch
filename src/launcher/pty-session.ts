@@ -68,8 +68,16 @@ export interface PtySessionOptions {
    * Polled periodically; return an account name when the operator has picked a
    * different account mid-session, and the child is ended so the swap loop
    * relaunches, resuming this conversation on it. Return null to keep running.
+   * `claudeIdle` says whether Claude has been idle long enough to be ended
+   * without cutting off a turn, a subagent or a background command.
    */
-  switchWatch?: () => string | null;
+  switchWatch?: (claudeIdle: () => boolean) => string | null;
+  /**
+   * How long Claude must have been idle before ccx ends it for anything but
+   * a limit: a newer ccx taking over, or a switch it cannot make in place.
+   * Injected in tests; production waits 20 s.
+   */
+  idleBeforeRestartMs?: number;
   /**
    * Run on every poll, before anything can short-circuit it. For work that must
    * keep happening for as long as the session is alive, whatever else is going
@@ -384,18 +392,22 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
 
     /**
      * Idle long enough to be a pause, not the gap between two tool calls: a
-     * turn in progress is never ended for an update.
+     * turn in progress is never ended for an update or a requested switch.
      */
-    const HANDOVER_IDLE_MS = 20_000;
+    const RESTART_IDLE_MS = options.idleBeforeRestartMs ?? 20_000;
+    /** Whether Claude says it has been idle that long; never when it does not say. */
+    const claudeIdle = (): boolean => {
+      if (!child.pid) return false;
+      const idle = idleForMs(options.configDir, child.pid, startedAt);
+      return idle !== null && idle >= RESTART_IDLE_MS;
+    };
     let handover = false;
     const checkHandover = (): void => {
       if (handover || exited || cap.isSet() || switching || pendingCapRelief || !child.pid) return;
       // A session that has not yet been told to carry on is idle because it is
       // waiting for that, and the newer ccx would resume it with nothing said.
       if (carryOn) return;
-      if (!options.handoverWhenIdle?.()) return;
-      const idle = idleForMs(options.configDir, child.pid, startedAt);
-      if (idle === null || idle < HANDOVER_IDLE_MS) return;
+      if (!options.handoverWhenIdle?.() || !claudeIdle()) return;
       handover = true;
       safeKill();
     };
@@ -534,7 +546,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
           }
           stepCarryOn();
           if (!options.switchWatch || cap.isSet() || switching || noConversation) return;
-          const target = options.switchWatch();
+          const target = options.switchWatch(claudeIdle);
           if (target) {
             switching = target;
             setTimeout(safeKill, 80);

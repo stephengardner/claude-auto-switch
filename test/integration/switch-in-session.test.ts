@@ -48,10 +48,11 @@ async function waitFor<T>(
 }
 
 interface RunEntry {
-  type: 'launch' | 'reread';
+  type: 'launch' | 'reread' | 'status';
   args?: string[];
   marker: string | null;
   oauthToken?: string | null;
+  status?: string;
 }
 
 type Verdict = 'limited' | 'allowed' | 'unknown';
@@ -186,6 +187,10 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     delete process.env.FAKE_CLAUDE_EMIT_CAP;
     delete process.env.FAKE_CLAUDE_CAP_EVERY_MS;
     delete process.env.FAKE_CLAUDE_NO_CONVERSATION;
+    delete process.env.FAKE_CLAUDE_SESSION_RECORD;
+    delete process.env.FAKE_CLAUDE_RESUMED_IDLE_MS;
+    delete process.env.FAKE_CLAUDE_STATUS;
+    delete process.env.FAKE_CLAUDE_STATUS_THEN;
   });
 
   it('replayed cap text is refuted by the API check: no false cap, no cascade', async () => {
@@ -415,56 +420,89 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     expect(caps.map((c) => c.account)).toEqual(['A']);
   });
 
-  it('restarts a session started with a token to switch it, which the folder login cannot', async () => {
-    // Claude uses the token it was started with whatever its folder holds, so
-    // replacing the login there moved nothing while ccx said it had.
-    const home = mkdtempSync(path.join(tmpdir(), 'cas-seamless-token-'));
+  /**
+   * A switch the session cannot make in place, because Claude was started with
+   * a long-lived token (it reads that and never the login in its folder) or
+   * because the account asked for has only a token (there is no login to put
+   * there). It is made by a restart, and a restart ends whatever Claude is
+   * doing, so it waits until Claude is idle. The fake is busy for its first 3 s
+   * and then idle; ccx is told to count 0.3 s of idle as enough.
+   */
+  async function switchWhileBusy(options: {
+    tokenOn: 'A' | 'B';
+    /** By its own request, as an early move and `ccx use --session` ask, or broadcast, as plain `ccx use`. */
+    targeted: boolean;
+    /** Claude keeps no record of what it is doing. */
+    silent?: boolean;
+  }): Promise<RunEntry[]> {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-switch-busy-'));
     const runsLog = path.join(home, 'runs.jsonl');
-    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
-    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+    Object.assign(process.env, {
+      FAKE_CLAUDE_RUNS_LOG: runsLog,
+      FAKE_CLAUDE_SESSION_RECORD: '1',
+      FAKE_CLAUDE_IDLE_MS: options.silent ? '4000' : '9000',
+      FAKE_CLAUDE_RESUMED_IDLE_MS: '600',
+      ...(options.silent ? {} : { FAKE_CLAUDE_STATUS: 'busy', FAKE_CLAUDE_STATUS_THEN: '3000:idle' }),
+    });
     const context = makeContext(home);
+    context.idleBeforeRestartMs = 300;
     await loginAccount(context, home, 'A');
-    await loginAccount(context, home, 'B');
-    saveToken(path.join(home, 'profiles', 'A'), 'sk-ant-oat01-not-a-real-token');
+    if (options.tokenOn === 'A') {
+      await loginAccount(context, home, 'B');
+      saveToken(path.join(home, 'profiles', 'A'), 'sk-ant-oat01-not-a-real-token');
+    } else {
+      const dirB = path.join(home, 'profiles', 'B');
+      await addCommand(context, 'B', { dir: dirB, login: false });
+      mkdirSync(dirB, { recursive: true });
+      saveToken(dirB, 'sk-ant-oat01-not-a-real-token');
+    }
     setActive('A', context.ctx);
 
     const running = runCommand(context, []);
     await firstLaunch(runsLog);
-    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, process.pid);
+    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, options.targeted ? process.pid : undefined);
     expect(await running).toBe(0);
+    return readRuns(runsLog);
+  }
 
-    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
+  /** The launches, the first Claude going idle, and each Claude ending by itself, in order. */
+  const lifeOf = (runs: RunEntry[]): string[] =>
+    runs.flatMap((r) => (r.type === 'launch' ? ['launch'] : r.type === 'status' ? [`status ${r.status}`] : r.type === 'reread' ? ['ended by itself'] : []));
+
+  it('waits for a token-launched Claude to be idle before restarting it for an early move', async () => {
+    // An early move asks by this session's own request; so does `ccx use --session`.
+    const runs = await switchWhileBusy({ tokenOn: 'A', targeted: true });
+    // Not ended while busy: it went idle first, and was restarted then, well
+    // before it would have ended by itself.
+    expect(lifeOf(runs)).toEqual(['launch', 'status idle', 'launch', 'ended by itself']);
+    const launches = runs.filter((r) => r.type === 'launch');
     expect(launches.map((l) => [l.marker, l.oauthToken ?? null])).toEqual([
       ['A', 'sk-ant-oat01-not-a-real-token'],
       ['B', null],
     ]);
   });
 
-  it('restarts a session to switch it onto an account that has only a token', async () => {
-    // There is no login to put in the session's folder: the swap emptied the
-    // folder under the running Claude, which then had no login at all.
-    const home = mkdtempSync(path.join(tmpdir(), 'cas-seamless-token-only-'));
-    const runsLog = path.join(home, 'runs.jsonl');
-    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
-    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
-    const context = makeContext(home);
-    await loginAccount(context, home, 'A');
-    const dirB = path.join(home, 'profiles', 'B');
-    await addCommand(context, 'B', { dir: dirB, login: false });
-    mkdirSync(dirB, { recursive: true });
-    saveToken(dirB, 'sk-ant-oat01-not-a-real-token');
-    setActive('A', context.ctx);
+  it('waits for a token-launched Claude to be idle before restarting it for ccx use', async () => {
+    const runs = await switchWhileBusy({ tokenOn: 'A', targeted: false });
+    expect(lifeOf(runs)).toEqual(['launch', 'status idle', 'launch', 'ended by itself']);
+    expect(runs.filter((r) => r.type === 'launch').map((l) => l.marker)).toEqual(['A', 'B']);
+  });
 
-    const running = runCommand(context, []);
-    await firstLaunch(runsLog);
-    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, process.pid);
-    expect(await running).toBe(0);
-
-    const launches = readRuns(runsLog).filter((r) => r.type === 'launch');
-    expect(launches.map((l) => [l.marker, l.oauthToken ?? null])).toEqual([
+  it('waits for Claude to be idle before restarting it onto an account that has only a token', async () => {
+    // Swapped in place, the folder's login was removed under the running Claude.
+    const runs = await switchWhileBusy({ tokenOn: 'B', targeted: true });
+    expect(lifeOf(runs)).toEqual(['launch', 'status idle', 'launch', 'ended by itself']);
+    expect(
+      runs.filter((r) => r.type === 'launch').map((l) => [l.marker, l.oauthToken ?? null]),
+    ).toEqual([
       ['A', null],
       [null, 'sk-ant-oat01-not-a-real-token'],
     ]);
+  });
+
+  it('never ends a Claude that does not say whether it is idle for such a switch', async () => {
+    const runs = await switchWhileBusy({ tokenOn: 'A', targeted: true, silent: true });
+    expect(lifeOf(runs)).toEqual(['launch', 'ended by itself']);
   });
 
   it('seamless (default): swaps the credential file in place, no relaunch', async () => {

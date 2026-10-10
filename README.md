@@ -63,7 +63,8 @@ token, when the session was started with a long-lived token, or when the
 session has stopped and the prompt cannot be typed safely: something is typed
 in the input box, a dialog stays open, or Claude does not say what it is doing.
 A switch you make yourself (`ccx use`, `/ccx`) happens in place, by the same
-rule.
+rule; when it needs a restart instead, ccx waits until Claude has been idle for
+20 seconds (`--now` restarts at once).
 
 **One session at a time.** Each session moves on its own: a refused turn moves
 that session and no other. A switch you make from the dashboard or with

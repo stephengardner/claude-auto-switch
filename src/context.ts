@@ -28,6 +28,11 @@ export interface CliContext {
    * half a minute and more, which no test can wait for.
    */
   carryOn?: Partial<CarryOnTiming>;
+  /**
+   * Injected in tests: how long Claude must be idle before ccx ends it for a
+   * newer ccx or a switch it cannot make in place. Production waits 20 s.
+   */
+  idleBeforeRestartMs?: number;
   /** Injected in tests: overrides the API lookup of who a stored login belongs to. */
   lookupOwner?: (dir: string) => Promise<string | null>;
   /** Injected in tests: a newer ccx installed under this one (update/newer-install). */

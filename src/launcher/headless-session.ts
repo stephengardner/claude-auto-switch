@@ -29,8 +29,12 @@ export interface HeadlessSessionOptions {
   stdin?: string;
   onStdout: (chunk: string) => void;
   onStderr: (chunk: string) => void;
-  /** As runPtySession's: an account the operator asked this session to move to. */
-  switchWatch?: () => string | null;
+  /**
+   * As runPtySession's: an account the operator asked this session to move to.
+   * A print-mode run is never idle until it is done, so a switch that would
+   * end it is never made while it runs.
+   */
+  switchWatch?: (claudeIdle: () => boolean) => string | null;
   /** As runPtySession's: kept running for as long as Claude is (leases, logins). */
   onTick?: () => void;
   /** Resolves true only when the account is really out (asked of the account). */
@@ -311,7 +315,7 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
     }
     if (interruptedBy !== null) return;
     if (!capped && !switchTo && options.switchWatch) {
-      const target = options.switchWatch();
+      const target = options.switchWatch(() => false);
       if (target) {
         switchTo = target;
         stop();

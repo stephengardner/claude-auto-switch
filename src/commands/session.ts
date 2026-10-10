@@ -1531,7 +1531,9 @@ export async function runInteractiveHotSwap(
         mirrorSessionLoginToProfile(current);
         pullRenewedLogin(current);
       };
-      const switchWatch = (): string | null => {
+      /** The switch this launch is waiting to make by a restart, once said. */
+      let restartAwaited: string | null = null;
+      const switchWatch = (claudeIdle: () => boolean): string | null => {
         // A request can name an account added since this session started.
         refreshAccounts();
         // This session's OWN request (written by `ccx use --session <pid>` or
@@ -1546,23 +1548,39 @@ export async function runInteractiveHotSwap(
           const t = accounts.find((a) => a.name === name);
           return !!t && hasLogin(t.dir);
         });
-        if (decision.consume) clearSwitchRequest(context.ctx, targeted ? process.pid : undefined);
-        if (!decision.switchTo) return null;
-        const target = accounts.find((a) => a.name === decision.switchTo);
-        if (!target) return null;
+        const consume = (): void => clearSwitchRequest(context.ctx, targeted ? process.pid : undefined);
+        const target = decision.switchTo ? accounts.find((a) => a.name === decision.switchTo) : undefined;
+        if (!target) {
+          if (decision.consume) consume();
+          return null;
+        }
         if (request?.mode === 'restart') {
+          consume();
           if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
           return target.name; // end child, resume this conversation
         }
         // In place only by the same rule a limit's move follows. Otherwise
         // relaunch: resuming by id keeps the same conversation, and the start
         // path renews a login, or passes a token, before handing it over.
+        // Asked for in place, so not at the cost of a turn, a subagent or a
+        // background command: the request stays until Claude is idle (or is
+        // replaced by another), which an early move and `/ccx`, asked in the
+        // middle of a turn, rely on. `--now` is the way to restart at once.
         const refusal = inPlaceRefusal(target, token);
         if (refusal !== null) {
-          notice(`${refusal}; continuing it on "${target.name}" with a restart`);
+          if (!claudeIdle()) {
+            if (restartAwaited !== target.name) {
+              restartAwaited = target.name;
+              notice(`${refusal}; moving it to "${target.name}" by a restart once Claude is idle`);
+            }
+            return null;
+          }
+          consume();
+          notice(`restarting this session on "${target.name}" now that Claude is idle`);
           if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
           return target.name;
         }
+        consume();
         activate(target);
         // A TARGETED switch (`ccx use --here/--session`) moves only this session:
         // it must not touch the global active account or the editor pointer, which
@@ -1721,6 +1739,7 @@ export async function runInteractiveHotSwap(
         currentAccount: () => current?.name ?? account.name,
         ...(context.blockedWatch ? { blockedWatch: context.blockedWatch } : {}),
         ...(context.carryOn ? { carryOnTiming: context.carryOn } : {}),
+        ...(context.idleBeforeRestartMs !== undefined ? { idleBeforeRestartMs: context.idleBeforeRestartMs } : {}),
         ...(terminalInput ? { input: terminalInput } : {}),
         ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
         ...(debugLog ? { debugLog } : {}),
