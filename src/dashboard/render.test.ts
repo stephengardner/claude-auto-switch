@@ -1178,6 +1178,16 @@ describe('renderDashboard (plain)', () => {
     expect(out).toContain('\u001b[1mq/esc\u001b[0m\u001b[2m quit\u001b[0m');
   });
 
+  it('names the key that removes an account beside the one that adds one', () => {
+    const out = renderDashboard(snapshot([account({ name: 'a' })]), { color: false, interactive: true });
+    expect(out).toContain('a add  ·  x remove  ·  l sign in');
+  });
+
+  it('still shows the remove key in a window as wide as the README pictures', () => {
+    const out = renderDashboard(snapshot([account({ name: 'a' })]), { color: false, interactive: true, width: 116 });
+    expect(out.split('\n').at(-1)).toContain('x remove');
+  });
+
   it('says from how full a week accounts are held back, when they are', () => {
     const settings = { model: 'Opus only', order: 'longest run first', holdBack: 'weeks 80%+ used' };
     const out = renderDashboard({ ...snapshot([account({ name: 'a' })]), settings }, opts);

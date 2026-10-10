@@ -27,6 +27,9 @@ import {
   type NumberedSession,
 } from '../dashboard/session-choice.js';
 import { liveLeases } from '../session/lease.js';
+import { removalStanding, type RemovalStanding } from '../accounts/removal.js';
+import { goneNotice, openRemoval, submitRemoval } from '../dashboard/remove-account.js';
+import { removeCommand } from './remove.js';
 import { applySetting } from './settings.js';
 import { openPrompt, promptKey, rejectPrompt, type PromptState } from '../dashboard/prompt.js';
 import { loadConfig, loadConfigFile, saveConfig } from '../config/config.js';
@@ -483,6 +486,15 @@ export async function dashboardCommand(
         ? `renamed to "${result.to}" (${result.folderNote})`
         : `renamed "${result.from}" to "${result.to}"`;
     },
+    removal: (target) => removalStanding(target.name, context.config, context.ctx),
+    onRemove: (target, purge) => {
+      // `ccx remove` itself, with its words kept for the footer, so removing
+      // here and removing from a shell are one rule and one outcome.
+      const said: string[] = [];
+      const code = removeCommand({ ...context, out: (m: string) => said.push(m) }, target.name, { purge });
+      if (code === 0) pushEvent(purge ? `removed ${target.name} and its login` : `removed ${target.name}`);
+      return { ok: code === 0, text: said.join(' ') };
+    },
     onLogin: async (target) => {
       // Reuses the ordinary login command, so the dashboard gets the same
       // duplicate refusal and the same identity recording as `ccx login`. Its
@@ -578,6 +590,10 @@ interface LoopDeps {
    * and keep the box open so it can be corrected without retyping everything.
    */
   onName: (kind: 'add' | 'rename', text: string, selected: DashboardAccount | undefined) => string;
+  /** What removing an account would touch, read now; null once it is gone. */
+  removal: (account: DashboardAccount) => RemovalStanding | null;
+  /** Remove an account, its folder too when `purge`: whether it did, and what was said. */
+  onRemove: (account: DashboardAccount, purge: boolean) => { ok: boolean; text: string };
   /** Cycle a Claude Desktop setting; returns what changed, in words. */
   onDesktop: (action: 'handoff' | 'mode') => Promise<string>;
   /** What cycling it would do, asked before it is done. */
@@ -783,6 +799,15 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     }
     const typed = next.text.trim();
     if (typed.length === 0) return null; // confirming an empty box just closes it
+    if (next.kind === 'remove') {
+      if (!target) return null;
+      const done = submitRemoval(next, target.name, {
+        standing: () => deps.removal(target),
+        remove: (purge) => deps.onRemove(target, purge),
+      });
+      if (done.notice !== undefined) ui.notice = done.notice;
+      return done.box;
+    }
     if (next.kind === 'setting') {
       const setting = ui.promptSetting;
       if (!setting) return null;
@@ -905,6 +930,19 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         // The cursor follows the account to wherever its row is now.
         snap = build();
         selected = Math.max(0, snap.accounts.findIndex((a) => a.name === target.name));
+        if (wake) wake();
+        return;
+      }
+      if (r.action === 'remove' && target) {
+        const standing = deps.removal(target);
+        if (standing) {
+          // Captured with the question, so the box acts on the account it names.
+          ui.prompt = openRemoval(standing);
+          ui.promptTarget = target;
+          ui.notice = null;
+        } else {
+          ui.notice = goneNotice(target.name);
+        }
         if (wake) wake();
         return;
       }

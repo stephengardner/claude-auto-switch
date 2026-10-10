@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.4.0]
+
+### Added
+
+- **Remove an account from the dashboard (`x`).** The dashboard could add,
+  rename, sign in and disable an account, but removing one meant leaving it
+  for `ccx remove`. `x` on the highlighted account asks first, and says what
+  the removal touches: any session running on the account (it keeps going on
+  its own copy of the login until it next moves, then uses another account, or
+  ends if none is left), whether it is the account new sessions start on,
+  whether it is your only account, and whether your editor is on it. Nothing
+  is removed by default: enter alone or `esc` leaves the account as it is,
+  and an answer the question does not ask for removes nothing. `y` removes it
+  from ccx and keeps its folder and login. `purge <name>` also deletes the
+  folder, which the question says deletes the login, so the account must be
+  signed in again to come back. If a session starts on the account while the
+  question is open, it is asked again rather than acted on. The removing is
+  `ccx remove` itself.
+
+### Changed
+
+- **`ccx remove --purge` removes nothing while the account's folder is in
+  use.** A running session saves its login back into that folder when the
+  login is renewed and when the session ends, creating the folder again, so a
+  purge under a running session came back holding a login for an account ccx
+  no longer listed. The editor reads the folder directly, as does every Claude
+  outside ccx through the link `ccx daemon install` keeps, and a purge left
+  either pointing at nothing until the next switch. And `ccx add --dir` lets
+  two accounts be registered on one folder, or one inside the other's, where
+  purging one deleted the other's login. `--purge` now says what is using the
+  folder and exits 1 with the account still registered. Run it again once
+  nothing is, or without `--purge` to keep the folder. Removing without
+  `--purge` is unchanged.
+
 ## [2.3.2]
 
 ### Fixed
