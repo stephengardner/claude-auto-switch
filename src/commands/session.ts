@@ -1009,11 +1009,6 @@ export async function runInteractiveHotSwap(
    * instead of leaving the session on a half-applied account.
    */
   const activate = (account: Account): void => {
-    // A fresh activation installs this account's own login, so whatever
-    // identity drift the previous session had is corrected here and the cap
-    // attribution starts clean.
-    capOwner = null;
-    capUnregisteredEmail = null;
     // The ORDER of announce / copy / release is the safety property, so it lives
     // in activateWithLease where tests pin it: announce first, copy second,
     // release the old one last. Any gap between a login being in use and being
@@ -1021,6 +1016,14 @@ export async function runInteractiveHotSwap(
     announced = activateWithLease(account.name, announced, {
       takeLease: (name) => takeLease(name, sessionDir, context.ctx),
       releaseLease: (name) => releaseLease(name, context.ctx),
+      // This account's own login is in now, so whatever identity drift the
+      // previous one had is gone and the cap attribution starts clean. Not
+      // before: when the copy fails, the session is still on the old login,
+      // and a limit it met still belongs to whoever the check found.
+      installed: () => {
+        capOwner = null;
+        capUnregisteredEmail = null;
+      },
       install: () => {
         withCredentialLock(sessionDir, () => {
           if (current && current.name !== account.name) saveBack(current);
@@ -1636,8 +1639,8 @@ export async function runInteractiveHotSwap(
         // it), there is a same-model renewal-ready destination, and the swap
         // applies cleanly (see inPlaceRefusal for what can go under it).
         let relievedTo: Account | null = null;
-        // Whose limit this is, as the check found. `activate` starts the new
-        // login's attribution afresh, but this limit was met before the move.
+        // Whose limit this is, as the check found. A move starts the new
+        // login's attribution afresh, but this limit was met before it.
         const unregistered = capUnregisteredEmail;
         if (opts.relieve && limitedModel === undefined && !relaunchForPrompt) {
           const next = reliefAccount(capName, token);

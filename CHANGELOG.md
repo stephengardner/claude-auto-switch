@@ -82,7 +82,8 @@ semantic versioning.
   signed in to an address no account here has, ccx meant to move the session
   without recording the limit against anyone. Moving it in place cleared that
   finding before the limit was written down, so the account the session was
-  believed to be on was set aside until its reset, though it had room.
+  believed to be on was set aside until its reset, though it had room. A
+  move that fails part-way now leaves that finding as it was, too.
 - **A running session could drop out of `ccx sessions` for good.** A session
   that could not refresh its lease for two minutes while its process stayed
   alive, as when the machine sleeps, had the lease deleted by whatever read
