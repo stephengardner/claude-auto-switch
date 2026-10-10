@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, appendFileSync, mkdirSync, statSync, renameSync, rmSync } from 'node:fs';
-import { acquireLockDir, type LockHandle } from '../claude/locks.js';
+import { acquireOwnedLock, type LockHandle } from '../claude/locks.js';
 import path from 'node:path';
 import { writeSecretFile } from '../util/secret-file.js';
 import { ccxVersion } from '../util/version.js';
@@ -21,18 +22,12 @@ const ROTATING_SUFFIX = '.rotating';
  */
 const LOCK_SUFFIX = '.compact.lock';
 /**
- * A holder lets go within milliseconds, so one held for seconds belongs to a
- * process that died holding it, and is taken over. A writer waits longer than
- * that, and writes without the lock only once the wait runs out, because it
- * would otherwise drop the line.
+ * A holder lets go within milliseconds. One that has exited is taken over at
+ * once, and an older build's, which names no holder, after five seconds. A
+ * writer waits up to five seconds for a holder still running, then writes
+ * without the lock rather than drop the line.
  */
-const LOCK = {
-  staleMs: 5_000,
-  waitMs: 6_000,
-  // How Windows refuses a new lock directory while the last one is still being
-  // removed.
-  busyErrors: process.platform === 'win32' ? ['EEXIST', 'EPERM', 'EACCES', 'EBUSY'] : ['EEXIST'],
-};
+const LOCK = { waitMs: 5_000, staleMs: 5_000 };
 const MAX = 200;
 
 export interface EventRecord {
@@ -246,7 +241,7 @@ export function appendEvent(
       ...(detail.data ? { data: detail.data } : {}),
     };
     // Written even when the wait runs out, rather than dropped: see LOCK.
-    lock = acquireLockDir(`${file}${LOCK_SUFFIX}`, LOCK);
+    lock = acquireOwnedLock(`${file}${LOCK_SUFFIX}`, LOCK);
     writeLine(file, `${JSON.stringify(record)}\n`);
   } catch {
     return; // a lost log line must never break a session
@@ -282,7 +277,7 @@ export function trimIfLong(configHome: string): void {
 
     // Never waiting: whoever holds the lock is appending or compacting, and the
     // next append tries again.
-    const lock = acquireLockDir(`${file}${LOCK_SUFFIX}`, { ...LOCK, waitMs: 0 });
+    const lock = acquireOwnedLock(`${file}${LOCK_SUFFIX}`, { ...LOCK, waitMs: 0 });
     if (!lock.held) return;
     try {
       if (statSync(file).size <= TRIM_BYTES) return; // they may have just finished
@@ -302,16 +297,39 @@ export function trimIfLong(configHome: string): void {
   }
 }
 
-/** Merge the file parked aside into the archive, keeping the newest records, then remove it. */
+/**
+ * Merge the file parked aside into the archive, keeping the newest records, then
+ * remove it.
+ *
+ * The archive's first line names the parked file it last took in, by a hash of
+ * its contents, because a compaction stopped between writing the archive and
+ * removing the parked file leaves the same records in both. Merging them again
+ * would count them twice and push older ones out. Readers skip the line, as
+ * they skip any line that is not an event.
+ */
 function archiveRotating(file: string): void {
   const rotating = `${file}${ROTATING_SUFFIX}`;
   const archive = `${file}${ARCHIVE_SUFFIX}`;
+  const parked = readFileSync(rotating, 'utf8');
+  const absorbed = createHash('sha256').update(parked).digest('hex');
   const older = existsSync(archive) ? readFileSync(archive, 'utf8') : '';
-  const kept = foldRepeats(
-    parseRecords(joinChunks([older, readFileSync(rotating, 'utf8')])),
-  ).slice(-MAX);
-  writeSecretFile(archive, `${kept.map((r) => JSON.stringify(r)).join('\n')}\n`);
+  if (absorbedBy(older) !== absorbed) {
+    const kept = foldRepeats(parseRecords(joinChunks([older, parked]))).slice(-MAX);
+    writeSecretFile(
+      archive,
+      `${[JSON.stringify({ absorbed }), ...kept.map((r) => JSON.stringify(r))].join('\n')}\n`,
+    );
+  }
   rmSync(rotating, { force: true });
+}
+
+function absorbedBy(archive: string): string | undefined {
+  try {
+    const first = JSON.parse(archive.split('\n', 1)[0] ?? '') as { absorbed?: unknown };
+    return typeof first.absorbed === 'string' ? first.absorbed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

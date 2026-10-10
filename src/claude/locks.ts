@@ -1,4 +1,14 @@
-import { mkdirSync, rmdirSync, statSync, utimesSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeSync,
+} from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -30,13 +40,7 @@ export interface LockOptions {
   staleMs?: number;
   /** Refresh our own lock's mtime this often so others do not judge it stale. */
   touchMs?: number;
-  /**
-   * mkdir errors that mean someone else holds the lock, so keep waiting. Any
-   * other error means the path is unusable and we proceed unheld at once.
-   */
-  busyErrors?: readonly string[];
   now?: () => number;
-  mkdir?: (dir: string) => void;
 }
 
 export interface LockHandle {
@@ -69,18 +73,16 @@ export function acquireLockDir(lockDir: string, options: LockOptions = {}): Lock
   const staleMs = options.staleMs ?? DEFAULTS.staleMs;
   const touchMs = options.touchMs ?? DEFAULTS.touchMs;
   const now = options.now ?? (() => Date.now());
-  const busyErrors = options.busyErrors ?? ['EEXIST'];
-  const mkdir = options.mkdir ?? ((dir: string) => mkdirSync(dir, { recursive: false }));
   const deadline = now() + waitMs;
 
   let held = false;
   for (;;) {
     try {
-      mkdir(lockDir);
+      mkdirSync(lockDir, { recursive: false });
       held = true;
       break;
     } catch (err) {
-      if (!busyErrors.includes((err as NodeJS.ErrnoException).code ?? '')) break; // unusable path: proceed
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') break; // unusable path: proceed
       const age = mtimeMs(lockDir);
       if (age !== null && now() - age > staleMs) {
         // Abandoned by a dead process: take it over rather than waiting forever.
@@ -124,6 +126,146 @@ export function acquireLockDir(lockDir: string, options: LockOptions = {}): Lock
       }
     },
   };
+}
+
+export interface OwnedLockOptions {
+  /** Give up waiting for a running holder after this long, and proceed unheld. */
+  waitMs: number;
+  /** A lock that names no holder is taken over once it is this old. */
+  staleMs: number;
+  /** A running holder's lock is taken over past this age all the same: its pid may be another process's by now. */
+  maxHoldMs?: number;
+  now?: () => number;
+  isRunning?: (pid: number) => boolean;
+  /** Creates the lock file, failing if it exists, and names this process in it. */
+  create?: (file: string) => void;
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * A lock for work done synchronously, which therefore cannot refresh its lock
+ * while it works: the lock's age says nothing about whether its holder is still
+ * at it. The lock is a file naming the holder's pid, and is taken over when that
+ * process has exited, never because it is old. A lock that names no holder (one
+ * being created, or one an older build made as a directory) is judged by age.
+ *
+ * A takeover judges the lock again under a guard of its own, so two processes
+ * that both found it abandoned cannot each remove it, the second taking away the
+ * lock the first had just made.
+ */
+export function acquireOwnedLock(lockFile: string, options: OwnedLockOptions): LockHandle {
+  const now = options.now ?? (() => Date.now());
+  const create = options.create ?? createOwnedLockFile;
+  // How Windows refuses a new file while the last one is still being removed.
+  const busy = (options.platform ?? process.platform) === 'win32' ? ['EEXIST', 'EPERM', 'EACCES', 'EBUSY'] : ['EEXIST'];
+  const deadline = now() + options.waitMs;
+  const abandoned = (): boolean =>
+    isAbandoned(lockFile, now(), options.staleMs, options.maxHoldMs ?? 60_000, options.isRunning ?? isRunning);
+
+  for (;;) {
+    try {
+      create(lockFile);
+      return ownedHandle(lockFile);
+    } catch (err) {
+      if (!busy.includes((err as NodeJS.ErrnoException).code ?? '')) return { held: false, release: () => {} };
+    }
+    if (abandoned() && takeOver(lockFile, abandoned, now(), options.staleMs)) continue;
+    if (now() >= deadline) return { held: false, release: () => {} };
+    sleepSync(50);
+  }
+}
+
+function createOwnedLockFile(file: string): void {
+  const fd = openSync(file, 'wx', 0o600);
+  try {
+    writeSync(fd, String(process.pid));
+  } catch {
+    /* held all the same; with no holder named it is judged by its age */
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function ownedHandle(lockFile: string): LockHandle {
+  let released = false;
+  return {
+    held: true,
+    release: () => {
+      if (released) return;
+      released = true;
+      try {
+        rmSync(lockFile, { force: true });
+      } catch {
+        /* already gone */
+      }
+    },
+  };
+}
+
+function isAbandoned(
+  lockFile: string,
+  now: number,
+  staleMs: number,
+  maxHoldMs: number,
+  running: (pid: number) => boolean,
+): boolean {
+  const since = mtimeMs(lockFile);
+  if (since === null) return false; // gone: the next attempt takes it
+  const age = now - since;
+  const holder = lockHolder(lockFile);
+  if (holder === null) return age > staleMs;
+  return age > maxHoldMs || !running(holder);
+}
+
+function lockHolder(lockFile: string): number | null {
+  try {
+    const pid = Number(readFileSync(lockFile, 'utf8').trim());
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null; // a directory from an older build, or unreadable
+  }
+}
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'; // running, as someone else
+  }
+}
+
+/** True when it removed the abandoned lock. */
+function takeOver(lockFile: string, stillAbandoned: () => boolean, now: number, staleMs: number): boolean {
+  const guard = `${lockFile}.takeover`;
+  try {
+    mkdirSync(guard);
+  } catch {
+    // Another process is taking it over. A guard left by one that died while
+    // doing so is cleared, for the next attempt.
+    const since = mtimeMs(guard);
+    if (since !== null && now - since > staleMs) {
+      try {
+        rmdirSync(guard);
+      } catch {
+        /* someone else cleared it */
+      }
+    }
+    return false;
+  }
+  try {
+    if (!stillAbandoned()) return false;
+    rmSync(lockFile, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      rmdirSync(guard);
+    } catch {
+      /* already gone */
+    }
+  }
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   TRIM_BYTES,
 } from './log.js';
 import { ccxVersion } from '../util/version.js';
+import { acquireOwnedLock } from '../claude/locks.js';
 
 function home(): string {
   return mkdtempSync(path.join(tmpdir(), 'cas-ev-'));
@@ -381,10 +382,11 @@ describe('keeping the file bounded without losing what matters', () => {
  * nothing compacts it yet. Fewer records than compaction keeps, so every one of
  * them must survive. Returns their messages, oldest first.
  */
-function fillPastTheThreshold(h: string): string[] {
+function fillPastTheThreshold(h: string, label = 'filler', count = 150): string[] {
   const file = eventsFilePath(h);
   mkdirSync(path.dirname(file), { recursive: true });
-  const messages = Array.from({ length: 150 }, (_, i) => `filler ${i} ${'y'.repeat(450)}`);
+  const padding = 'y'.repeat(Math.ceil(TRIM_BYTES / count));
+  const messages = Array.from({ length: count }, (_, i) => `${label} ${i} ${padding}`);
   const lines = messages.map((msg, i) => JSON.stringify({ at: 1000 + i, msg }));
   writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');
   expect(statSync(file).size).toBeGreaterThan(TRIM_BYTES);
@@ -435,6 +437,31 @@ describe('a compaction and a writer that already has the file open', () => {
     expect(existsSync(`${file}.rotating`)).toBe(false);
     expect(readEvents(h, 500).map((r) => r.msg)).toEqual(['left aside', ...fill, 'next']);
   });
+
+  it('archives a file left aside only once, when the compaction stopped after archiving it', () => {
+    // Stopped between writing the archive and removing the parked file, a
+    // compaction leaves the same events in both. Merging them again counted
+    // them twice, and past 200 pushed older events out of the archive.
+    const h = home();
+    const file = eventsFilePath(h);
+    mkdirSync(h, { recursive: true });
+    const older = Array.from({ length: 10 }, (_, i) => `older ${i}`);
+    writeFileSync(
+      `${file}.1`,
+      `${older.map((msg, i) => JSON.stringify({ at: 100 + i, msg })).join('\n')}\n`,
+      'utf8',
+    );
+    const first = fillPastTheThreshold(h, 'first', 60);
+    const parked = readFileSync(file, 'utf8');
+    trimIfLong(h);
+    writeFileSync(`${file}.rotating`, parked, 'utf8'); // as the stopped compaction left it
+
+    const second = fillPastTheThreshold(h, 'second', 60);
+    trimIfLong(h);
+
+    expect(existsSync(`${file}.rotating`)).toBe(false);
+    expect(readEvents(h, 500).map((r) => r.msg)).toEqual([...older, ...first, ...second]);
+  });
 });
 
 describe('when another process holds the log', () => {
@@ -460,6 +487,28 @@ describe('when another process holds the log', () => {
     trimIfLong(h);
     expect(existsSync(`${file}.1`)).toBe(true);
     expect(readEvents(h, 500).map((r) => r.msg)).toEqual(fill);
+  });
+
+  it('never takes it from a holder that is still running, however long it holds it', () => {
+    // A compaction is synchronous, so its holder cannot refresh the lock while
+    // it works. Taken for abandoned, it would have a second compaction run
+    // alongside it.
+    const h = home();
+    const file = eventsFilePath(h);
+    const fill = fillPastTheThreshold(h);
+    const lock = `${file}.compact.lock`;
+    const holder = acquireOwnedLock(lock, { waitMs: 0, staleMs: 5_000 });
+    const then = new Date(Date.now() - 30_000);
+    utimesSync(lock, then, then);
+    try {
+      trimIfLong(h);
+      expect(existsSync(`${file}.1`)).toBe(false);
+    } finally {
+      holder.release();
+    }
+    trimIfLong(h);
+    expect(readEvents(h, 500).map((r) => r.msg)).toEqual(fill);
+    expect(existsSync(`${file}.1`)).toBe(true);
   });
 
   it('takes over a lock left by a process that died holding it', () => {

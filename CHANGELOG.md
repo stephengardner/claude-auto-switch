@@ -15,13 +15,17 @@ semantic versioning.
   wrote just after wrote into the file being deleted, so the event never
   reached `ccx history` or the dashboard. Every write now holds the same short
   lock that trimming holds, so a trim waits for a write in progress and a
-  write waits for a trim. A lock left by a process that died holding it is
-  taken over after five seconds. Each event costs about 0.08 ms more to
-  write (measured on a Mac).
+  write waits for a trim. The lock names the process holding it, and is taken
+  over when that process has exited, never just because it is old: a trim
+  cannot refresh its lock while it works, so age said nothing about whether it
+  was still at work. Each event costs about 0.1 ms more to write (measured on
+  a Mac).
 - **A trim stopped part way could lose events at the next one.** A trim that
   was killed after moving the log aside left it as `events.jsonl.rotating`,
   and the next trim moved the live log onto that name, replacing it. It is now
-  folded into the archive first.
+  folded into the archive first, and only once: the archive records which
+  file it last took in, so one killed after writing the archive does not
+  count those events twice or push older ones out.
 - **Handing back prompt history could drop a prompt another Claude had just
   added.** When a session's `history.jsonl` was a copy rather than a link to
   `~/.claude/history.jsonl`, ccx rewrote the user's file to add the session's

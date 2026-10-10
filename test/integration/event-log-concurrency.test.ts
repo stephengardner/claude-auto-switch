@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readEvents } from '../../src/events/log.js';
-import { acquireLockDir } from '../../src/claude/locks.js';
+import { acquireOwnedLock } from '../../src/claude/locks.js';
 
 /**
  * Several ccx processes share one event log: a session writes swaps, the
@@ -117,8 +117,11 @@ describe('several processes writing the event log at once', () => {
       'utf8',
     );
 
-    // Held as a live process holds it, kept fresh so it never looks abandoned.
-    const holder = acquireLockDir(path.join(home, 'events.jsonl.compact.lock'), { touchMs: 200 });
+    // Held as a running process holds it: this one, which the child can see is running.
+    const holder = acquireOwnedLock(path.join(home, 'events.jsonl.compact.lock'), {
+      waitMs: 0,
+      staleMs: 5_000,
+    });
     expect(holder.held).toBe(true);
     let exited: Promise<{ code: number | null; stderr: string }>;
     try {
