@@ -164,7 +164,7 @@ function inPlay(account: DashboardAccount, window: ModelWindow, now: number): bo
  * play on some account, otherwise whichever in-play limit binds hardest. No
  * limit in play means no column, which is most of the time.
  */
-export function columnModel(
+function columnModel(
   accounts: readonly DashboardAccount[],
   preferred: string | null,
   now: number,

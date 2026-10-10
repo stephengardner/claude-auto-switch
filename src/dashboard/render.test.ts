@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderDashboard, type DashboardSnapshot, type DashboardAccount } from './render.js';
+import { removeQuestion } from './remove-account.js';
 import { clockTime } from './table.js';
 
 const NOW = 1_000_000_000;
@@ -1305,6 +1306,63 @@ describe('renderDashboard (color)', () => {
     );
     expect(out).toContain(`${ESC}[2m██████████${ESC}[0m`);
     expect(out).toContain(`${ESC}[33mback in 2d${ESC}[0m`);
+  });
+});
+
+describe('the keys and the remove box, under the table', () => {
+  // What x asks about the account new sessions start on, with two sessions on it.
+  const question = removeQuestion({
+    name: 'stephenalviz2-proton',
+    dir: 'profiles/stephenalviz2-proton',
+    leases: [
+      { pid: 11001, account: 'stephenalviz2-proton', configDir: 'sessions/11001', cwd: '/w/storefronts', at: 1 },
+      { pid: 11002, account: 'stephenalviz2-proton', configDir: 'sessions/11002', cwd: '/w/api', at: 1 },
+    ],
+    active: true,
+    last: false,
+    editor: false,
+    daemon: false,
+    others: [],
+    folderIsOurs: true,
+  });
+  const live = (width: number, over: Parameters<typeof renderDashboard>[1] = {}): string[] =>
+    renderDashboard(machine(), { color: false, clock: utc, interactive: true, selected: 2, width, ...over }).split('\n');
+
+  it('keeps the key hints on the last line, ruled off, with remove beside add', () => {
+    const lines = live(120);
+    expect(lines.at(-1)).toContain('a add  ·  x remove  ·  l sign in');
+    expect(lines.at(-2)).toBe('─'.repeat(115));
+    // The line before the rule is the last thing the table has to say.
+    expect(lines.at(-3)).toBe(' recent  22:49 a session moved to christopherplumb2-proton');
+  });
+
+  it('never wraps the key hints, and keeps the way out whatever it drops', () => {
+    for (const width of [120, 100, 80, 60, 40]) {
+      const hints = live(width).at(-1) ?? '';
+      expect(hints.length, `at ${width}: ${hints}`).toBeLessThanOrEqual(width);
+      expect(hints, `at ${width}`).toMatch(/^q\/esc quit/);
+    }
+  });
+
+  it('draws the remove box whole under the table, at any width, with the table as it was', () => {
+    const box = { prompt: { label: question, text: 'purge stephenalviz2-pr', error: 'type the whole name' } };
+    for (const width of [120, 100, 80, 60]) {
+      const lines = live(width, box);
+      for (const line of lines) expect(line.length, `at ${width}: ${line}`).toBeLessThanOrEqual(width);
+
+      // The table above is the one drawn without the box.
+      const closed = live(width);
+      const ruled = lines.lastIndexOf(closed.at(-2) ?? '');
+      expect(lines[ruled], `at ${width}`).toMatch(/^─+$/);
+      expect(lines.slice(0, ruled + 1), `at ${width}`).toEqual(closed.slice(0, -1));
+
+      // Under the rule: the question, wrapped and whole, then the box, why it
+      // was refused, and how to answer.
+      const typed = lines.indexOf('  › purge stephenalviz2-pr█');
+      expect(typed, `at ${width}`).toBeGreaterThan(ruled);
+      expect(lines.slice(ruled + 1, typed).map((l) => l.trim()).join(' '), `at ${width}`).toBe(question);
+      expect(lines.slice(typed + 1)).toEqual(['  type the whole name', '  enter confirm  ·  esc cancel']);
+    }
   });
 });
 
