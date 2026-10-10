@@ -39,10 +39,15 @@ export function editorPointerAccount(
   accounts: Array<{ name: string; dir: string }>,
   c: PathCtx = {},
 ): string | null {
-  const target = readTarget(path.join(configHome(c), 'editor-active'));
+  const target = readTarget(editorLinkPath(c));
   if (!target) return null;
   const resolved = path.resolve(target);
   return accounts.find((a) => path.resolve(a.dir) === resolved)?.name ?? null;
+}
+
+/** Where the editor's pointer lives, for a caller with only a paths context. */
+export function editorLinkPath(c: PathCtx = {}): string {
+  return path.join(configHome(c), 'editor-active');
 }
 
 /**
@@ -52,7 +57,7 @@ export function editorPointerAccount(
  * disturb each other.
  */
 export function editorJunctionPath(context: CliContext): string {
-  return path.join(configHome(context.ctx), 'editor-active');
+  return editorLinkPath(context.ctx);
 }
 
 /**

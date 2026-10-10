@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { addAccount } from './registry.js';
@@ -110,6 +110,38 @@ describe('what removing an account would touch', () => {
     setTarget(path.join(home, 'editor-active'), dirOf('work'));
     expect(standing('work')?.editor).toBe(true);
     expect(standing('twin')?.editor).toBe(true);
+  });
+
+  it('knows two accounts share a folder when one is registered on a link to the other', () => {
+    // Two different paths, one folder: the paths are compared by where they land.
+    const { standing, ctx, home, dirOf } = setup();
+    const alias = path.join(home, 'profiles', 'twin');
+    setTarget(alias, dirOf('work'));
+    addAccount({ name: 'twin', dir: alias }, ctx);
+    expect(standing('twin')?.sharedWith).toEqual(['work']);
+    expect(standing('work')?.sharedWith).toEqual(['twin']);
+    expect(standing('spare')?.sharedWith).toEqual([]);
+  });
+
+  it("sees the editor and the daemon's link on a folder they reach through a link to it", () => {
+    const { standing, ctx, home, dirOf } = setup();
+    const alias = path.join(home, 'profiles', 'twin');
+    setTarget(alias, dirOf('work'));
+    addAccount({ name: 'twin', dir: alias }, ctx);
+    setTarget(path.join(home, 'editor-active'), alias);
+    setTarget(path.join(home, 'active'), alias);
+    expect(standing('work')).toMatchObject({ editor: true, daemon: true });
+    expect(standing('spare')).toMatchObject({ editor: false, daemon: false });
+  });
+
+  it('does not take a link left on a folder that is gone for one on a folder that is there', () => {
+    const { standing, home, dirOf } = setup();
+    const gone = path.join(home, 'profiles', 'gone');
+    mkdirSync(gone);
+    setTarget(path.join(home, 'editor-active'), gone);
+    rmSync(gone, { recursive: true });
+    expect(standing('work')?.editor).toBe(false);
+    expect(dirOf('work')).not.toBe(gone);
   });
 
   it('knows a folder outside the profiles tree is not one ccx deletes', () => {

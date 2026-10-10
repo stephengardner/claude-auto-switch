@@ -176,6 +176,21 @@ describe('ccx remove --purge', () => {
     expect(said.join('\n')).toContain('its folder cannot be deleted while "work" shares it.');
   });
 
+  it('removes nothing when the two share a folder through a link, from either side', () => {
+    // Purging the link's own account would clear the login through the link;
+    // purging the other would delete the folder the link lands on.
+    const { context, ctx, home, dirOf } = setup();
+    const alias = path.join(home, 'profiles', 'twin');
+    setTarget(alias, dirOf('work'));
+    addAccount({ name: 'twin', dir: alias }, ctx);
+    for (const name of ['twin', 'work']) {
+      expect(removeCommand(context, name, { purge: true }, nothingRunning)).toBe(1);
+      expect(getAccount(name, ctx)).toBeDefined();
+      expect(existsSync(credentialPath(dirOf('work')))).toBe(true);
+      expect(existsSync(credentialPath(alias))).toBe(true);
+    }
+  });
+
   it('still removes an account on a shared folder without --purge, leaving the folder to the other', () => {
     const { context, ctx, dirOf } = setup();
     addAccount({ name: 'twin', dir: dirOf('work') }, ctx);

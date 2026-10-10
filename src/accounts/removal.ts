@@ -1,10 +1,10 @@
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { listAccounts } from './registry.js';
 import { getActive } from '../state/active.js';
 import { liveLeases, type SessionLease } from '../session/lease.js';
-import { editorPointerAccount } from '../editor/junction.js';
+import { editorLinkPath } from '../editor/junction.js';
 import { activeLinkPath } from '../daemon/install.js';
-import { readTarget } from '../daemon/junction.js';
 import { configHome, profilesDir, type PathCtx } from '../config/paths.js';
 import { isInside } from '../util/names.js';
 
@@ -49,21 +49,39 @@ export function removalStanding(
   if (!account) return null;
   // By folder, not by name: the folder is what a delete takes, and two
   // accounts can be registered on one.
-  const sameFolder = (dir: string): boolean => path.resolve(dir) === path.resolve(account.dir);
-  const editorName = editorPointerAccount(accounts, c);
-  const editorDir = accounts.find((a) => a.name === editorName)?.dir;
-  const daemonTarget = readTarget(activeLinkPath(configHome(c)));
+  const here = landsOn(account.dir);
+  const sameFolder = (other: string): boolean => {
+    const there = landsOn(other);
+    // A folder that is not there lands nowhere, so it is matched by its path.
+    return here !== null && there !== null
+      ? here === there
+      : path.resolve(other) === path.resolve(account.dir);
+  };
   return {
     name,
     dir: account.dir,
     leases: leases().filter((l) => l.account === name),
     active: getActive(c) === name,
     last: accounts.length === 1,
-    editor: editorDir !== undefined && sameFolder(editorDir),
-    daemon: daemonTarget !== null && sameFolder(daemonTarget),
+    editor: sameFolder(editorLinkPath(c)),
+    daemon: sameFolder(activeLinkPath(configHome(c))),
     sharedWith: accounts.filter((a) => a.name !== name && sameFolder(a.dir)).map((a) => a.name),
     folderIsOurs: isInside(profilesDir(config, c), account.dir),
   };
+}
+
+/**
+ * The folder a path lands on, through any links, or null when nothing is
+ * there. Two paths are one folder when they land on the same place, which
+ * their text cannot tell: one may be a link to the other, or another spelling
+ * of it.
+ */
+function landsOn(target: string): string | null {
+  try {
+    return realpathSync.native(target);
+  } catch {
+    return null;
+  }
 }
 
 /** "a", "a and b", "a, b and c". */
