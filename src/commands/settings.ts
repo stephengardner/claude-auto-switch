@@ -103,7 +103,14 @@ function applyArtifacts(context: CliContext, setting: Setting, value: unknown): 
   const on = routingOn(checked.data.artifacts);
   const hooks = on ? installArtifactHooks(true, context.ctx) : refreshArtifactHooks(false, context.ctx);
   if (hooks && !hooks.ok) throw new Error(`could not change your Claude settings: ${hooks.reason}`);
-  saveConfig(next as PartialConfig, context.ctx);
+  try {
+    saveConfig(next as PartialConfig, context.ctx);
+  } catch (error) {
+    // config.json still says on, and on with no hooks routes nothing in silence.
+    // Turning on needs nothing undone: hooks with routing off route nothing.
+    if (!on && wasInstalled) installArtifactHooks(true, context.ctx);
+    throw error;
+  }
   reload(context);
   const now = `${setting.label}: ${setting.words(valueOf(context.config, setting.key))}`;
   if (on && !wasInstalled) return `${now}. ccx now runs before and after Claude's Artifact tool`;

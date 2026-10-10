@@ -1,8 +1,21 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadConfig, configFilePath, saveConfig } from '../config/config.js';
+
+/** When on, config.json cannot be written, as on a full disk. */
+const failingSave = vi.hoisted(() => ({ on: false }));
+vi.mock('../config/config.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../config/config.js')>();
+  return {
+    ...real,
+    saveConfig: (...args: Parameters<typeof real.saveConfig>): void => {
+      if (failingSave.on) throw new Error('no space left on device');
+      real.saveConfig(...args);
+    },
+  };
+});
 import { applySetting, configCommand } from './settings.js';
 import { SETTINGS, type Setting } from '../dashboard/settings-catalog.js';
 import { addAccount } from '../accounts/registry.js';
@@ -123,6 +136,19 @@ describe('the page settings', () => {
     await expect(applySetting(context, setting('artifacts.home'), 'work')).rejects.toThrow('not valid JSON');
     expect(() => readFileSync(file)).toThrow();
     expect(readFileSync(claudeSettings, 'utf8')).toBe('{ broken');
+  });
+
+  it('put the hooks back when turning the last one off cannot be saved, so on is never left with none', async () => {
+    const { context, file, claudeSettings } = pages();
+    await applySetting(context, setting('artifacts.updates'), 'owner');
+    failingSave.on = true;
+    try {
+      await expect(applySetting(context, setting('artifacts.updates'), 'off')).rejects.toThrow('no space left');
+    } finally {
+      failingSave.on = false;
+    }
+    expect(written(file)).toEqual({ artifacts: { updates: 'owner' } });
+    expect(hookEvents(claudeSettings)).toEqual(ALL);
   });
 
   it('touch nothing in Claude settings when a setting is put back to off with none installed', async () => {

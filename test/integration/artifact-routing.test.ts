@@ -1,5 +1,16 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+
+/** When on, Claude cannot be made to read its login again (the login file's time could not be changed). */
+const nudge = vi.hoisted(() => ({ fails: false }));
+vi.mock('../../src/accounts/credential-vault.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/accounts/credential-vault.js')>();
+  return {
+    ...real,
+    nudgeLoginReread: (...args: Parameters<typeof real.nudgeLoginReread>): boolean =>
+      nudge.fails ? false : real.nudgeLoginReread(...args),
+  };
+});
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -236,6 +247,7 @@ function expectNothingLeftBehind(s: Scene): void {
 describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('page routing in a running session (against fake-claude)', () => {
   afterEach(() => {
     for (const name of TEST_ENV) delete process.env[name];
+    nudge.fails = false;
   });
 
   it(
@@ -534,6 +546,37 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('page routing in a running se
       expect(of(log, 'reread').map((e) => e.marker)).toEqual(['A']);
       expect(probes).toBe(0);
       expectNothingLeftBehind(s);
+    },
+  );
+
+  it(
+    'refuses a call, moved or not, when Claude cannot be made to read the login it is to go out on',
+    { timeout: 120_000 },
+    async () => {
+      nudge.fails = true;
+      const moved = await scene({
+        artifacts: { home: 'B' },
+        calls: [{ afterMs: 1500, id: 'toolu_new', input: { file_path: PAGE }, response: RESPONSE }],
+      });
+      expect(await runCommand(moved.context, [])).toBe(0);
+      let log = entries(moved.runsLog);
+      expect(of(log, 'artifact-call')).toEqual([]);
+      expect(of(log, 'artifact-denied').map((e) => [e.reason, e.marker])).toEqual([
+        [expect.stringContaining('could not put this session on "B"'), 'A'],
+      ]);
+      expect(existsSync(recordPath(moved.context.ctx))).toBe(false);
+      expectNothingLeftBehind(moved);
+
+      for (const name of TEST_ENV) delete process.env[name];
+      const stayed = await scene({
+        artifacts: { home: 'A' },
+        calls: [{ afterMs: 1500, id: 'toolu_new', input: { file_path: PAGE }, response: RESPONSE }],
+      });
+      expect(await runCommand(stayed.context, [])).toBe(0);
+      log = entries(stayed.runsLog);
+      expect(of(log, 'artifact-call')).toEqual([]);
+      expect(of(log, 'artifact-denied')[0]?.reason).toContain('could not make Claude use the "A" login');
+      expectNothingLeftBehind(stayed);
     },
   );
 

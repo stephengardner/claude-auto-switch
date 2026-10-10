@@ -1069,8 +1069,13 @@ export async function runInteractiveHotSwap(
             // is not a change to mirror back.
             mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
             // A Claude already running here keeps the login it read until the
-            // file's time changes, which a Keychain write does not do.
-            nudgeLoginReread(sessionDir, new Date(), loginStore);
+            // file's time changes, which a Keychain write does not do. A move
+            // for one call is undone when that cannot be made sure of, since
+            // the call goes out at once. Any other move stands: Claude reads
+            // the new login within 30 seconds regardless.
+            if (!nudgeLoginReread(sessionDir, new Date(), loginStore) && how.temporary) {
+              throw new Error('the time of its login file could not be changed');
+            }
           } catch (e) {
             rollbackCredential(sessionDir);
             throw e;
