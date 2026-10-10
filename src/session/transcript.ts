@@ -23,6 +23,8 @@ export interface Refusal {
   status: number | null;
   /** What Claude showed for it, for the checks that read the wording. */
   text: string;
+  /** When Claude recorded it, by Claude's clock in milliseconds; null when the entry does not say. */
+  at: number | null;
 }
 
 /** The refusal in one record entry, or null when the entry is anything else. */
@@ -35,6 +37,7 @@ export function refusalIn(entry: unknown): Refusal | null {
     error?: unknown;
     apiError?: unknown;
     apiErrorStatus?: unknown;
+    timestamp?: unknown;
     message?: { content?: unknown };
   };
   // A subagent's refusal is the same account's, and the main thread meets it
@@ -50,11 +53,13 @@ export function refusalIn(entry: unknown): Refusal | null {
     )
     .filter(Boolean)
     .join('\n');
+  const at = typeof e.timestamp === 'string' ? Date.parse(e.timestamp) : NaN;
   return {
     error: error || 'rate_limit',
     apiError: typeof e.apiError === 'string' ? e.apiError : null,
     status,
     text,
+    at: Number.isFinite(at) ? at : null,
   };
 }
 

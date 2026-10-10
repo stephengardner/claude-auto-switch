@@ -21,10 +21,18 @@ import {
  * port and channel (set once, by hand, if ever). They stay in config.json.
  */
 
-export type SettingKind = 'toggle' | 'choice' | 'number' | 'text' | 'models';
+export type SettingKind = 'toggle' | 'choice' | 'number' | 'text' | 'models' | 'account';
 
 /** When a change reaches sessions that are already running. */
-export type Applies = 'next-move' | 'next-restart' | 'next-check' | 'now' | 'new-sessions' | 'next-run' | 'daemon-start';
+export type Applies =
+  | 'next-move'
+  | 'next-restart'
+  | 'next-check'
+  | 'now'
+  | 'new-sessions'
+  | 'next-run'
+  | 'daemon-start'
+  | 'hooks';
 
 export interface Setting {
   /** Where it lives in config.json, dotted: `rotation.accountOrder`. */
@@ -271,6 +279,42 @@ export const SETTINGS: readonly Setting[] = [
     applies: 'now',
   },
   {
+    key: 'artifacts.home',
+    group: 'Pages',
+    label: 'Publish new pages as',
+    kind: 'account',
+    words: (value) => (typeof value === 'string' && value !== '' ? value : 'off, as the account the session is on'),
+    help:
+      'A page Claude publishes with its Artifact tool is private to the account that published it. With an ' +
+      'account here, every new page goes out as that account, whatever account the session is on, and later ' +
+      'changes to it follow. Enter types an account name, or off.',
+    applies: 'hooks',
+    confirm: (next) =>
+      `${
+        typeof next === 'string'
+          ? `Publish every new page as "${next}", by moving the session there for the length of the call`
+          : 'Stop publishing new pages as one account'
+      }? This edits the hooks in ~/.claude/settings.json.`,
+  },
+  {
+    key: 'artifacts.updates',
+    group: 'Pages',
+    label: 'Change a page as',
+    kind: 'choice',
+    choices: ['off', 'owner'],
+    words: (value) => (value === 'owner' ? 'the account that owns it' : 'off, as the account the session is on'),
+    help:
+      'Only the account that published a page can change it. With the owner chosen, a session on any account ' +
+      'can update or read a page ccx has recorded: it is moved to that account for the length of the call.',
+    applies: 'hooks',
+    confirm: (next) =>
+      `${
+        next === 'owner'
+          ? 'Send updates to a page as the account that owns it, by moving the session there for the length of the call'
+          : 'Stop sending page updates as the account that owns the page'
+      }? This edits the hooks in ~/.claude/settings.json.`,
+  },
+  {
     key: 'rotation.autoRotateHeadless',
     group: 'Other',
     label: 'ccx run -p moves by itself',
@@ -310,6 +354,9 @@ export function appliesWords(applies: Applies): string {
       return 'Takes effect from the next ccx run.';
     case 'daemon-start':
       return 'Takes effect when ccx daemon next starts.';
+    case 'hooks':
+      // A running Claude holds the hooks it started with.
+      return 'Turning it on reaches a running session when its Claude next starts; a change after that, and turning it off, take effect now.';
     default:
       return 'Takes effect now.';
   }
@@ -422,13 +469,16 @@ export function typedRange(setting: Setting): readonly [number, number] {
 /** What the box opens with when the setting is typed rather than stepped. */
 export function editText(setting: Setting, value: unknown): string {
   if (setting.kind === 'models') return chainOf(value).join(', ');
+  if (setting.kind === 'account') return typeof value === 'string' && value !== '' ? value : 'off';
   if (setting.kind === 'number' && value === setting.off) return 'off';
   return value === undefined || value === null ? '' : String(value);
 }
 
 /** Settings a key steps (toggles and choices); the rest open a box on enter. */
 export function isTyped(setting: Setting): boolean {
-  return setting.kind === 'text' || setting.kind === 'number' || setting.kind === 'models';
+  return (
+    setting.kind === 'text' || setting.kind === 'number' || setting.kind === 'models' || setting.kind === 'account'
+  );
 }
 
 /**
@@ -465,6 +515,13 @@ export function parseSetting(setting: Setting, text: string): unknown {
       const chain = typed.split(/[\s,]+/).filter(Boolean);
       if (chain.length === 0) throw new Error('name at least one model, such as: opus, fable');
       return chain;
+    }
+    case 'account': {
+      if (/^(off|none)$/i.test(typed)) return null;
+      // The letters an account name can have (accounts/registry.schema). Whether
+      // there is such an account is asked when it is saved.
+      if (!/^[A-Za-z0-9._-]+$/.test(typed) || typed.startsWith('.')) throw new Error('an account name, or off');
+      return typed;
     }
     default: {
       // Both prompts are typed into a session, so they follow the rules the

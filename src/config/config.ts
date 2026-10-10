@@ -49,6 +49,14 @@ function envOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
   }
   if (Object.keys(rotation).length > 0) out.rotation = rotation;
 
+  // For one session alone: its environment reaches the hook Claude runs for it.
+  const artifacts: Record<string, unknown> = {};
+  if (env.CAS_ARTIFACTS_HOME) {
+    artifacts.home = /^(off|none)$/i.test(env.CAS_ARTIFACTS_HOME) ? null : env.CAS_ARTIFACTS_HOME;
+  }
+  if (env.CAS_ARTIFACTS_UPDATES) artifacts.updates = env.CAS_ARTIFACTS_UPDATES;
+  if (Object.keys(artifacts).length > 0) out.artifacts = artifacts;
+
   return out;
 }
 

@@ -12,6 +12,9 @@ import {
   type Setting,
 } from '../dashboard/settings-catalog.js';
 import { setHandoff, setMode, setPrompt } from './desktop.js';
+import { getAccount } from '../accounts/registry.js';
+import { installArtifactHooks, readArtifactHooksInstalled, refreshArtifactHooks } from '../artifacts/hooks.js';
+import { routingOn } from '../artifacts/route.js';
 
 /**
  * Change one setting, the same way from the dashboard's settings panel and from
@@ -26,9 +29,11 @@ import { setHandoff, setMode, setPrompt } from './desktop.js';
  *
  * The Desktop settings go through `ccx desktop`'s own commands, because
  * changing when conversations move installs hooks in Claude's settings too.
+ * The page settings install hooks as well (applyArtifacts).
  */
 export async function applySetting(context: CliContext, setting: Setting, value: unknown): Promise<string> {
   if (setting.key.startsWith('desktop.')) return applyDesktop(context, setting, value);
+  if (setting.key.startsWith('artifacts.')) return applyArtifacts(context, setting, value);
   const onDisk = loadConfigFile(context.ctx);
   const next = withValue(onDisk, setting.key, value);
   const checked = ConfigSchema.safeParse(next);
@@ -76,6 +81,34 @@ async function applyDesktop(context: CliContext, setting: Setting, value: unknow
   const text = said.filter((l) => l.trim() !== '').join(' ');
   if (code !== 0) throw new Error(text || `${setting.label} was not changed`);
   return text || `${setting.label}: ${setting.words(value)}`;
+}
+
+/**
+ * The page settings: saved like any other, with the hooks on Claude's Artifact
+ * tool put into the user's Claude settings when the first of the two is turned
+ * on and taken out when the last is turned off. The hooks first: a setting
+ * saved as on with no hook behind it would do nothing and say nothing.
+ */
+function applyArtifacts(context: CliContext, setting: Setting, value: unknown): string {
+  const next = withValue(loadConfigFile(context.ctx), setting.key, value);
+  const checked = ConfigSchema.safeParse(next);
+  if (!checked.success) {
+    throw new Error(`${setting.label}: ${checked.error.issues[0]?.message ?? 'not a usable value'}`);
+  }
+  const { home } = checked.data.artifacts;
+  if (setting.key === 'artifacts.home' && home !== null && !getAccount(home, context.ctx)) {
+    throw new Error(`no account called "${home}"; ccx list names them`);
+  }
+  const wasInstalled = readArtifactHooksInstalled(context.ctx);
+  const on = routingOn(checked.data.artifacts);
+  const hooks = on ? installArtifactHooks(true, context.ctx) : refreshArtifactHooks(false, context.ctx);
+  if (hooks && !hooks.ok) throw new Error(`could not change your Claude settings: ${hooks.reason}`);
+  saveConfig(next as PartialConfig, context.ctx);
+  reload(context);
+  const now = `${setting.label}: ${setting.words(valueOf(context.config, setting.key))}`;
+  if (on && !wasInstalled) return `${now}. ccx now runs before and after Claude's Artifact tool`;
+  if (!on && hooks?.changed) return `${now}. ccx's hooks on Claude's Artifact tool are removed`;
+  return now;
 }
 
 /**
@@ -150,6 +183,8 @@ function takes(setting: Setting): string {
     }
     case 'models':
       return 'model names in order, such as: opus fable';
+    case 'account':
+      return 'an account name, or off';
     default:
       return 'one line of text';
   }

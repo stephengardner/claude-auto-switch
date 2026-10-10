@@ -20,7 +20,7 @@ import { defaultPowerShellProfile, defaultPosixProfile } from '../shell/profile-
 import { isLink, readTarget } from '../daemon/junction.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
 import { defaultClaudeRoot } from '../session/shared-root.js';
-import { listAccounts } from '../accounts/registry.js';
+import { getAccount, listAccounts } from '../accounts/registry.js';
 import { liveLeases } from '../session/lease.js';
 import { verifyAccountIdentities } from '../accounts/identity-check.js';
 import { sharedLoginGroups } from '../accounts/duplicate-guard.js';
@@ -32,6 +32,8 @@ import type { ClaudeInvoker } from '../invoker.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { settingsPath, readSettings, isOurs } from '../statusline/settings-install.js';
 import { installedHooksProblem, readInstalledHandoff } from '../desktop/hooks.js';
+import { artifactHooksInstalled, artifactHooksProblem, withoutArtifactHooks } from '../artifacts/hooks.js';
+import { routingOn } from '../artifacts/route.js';
 
 export interface DoctorCheck {
   name: string;
@@ -494,6 +496,48 @@ function auditDesktopHooks(context: CliContext): DoctorCheck | null {
     : { name: 'desktop-hooks', ok: true, detail: `Desktop conversations move on: ${when}` };
 }
 
+/**
+ * Page routing: its hooks are in Claude's settings exactly while it is on, can
+ * run, and the home account is one of the accounts. Null when it is off and
+ * nothing of it is installed, which is how most setups are.
+ */
+export function auditArtifactHooks(context: CliContext): DoctorCheck | null {
+  const { home, updates } = context.config.artifacts;
+  const on = routingOn(context.config.artifacts);
+  const read = readSettings(settingsPath(context.ctx));
+  const settings = read.ok ? read.settings : {};
+  const installed = artifactHooksInstalled(settings);
+  if (!on) {
+    if (JSON.stringify(withoutArtifactHooks(settings)) === JSON.stringify(settings)) return null;
+    return {
+      name: 'page-routing',
+      ok: false,
+      detail: 'page routing is off, but its hooks are still in your Claude settings',
+      fix: ['ccx on'],
+    };
+  }
+  const problem = !installed
+    ? 'page routing is on, but its hooks are not in your Claude settings, so nothing is routed'
+    : (() => {
+        const broken = artifactHooksProblem(settings);
+        return broken ? `the page routing hooks cannot run: ${broken}` : null;
+      })();
+  if (problem) return { name: 'page-routing', ok: false, detail: problem, fix: ['ccx on'] };
+  if (home !== null && !getAccount(home, context.ctx)) {
+    return {
+      name: 'page-routing',
+      ok: false,
+      detail: `new pages are to be published as "${home}", which is not an account, so they are refused`,
+      fix: ['ccx config artifacts.home <account>'],
+    };
+  }
+  const what = [
+    ...(home !== null ? [`new pages are published as "${home}"`] : []),
+    ...(updates === 'owner' ? ['a page is changed as the account that owns it'] : []),
+  ];
+  return { name: 'page-routing', ok: true, detail: what.join('; ') };
+}
+
 export async function runDoctor(
   context: CliContext,
   deps: DoctorDeps = {},
@@ -516,7 +560,7 @@ export async function runDoctor(
     auditRealClaude(context, deps),
     auditEditor(context),
     await auditBrowserPort(context, deps),
-    ...[await auditKeepalive(context, deps), auditDesktopHooks(context)].filter(
+    ...[await auditKeepalive(context, deps), auditDesktopHooks(context), auditArtifactHooks(context)].filter(
       (c): c is DoctorCheck => c !== null,
     ),
   ];
@@ -540,6 +584,7 @@ const LABELS: Record<string, string> = {
   'browser-debug-port': 'browser',
   keepalive: 'keepalive',
   'desktop-hooks': 'Claude Desktop',
+  'page-routing': 'pages',
 };
 
 /** Print the doctor report and return 0 when all checks pass, 1 otherwise. */

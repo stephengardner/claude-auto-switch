@@ -35,6 +35,7 @@ import {
   type DesktopOptions,
 } from './commands/desktop.js';
 import { swapCommand } from './commands/swap.js';
+import { artifactsCommand, artifactsScanCommand } from './commands/artifacts.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { homeCommand } from './commands/home.js';
 import { sessionsCommand } from './commands/sessions.js';
@@ -396,6 +397,24 @@ program
   .action(async (name: string | undefined) => {
     const ctx = context();
     process.exitCode = await swapCommand(ctx, name, { json: ctx.json });
+  });
+
+const artifacts = program
+  .command('artifacts')
+  .description(
+    'the pages published with Claude\'s Artifact tool that ccx has recorded, and the account that owns each (scan: ask each account for the pages it already has)',
+  )
+  .action(() => {
+    process.exitCode = artifactsCommand(context());
+  });
+artifacts
+  .command('scan')
+  .description(
+    'best effort: list every signed-in account\'s existing pages with one headless Claude, and record their owners',
+  )
+  .option('--account <name...>', 'only these accounts')
+  .action(async (opts: { account?: string[] }) => {
+    process.exitCode = await artifactsScanCommand(context(), opts);
   });
 
 // The hooks `ccx desktop handoff` installs run dist/desktop/hook-entry.js, not

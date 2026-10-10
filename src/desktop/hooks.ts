@@ -1,5 +1,15 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import {
+  eachHook,
+  hookCommand,
+  hookEntry,
+  withHookGroups,
+  withoutHooks,
+  type HookGroup,
+  type HookProgram,
+  type Settings,
+} from '../claude/settings-hooks.js';
 import { readSettings, settingsPath } from '../statusline/settings-install.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
 import type { PathCtx } from '../config/paths.js';
@@ -15,13 +25,10 @@ import type { PathCtx } from '../config/paths.js';
  * - `UserPromptSubmit` fires before a message is sent, and can hold it back,
  *   which is how a message is kept from spending usage credits.
  *
- * Each hook is a program and its arguments, run with no shell (Claude's "exec
- * form"): node, running ccx's hook entry. A shell command would be read by
- * whichever shell Claude picks, Git Bash on Windows when there is one and
- * PowerShell when there is not, and no single test reads the same in both; on
- * the wrong one every session on the machine would report a broken hook. Every
- * session runs these, not only Desktop's, so the entry decides first and
- * cheaply, and anything that is not Desktop is gone before ccx is loaded.
+ * Each is node running ccx's hook entry, with no shell (see
+ * claude/settings-hooks). Every session runs these, not only Desktop's, so the
+ * entry decides first and cheaply, and anything that is not Desktop is gone
+ * before ccx is loaded.
  */
 
 export type HandoffWhen = 'off' | 'limit' | 'credits';
@@ -30,12 +37,6 @@ export type HandoffWhen = 'off' | 'limit' | 'credits';
 export const LIMIT_ERRORS = 'rate_limit|billing_error';
 /** Seconds; a hung ccx must not hold Desktop up for Claude's full default. */
 const TIMEOUT_SECONDS = 30;
-
-/** What Claude runs for these hooks: a node, and ccx's hook entry. */
-export interface HookProgram {
-  node: string;
-  entry: string;
-}
 
 /** This ccx's own, so the hooks always run the ccx that installed them. */
 export function thisHookProgram(): HookProgram {
@@ -46,82 +47,19 @@ export function thisHookProgram(): HookProgram {
 }
 
 type HookEvent = 'limit' | 'prompt';
-type Settings = Record<string, unknown>;
-type Group = { matcher?: string; hooks?: unknown[]; [key: string]: unknown };
 
-function hookFor(program: HookProgram, event: HookEvent): Record<string, unknown> {
-  return {
-    type: 'command',
-    command: program.node,
-    args: [program.entry, event],
-    timeout: TIMEOUT_SECONDS,
-  };
-}
-
-/**
- * Which of ccx's hooks this is, if it is one. Known by the entry it runs, so a
- * hook somebody else wrote is never touched, and one left by a ccx installed
- * somewhere else is still recognised and replaced.
- */
+/** Which of ccx's Desktop hooks this is, if it is one. */
 function ourEvent(hook: unknown): HookEvent | null {
-  if (typeof hook !== 'object' || hook === null) return null;
-  const args = (hook as { args?: unknown }).args;
-  if (!Array.isArray(args) || typeof args[0] !== 'string') return null;
-  if (!/[\\/]desktop[\\/]hook-entry\.js$/.test(args[0])) return null;
-  return args[1] === 'limit' || args[1] === 'prompt' ? args[1] : null;
+  const found = hookEntry(hook);
+  if (!found || !/[\\/]desktop[\\/]hook-entry\.js$/.test(found.entry)) return null;
+  return found.event === 'limit' || found.event === 'prompt' ? found.event : null;
 }
 
-function eachOurs(
-  settings: Settings,
-  visit: (event: string, hook: Record<string, unknown>) => void,
-): void {
-  const hooks = settings.hooks;
-  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return;
-  for (const [event, groups] of Object.entries(hooks as Record<string, unknown>)) {
-    if (!Array.isArray(groups)) continue;
-    for (const group of groups) {
-      const list = (group as Group)?.hooks;
-      if (!Array.isArray(list)) continue;
-      for (const hook of list) {
-        if (ourEvent(hook) !== null) visit(event, hook as Record<string, unknown>);
-      }
-    }
-  }
-}
+const isOurs = (hook: unknown): boolean => ourEvent(hook) !== null;
 
 /** `settings` with every ccx Desktop hook gone, and any group that left empty. */
 export function withoutDesktopHooks(settings: Settings): Settings {
-  const hooks = settings.hooks;
-  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return settings;
-  const kept: Record<string, unknown> = {};
-  for (const [event, groups] of Object.entries(hooks as Record<string, unknown>)) {
-    if (!Array.isArray(groups)) {
-      kept[event] = groups;
-      continue;
-    }
-    const left = groups
-      .map((group) => {
-        if (typeof group !== 'object' || group === null) return group;
-        const g = group as Group;
-        if (!Array.isArray(g.hooks)) return g;
-        return { ...g, hooks: g.hooks.filter((h) => ourEvent(h) === null) };
-      })
-      // Only a group ccx emptied is dropped; one that came empty is the user's.
-      .filter((group, i) => {
-        const before = groups[i] as Group;
-        const after = group as Group;
-        return !(
-          Array.isArray(before?.hooks) &&
-          before.hooks.length > 0 &&
-          after.hooks?.length === 0
-        );
-      });
-    if (left.length > 0) kept[event] = left;
-  }
-  const rest = { ...settings };
-  if (Object.keys(kept).length === 0) delete rest.hooks;
-  else rest.hooks = kept;
-  return rest;
+  return withoutHooks(settings, isOurs);
 }
 
 /** `settings` with exactly the Desktop hooks `when` calls for. */
@@ -132,26 +70,20 @@ export function planDesktopHooks(
 ): Settings {
   const base = withoutDesktopHooks(settings);
   if (when === 'off') return base;
-  const hooks: Record<string, unknown> = {
-    ...((typeof base.hooks === 'object' && base.hooks !== null ? base.hooks : {}) as Record<
-      string,
-      unknown
-    >),
-  };
-  const add = (event: string, group: Group): void => {
-    const existing = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
-    hooks[event] = [...existing, group];
-  };
-  add('StopFailure', { matcher: LIMIT_ERRORS, hooks: [hookFor(program, 'limit')] });
-  if (when === 'credits') add('UserPromptSubmit', { hooks: [hookFor(program, 'prompt')] });
-  return { ...base, hooks };
+  const groups: Array<readonly [string, HookGroup]> = [
+    ['StopFailure', { matcher: LIMIT_ERRORS, hooks: [hookCommand(program, 'limit', TIMEOUT_SECONDS)] }],
+  ];
+  if (when === 'credits') {
+    groups.push(['UserPromptSubmit', { hooks: [hookCommand(program, 'prompt', TIMEOUT_SECONDS)] }]);
+  }
+  return withHookGroups(base, groups);
 }
 
 /** Which handoff the hooks in `settings` add up to. */
 export function installedHandoff(settings: Settings): HandoffWhen {
   let limit = false;
   let prompt = false;
-  eachOurs(settings, (event, hook) => {
+  eachHook(settings, isOurs, (event, hook) => {
     if (event === 'StopFailure' && ourEvent(hook) === 'limit') limit = true;
     if (event === 'UserPromptSubmit' && ourEvent(hook) === 'prompt') prompt = true;
   });
@@ -169,7 +101,7 @@ export function desktopHooksProblem(
   exists: (file: string) => boolean = existsSync,
 ): string | null {
   let problem: string | null = null;
-  eachOurs(settings, (_event, hook) => {
+  eachHook(settings, isOurs, (_event, hook) => {
     if (problem) return;
     const node = hook.command;
     const entry = (hook.args as unknown[])[0] as string;

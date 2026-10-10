@@ -142,6 +142,21 @@ export const ConfigSchema = z.object({
       follow: z.boolean().default(true),
     })
     .default({}),
+  /**
+   * Which account the pages Claude's Artifact tool publishes belong to. A page
+   * is private to the account that published it, so with several accounts
+   * they scatter, and a session on one account cannot update a page another
+   * published. Both are off by default, and with both off ccx installs
+   * nothing for this.
+   */
+  artifacts: z
+    .object({
+      /** Publish every new page as this account, whatever account the session is on. Null is off. */
+      home: z.string().min(1).nullable().default(null),
+      /** `owner`: send an update to a page as the account that owns it. */
+      updates: z.enum(['off', 'owner']).default('off'),
+    })
+    .default({}),
   realClaudePath: z.string().nullable().default(null),
 });
 
@@ -175,6 +190,10 @@ export interface PartialConfig {
   };
   update?: {
     follow?: boolean;
+  };
+  artifacts?: {
+    home?: string | null;
+    updates?: 'off' | 'owner';
   };
   realClaudePath?: string | null;
 }

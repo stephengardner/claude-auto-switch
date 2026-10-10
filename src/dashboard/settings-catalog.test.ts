@@ -54,7 +54,14 @@ describe('the settings catalog', () => {
   });
 
   it('asks before changing what edits files outside ccx, and only that', () => {
-    expect(SETTINGS.filter((s) => s.confirm).map((s) => s.key)).toEqual(['desktop.handoff', 'desktop.mode']);
+    expect(SETTINGS.filter((s) => s.confirm).map((s) => s.key)).toEqual([
+      'desktop.handoff',
+      'desktop.mode',
+      'artifacts.home',
+      'artifacts.updates',
+    ]);
+    expect(setting('artifacts.home').confirm?.('work')).toContain('~/.claude/settings.json');
+    expect(setting('artifacts.updates').confirm?.('owner')).toContain('~/.claude/settings.json');
     expect(setting('desktop.handoff').confirm?.('credits')).toContain('~/.claude/settings.json');
   });
 });
@@ -178,6 +185,48 @@ describe('typing a value', () => {
     expect(editText(setting('rotation.modelPreference'), ['opus', 'fable'])).toBe('opus, fable');
     expect(editText(setting('rotation.holdBackAtPercent'), 100)).toBe('off');
     expect(editText(setting('rotation.holdBackAtPercent'), 80)).toBe('80');
+  });
+});
+
+describe('the page settings', () => {
+  it('are both off by default, and say so in words', () => {
+    expect(defaultOf(setting('artifacts.home'))).toBeNull();
+    expect(setting('artifacts.home').words(null)).toContain('off');
+    expect(setting('artifacts.home').words('work')).toBe('work');
+    expect(defaultOf(setting('artifacts.updates'))).toBe('off');
+    expect(setting('artifacts.updates').words('off')).toContain('off');
+    expect(setting('artifacts.updates').words('owner')).toContain('owns');
+  });
+
+  it('take an account name for the home account, or off', () => {
+    const home = setting('artifacts.home');
+    expect(parseSetting(home, ' work ')).toBe('work');
+    expect(parseSetting(home, 'stephen.alvis-2')).toBe('stephen.alvis-2');
+    for (const off of ['off', 'OFF', 'none']) expect(parseSetting(home, off)).toBeNull();
+    expect(() => parseSetting(home, 'two words')).toThrow('an account name, or off');
+    expect(() => parseSetting(home, '../etc')).toThrow('an account name, or off');
+    expect(() => parseSetting(home, '')).toThrow('an account name, or off');
+  });
+
+  it('type the home account rather than step it, and open the box with what would be typed', () => {
+    const home = setting('artifacts.home');
+    expect(isTyped(home)).toBe(true);
+    expect(stepSetting(home, null, 1)).toBeNull();
+    expect(editText(home, null)).toBe('off');
+    expect(editText(home, 'work')).toBe('work');
+  });
+
+  it('step updates between off and the owner', () => {
+    const updates = setting('artifacts.updates');
+    expect(stepSetting(updates, 'off', 1)).toBe('owner');
+    expect(stepSetting(updates, 'owner', 1)).toBe('off');
+    expect(parseSetting(updates, 'owner')).toBe('owner');
+    expect(() => parseSetting(updates, 'always')).toThrow('one of: off, owner');
+  });
+
+  it('say that a running session follows when its Claude next starts', () => {
+    expect(appliesWords(setting('artifacts.home').applies)).toContain('next starts');
+    expect(appliesWords(setting('artifacts.updates').applies)).toContain('next starts');
   });
 });
 

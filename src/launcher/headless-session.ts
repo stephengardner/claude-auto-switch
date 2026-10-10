@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { createRefusalFollower, type Refusal } from '../session/transcript.js';
+import { gateRefusals, type RefusalGate } from '../session/refusal-gate.js';
 import { matchesCapText, resetAtIn } from './cap-detect.js';
 import { scrubHostEnv } from './child-env.js';
 import { conversationIdIn, wantsExistingConversation } from './conversation.js';
@@ -36,6 +37,8 @@ export interface HeadlessSessionOptions {
   /** Resolves true only when the account is really out (asked of the account). */
   verifyCap?: (renderedText: string) => Promise<boolean>;
   ignoreLimits?: boolean;
+  /** As runPtySession's: which refused turns are held back or passed over. */
+  limitGate?: RefusalGate;
   /** Ending the worker: an end stops this run, and one that came first means no run starts. */
   interruption?: Interruption;
   /** How often the record and the hooks are checked, in ms. */
@@ -214,7 +217,10 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
 
   const conversation = conversationIdIn(options.args);
   const resumedId = wantsExistingConversation(options.args) ? conversation : null;
-  const record = createRefusalFollower(options.configDir, !wantsExistingConversation(options.args));
+  const record = gateRefusals(
+    createRefusalFollower(options.configDir, !wantsExistingConversation(options.args)),
+    options.limitGate,
+  );
   let recordReadable = false;
   let tail = '';
   const keep = (chunk: string): void => {
@@ -342,7 +348,15 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
       // A refusal written just before Claude exited is read now, and the
       // output stands in for the record only when there was none to read.
       checkRecord();
-      if (!capped && !switchTo && interruptedBy === null && !recordReadable && exitCode !== 0 && !options.ignoreLimits) {
+      if (
+        !capped &&
+        !switchTo &&
+        interruptedBy === null &&
+        !recordReadable &&
+        exitCode !== 0 &&
+        !options.ignoreLimits &&
+        !options.limitGate?.held()
+      ) {
         const hit = matchesCapText(tail);
         if (hit) evidence(tail, { reason: hit.reason, ...(hit.resetAt !== undefined ? { resetAt: hit.resetAt } : {}) });
       }

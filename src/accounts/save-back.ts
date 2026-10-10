@@ -120,3 +120,24 @@ export function decideSaveBack(input: SaveBackInput): SaveBackDecision {
       'alone. Signing in as a different account mid-session is exactly when this matters',
   };
 }
+
+/**
+ * Whether the login a session is leaving is written home at all, before who
+ * it belongs to is even asked.
+ *
+ * A session leaving an account for good always offers its copy: it may hold a
+ * renewal the profile never got. A session on an account only for the length
+ * of one Artifact call leaves it again on every page it publishes, and its
+ * copy is the newer one only when its own Claude renewed it there. Otherwise
+ * the stored copy is as new, or newer because another session on that account
+ * renewed it meanwhile, and writing the older one over it would hand the next
+ * session a login the server has already retired.
+ */
+export function savesOnLeaving(
+  how: { temporary: boolean },
+  /** When each copy's access token expires, read only when it matters; 0 when unknown. */
+  sessionExpiresAt: () => number,
+  storedExpiresAt: () => number,
+): boolean {
+  return !how.temporary || sessionExpiresAt() > storedExpiresAt();
+}

@@ -55,7 +55,10 @@ import { copyUserSettings, ensureSharedProjects, ensureSharedUserConfig } from '
 import { confirmSessionCap } from '../usage/confirm-cap.js';
 import { resolveSessionIdentity, maskEmail } from '../session/session-identity.js';
 import { createTerminalWriter } from '../ui/terminal-writer.js';
-import { readUsageSnapshot, refreshUsage, snapshotAgeMs } from '../usage/usage-store.js';
+import { readUsageSnapshot, refreshUsage, renewIdleLogin, snapshotAgeMs } from '../usage/usage-store.js';
+import { createHopController } from '../artifacts/hop.js';
+import { openHops } from '../artifacts/hop-files.js';
+import type { RefusalGate } from '../session/refusal-gate.js';
 import { startUsageRefresher } from '../usage/usage-refresher.js';
 import { planRotation, spentKey } from '../usage/rotation-plan.js';
 import { orderComparator } from '../selector/selector.js';
@@ -88,6 +91,7 @@ import {
   identityKey,
   sessionIdentityEmail,
   credentialFingerprint,
+  hasUsableLogin,
 } from '../accounts/credential-vault.js';
 import { hasLogin, hasWorkingLogin } from '../accounts/account-login.js';
 import {
@@ -101,7 +105,9 @@ import {
   pullProfileIntoSession,
   recoverLoginFromLiveSession,
 } from '../accounts/credential-sync.js';
-import { decideSaveBack } from '../accounts/save-back.js';
+import { decideSaveBack, savesOnLeaving } from '../accounts/save-back.js';
+import { signalLoginChange } from '../accounts/login-change-signal.js';
+import { readExpiresAt } from '../usage/token-expiry.js';
 import {
   freshMirrorState,
   shouldCheck,
@@ -127,6 +133,8 @@ import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 
 const CREDS = '.credentials.json';
+/** How long a confirmed usage limit keeps a visit to another account waiting, at most. */
+const CAP_DECIDING_MS = 60_000;
 
 /** True when at least one account can run (hot-swap is possible). */
 export function hasAnyUsableAccount(context: CliContext): boolean {
@@ -415,6 +423,9 @@ export async function runInteractiveHotSwap(
   // request carries no generation, so clearing it here is what bounds its age.
   clearSwitchRequest(context.ctx);
   clearSwitchRequest(context.ctx, process.pid);
+  // From here this session answers requests to be on another account for one
+  // Artifact call (see artifacts/hop). Nothing asks unless page routing is on.
+  openHops(sessionDir, process.pid);
   if (startPrompt !== null) writeResumePrompt(sessionDir, startPrompt);
 
   /**
@@ -642,7 +653,7 @@ export async function runInteractiveHotSwap(
   // WHO the limit belongs to is resolved alongside, and the cap is recorded
   // against that account, never against the believed one on somebody else's
   // evidence.
-  const verifyCap = async (renderedText: string): Promise<boolean> => {
+  const askAccountAboutCap = async (renderedText: string): Promise<boolean> => {
     let verdict: string;
     let refusalData: EventDetail['data'];
     if (context.verifyCap) {
@@ -989,7 +1000,7 @@ export async function runInteractiveHotSwap(
    * token refresh, and a failure part-way rolls the session credential back
    * instead of leaving the session on a half-applied account.
    */
-  const activate = (account: Account): void => {
+  const activate = (account: Account, how: { temporary?: boolean } = {}): void => {
     // A fresh activation installs this account's own login, so whatever
     // identity drift the previous session had is corrected here and the cap
     // attribution starts clean.
@@ -1004,7 +1015,18 @@ export async function runInteractiveHotSwap(
       releaseLease: (name) => releaseLease(name, context.ctx),
       install: () => {
         withCredentialLock(sessionDir, () => {
-          if (current && current.name !== account.name) saveBack(current);
+          const leaving = current;
+          if (
+            leaving &&
+            leaving.name !== account.name &&
+            savesOnLeaving(
+              { temporary: how.temporary === true },
+              () => readExpiresAt(sessionCreds),
+              () => readExpiresAt(path.join(leaving.dir, CREDS)),
+            )
+          ) {
+            saveBack(leaving);
+          }
           const src = path.join(account.dir, CREDS);
           // Always replace (or clear) the session credential so one account's login
           // can never linger into another account's session.
@@ -1015,6 +1037,13 @@ export async function runInteractiveHotSwap(
             // had moved, and its limit would then be blamed on the wrong account.
             if (!installCredential(sessionDir, src)) {
               scrubSessionCreds();
+            } else if (how.temporary) {
+              // The call this move is for goes out within the second, so
+              // Claude has to be on the new login by then (see the function).
+              visitLoginIn = signalLoginChange(
+                sessionDir,
+                context.loginInKeychain ? { keychainHolds: context.loginInKeychain } : {},
+              );
             }
             // Stamp the account's identity (oauthAccount/userID) so the interactive
             // app sees a logged-in account instead of prompting for login.
@@ -1033,8 +1062,119 @@ export async function runInteractiveHotSwap(
     });
     current = account;
     // Every account a worker works on goes in its report, including one it
-    // was moved to under a running launch, where no new launch says so.
-    worker?.onAccount(account.name);
+    // was moved to under a running launch, where no new launch says so. Not
+    // one it only visits for an Artifact call: no work is done there.
+    if (!how.temporary) worker?.onAccount(account.name);
+  };
+
+  /**
+   * Whether this Claude was started with a long-lived token in its
+   * environment (`ccx token`). It signs in with that whatever login is in the
+   * session's folder, so an in-place move changes nothing for it.
+   */
+  let tokenInEnv = false;
+  /** Where the session's login lived at its last move for one Artifact call, for the log. */
+  let visitLoginIn: 'file' | 'keychain' | null = null;
+  /**
+   * Usage limit checks in flight, and when the last confirmed one came back
+   * (null once acted on). A visit waits for both: acting on a limit moves the
+   * session, and must not find it away.
+   */
+  let capChecks = 0;
+  let capConfirmedAt: number | null = null;
+
+  /**
+   * This session on another account for one Artifact call, and back (see
+   * artifacts/hop). Made with `activate`, so every rule of an in-place move
+   * holds: the login it leaves is saved home first, the account it visits is
+   * announced before its login is copied in, and nothing is copied any other
+   * way. It does not touch the active account, the editor's link or what new
+   * sessions start on, and it never ends Claude.
+   */
+  const hop = createHopController<Account>({
+    dir: sessionDir,
+    current: () => current,
+    account: (name) => {
+      refreshAccounts();
+      return accounts.find((a) => a.name === name) ?? null;
+    },
+    // A login that only exists as a long-lived token cannot be put in the
+    // session's folder, so it does not count here.
+    readiness: (account) =>
+      !hasUsableLogin(account.dir) ? 'no-login' : renewalIsDue(account.dir) ? 'renewal-due' : 'ready',
+    renew: async (account) => {
+      const { refusal, renewal } = await renewIdleLogin(account, accounts, context.ctx);
+      if (refusal !== null) {
+        return {
+          ok: false,
+          reason:
+            `the "${account.name}" login is due for renewal, and something else is using it, so the call was ` +
+            'not sent. Try again in a minute',
+        };
+      }
+      if (renewal.status === 'refreshed' || renewal.status === 'not-needed') return { ok: true };
+      return {
+        ok: false,
+        reason:
+          renewal.status === 'needs-login'
+            ? `"${account.name}" needs signing in again, so the call was not sent. Ask the person to run: ccx login ${account.name}`
+            : `the "${account.name}" login could not be renewed just now (${renewal.detail ?? 'no answer'}), so the call was not sent. Try again in a minute`,
+      };
+    },
+    activate: (account) => activate(account, { temporary: true }),
+    standing: () => {
+      if (tokenInEnv) {
+        return {
+          refuse:
+            'this session signs in with a long-lived token (ccx token), which cannot be changed under a ' +
+            'running Claude, so it cannot be moved to another account for one call and nothing was sent',
+        };
+      }
+      // Signed in as somebody else from inside (/login): that login is in this
+      // folder and nowhere else, and a move away would be the end of it.
+      if (resolveSessionIdentity({ sessionDir, believed: current, accounts }).mismatch) {
+        return {
+          refuse:
+            `this session was signed in as a different account from inside (/login) than "${current?.name ?? ''}", ` +
+            'the one ccx started it on, and moving it for one call would lose that login, so nothing was sent',
+        };
+      }
+      // Bounded, so a confirmed limit nothing acts on cannot hold visits back for the rest of the run.
+      const deciding = capConfirmedAt !== null && Date.now() - capConfirmedAt < CAP_DECIDING_MS;
+      return capChecks > 0 || deciding ? 'busy' : 'free';
+    },
+    log: (message, data) =>
+      logEvent(message, { kind: 'artifact-hop', data: { ...data, ...(visitLoginIn ? { loginIn: visitLoginIn } : {}) } }),
+    ...(context.artifactHop ?? {}),
+  });
+  /** The account this session is on for its own work: the one it comes back to, while it is away. */
+  const ownAccount = (): Account | null => hop.away()?.from ?? current;
+  /**
+   * Refused turns while the session is away were refused by the account it is
+   * visiting. They are not read then, and those recorded during a visit are
+   * passed over afterwards: nothing about them is this session's own account
+   * running out, so they cap nothing and move nothing.
+   */
+  const limitGate: RefusalGate = {
+    held: () => hop.away() !== null,
+    ignores: (refusal) => hop.duringHop(refusal.at),
+  };
+  /**
+   * The check every limit goes through. Never while away: the login in the
+   * folder is the visited account's, and its answer would be recorded against
+   * this session. Counted, so a visit does not start while one is in flight
+   * or a confirmed limit is still being acted on.
+   */
+  const verifyCap = async (renderedText: string): Promise<boolean> => {
+    if (hop.away()) return false;
+    capChecks += 1;
+    try {
+      const limited = await askAccountAboutCap(renderedText);
+      if (limited) capConfirmedAt = Date.now();
+      return limited;
+    } finally {
+      capChecks -= 1;
+    }
   };
 
   /**
@@ -1212,7 +1352,8 @@ export async function runInteractiveHotSwap(
   // the conversation moves in place rather than restarting.
   const proactive = startProactiveRotation(
     buildProactiveDeps(context, {
-      current: () => current?.name ?? null,
+      // Its own account, not one it is on for the length of an Artifact call.
+      current: () => ownAccount()?.name ?? null,
       // Turning early moves on or off in the dashboard reaches this session
       // at its next check, not only the sessions started after.
       refresh: refreshSettings,
@@ -1464,6 +1605,7 @@ export async function runInteractiveHotSwap(
       }
       nextStartTargeted = false;
       const token = readToken(account.dir);
+      tokenInEnv = token !== null;
       const env: Record<string, string> = token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
       // Watch for an operator-requested switch to a DIFFERENT, usable account.
       // Seamless (default) swaps credentials under the running process; 'restart'
@@ -1481,12 +1623,19 @@ export async function runInteractiveHotSwap(
        * went quiet exactly when it was still finishing up.
        */
       const onTick = (): void => {
+        // On every tick, whatever else is going on: a visit to another account
+        // ends by this clock when nothing reports it over.
+        hop.tick();
         if (!current) return;
         touchLease(current.name, context.ctx);
         mirrorSessionLoginToProfile(current);
         pullRenewedLogin(current);
       };
       const switchWatch = (): string | null => {
+        // A visit to another account for one Artifact call comes first, and
+        // while one is held or being prepared every other move waits for the
+        // session to be back: the request stays where it is.
+        if (hop.poll()) return null;
         // A request can name an account added since this session started.
         refreshAccounts();
         // This session's OWN request (written by `ccx use --session <pid>` or
@@ -1552,6 +1701,7 @@ export async function runInteractiveHotSwap(
         opts: { relieve: boolean; switching: boolean },
       ): 'relieved' | 'restart' => {
         const capName = capOwner ?? current?.name ?? account.name;
+        capConfirmedAt = null;
 
         // Decide (and perform) the in-place move FIRST, so recording can key off
         // what actually happened rather than a caller's guess. Relief is possible
@@ -1630,6 +1780,7 @@ export async function runInteractiveHotSwap(
         switchWatch,
         onTick,
         verifyCap,
+        limitGate,
         onCapConfirmed,
         ...(context.blockedWatch ? { blockedWatch: context.blockedWatch } : {}),
         ...(terminalInput ? { input: terminalInput } : {}),
@@ -1654,7 +1805,7 @@ export async function runInteractiveHotSwap(
        * worker, whose output goes to the caller and whose brief, when it is too
        * long for a command line, goes in by standard input.
        */
-      const runChild = (childArgs: string[], stdin?: string): Promise<SessionOutcome> => {
+      const launchChild = (childArgs: string[], stdin?: string): Promise<SessionOutcome> => {
         if (!worker) return runPtySession({ ...base, args: childArgs });
         // Ended: nothing starts, and what the last launch printed stays as it was.
         if (interruption?.exitCode != null) {
@@ -1669,12 +1820,26 @@ export async function runInteractiveHotSwap(
           switchWatch,
           onTick,
           verifyCap,
+          limitGate,
           ...(runOptions?.ignoreLimits ? { ignoreLimits: true } : {}),
           ...(stdin !== undefined ? { stdin } : {}),
           ...(interruption ? { interruption } : {}),
           onStdout: worker.onStdout,
           onStderr: worker.onStderr,
         });
+      };
+      /**
+       * One run of Claude, and the session back on its own account when it
+       * ends, before anything reads which account that is: what the run ended
+       * on must never be put down to an account it was only visiting.
+       */
+      const runChild = async (childArgs: string[], stdin?: string): Promise<SessionOutcome> => {
+        try {
+          return await launchChild(childArgs, stdin);
+        } finally {
+          capConfirmedAt = null;
+          hop.childEnded();
+        }
       };
       /** A worker's brief on a launch: as Claude's prompt, or by standard input when too long. */
       const withBrief = (launch: string[]): { args: string[]; stdin?: string } => {

@@ -33,10 +33,18 @@ describe('what counts as a refused turn', () => {
       apiError: 'model_requires_usage_credits',
       status: 429,
       text: 'Out of room for now.',
+      at: null,
     });
     expect(refusalIn(refused({ error: 'billing_error', apiErrorStatus: 400 }))?.error).toBe(
       'billing_error',
     );
+  });
+
+  it('reads when Claude recorded it, and says so when the entry does not', () => {
+    const at = '2026-10-09T12:00:00.250Z';
+    expect(refusalIn(refused({ timestamp: at }))?.at).toBe(Date.parse(at));
+    expect(refusalIn(refused({ timestamp: 'yesterday' }))?.at).toBeNull();
+    expect(refusalIn(refused({ timestamp: 1791600552486 }))?.at).toBeNull();
   });
 
   it('is not a real answer, another kind of failure, or a subagent refusal', () => {

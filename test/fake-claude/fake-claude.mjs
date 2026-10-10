@@ -404,6 +404,130 @@ if (capEvery > 0) {
   if (t.unref) t.unref();
 }
 
+// Calls of the Artifact tool, made the way the real CLI makes them (measured
+// on 2.1.296): the hooks in the session's settings whose matcher is "Artifact"
+// are run as a program and its arguments, the call's description on standard
+// input, before the call and after it (PostToolUseFailure when it failed). A
+// "deny" from a before-hook stops the call. Which account's login was in the
+// session's folder when the call went out, and when it was over, goes to the
+// runs log: that is the account a page would have been published as.
+// FAKE_CLAUDE_ARTIFACT is a JSON list of calls: { afterMs, id, input,
+// response?, fail?, takesMs?, skipAfterHook?, writeResult?, refuseDuring?,
+// sayDuring? }.
+if (process.env.FAKE_CLAUDE_ARTIFACT && firstLaunch) {
+  const valueAfter = (flag) => {
+    const i = args.indexOf(flag);
+    return i >= 0 && args[i + 1] && !args[i + 1].startsWith('-') ? args[i + 1] : null;
+  };
+  const sessionId = valueAfter('--session-id') ?? valueAfter('--resume') ?? '00000000-0000-4000-8000-000000000000';
+  const transcript = path.join(configDir, 'projects', 'fake-project', `${sessionId}.jsonl`);
+  const note = (entry) => {
+    if (runsLog) appendFileSync(runsLog, `${JSON.stringify(entry)}\n`, 'utf8');
+  };
+  const record = (entry) => {
+    mkdirSync(path.dirname(transcript), { recursive: true });
+    appendFileSync(transcript, `${JSON.stringify({ ...entry, timestamp: new Date().toISOString() })}\n`, 'utf8');
+  };
+  const hooksFor = (event) => {
+    const groups = readObject(path.join(configDir, 'settings.json')).hooks?.[event];
+    return (Array.isArray(groups) ? groups : [])
+      .filter((group) => group?.matcher === 'Artifact')
+      .flatMap((group) => (Array.isArray(group.hooks) ? group.hooks : []));
+  };
+  /** Run one hook and give back what it printed, parsed when it is JSON. */
+  const runHook = (hook, input) =>
+    new Promise((resolve) => {
+      const child = spawn(hook.command, hook.args ?? [], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+      let out = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => (out += chunk));
+      child.on('error', () => resolve(null));
+      child.on('close', () => {
+        try {
+          resolve(JSON.parse(out));
+        } catch {
+          resolve(null);
+        }
+      });
+      child.stdin.on('error', () => {});
+      child.stdin.end(JSON.stringify(input));
+    });
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const makeCall = async (call) => {
+    const base = {
+      session_id: sessionId,
+      transcript_path: transcript,
+      cwd: process.cwd(),
+      permission_mode: 'default',
+      tool_name: 'Artifact',
+      tool_input: call.input,
+      tool_use_id: call.id,
+    };
+    record({ type: 'assistant', message: { content: [{ type: 'tool_use', id: call.id, name: 'Artifact', input: call.input }] } });
+    for (const hook of hooksFor('PreToolUse')) {
+      const said = await runHook(hook, { ...base, hook_event_name: 'PreToolUse' });
+      const decision = said?.hookSpecificOutput;
+      if (decision?.additionalContext) note({ type: 'artifact-context', id: call.id, context: decision.additionalContext });
+      if (decision?.permissionDecision === 'deny') {
+        note({ type: 'artifact-denied', id: call.id, reason: decision.permissionDecisionReason, marker: readMarker() });
+        return;
+      }
+    }
+    // The call itself: whichever login is in the folder now is the one it goes out as.
+    note({ type: 'artifact-call', id: call.id, marker: readMarker() });
+    // Words on the screen while the call is out, as when a subagent is refused.
+    if (call.sayDuring) process.stdout.write(`${call.sayDuring}\n`);
+    if (call.refuseDuring) {
+      record({
+        type: 'assistant',
+        isSidechain: false,
+        isApiErrorMessage: true,
+        error: 'rate_limit',
+        apiError: 'rate_limit_error',
+        apiErrorStatus: 429,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Out of room on this account for now.' }] },
+      });
+    }
+    const started = Date.now();
+    await wait(call.takesMs ?? 50);
+    if (call.writeResult) {
+      record({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: call.id, content: 'ok' }] } });
+    }
+    if (!call.skipAfterHook) {
+      const event = call.fail ? 'PostToolUseFailure' : 'PostToolUse';
+      for (const hook of hooksFor(event)) {
+        const said = await runHook(hook, {
+          ...base,
+          hook_event_name: event,
+          duration_ms: Date.now() - started,
+          ...(call.fail ? { error: 'the page could not be published' } : { tool_response: call.response ?? {} }),
+        });
+        const context = said?.hookSpecificOutput?.additionalContext;
+        if (context) note({ type: 'artifact-context', id: call.id, context });
+      }
+    }
+    note({ type: 'artifact-over', id: call.id, marker: readMarker() });
+  };
+  const calls = JSON.parse(process.env.FAKE_CLAUDE_ARTIFACT);
+  let over = 0;
+  for (const call of calls) {
+    setTimeout(() => {
+      void makeCall(call).then(() => {
+        over += 1;
+        // End the run a while after the last call, when asked, saying first
+        // which login is in the folder by then.
+        const thenExit = Number(process.env.FAKE_CLAUDE_ARTIFACT_THEN_EXIT_MS) || 0;
+        if (over === calls.length && thenExit > 0) {
+          setTimeout(() => {
+            note({ type: 'reread', marker: readMarker() });
+            process.exit(0);
+          }, thenExit);
+        }
+      });
+    }, call.afterMs ?? 0);
+  }
+}
+
 // Stay alive when asked, so a test can interrupt the run (cap or switch) before
 // it exits. Killed by the parent (child.kill) ends it immediately.
 // One that does not stop when asked keeps running well past any test, unless

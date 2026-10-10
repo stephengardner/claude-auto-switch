@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.5.0]
+
+### Added
+
+- **Pages published with Claude's Artifact tool can stay on one account.** A
+  page is private to the account that published it, and only that account
+  can change it, so with several accounts pages scattered and a session on
+  one account could not update a page another had published. Two settings,
+  both off by default:
+  - `ccx config artifacts.home <account>`: every new page is published as
+    that account, whatever account the session is on.
+  - `ccx config artifacts.updates owner`: a change to a page, or a read of
+    it, goes out as the account that owns it.
+
+  For one call, ccx moves the session in place to that account and straight
+  back, through the same move `ccx use --session` makes, so the login it
+  leaves is saved home first and nothing restarts. The session's own ccx
+  holds the move and ends it when the call is over, when its result shows up
+  in the conversation, when Claude ends, or after two minutes, so it never
+  depends on the hook after the call running (a call refused by a question
+  runs none). A usage limit hit during the move belongs to the other account
+  and is not counted against the session's. A call that cannot be routed is
+  refused with the reason rather than published on the wrong account: the
+  account is not signed in, the session signs in with a `ccx token`, or it
+  was signed in as someone else from inside with `/login`.
+
+  On macOS a session's login moves into the Keychain once Claude saves it
+  itself, and Claude then goes on with the login it read for up to 30
+  seconds after a move, because a Keychain write changes no file it watches.
+  A move for one call also changes the time on the session's
+  `.credentials.json`, which Claude does watch. Measured: a read right after
+  the move went out as the old account without that, and as the new one
+  with it.
+
+- **`ccx artifacts`** lists the pages ccx has recorded and the account that
+  owns each, and **`ccx artifacts scan`** asks each signed-in account for the
+  pages it already has, with one headless Claude. The scan is best effort:
+  a headless Claude has the Artifact tool only with a variable Claude Code
+  does not document.
+
+- With either setting on, `ccx on` adds three hooks on the Artifact tool to
+  `~/.claude/settings.json`; with both off it removes them, as `ccx off`
+  always does. With both off, ccx installs nothing for this. `ccx doctor`
+  says when the hooks are missing, cannot run, or name an account that is
+  gone. Renaming an account carries its pages and the setting with it.
+
 ## [2.4.0]
 
 ### Added

@@ -239,11 +239,46 @@ over. It prints Claude's answer (JSON by default) with the accounts that did
 the work. See [workers](docs/workers.md) for the options, output, agent
 definitions and parallel coders in git worktrees.
 
+## Pages published with Claude's Artifact tool
+
+A page Claude publishes with its Artifact tool is private to the account that
+published it, and only that account can change it. With several accounts,
+pages scatter, and a session on one account cannot update a page another
+published. Two settings, both off by default, keep them together:
+
+```sh
+ccx config artifacts.home work        # every new page is published as "work"
+ccx config artifacts.updates owner    # a change to a page goes out as the account that owns it
+ccx artifacts                         # the pages ccx has recorded, and who owns each
+```
+
+For one call, ccx moves the session in place to the account the page belongs
+on, sends the call, and moves it straight back. The session never restarts,
+and the account new sessions start on is not touched. The move ends when the
+call is over, or when its result shows up in the conversation, or after two
+minutes, whichever comes first. If the session cannot be moved (the account
+is not signed in, or the session signs in with a `ccx token`), the call is
+refused with the reason, so a page never lands on the wrong account without
+anyone knowing. A usage limit hit by the other account during the move is
+not counted against the session's own.
+
+ccx records each page a ccx session publishes while either setting is on. An
+update to a page published before that goes out as the session's account, and
+ccx says so, once for each page. `ccx artifacts scan` asks each signed-in account for the
+pages it already has, with one headless Claude. It is best effort: it relies
+on a Claude Code variable that is not documented (`CLAUDE_CODE_ARTIFACT=1`).
+
+Turning either setting on adds three hooks on the Artifact tool to
+`~/.claude/settings.json`, and turning both off removes them. A running
+session picks the hooks up when its Claude next starts. They do nothing in
+plain `claude`, Claude Desktop or the editor.
+
 ## Commands
 
 | Command                                  | What it does                                                                                                             |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `ccx worker [brief...]`                  | one task headless on an account, for an orchestrator (`--agent`, `--account`, `--cwd`, `--timeout`; see docs/workers.md) |
+| `ccx artifacts`                          | the pages ccx has recorded, and the account that owns each (`scan`: ask each account for its pages, best effort)         |
 | `ccx add <name>`                         | add an account and sign it in through the browser                                                                        |
 | `ccx on` / `ccx off`                     | set up / remove ccx in your shell, editors, status line and `/ccx`                                                       |
 | `ccx`                                    | status at a glance (a setup guide when nothing is set up)                                                                |
@@ -304,24 +339,27 @@ usage check, as `ccx config <key>` says.
 | `desktop.handoff`                      | `"off"`                         | `off`, `limit` or `credits`                                       |
 | `desktop.mode`                         | `"fork"`                        | `fork` or `same`                                                  |
 | `desktop.prompt`                       | "Carry on where you stopped."   | what a moved Desktop conversation continues with                  |
+| `artifacts.home`                       | off                             | publish every new page as this account                            |
+| `artifacts.updates`                    | `"off"`                         | `owner`: change a page as the account that owns it                |
 | `realClaudePath`                       | found on `PATH`                 | the real `claude` binary, when finding it fails                   |
 | `browser.debugPort`, `browser.channel` | `9222`, `"chrome"`              | the browser `ccx add` and `ccx login` use                         |
 
 ## What ccx writes
 
-| Where                                    | What                                                                  |
-| ---------------------------------------- | --------------------------------------------------------------------- |
-| `~/.claude-auto-switch/profiles/<name>/` | each account's login, owner-only (separate Keychain entries on macOS) |
-| `~/.claude-auto-switch/sessions/<pid>/`  | per-session config folders, cleared after the session ends            |
-| `~/.claude-auto-switch/config.json`      | your settings                                                         |
-| `~/.claude-auto-switch/events.jsonl`     | what ccx did (`ccx history`)                                          |
-| `~/.claude-auto-switch/rescued/`         | session changes that could not be merged back                         |
-| `~/.claude/settings.json`                | the `statusLine` key; the Desktop hooks when enabled; session changes |
-| `~/.claude.json`                         | session changes to your preferences, MCP servers and folder trust     |
-| `~/.claude/skills/ccx/`                  | the `/ccx` command                                                    |
-| your shell profile                       | the `claude` function                                                 |
-| Cursor / VS Code settings                | `claudeCode.environmentVariables`                                     |
-| your crontab                             | one line marked `# ccx keepalive`, only after `ccx keepalive on`      |
+| Where                                    | What                                                                                         |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `~/.claude-auto-switch/profiles/<name>/` | each account's login, owner-only (separate Keychain entries on macOS)                        |
+| `~/.claude-auto-switch/sessions/<pid>/`  | per-session config folders, cleared after the session ends                                   |
+| `~/.claude-auto-switch/config.json`      | your settings                                                                                |
+| `~/.claude-auto-switch/events.jsonl`     | what ccx did (`ccx history`)                                                                 |
+| `~/.claude-auto-switch/rescued/`         | session changes that could not be merged back                                                |
+| `~/.claude-auto-switch/artifacts.jsonl`  | each page a session published while page routing was on, and its owner                       |
+| `~/.claude/settings.json`                | the `statusLine` key; the Desktop hooks and the Artifact hooks when enabled; session changes |
+| `~/.claude.json`                         | session changes to your preferences, MCP servers and folder trust                            |
+| `~/.claude/skills/ccx/`                  | the `/ccx` command                                                                           |
+| your shell profile                       | the `claude` function                                                                        |
+| Cursor / VS Code settings                | `claudeCode.environmentVariables`                                                            |
+| your crontab                             | one line marked `# ccx keepalive`, only after `ccx keepalive on`                             |
 
 To read ccx from another program, use `ccx state`; the files above are internal
 and change between releases. See
