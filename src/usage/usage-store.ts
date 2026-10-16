@@ -415,25 +415,8 @@ export async function refreshUsage(
       result = { verdict: 'unknown' };
     }
 
-    const known = result.fiveHour !== undefined || result.sevenDay !== undefined;
-    if (known) {
-      const previous = snapshot.accounts[account.name];
-      const fresh = {
-        fiveHour: result.fiveHour ?? null,
-        sevenDay: result.sevenDay ?? null,
-        fiveHourReset: result.fiveHourReset ?? null,
-        sevenDayReset: result.sevenDayReset ?? null,
-        ...(result.models
-          ? { models: result.models.map((m) => ({ name: m.name, utilization: m.utilization, resetsAt: m.resetsAt ?? null })) }
-          : {}),
-        at: now(),
-      };
-      const learned = learnWindowCost(previous, fresh);
-      snapshot.accounts[account.name] = {
-        ...fresh,
-        ...(learned.windowCost !== null ? { windowCost: learned.windowCost } : {}),
-        ...(learned.costAnchor ? { costAnchor: learned.costAnchor } : {}),
-      };
+    if (answered(result)) {
+      snapshot.accounts[account.name] = entryFromProbe(snapshot.accounts[account.name], result, now());
     } else {
       // Could not read it (offline, or the endpoint asked us to slow down).
       // KEEP the last known numbers rather than replacing them with blanks, and
@@ -452,6 +435,61 @@ export async function refreshUsage(
     /* cache write is best effort */
   }
   return snapshot;
+}
+
+/** Whether a usage read came back with numbers, rather than turned away or lost. */
+function answered(result: LimitProbeResult): boolean {
+  return result.fiveHour !== undefined || result.sevenDay !== undefined;
+}
+
+/**
+ * The stored entry for one answered read, with what a 5-hour window costs the
+ * week learned against the entry it replaces.
+ */
+function entryFromProbe(previous: UsageEntry | undefined, result: LimitProbeResult, at: number): UsageEntry {
+  const fresh = {
+    fiveHour: result.fiveHour ?? null,
+    sevenDay: result.sevenDay ?? null,
+    fiveHourReset: result.fiveHourReset ?? null,
+    sevenDayReset: result.sevenDayReset ?? null,
+    ...(result.models
+      ? { models: result.models.map((m) => ({ name: m.name, utilization: m.utilization, resetsAt: m.resetsAt ?? null })) }
+      : {}),
+    at,
+  };
+  const learned = learnWindowCost(previous, fresh);
+  return {
+    ...fresh,
+    ...(learned.windowCost !== null ? { windowCost: learned.windowCost } : {}),
+    ...(learned.costAnchor ? { costAnchor: learned.costAnchor } : {}),
+  };
+}
+
+/**
+ * File one account's usage as read by a caller that asked the endpoint itself.
+ *
+ * The auto-switch watcher reads the account in use every minute, far inside
+ * the five minutes this cache keeps a number. Filing its reading here means
+ * the dashboard, the status line and every session show the number the
+ * watcher acted on, and find the entry fresh instead of each asking again.
+ *
+ * Only an answered read is filed. One that was turned away is dropped rather
+ * than stamped: the caller keeps its own record of what failed, and a stamp
+ * here would make an old number look newly checked.
+ */
+export function recordUsageReading(
+  name: string,
+  result: LimitProbeResult,
+  c: PathCtx = {},
+  at: number = Date.now(),
+): boolean {
+  if (!answered(result)) return false;
+  // Read at the moment of writing, not held from earlier: the snapshot has no
+  // lock, and the smaller the gap the less of another writer's work is undone.
+  const snapshot = readUsageSnapshot(c);
+  snapshot.accounts[name] = entryFromProbe(snapshot.accounts[name], result, at);
+  writeUsageSnapshot(snapshot, c);
+  return true;
 }
 
 /**

@@ -7,6 +7,7 @@ import {
   clearAccount,
   modelOnlyLimit,
   activeModelCaps,
+  cappedSince,
 } from './ledger.js';
 import type { Ledger } from './ledger.schema.js';
 
@@ -174,5 +175,23 @@ describe('limits scoped to one model', () => {
     const ledger = markCapped({ caps: [] }, { account: 'a', now, resetAt: now - 1, model: 'Fable' });
     expect(modelOnlyLimit(ledger, now)).toBeNull();
     expect(activeModelCaps(ledger, now)).toEqual([]);
+  });
+});
+
+describe('since when an account has been unusable', () => {
+  it('is when the limit in force was recorded', () => {
+    const l = markCapped(empty, { account: 'a', now: 1000, backoffMinutes: 5 });
+    expect(cappedSince(l, 'a', 2000)).toBe(1000);
+  });
+
+  it('is null for an account with no limit, or one that has lifted', () => {
+    const l = markCapped(empty, { account: 'a', now: 1000, backoffMinutes: 5 });
+    expect(cappedSince(l, 'b', 2000)).toBeNull();
+    expect(cappedSince(l, 'a', 1000 + 5 * MIN + 1)).toBeNull();
+  });
+
+  it('leaves out a limit on one model, which stops that model and not the account', () => {
+    const l = markCapped(empty, { account: 'a', now: 1000, backoffMinutes: 5, model: 'Fable' });
+    expect(cappedSince(l, 'a', 2000)).toBeNull();
   });
 });

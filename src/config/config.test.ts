@@ -26,6 +26,30 @@ describe('loadConfig', () => {
     expect(cfg.rotation.holdBackAtPercent).toBe(80);
   });
 
+  it('starts the auto-switch watcher at 85% with ten points of room, naming no account and followed by no machine', () => {
+    const cfg = loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: seedHome(null) } });
+    expect(cfg.autoSwitch).toEqual({
+      thresholdPercent: 85,
+      hysteresisPercent: 10,
+      nameAccounts: false,
+      label: null,
+      followers: [],
+    });
+  });
+
+  it('keeps the other auto-switch defaults when the file sets one', () => {
+    const home = seedHome({ autoSwitch: { thresholdPercent: 70, followers: ['my-server'] } });
+    const cfg = loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: home } });
+    expect(cfg.autoSwitch.thresholdPercent).toBe(70);
+    expect(cfg.autoSwitch.hysteresisPercent).toBe(10);
+    expect(cfg.autoSwitch.followers).toEqual(['my-server']);
+  });
+
+  it('refuses an auto-switch threshold that is not a percent', () => {
+    const home = seedHome({ autoSwitch: { thresholdPercent: 140 } });
+    expect(() => loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: home } })).toThrow(ConfigError);
+  });
+
   it('lets file values override defaults while keeping sibling defaults', () => {
     const home = seedHome({ browser: { debugPort: 9333 } });
     const cfg = loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: home } });

@@ -33,6 +33,7 @@ export type Applies =
   | 'new-sessions'
   | 'next-run'
   | 'daemon-start'
+  | 'next-pass'
   | 'hooks';
 
 export interface Setting {
@@ -233,6 +234,47 @@ export const SETTINGS: readonly Setting[] = [
     applies: 'new-sessions',
   },
   {
+    key: 'autoSwitch.thresholdPercent',
+    group: 'Auto-switch',
+    label: 'The watcher moves at',
+    kind: 'number',
+    min: 50,
+    max: 95,
+    step: 5,
+    typed: [1, 100],
+    unit: 'percent',
+    words: (value) => `${String(value)}% used`,
+    help:
+      'Only for ccx autoswitch: it moves off the account in use once its tightest window is this full. ' +
+      'An account that is used up moves whatever this says.',
+    applies: 'next-pass',
+  },
+  {
+    key: 'autoSwitch.hysteresisPercent',
+    group: 'Auto-switch',
+    label: 'Only to an account with',
+    kind: 'number',
+    min: 0,
+    max: 50,
+    step: 5,
+    typed: [0, 100],
+    unit: 'points',
+    words: (value) => `${String(value)} points more room`,
+    help: 'The watcher only moves early to an account with at least this much more room, so it does not bounce between two that are alike.',
+    applies: 'next-pass',
+  },
+  {
+    key: 'autoSwitch.nameAccounts',
+    group: 'Auto-switch',
+    label: 'Name accounts in switch messages',
+    kind: 'toggle',
+    words: onOff,
+    help:
+      'Off: the message a switch sends says "the next account". It leaves this machine, so the names ' +
+      'stay here unless you turn this on.',
+    applies: 'next-pass',
+  },
+  {
     key: 'desktop.handoff',
     group: 'Claude Desktop',
     label: 'Move Desktop conversations',
@@ -355,6 +397,8 @@ export function appliesWords(applies: Applies): string {
       return 'Takes effect from the next ccx run.';
     case 'daemon-start':
       return 'Takes effect when ccx daemon next starts.';
+    case 'next-pass':
+      return "Takes effect at the watcher's next pass.";
     case 'hooks':
       // A running Claude holds the hooks it started with.
       return 'Turning it on reaches a running session when its Claude next starts; a change after that, and turning it off, take effect now.';

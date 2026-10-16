@@ -4,6 +4,81 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.7.0]
+
+### Added
+
+- **`ccx autoswitch`: one watcher for the whole machine.** ccx moves a session
+  after a turn of its own is refused, and `ccx proactive` has each session
+  check its own usage. Neither suits a machine that runs many sessions
+  unattended: each of them reads usage for itself, and each meets the limit
+  for itself. `ccx autoswitch run` is one process that keeps the active
+  account ahead of its limits for all of them. It makes no model call.
+  - Once a minute it reads the account in use, with the request ccx's own
+    numbers come from, and files the reading where the dashboard and every
+    session read usage, so they show the number it acted on.
+  - It moves at 85% of the tightest window (`autoSwitch.thresholdPercent`), to
+    an account with 10 points more room (`autoSwitch.hysteresisPercent`), in
+    the order ccx is set to pick by. Two readings heading for the limit within
+    ten minutes move it sooner. A spent account is confirmed on a second
+    reading, then left for any account under 95%. A login refused on two reads
+    is left as well. An account whose usage credits carry it past its plan
+    still serves, so it is not counted as spent.
+  - It reads the target itself before every move. The cached number for an
+    account keeps its old value when a read fails, under a new time, so a move
+    made from the cache could land on an account that had filled up since.
+  - The move is the one `ccx use` makes: the active account changes, and each
+    running session on the account being left is asked to move in place. One
+    switch runs at a time, under a lock `ccx use` now takes as well, and the
+    watcher checks under it that the account is still the one it judged.
+  - `ccx autoswitch` shows what it sees and what it last did. `once` and `now`
+    run a single pass (`--dry-run`, `--force`, `--json`) and exit with the
+    codes `ccx auto` uses. `stats` counts its usage reads by status, which is
+    where a rate limit shows.
+
+- **Your own pick is left alone.** An account chosen with `ccx use`, enter in
+  the dashboard or `/ccx` is not left by an early move while it stays the
+  active one. The watcher moves off it only once it cannot run, and says so.
+  `ccx autoswitch early off` holds every early move, and an account that
+  cannot run still moves, so nothing is left stuck. `ccx autoswitch pause`
+  stops every move, and `resume` clears both.
+
+- **A message per switch.** `ccx autoswitch notify <address>` takes a Slack
+  incoming webhook (`-` reads it from standard input). Each switch posts one
+  line, and so does finding no account with room. The line names no account
+  unless `autoSwitch.nameAccounts` is on, and `ccx autoswitch label` puts a
+  word in front to tell machines apart. The address is kept in a file only its
+  owner can read, and is never printed.
+
+- **Other machines follow.** `ccx autoswitch followers add <host>` lists a
+  machine that is asked over SSH, after each switch, to make the same move by
+  account name, with its own login of that account. It moves only if it was on
+  the account being left, and a pick or a pause made there holds there. One
+  that could not be reached is asked again each minute for ten minutes.
+
+- **Keeping the watcher running.** `ccx autoswitch service` prints a systemd
+  user unit, a launch agent or a scheduled task for this machine, and installs
+  nothing. On Linux and macOS the watcher ends itself when a newer ccx is
+  installed, so its service brings it back on that one. `ccx autoswitch watchdog --host <host>`
+  runs on a second machine: when the watcher there has started no pass for
+  three minutes, it runs one itself and asks for the service to be started
+  again.
+
+- The settings panel and `ccx config` have three new settings, under
+  Auto-switch.
+
+### Changed
+
+- `ccx use`, enter in the dashboard and `/ccx` write down the account that was
+  chosen (`hand-pick.json`), for the watcher to respect. Nothing else reads
+  it.
+- `ccx use`, enter in the dashboard and `/ccx` make their switch under the
+  same lock as the watcher. They wait at most two seconds for it (half a
+  second in the dashboard), then switch all the same.
+- The file that holds the active account is written only when the account
+  changes. Every session sets it at start to the account it is on, which is
+  nearly always the one already there, and the file's time now says when the
+  active account last changed.
 ## [2.6.6]
 
 ### Fixed

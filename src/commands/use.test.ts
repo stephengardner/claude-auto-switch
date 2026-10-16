@@ -5,6 +5,7 @@ import path from 'node:path';
 import { loadConfig } from '../config/config.js';
 import { addAccount } from '../accounts/registry.js';
 import { getActive } from '../state/active.js';
+import { readHandPick } from '../state/hand-pick.js';
 import { readSwitchRequest } from '../state/switch-request.js';
 import { useCommand } from './use.js';
 import type { CliContext } from '../context.js';
@@ -69,5 +70,28 @@ describe('ccx use without naming a session', () => {
     expect(readSwitchRequest(context.ctx, 11)).toMatchObject({ account: 'b', mode: 'restart' });
     expect(readSwitchRequest(context.ctx, 12)).toBeNull();
     expect(readSwitchRequest(context.ctx, 13)).toMatchObject({ account: 'b', mode: 'restart' });
+  });
+});
+
+describe('ccx use, as the auto-switch watcher sees it', () => {
+  it('writes down that the account was chosen by hand', () => {
+    const { context } = setup();
+    const before = Date.now();
+    expect(useCommand(context, 'b', {}, () => [])).toBe(0);
+    const pick = readHandPick(context.ctx);
+    expect(pick?.account).toBe('b');
+    expect(pick?.at).toBeGreaterThanOrEqual(before);
+  });
+
+  it('writes down nothing when one session is moved alone, since the active account stays', () => {
+    const { context } = setup();
+    expect(useCommand(context, 'b', { session: '4242' }, () => [lease(4242, 'a', '/w/api')])).toBe(0);
+    expect(readHandPick(context.ctx)).toBeNull();
+  });
+
+  it('writes down nothing for an account that does not exist', () => {
+    const { context } = setup();
+    expect(useCommand(context, 'nowhere', {}, () => [])).toBe(1);
+    expect(readHandPick(context.ctx)).toBeNull();
   });
 });

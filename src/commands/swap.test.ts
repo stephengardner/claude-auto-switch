@@ -9,6 +9,7 @@ import { addAccount } from '../accounts/registry.js';
 import { loadConfig } from '../config/config.js';
 import { sessionDirFor } from '../session/session-dir.js';
 import { getActive } from '../state/active.js';
+import { readHandPick } from '../state/hand-pick.js';
 import type { StateAccount, StatePayload } from '../dashboard/state-payload.js';
 import type { CliContext } from '../context.js';
 
@@ -253,6 +254,8 @@ describe('ccx swap <name>', () => {
       ),
     ).toBe(0);
     expect(getActive(s.context.ctx)).toBe('roomy');
+    // Chosen by hand, which the auto-switch watcher leaves alone.
+    expect(readHandPick(s.context.ctx)?.account).toBe('roomy');
   });
 
   it('refuses an account that cannot take the session, and names one that can', async () => {

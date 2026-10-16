@@ -38,7 +38,15 @@ describe('the settings catalog', () => {
   it('covers every setting in the config, or leaves it out on purpose', () => {
     // A setting added to the config without a row here would be one the
     // dashboard silently cannot change. This fails until someone decides.
-    const leftOut = ['browser.debugPort', 'browser.channel', 'realClaudePath'];
+    // The label and the followers are set with `ccx autoswitch`, which checks
+    // a host before it is saved.
+    const leftOut = [
+      'browser.debugPort',
+      'browser.channel',
+      'realClaudePath',
+      'autoSwitch.label',
+      'autoSwitch.followers',
+    ];
     const missing = configKeys().filter((k) => !leftOut.includes(k) && !SETTINGS.some((s) => s.key === k));
     expect(missing).toEqual([]);
   });
@@ -261,5 +269,36 @@ describe('defaults and timing', () => {
   it('says when a change takes effect', () => {
     expect(appliesWords('next-move')).toBe("Takes effect at each session's next move.");
     expect(appliesWords('new-sessions')).toBe('Takes effect in sessions started after the change.');
+    expect(appliesWords('next-pass')).toBe("Takes effect at the watcher's next pass.");
+  });
+});
+
+describe('the auto-switch settings', () => {
+  it('start at 85% with ten points of room, and name no account', () => {
+    expect(defaultOf(setting('autoSwitch.thresholdPercent'))).toBe(85);
+    expect(setting('autoSwitch.thresholdPercent').words(85)).toBe('85% used');
+    expect(defaultOf(setting('autoSwitch.hysteresisPercent'))).toBe(10);
+    expect(setting('autoSwitch.hysteresisPercent').words(10)).toBe('10 points more room');
+    expect(defaultOf(setting('autoSwitch.nameAccounts'))).toBe(false);
+    expect(setting('autoSwitch.nameAccounts').words(false)).toBe('off');
+  });
+
+  it('step the threshold along its grid and take any percent typed', () => {
+    expect(stepSetting(setting('autoSwitch.thresholdPercent'), 85, 1)).toBe(90);
+    expect(stepSetting(setting('autoSwitch.thresholdPercent'), 95, 1)).toBeNull();
+    expect(parseSetting(setting('autoSwitch.thresholdPercent'), '72')).toBe(72);
+    expect(() => parseSetting(setting('autoSwitch.thresholdPercent'), '0')).toThrow('from 1 to 100');
+  });
+
+  it('are found by their last part, apart from the settings for early moves by a session', () => {
+    expect(findSetting('thresholdPercent')).toBe(setting('autoSwitch.thresholdPercent'));
+    expect(findSetting('hysteresisPercent')).toBe(setting('autoSwitch.hysteresisPercent'));
+    expect(findSetting('proactiveHysteresisPercent')).toBe(setting('rotation.proactiveHysteresisPercent'));
+  });
+
+  it('reach the watcher at its next pass', () => {
+    for (const key of ['autoSwitch.thresholdPercent', 'autoSwitch.hysteresisPercent', 'autoSwitch.nameAccounts']) {
+      expect(setting(key).applies, key).toBe('next-pass');
+    }
   });
 });

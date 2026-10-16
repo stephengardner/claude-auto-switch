@@ -156,6 +156,33 @@ export const ConfigSchema = z.object({
       updates: z.enum(['off', 'owner']).default('off'),
     })
     .default({}),
+  /**
+   * The auto-switch watcher (`ccx autoswitch`): one process that reads the
+   * account in use on its own clock and moves to another account before any
+   * session meets a limit. Nothing here does anything until the watcher runs.
+   */
+  autoSwitch: z
+    .object({
+      /** Move off the account in use once its tightest window reaches this percent. */
+      thresholdPercent: z.number().int().min(1).max(100).default(85),
+      /** The target needs this many points more room than the account being left. */
+      hysteresisPercent: z.number().int().min(0).max(100).default(10),
+      /**
+       * Name the accounts in the message a switch sends. Off by default: that
+       * message leaves the machine, and "the next account" says what happened
+       * without saying whose accounts these are.
+       */
+      nameAccounts: z.boolean().default(false),
+      /** Put in front of each message, to tell one machine's from another's. */
+      label: z.string().min(1).max(80).nullable().default(null),
+      /**
+       * Other machines that follow a switch made here. After each one, ccx on
+       * that machine is asked over SSH to make the same move, with its own
+       * login of the account: a login is never copied between machines.
+       */
+      followers: z.array(z.string().min(1).max(255)).max(32).default([]),
+    })
+    .default({}),
   realClaudePath: z.string().nullable().default(null),
 });
 
@@ -193,6 +220,13 @@ export interface PartialConfig {
   artifacts?: {
     home?: string | null;
     updates?: 'off' | 'owner';
+  };
+  autoSwitch?: {
+    thresholdPercent?: number;
+    hysteresisPercent?: number;
+    nameAccounts?: boolean;
+    label?: string | null;
+    followers?: string[];
   };
   realClaudePath?: string | null;
 }

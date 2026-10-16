@@ -300,6 +300,130 @@ Claude print the link and take the pasted code.
 Logins on a shared machine are as private as that machine: anyone with root
 there can read them.
 
+## One watcher for the whole machine
+
+Left alone, ccx moves a session after one of its turns is refused, and
+`ccx proactive on` has each session check its own usage every five minutes.
+`ccx autoswitch` is a third way, for a machine that runs many sessions or runs
+unattended: one small process that keeps the active account ahead of its
+limits, so that no session meets one.
+
+```sh
+ccx autoswitch run        # watch in this terminal (Ctrl-C stops it)
+ccx autoswitch service    # print the service file that keeps it running
+ccx autoswitch            # what it sees, and what it last did
+```
+
+It makes no model call. Once a minute it reads the usage of the account in
+use, with the same free request the dashboard's numbers come from, and decides
+from its own last few readings:
+
+- **Near the limit.** At 85% of the tightest window
+  (`autoSwitch.thresholdPercent`) it moves to an account with at least 10
+  points more room (`autoSwitch.hysteresisPercent`), in the order ccx is set
+  to pick by.
+- **Burning fast.** Two readings that would reach the limit within ten minutes
+  move it before the threshold.
+- **Used up.** A spent account is confirmed on a second reading thirty seconds
+  later, then left for any account under 95%: a little room somewhere beats
+  every session stopped. If the only accounts with room are out of one model's
+  own week, it settles for one of those, since the other models still run
+  there. An account whose usage credits carry it past its plan is not counted
+  as used up, because it still serves; it is left like any account near its
+  limit, and the watcher never moves onto one that is past its plan.
+- **Refused or unreadable.** A login refused on two reads is left. When no
+  reading comes back and the last one was already high, it moves on that.
+
+Before any move it reads the target itself. ccx's cached number for an account
+can be one that failed to refresh, and a move made on that lands on an account
+that has filled up since. A target that turns out full is left out for five
+minutes and the next one is tried.
+
+The move is the one `ccx use` makes: the active account changes, and each
+running session on the account being left is asked to move in place, keeping
+its conversation. A session you put on another account stays there. One switch
+runs at a time, under a lock `ccx use` takes too, and the watcher checks under
+that lock that the account is still the one it judged, so a pick you made a
+moment before is never overwritten.
+
+**Your pick wins.** An account you chose (`ccx use`, enter in the dashboard,
+`/ccx`) is left alone by every early move for as long as it stays the active
+one. The watcher moves off it only once it is used up or its login is refused,
+and says so. Two switches hold it back further:
+
+```sh
+ccx autoswitch early off      # nothing moves before an account is used up
+ccx autoswitch pause [why]    # nothing moves at all; it keeps watching
+ccx autoswitch resume         # both back on
+```
+
+With early moves off, an account that cannot run still moves, so holding them
+can never leave a machine stuck. A pause is absolute.
+
+**A message per switch.** Give it a Slack incoming webhook, and each switch
+posts one line. So does finding no account with room, once per time it
+happens:
+
+```sh
+ccx autoswitch notify https://hooks.slack.com/services/...
+ccx autoswitch notify -           # or read the address from standard input
+ccx autoswitch notify test
+ccx autoswitch label my-server    # start each line with [my-server]
+```
+
+```
+[my-server] ccx auto-switch: the account in use was near its limit; moved to the next account
+[my-server] ccx auto-switch: your pick was used up; moved on to the next account
+[my-server] ccx auto-switch: no account has room (the soonest opens in 1h 30m); staying on the account in use
+```
+
+The address is kept in a file only you can read, and ccx never prints it
+again. The line names no account unless you turn `autoSwitch.nameAccounts` on
+(`work was near its limit; moved to personal`): it leaves your machine, and
+"the next account" says what happened without saying whose accounts these are.
+
+**Other machines follow.** Run the watcher on one machine and list the others:
+
+```sh
+ccx autoswitch followers add laptop
+ccx autoswitch followers add me@my-server
+```
+
+After each switch, ccx on every follower is asked over SSH to make the same
+move, by account name. A login is never copied: each machine needs ccx, the
+same account names and its own sign-in of each, as the section above explains.
+A follower moves only if it was on the account being left, and a pick or a
+pause made on that machine holds there too. One that could not be reached, or
+was in the middle of a switch of its own, is asked again each minute for ten
+minutes. SSH has to work without asking for a password, since nobody is there
+to type one.
+
+**Keeping it running.** `ccx autoswitch service` prints a systemd user unit on
+Linux, a launch agent on macOS or a scheduled task on Windows, with your node
+and ccx filled in. It installs nothing. On Linux and macOS the watcher is
+started again whenever it exits, which covers updates as well: it ends itself
+when a newer ccx is installed, and comes back on that one. A Windows task
+starts at sign-in and is not started again, so there the watcher keeps running
+on the ccx it started with until you run the task again. For what a restart
+cannot cover (a service somebody stopped, a machine off the network), a second
+machine can look after it:
+
+```sh
+ccx autoswitch watchdog --host my-server --restart 'systemctl --user restart ccx-autoswitch'
+```
+
+Once a minute it asks that machine when its watcher last started a pass. After
+three minutes without one it runs a pass there itself, so accounts keep
+moving, and asks for the service to be started again. When the machine has not
+answered for five minutes, it says so through its own webhook.
+
+Run this or `ccx proactive`, not both: two switchers with different rules undo
+each other, and `ccx autoswitch` tells you when both are on. It watches the
+active account, the one new sessions start on; a session you moved elsewhere
+by hand is looked after as before, by itself. Every model's own week counts
+towards the tightest window unless you name one (`--model fable`), as with
+`ccx auto --model`.
+
 ## Inside Claude: `/ccx`
 
 `/ccx` shows every account's room and swaps the current session to the one you
@@ -406,6 +530,7 @@ are already in `~/.claude/settings.json`.
 | `ccx enable` / `disable <name>`          | include / exclude an account                                                                                             |
 | `ccx proactive on\|off`                  | move before an account runs out (off by default)                                                                         |
 | `ccx auto`                               | run that check once (`--once`, `--json`)                                                                                 |
+| `ccx autoswitch [action]`                | one watcher that keeps the active account ahead of its limits (`run`, `service`, `pause`, `notify`, `followers`)         |
 | `ccx resume-prompt "<text>"`             | what a session is told after ccx moves or relaunches it (`--clear`)                                                      |
 | `ccx run -- <args>`                      | run one Claude session through ccx without `ccx on`                                                                      |
 | `ccx desktop [...]`                      | Claude Desktop: status, `move`, `handoff`, `mode`, `prompt`                                                              |
@@ -452,6 +577,11 @@ usage check, as `ccx config <key>` says.
 | `desktop.prompt`                       | "Carry on where you stopped."   | what a moved Desktop conversation continues with                  |
 | `artifacts.home`                       | off                             | publish every new page as this account                            |
 | `artifacts.updates`                    | `"off"`                         | `owner`: change a page as the account that owns it                |
+| `autoSwitch.thresholdPercent`          | `85`                            | `ccx autoswitch` moves off the account in use at this percent     |
+| `autoSwitch.hysteresisPercent`         | `10`                            | and only to an account with this many points more room            |
+| `autoSwitch.nameAccounts`              | `false`                         | name the accounts in the message a switch sends                   |
+| `autoSwitch.label`                     | none                            | put in front of each message (`ccx autoswitch label`)             |
+| `autoSwitch.followers`                 | `[]`                            | machines asked over SSH to follow (`ccx autoswitch followers`)    |
 | `realClaudePath`                       | found on `PATH`                 | the real `claude` binary, when finding it fails                   |
 | `browser.debugPort`, `browser.channel` | `9222`, `"chrome"`              | the browser `ccx add` and `ccx login` use                         |
 
@@ -465,6 +595,8 @@ usage check, as `ccx config <key>` says.
 | `~/.claude-auto-switch/events.jsonl`     | what ccx did (`ccx history`)                                                                 |
 | `~/.claude-auto-switch/rescued/`         | session changes that could not be merged back                                                |
 | `~/.claude-auto-switch/artifacts.jsonl`  | each page a session published while page routing was on, and its owner                       |
+| `~/.claude-auto-switch/autoswitch/`      | the watcher's readings and pause files, and the Slack webhook address, owner-only            |
+| `~/.claude-auto-switch/hand-pick.json`   | the account you last chose by hand, which the watcher leaves alone                           |
 | `~/.claude/settings.json`                | the `statusLine` key; the Desktop hooks and the Artifact hooks when enabled; session changes |
 | `~/.claude.json`                         | session changes to your preferences, MCP servers and folder trust                            |
 | `~/.claude/skills/ccx/`                  | the `/ccx` command                                                                           |
@@ -482,6 +614,11 @@ ccx talks to Anthropic only about your own accounts: reading usage, renewing a
 stale login, and asking which account a login belongs to, so a login is never
 stored under the wrong account. Logins come from your browser sign-in; ccx never
 sees a password. See [SECURITY.md](SECURITY.md).
+
+`ccx autoswitch` can send two more things, each only after you set it up: a
+line per switch to a Slack webhook you give it, which names no account unless
+you turn that on, and, to machines you list as followers, the names of the two
+accounts in a switch, over your own SSH.
 
 Using several paid accounts to extend your usage may conflict with Anthropic's
 terms. Use your own judgment.

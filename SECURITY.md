@@ -45,7 +45,49 @@ you should only enable it transiently and delete the file when done.
 
 - It never reads or stores your password. Logins ride your browser's existing
   sessions.
-- It makes no network calls of its own and sends no telemetry.
+- It sends no telemetry. Besides Anthropic, about your own accounts, it sends
+  something in two cases only, both off until you set them up and both
+  described below: a Slack webhook you give it, and your own other machines
+  over SSH.
+
+## The Slack webhook (off until you set one)
+
+`ccx autoswitch notify <address>` makes the auto-switch watcher post one line
+to a Slack incoming webhook when it switches accounts. Nothing is posted
+without it.
+
+- The address is a secret: anyone who has it can post to that channel. It is
+  kept in `~/.claude-auto-switch/autoswitch/slack-webhook`, owner-only, apart
+  from `config.json`. ccx prints only its host, never the address, and
+  `ccx autoswitch notify off` deletes the file.
+- Typed as an argument, the address lands in your shell's history and shows in
+  the process list while the command runs. `ccx autoswitch notify -` reads it
+  from standard input instead.
+- Only an `https://` address is accepted.
+- The line says what happened and names no account, unless you turn
+  `autoSwitch.nameAccounts` on. With it off, the line also leaves out who asked
+  for a move made by hand. It never names another machine, and never carries a
+  login, a token or an email address.
+
+## Other machines of yours (off until you list one)
+
+Two parts of the auto-switch watcher talk to machines you name, over your own
+SSH, with `BatchMode` on so it never stops to ask for a password:
+
+- **Followers** (`ccx autoswitch followers add <host>`). After a switch, each
+  is sent the two account names involved, why the move was made, and this
+  machine's name, so its own ccx can make the same move. No login is sent: a
+  follower uses its own sign-in of the account.
+- **A watchdog** (`ccx autoswitch watchdog --host <host>`). It asks that
+  machine when its watcher last ran, which says nothing about accounts, and
+  may run a pass there under this machine's name, and the restart command you
+  gave it. It keeps the pass's exit code and discards what the pass printed.
+
+A machine that follows does one thing when asked: move from one named account
+to another registered, signed-in one, and only when it was on the first. What
+bounds who can ask is your SSH key, as with `ccx login --host`. What a remote
+machine prints back is stripped of control characters and cut to a line before
+it is shown or written to the history here.
 
 ## Resolving the real `claude`
 

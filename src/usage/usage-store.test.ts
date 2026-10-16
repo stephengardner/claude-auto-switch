@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { refreshUsage, readUsageSnapshot, renewIdleLogin } from './usage-store.js';
+import { recordUsageReading, refreshUsage, readUsageSnapshot, renewIdleLogin } from './usage-store.js';
 import { renewOneAtATime } from './renew-one-at-a-time.js';
 import type { LimitProbeResult } from './limit-probe.js';
 import { readCredentialEvents } from '../accounts/credential-log.js';
@@ -645,6 +645,49 @@ describe('whose login answers for an account, when a session is running', () => 
     });
 
     expect(probed[0]).toContain('anon-session');
+  });
+});
+
+describe('a reading filed by a caller that asked the endpoint itself', () => {
+  it('is stored with its own time, and the other accounts are left as they were', async () => {
+    const { c, accounts } = setup(['a', 'b']);
+    await refreshUsage(accounts, c, { probe: () => Promise.resolve(result(0.25, 0.6)), now: () => 1_000 });
+
+    expect(recordUsageReading('a', result(0.4, 0.61), c, 5_000)).toBe(true);
+
+    const snap = readUsageSnapshot(c);
+    expect(snap.accounts.a).toMatchObject({ fiveHour: 0.4, sevenDay: 0.61, fiveHourReset: 1_000, at: 5_000 });
+    expect(snap.accounts.b).toMatchObject({ fiveHour: 0.25, sevenDay: 0.6, at: 1_000 });
+  });
+
+  it('keeps the next refresh from asking again while it is fresh', async () => {
+    const { c, accounts } = setup(['a']);
+    recordUsageReading('a', result(0.4, 0.61), c, 5_000);
+    let probes = 0;
+    await refreshUsage(accounts, c, {
+      probe: () => {
+        probes += 1;
+        return Promise.resolve(result(0.9, 0.9));
+      },
+      now: () => 6_000,
+    });
+    expect(probes).toBe(0);
+    expect(readUsageSnapshot(c).accounts.a?.fiveHour).toBe(0.4);
+  });
+
+  it('drops a read that was turned away, rather than stamp an old number as new', async () => {
+    const { c, accounts } = setup(['a']);
+    await refreshUsage(accounts, c, { probe: () => Promise.resolve(result(0.25, 0.6)), now: () => 1_000 });
+
+    expect(recordUsageReading('a', { verdict: 'unknown', detail: 'status 429' }, c, 5_000)).toBe(false);
+
+    expect(readUsageSnapshot(c).accounts.a).toMatchObject({ fiveHour: 0.25, at: 1_000 });
+  });
+
+  it('keeps the per-model weeks the read carried', () => {
+    const { c } = setup(['a']);
+    recordUsageReading('a', { ...result(0.4, 0.61), models: [{ name: 'Fable', utilization: 0.7, resetsAt: 9_000 }] }, c, 5_000);
+    expect(readUsageSnapshot(c).accounts.a?.models).toEqual([{ name: 'Fable', utilization: 0.7, resetsAt: 9_000 }]);
   });
 });
 

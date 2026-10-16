@@ -1,5 +1,7 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
+import { recordHandPick } from '../state/hand-pick.js';
+import { withSwitchLock } from '../state/switch-lock.js';
 import { requestMoves, type SwitchMode } from '../state/switch-request.js';
 import { refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
 import { probeAll, type ProbeResult } from '../health/prober.js';
@@ -404,8 +406,14 @@ export async function dashboardCommand(
     onUse: (a, mode, chosen) => {
       // The account new sessions start on, and the editor's, whichever
       // sessions move; then each chosen session by its own request.
-      setActive(a.name, context.ctx);
-      syncEditorPointerIfEnabled(context);
+      // Under the lock the auto-switch watcher switches under, as `ccx use`
+      // does. Half a second at most: this runs between two frames.
+      withSwitchLock(context.ctx, { waitMs: 500 }, () => {
+        setActive(a.name, context.ctx);
+        syncEditorPointerIfEnabled(context);
+      });
+      // Chosen by hand, which the auto-switch watcher leaves alone while it can run.
+      recordHandPick(a.name, context.ctx);
       const moving = requestMoves(a.name, chosen, mode, context.ctx);
       const how = mode === 'restart' ? 'now, restarting' : 'in place, within ~30s';
       const said =

@@ -11,6 +11,7 @@ import { resumePromptCommand } from './commands/resume-prompt.js';
 import { rotateCommand } from './commands/rotate.js';
 import { usageCommand } from './commands/usage.js';
 import { autoCommand, type AutoOptions } from './commands/auto.js';
+import { autoswitchCommand, type AutoswitchOptions } from './commands/autoswitch.js';
 import { proactiveCommand } from './commands/proactive-config.js';
 import { modelsCommand } from './commands/models-config.js';
 import { orderCommand } from './commands/order-config.js';
@@ -251,6 +252,30 @@ program
   .option('--threshold <percent>', 'treat an account as nearly out at this percent')
   .action(async (opts: AutoOptions) => {
     process.exitCode = await autoCommand(context(), opts);
+  });
+
+program
+  .command('autoswitch [action] [args...]')
+  .description(
+    'one watcher that keeps the active account ahead of its limits: status|run|once|now|pause|resume|early|notify|label|followers|stats|service|watchdog',
+  )
+  .option('--json', 'emit JSON instead of prose')
+  .option('--dry-run', 'once, now: say what would happen without switching')
+  .option('--force', 'now: move even though the account in use has room')
+  .option('--by <who>', 'who is asking, for the history')
+  .option('--model <name>', "decide by one model's own week (e.g. Fable) beside the account-wide windows")
+  .option('--interval <seconds>', 'run, watchdog: seconds between passes')
+  .option('--hours <n>', 'stats: how many hours back to count')
+  .option('--host <host>', 'watchdog: the machine the watcher runs on')
+  .option('--restart <command>', 'watchdog: what to run there to start the watcher again')
+  .option('--remote-ccx <command>', 'watchdog: how to run ccx there (default: ccx, via its login shell)')
+  .option('--once', 'watchdog: one check and exit')
+  // What a machine that follows this one is sent; not for typing.
+  .addOption(new Option('--from <account>').hideHelp())
+  .addOption(new Option('--to <account>').hideHelp())
+  .addOption(new Option('--kind <kind>').hideHelp())
+  .action(async (action: string | undefined, args: string[] | undefined, opts: AutoswitchOptions) => {
+    process.exitCode = await autoswitchCommand(context(), action, args ?? [], opts);
   });
 
 program

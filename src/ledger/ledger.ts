@@ -53,6 +53,18 @@ export function isCapped(ledger: Ledger, account: string, now: number): boolean 
   return ledger.caps.some((c) => c.account === account && !c.model && isActive(c, now));
 }
 
+/**
+ * Since when this account has been unusable, or null when it is not.
+ *
+ * The auto-switch watcher reads usage rather than waiting for a refusal, so a
+ * limit on record here is its second opinion: a turn was refused on this
+ * account and the limit confirmed, by something that was actually running.
+ */
+export function cappedSince(ledger: Ledger, account: string, now: number): number | null {
+  const at = ledger.caps.filter((c) => c.account === account && !c.model && isActive(c, now)).map((c) => c.at);
+  return at.length > 0 ? Math.min(...at) : null;
+}
+
 /** The set of accounts that cannot run at all at time `now`. */
 export function cappedNames(ledger: Ledger, now: number): Set<string> {
   return new Set(ledger.caps.filter((c) => !c.model && isActive(c, now)).map((c) => c.account));
