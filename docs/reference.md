@@ -19,7 +19,7 @@
 | `ccx order [smart\|most-room\|priority]` | the pick rule                                                                                                                  |
 | `ccx models [models...]`                 | the model chain (`--strategy model-first\|account-first`)                                                                      |
 | `ccx priority <name> <n>`                | an account's place in your order (lower first)                                                                                 |
-| `ccx enable` / `disable <name>`          | include / exclude an account                                                                                                   |
+| `ccx enable <name>` / `disable <name>`   | include / exclude an account                                                                                                   |
 | `ccx proactive on\|off`                  | move before an account runs out (off by default)                                                                               |
 | `ccx auto`                               | run that check once (`--once`, `--json`)                                                                                       |
 | `ccx resume-prompt "<text>"`             | what a session is told after ccx moves or relaunches it (`--clear`)                                                            |

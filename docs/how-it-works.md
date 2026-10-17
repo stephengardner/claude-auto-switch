@@ -117,7 +117,8 @@ when Claude is next relaunched or has been idle for 20 seconds, never mid-turn.
 - **priority**: your own order, set with `ccx priority <name> <n>` or `[` and `]`
   in the dashboard.
 
-A pinned account (`ccx use <name>`) always wins.
+A pinned account (`ccx use <name>`) comes first while it is enabled, signed in
+and not out of room; otherwise the rule above picks, as if nothing were pinned.
 
 ## Models
 

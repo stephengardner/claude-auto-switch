@@ -23,7 +23,9 @@ browser approves it, and the code goes back. With Chrome started with
 `--remote-debugging-port=9222` approving is automatic; otherwise ccx shows the
 link and asks you to paste the code. The server's ccx still checks who signed
 in, and refuses a login that belongs to a different account than the one the
-profile is registered for. Only an exact Claude Code sign-in
+profile is registered for. A profile registered without an address takes the
+account that signs in and records it, unless another profile already holds that
+account. Only an exact Claude Code sign-in
 link is approved without you seeing it; any other link on an Anthropic address is
 shown for you to check, and links anywhere else are never opened.
 

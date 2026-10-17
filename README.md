@@ -2,7 +2,8 @@
 
 Run Claude Code across several of your Claude accounts. When one account runs
 out, ccx moves the session to another and the conversation carries on: same
-terminal, same conversation, same model, no restart.
+terminal, same conversation, same model. It moves the running Claude in place
+when it safely can, and otherwise relaunches it with `--resume`.
 
 Local only: your machine, your accounts. No server, no telemetry.
 
