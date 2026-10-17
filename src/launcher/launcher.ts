@@ -3,6 +3,7 @@ import { runInherit, runCapture, type RunOptions, type RunResult } from '../util
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { classifyRun, type CapClassification } from './cap-detect.js';
 import { ACCOUNT_ENV, withoutEnv } from './child-env.js';
+import { createStderrTail } from './stderr-tail.js';
 
 export interface LaunchTarget {
   name: string;
@@ -101,9 +102,10 @@ export interface WatchedResult {
   exitCode: number;
   classification: CapClassification;
   /**
-   * What the run actually printed. Carried out so a caller confirming a cap
-   * can hand the verifier the real rendered text (which is how a per-model
-   * limit gets matched to its model) instead of a one-line summary.
+   * The end of what Claude itself printed on standard error, its debug lines
+   * left out (see stderr-tail). Carried out so a caller confirming a cap can
+   * hand the verifier the real rendered text (which is how a per-model limit
+   * gets matched to its model) instead of a one-line summary.
    */
   stderr: string;
 }
@@ -144,11 +146,12 @@ export async function spawnWatched(
   });
   if (child.pid !== undefined) started?.(child);
 
-  let stderr = '';
+  // Everything is passed on; only the end of Claude's own words is kept.
+  const kept = createStderrTail();
   // Decoded as a stream, so a character split between two reads stays whole.
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (text: string) => {
-    stderr += text;
+    kept.add(text);
     process.stderr.write(text);
   });
 
@@ -157,5 +160,6 @@ export async function spawnWatched(
     child.on('error', () => resolve(1));
   });
 
+  const stderr = kept.text();
   return { exitCode, classification: classifyRun({ exitCode, stderr }), stderr };
 }

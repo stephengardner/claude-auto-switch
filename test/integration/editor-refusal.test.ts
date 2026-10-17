@@ -554,6 +554,32 @@ describe('an editor chat that meets a limit while the usage check is turned away
   );
 
   it(
+    "asks nothing about Claude's debug lines, however much they say about rate limits",
+    { timeout: 60_000 },
+    async () => {
+      // The extension starts its Claude with --debug --debug-to-stderr, and in
+      // an ordinary turn Claude's debug log talks about rate limits. A chat
+      // that closes on such a line has met no limit.
+      const { home, ctx } = await twoAccounts('cas-editor-debug-', { A: [ROOM] });
+      const chat = openChat(home, [], {
+        FAKE_CLAUDE_REFUSE_ON: '',
+        FAKE_CLAUDE_LAST_WORDS:
+          `${new Date().toISOString()} [ERROR] API error (attempt 1/11): 429 ` +
+          'This request would exceed the rate limit for your organization',
+        FAKE_CLAUDE_EXIT_CODE: '1',
+      });
+      chat.send('hello');
+      expect(await chat.answered(1)).toBe(true);
+
+      expect(await chat.close()).toBe(1);
+      expect(asked(home)).toEqual([]);
+      expect(verdicts(home)).toEqual([]);
+      expect(capsIn(home)).toEqual([]);
+      expect(getActive(ctx)).toBe('A');
+    },
+  );
+
+  it(
     'records the limit again when the chat meets it after its reset',
     { timeout: 60_000 },
     async () => {

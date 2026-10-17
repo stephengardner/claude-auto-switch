@@ -149,7 +149,10 @@ as it lasts, however many turns Claude refuses on it, and the editor's next
 chat starts on the next account; the chat that met it stays on its account
 until it is closed, and meeting the limit again after its reset is recorded
 again. When the extension closes a chat, a check still under way gets 4 s to
-be written down before `ccx-claude` ends. `ccx on`
+be written down before `ccx-claude` ends. The extension also has Claude write
+its debug log to standard error for as long as the chat is open: ccx passes
+all of it on to the editor, never reads a debug line as a limit, and keeps
+only the last 64 KiB of the rest. `ccx on`
 and `ccx editor on` set up the editor differently: they point its
 `CLAUDE_CONFIG_DIR` at the active account, and no ccx process runs beside the
 editor's Claude.

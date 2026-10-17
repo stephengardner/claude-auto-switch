@@ -3,10 +3,9 @@ import { resetChildTerminalModes } from '../ui/child-terminal-modes.js';
 import type { IPty } from 'node-pty';
 import { nodePty } from '../util/native-pty.js';
 import { matchesCapText, resetAtIn } from './cap-detect.js';
-import type { Refusal } from '../session/transcript.js';
 import type { RecordedRefusal } from '../session/refused-turn.js';
 import type { RefusalGate } from '../session/refusal-gate.js';
-import { createRecordWatch } from '../session/record-watch.js';
+import { createRecordWatch, type ReadRefusal } from '../session/record-watch.js';
 import { createCheckBackoff } from '../session/check-backoff.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { writeSecretFile } from '../util/secret-file.js';
@@ -62,8 +61,11 @@ export type CarryOnEvent =
   | { kind: 'relaunch'; why: string };
 
 type Hit = { reason?: string; resetAt?: number };
-/** A refused turn as the checks take it: its words, and its entry in the record when it came from there. */
-type Evidence = { text: string; hit: Hit; refusal?: Refusal };
+/**
+ * A refused turn as the checks take it: its words, and its entry in the record
+ * when it came from there, which says the conversation it was read from.
+ */
+type Evidence = { text: string; hit: Hit; refusal?: ReadRefusal };
 
 /**
  * Why Claude cannot be ended now without cutting something off. `silent`:
@@ -395,7 +397,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     };
 
     /** A refusal as evidence: Claude's own codes, and the wording for the checks that read it. */
-    const hitOf = (refusal: Refusal): Evidence => {
+    const hitOf = (refusal: ReadRefusal): Evidence => {
       const resetAt = resetAtIn(refusal.text);
       return {
         text: refusal.text,
@@ -405,11 +407,12 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     };
     /**
      * A refusal as the check is given it: with when this Claude started and
-     * was last typed at, and which conversation and process it is. Nothing of
-     * the screen: Claude draws only the cells that changed, so what it sent
-     * cannot say whether it drew a refusal.
+     * was last typed at, which process it is, and the conversation it was
+     * read from, however long it was held. Nothing of the screen: Claude draws
+     * only the cells that changed, so what it sent cannot say whether it drew
+     * a refusal.
      */
-    const recordedOf = (refusal: Refusal | undefined): RecordedRefusal | undefined =>
+    const recordedOf = (refusal: ReadRefusal | undefined): RecordedRefusal | undefined =>
       refusal ? watch.recorded(refusal, child.pid || null) : undefined;
 
     /**
@@ -801,7 +804,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      * toward "this session is stuck" nor is kept for the exit path, and when
      * nothing can confirm it, it is dropped.
      */
-    const onLimitEvidence = (hit: Hit, snapshot: string, sidechain: boolean, refusal?: Refusal): void => {
+    const onLimitEvidence = (hit: Hit, snapshot: string, sidechain: boolean, refusal?: ReadRefusal): void => {
       if (sidechain) {
         if (sidechainBackoff.paused(Date.now())) return;
       } else {
@@ -847,7 +850,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     };
 
     /** Ask the account about a refusal, or hold it while that cannot be done yet. */
-    const checkRefusal = (hit: Hit, snapshot: string, sidechain: boolean, refusal?: Refusal): void => {
+    const checkRefusal = (hit: Hit, snapshot: string, sidechain: boolean, refusal?: ReadRefusal): void => {
       if (verifying || mainBackoff.paused(Date.now())) {
         if (!sidechain) {
           unprobed = { text: snapshot, hit, ...(refusal ? { refusal } : {}) };

@@ -637,11 +637,17 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
       setStatus(resting ?? 'idle');
       if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'menu', open: false })}\n`, 'utf8');
     };
+    // With FAKE_CLAUDE_REFUSALS_AT_ONCE, that many refused turns a millisecond
+    // apart in one write, as when somebody tries again before anyone has read
+    // the record: whoever reads it next reads them together.
+    const atOnce = Math.max(1, Number(process.env.FAKE_CLAUDE_REFUSALS_AT_ONCE) || 1);
     const refuse = () => {
       if (!refusesHere) return;
       const signedOut = process.env.FAKE_CLAUDE_REFUSE_AS === 'signed-out';
       const entry = signedOut ? signedOutEntry() : refusalEntry();
-      appendFileSync(transcript, `${JSON.stringify(entry)}\n`);
+      const at = Date.parse(entry.timestamp);
+      const entries = Array.from({ length: atOnce }, (_, i) => ({ ...entry, timestamp: new Date(at + i).toISOString() }));
+      appendFileSync(transcript, entries.map((e) => `${JSON.stringify(e)}\n`).join(''));
       if (!signedOut) {
         showRefusal(entry);
         openLimitMenu();
@@ -952,9 +958,18 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
       say({ type: 'system', subtype: 'init' });
     }
   }
-  // A conversation switch made inside the session, at human speed.
+  // A conversation switch made inside the session (a /clear), at human speed,
+  // or once a file the test names appears (FAKE_CLAUDE_SWITCH_WHEN).
   const switchTo = process.env.FAKE_CLAUDE_SWITCH_TO;
-  if (switchTo) {
+  const switchWhen = process.env.FAKE_CLAUDE_SWITCH_WHEN;
+  if (switchTo && switchWhen) {
+    const t = setInterval(() => {
+      if (!existsSync(switchWhen)) return;
+      clearInterval(t);
+      writeRecord(switchTo);
+    }, 50);
+    if (t.unref) t.unref();
+  } else if (switchTo) {
     const t = setTimeout(() => writeRecord(switchTo), Number(process.env.FAKE_CLAUDE_SWITCH_AFTER_MS) || 200);
     if (t.unref) t.unref();
   }

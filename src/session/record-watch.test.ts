@@ -119,4 +119,30 @@ describe('following a running Claude by its own records', () => {
     watch.poll();
     expect(watch.promptAt()).toBe(launchedAt + 40);
   });
+
+  it('hands a refusal held across a /clear to the check on the conversation it was read from', () => {
+    const { dir, record, inConversation } = folder();
+    const launchedAt = Date.now();
+    const watch = createRecordWatch({ configDir: dir, startsNew: true, launchedAt });
+    inConversation(FIRST, launchedAt);
+    writeFileSync(record(FIRST), line(refusal(launchedAt + 10)));
+    watch.noteConversation(PID);
+    const [held] = watch.poll().refusals;
+    expect(held?.conversation).toBe(FIRST);
+
+    // While it is held, Claude moves to another conversation, and a prompt is typed there.
+    inConversation(SECOND, launchedAt);
+    expect(watch.noteConversation(PID)).toBe(SECOND);
+    watch.poll();
+    writeFileSync(record(SECOND), line(prompt(launchedAt + 20)));
+    watch.poll();
+    // On its own conversation, and against the prompt as things are now.
+    expect(watch.recorded(held!, PID)).toEqual({
+      refusal: held,
+      launchedAt,
+      promptAt: launchedAt + 20,
+      conversation: FIRST,
+      claudePid: PID,
+    });
+  });
 });

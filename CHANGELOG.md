@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.17]
+
+### Fixed
+
+- **`ccx-claude` no longer keeps an editor chat's whole debug log (#158).** The
+  extension starts every chat's Claude with `--debug --debug-to-stderr`, and
+  that Claude runs until the chat closes, so ccx held a string that grew for
+  hours and read all of it for limit words as the chat ended. ccx now passes
+  standard error on as before and keeps only the last 64 KiB of Claude's own
+  words there. Claude 2.1.302 writes each debug entry as one line,
+  `<time> [LEVEL] <message>`, and those lines are never kept or judged: they
+  talk about rate limits in ordinary turns, and they name models, which could
+  narrow what the usage check reported. A chat that closes on such a line no
+  longer costs a usage check.
+- **A terminal judges a held refusal on the conversation it was read from
+  (#159).** A refused turn read while a check was under way, or during the
+  pause after one, was judged later on the conversation the session followed
+  by then, so after a `/clear` another live Claude on the first conversation
+  went unseen, and its refusal could be taken for this session's. The record
+  watch now hands out each refusal with the conversation it was read from, and
+  every check takes it from there, in the terminal and in the editor alike;
+  the time of the last typed prompt is still read when the check is made.
+
 ## [2.6.16]
 
 ### Fixed

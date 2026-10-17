@@ -32,6 +32,16 @@ export interface RecordWatchOptions {
   gate?: RefusalGate;
 }
 
+/** A refused turn as the watch read it, with the conversation whose record it was in. */
+export interface ReadRefusal extends Refusal {
+  conversation: string | null;
+}
+
+/** What the record of the conversation followed gained, each refusal with where it was read. */
+export interface WatchNews extends RecordNews {
+  refusals: ReadRefusal[];
+}
+
 export interface RecordWatch {
   /**
    * Ask Claude which conversation the process `pid` is in now, and follow it
@@ -41,11 +51,16 @@ export interface RecordWatch {
   /** The conversation followed, or null until Claude has said. */
   conversation(): string | null;
   /** What the record of the conversation followed gained since the last look. */
-  poll(): RecordNews;
+  poll(): WatchNews;
   /** When a prompt was last typed, by Claude's clock, among everything read; 0 before any. */
   promptAt(): number;
-  /** `refusal` as the check takes it, for the Claude process `claudePid`. */
-  recorded(refusal: Refusal, claudePid: number | null): RecordedRefusal;
+  /**
+   * `refusal` as the check takes it, for the Claude process `claudePid`. A
+   * refusal held back is asked about later, when Claude may have moved to
+   * another conversation (a /clear): it is judged on the one it was read
+   * from, and against the last prompt typed as things are now.
+   */
+  recorded(refusal: ReadRefusal, claudePid: number | null): RecordedRefusal;
 }
 
 export function createRecordWatch(options: RecordWatchOptions): RecordWatch {
@@ -70,14 +85,14 @@ export function createRecordWatch(options: RecordWatchOptions): RecordWatch {
       // Kept before the refusals are handed on: one that a prompt read with it
       // came before is judged against that prompt.
       if (news.promptAt !== null) promptAt = Math.max(promptAt, news.promptAt);
-      return news;
+      return { ...news, refusals: news.refusals.map((refusal) => ({ ...refusal, conversation })) };
     },
     promptAt: () => promptAt,
     recorded: (refusal, claudePid) => ({
       refusal,
       launchedAt: options.launchedAt,
       promptAt,
-      conversation,
+      conversation: refusal.conversation,
       claudePid,
     }),
   };

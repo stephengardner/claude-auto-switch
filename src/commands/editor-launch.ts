@@ -25,7 +25,7 @@ import {
   type CapDecision,
 } from '../usage/confirm-cap.js';
 import { judgeRefusal, limitNamed, type RecordedRefusal, type WriterLookup } from '../session/refused-turn.js';
-import { createRecordWatch, type RecordWatch } from '../session/record-watch.js';
+import { createRecordWatch, type ReadRefusal, type RecordWatch } from '../session/record-watch.js';
 import { createCheckBackoff } from '../session/check-backoff.js';
 import type { Refusal } from '../session/transcript.js';
 import { conversationIdIn, forksConversation, wantsExistingConversation } from '../launcher/conversation.js';
@@ -74,12 +74,6 @@ function within(promise: Promise<unknown>, ms: number): Promise<void> {
     };
     promise.then(done, done);
   });
-}
-
-/** A refused turn as read, with the conversation whose record it was read from. */
-interface Seen {
-  refusal: Refusal;
-  conversation: string | null;
 }
 
 interface EditorWatch {
@@ -146,7 +140,7 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
    * newest of all would let a refusal for one model, read later, push out the
    * whole account's, which is the only one that keeps the next chat off it.
    */
-  const held = new Map<string, Seen>();
+  const held = new Map<string, ReadRefusal>();
   /** Claude is ending or has ended: what is held is asked about now, whatever the back-off says. */
   let ending = false;
 
@@ -155,16 +149,16 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
     if (named === null) return UNNAMED;
     return named.model === undefined ? WHOLE_ACCOUNT : normalizeModel(named.model);
   };
-  const hold = (seen: Seen): void => {
-    const scope = scopeOf(seen.refusal);
+  const hold = (refusal: ReadRefusal): void => {
+    const scope = scopeOf(refusal);
     held.delete(scope);
-    held.set(scope, seen);
+    held.set(scope, refusal);
   };
   /** Every refusal held back, the whole account's first, since it takes in every other. */
-  const takeHeld = (): Seen[] => {
+  const takeHeld = (): ReadRefusal[] => {
     const all = [...held.entries()]
       .sort(([one], [other]) => Number(other === WHOLE_ACCOUNT) - Number(one === WHOLE_ACCOUNT))
-      .map(([, seen]) => seen);
+      .map(([, refusal]) => refusal);
     held.clear();
     return all;
   };
@@ -253,19 +247,17 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
     }
   };
 
-  const refused = (seen: Seen): void => {
+  const refused = (refusal: ReadRefusal): void => {
     // Claude refuses every turn the person tries until a limit resets, and each
     // check spends the usage endpoint's budget, which every session on the
     // machine shares: a limit the ledger holds is not asked about again.
-    if (!watch || covered(limitNamed(seen.refusal.limitType)?.model)) return;
+    if (!watch || covered(limitNamed(refusal.limitType)?.model)) return;
     if (checking || (!ending && backoff.paused(Date.now()))) {
-      hold(seen);
+      hold(refusal);
       return;
     }
-    // Judged as things are when it is asked about, so a prompt typed while it
-    // waited counts against it, but on the conversation it was read from.
-    const recorded = { ...watch.recorded(seen.refusal, child?.pid ?? null), conversation: seen.conversation };
-    checking = act(seen.refusal.text, seen.refusal.apiError ?? seen.refusal.error, recorded)
+    const recorded = watch.recorded(refusal, child?.pid ?? null);
+    checking = act(refusal.text, refusal.apiError ?? refusal.error, recorded)
       .catch(() => {
         /* a check that fails records nothing */
       })
@@ -281,7 +273,7 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
    * ends, as the pause does while it lasts.
    */
   const askHeld = (): void => {
-    for (const seen of takeHeld()) refused(seen);
+    for (const refusal of takeHeld()) refused(refusal);
   };
 
   /** Read what Claude's records gained. `live`: Claude is running, so which conversation it is in can be asked. */
@@ -289,9 +281,7 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
     if (!watch) return;
     const pid = child?.pid;
     if (live && pid !== undefined) watch.noteConversation(pid);
-    const news = watch.poll();
-    const conversation = watch.conversation();
-    for (const refusal of news.refusals) refused({ refusal, conversation });
+    for (const refusal of watch.poll().refusals) refused(refusal);
   };
 
   return {

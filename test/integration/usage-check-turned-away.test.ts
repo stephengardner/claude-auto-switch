@@ -7,6 +7,8 @@ import { runCommand } from '../../src/commands/run.js';
 import { setActive } from '../../src/state/active.js';
 import { loadConfig } from '../../src/config/config.js';
 import { processIsAlive } from '../../src/session/lease.js';
+import { readConversation } from '../../src/session/claude-report.js';
+import { sessionDirFor } from '../../src/session/session-dir.js';
 import type { CliContext } from '../../src/context.js';
 import type { LimitProbeResult } from '../../src/usage/limit-probe.js';
 import {
@@ -47,7 +49,12 @@ const ALSO_SET = [
   'FAKE_CLAUDE_DRAW_BY_CELLS',
   'FAKE_CLAUDE_SAY',
   'FAKE_CLAUDE_EXIT_CODE',
+  'FAKE_CLAUDE_REFUSALS_AT_ONCE',
+  'FAKE_CLAUDE_SWITCH_TO',
+  'FAKE_CLAUDE_SWITCH_WHEN',
 ];
+/** The conversation a /clear moves the session's Claude to. */
+const CLEARED = '56565656-7878-4909-8a1a-121212121212';
 /** The usage check answering, with a window this one measured. */
 const OUT = (resetAt: number): LimitProbeResult => ({
   verdict: 'limited',
@@ -81,11 +88,14 @@ const capsIn = (home: string): Cap[] => {
   return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as { caps: Cap[] }).caps : [];
 };
 
+/** An answer of the usage endpoint, or one it gives only once the promise settles. */
+type Answer = LimitProbeResult | Promise<LimitProbeResult>;
+
 /**
  * The usage endpoint: each account's answers in turn, the last one standing
  * once they run out, and who it was asked about, in order.
  */
-function usageEndpoint(answers: Record<string, LimitProbeResult[]>): {
+function usageEndpoint(answers: Record<string, Answer[]>): {
   probe: NonNullable<CliContext['capProbe']>;
   asked: string[];
 } {
@@ -111,10 +121,26 @@ async function loginAccount(context: CliContext, home: string, name: string): Pr
   writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ account: name }), 'utf8');
 }
 
+/**
+ * Claude's own record of another live process of its on `conversation`, in
+ * the folder every Claude shares; the test runner's parent stands in for it.
+ * Its pid.
+ */
+function otherClaudeOn(home: string, conversation: string): number {
+  const pid = process.ppid;
+  mkdirSync(path.join(home, '.claude', 'sessions'), { recursive: true });
+  writeFileSync(
+    path.join(home, '.claude', 'sessions', `${pid}.json`),
+    JSON.stringify({ pid, sessionId: conversation, kind: 'interactive' }),
+    'utf8',
+  );
+  return pid;
+}
+
 /** Accounts A and B, the session starting on A, and the usage endpoint answering as given. */
 async function twoAccounts(
   prefix: string,
-  answers: Record<string, LimitProbeResult[]>,
+  answers: Record<string, Answer[]>,
 ): Promise<{ home: string; runsLog: string; context: CliContext; asked: string[] }> {
   const home = mkdtempSync(path.join(tmpdir(), prefix));
   const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home } };
@@ -553,6 +579,80 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)(
         // Claude had exited, so it is relaunched, on B.
         expect(launches(readLog(runsLog)).map((l) => l.marker)).toEqual(['A', 'B']);
         expect(capsIn(home).map((c) => c.account)).toEqual(['A']);
+      },
+    );
+
+    it(
+      'judges a held refusal on the conversation it was read from, after a /clear',
+      { timeout: 60_000 },
+      async () => {
+        // Two turns refused together on the first conversation, where another
+        // live Claude is at work: the first one's check waits, so the second
+        // is held. Then a /clear moves this Claude to another conversation,
+        // and the held one is asked about as Claude exits.
+        let answer: () => void = () => {};
+        const waiting = new Promise<LimitProbeResult>((resolve) => {
+          answer = () => resolve(TURNED_AWAY);
+        });
+        const { home, runsLog, context, asked } = await twoAccounts('cas-429-held-clear-', {
+          A: [waiting, TURNED_AWAY],
+        });
+        const switchNow = path.join(home, 'switch-now');
+        const endNow = path.join(home, 'end-now');
+        Object.assign(process.env, {
+          FAKE_CLAUDE_RUNS_LOG: runsLog,
+          // Ended by the test once the first check is answered; this is a backstop.
+          FAKE_CLAUDE_IDLE_MS: '45000',
+          FAKE_CLAUDE_EXIT_WHEN: endNow,
+          FAKE_CLAUDE_SESSION_RECORD: '1',
+          FAKE_CLAUDE_TRANSCRIPT: '1',
+          FAKE_CLAUDE_REFUSE_ON: 'A',
+          FAKE_CLAUDE_REFUSE_AFTER_MS: '1500',
+          FAKE_CLAUDE_REFUSALS_AT_ONCE: '2',
+          FAKE_CLAUDE_SWITCH_TO: CLEARED,
+          FAKE_CLAUDE_SWITCH_WHEN: switchNow,
+        });
+
+        const running = runCommand(context, []);
+        let other = 0;
+        try {
+          const [launch] = await waitFor(
+            'the launch on A',
+            () => launches(readLog(runsLog)),
+            (l) => l.length === 1,
+          );
+          const args = launch?.args ?? [];
+          other = otherClaudeOn(home, args[args.indexOf('--session-id') + 1] ?? '');
+          // Both refusals are read in one look, so the second is held behind this check.
+          await waitFor('the first refusal to be checked', () => asked.length, (n) => n === 1);
+          writeFileSync(switchNow, '', 'utf8');
+          await waitFor(
+            'ccx to follow Claude to the cleared conversation',
+            () => readConversation(sessionDirFor(process.pid, context.ctx)),
+            (id) => id === CLEARED,
+          );
+          answer();
+          const verdictsSoFar = (): number => {
+            try {
+              return capVerdicts(home).length;
+            } catch {
+              return 0; // not written yet, or caught mid-line
+            }
+          };
+          await waitFor('the first verdict', verdictsSoFar, (n) => n === 1);
+        } finally {
+          answer();
+          writeFileSync(endNow, '', 'utf8');
+        }
+        expect(await running).toBe(0);
+
+        const notProof =
+          'Claude recorded a refused turn, but not switching yet: the usage check could not answer ' +
+          `(status 429), and another Claude (pid ${other}) is on this conversation too, so the refusal may be its`;
+        expect(asked).toEqual(['A', 'A']);
+        expect(launches(readLog(runsLog)).map((l) => l.marker)).toEqual(['A']);
+        expect(capsIn(home)).toEqual([]);
+        expect(capVerdicts(home)).toEqual([notProof, notProof]);
       },
     );
   },

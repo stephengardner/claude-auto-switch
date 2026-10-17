@@ -35,7 +35,11 @@ Its behavior is driven by a **scenario** JSON, resolved in this order:
   names a file: `FAKE_CLAUDE_REFUSE_WHEN` refuses the main thread's turn once it
   appears (with `FAKE_CLAUDE_SESSION_RECORD` and `FAKE_CLAUDE_TRANSCRIPT` set),
   and `FAKE_CLAUDE_EXIT_WHEN` ends the run once it appears, leaving
-  `FAKE_CLAUDE_IDLE_MS` as a backstop. With `FAKE_CLAUDE_LOG_CAP_WORDS`, each
+  `FAKE_CLAUDE_IDLE_MS` as a backstop. `FAKE_CLAUDE_SWITCH_WHEN` moves the
+  process to the conversation `FAKE_CLAUDE_SWITCH_TO` names once it appears,
+  as a `/clear` does (without it, the move comes `FAKE_CLAUDE_SWITCH_AFTER_MS`
+  in). `FAKE_CLAUDE_REFUSALS_AT_ONCE` writes that many refused turns in one
+  write each time the main thread is refused. With `FAKE_CLAUDE_LOG_CAP_WORDS`, each
   showing of the repeated limit words (`FAKE_CLAUDE_CAP_EVERY_MS`) is logged as
   `cap-words`, so a test can count them.
 - with `--input-format stream-json` (and `FAKE_CLAUDE_SESSION_RECORD` and
