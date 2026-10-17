@@ -3,7 +3,17 @@
 // claude-auto-switch drives: `auth status`, `auth login`, and a generic run.
 // Behavior is driven by a scenario JSON, resolved from FAKE_CLAUDE_SCENARIO or
 // <CLAUDE_CONFIG_DIR>/fake-scenario.json. No network, no model spend, no logins.
-import { readFileSync, writeFileSync, writeSync, existsSync, mkdirSync, appendFileSync, rmSync, statSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+  writeSync,
+  existsSync,
+  mkdirSync,
+  appendFileSync,
+  rmSync,
+  statSync,
+  realpathSync,
+} from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -256,6 +266,27 @@ if (outputFormat) {
     }
   }
 }
+/**
+ * With FAKE_CLAUDE_LOG_FOLDER, what the folder it runs in holds of the user's
+ * Claude, as it would read it: where its projects and skills land, its
+ * settings, and who its state says it is signed in as.
+ */
+const describeFolder = () => {
+  const landsAt = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return null;
+    }
+  };
+  return {
+    configDir: landsAt(configDir),
+    projects: landsAt(path.join(configDir, 'projects')),
+    skills: landsAt(path.join(configDir, 'skills')),
+    settings: readObject(path.join(configDir, 'settings.json')),
+    email: readObject(path.join(configDir, '.claude.json')).oauthAccount?.emailAddress ?? null,
+  };
+};
 if (runsLog) {
   // The model the session was given in its settings, as Claude would read it.
   const settingsModel = readObject(path.join(configDir, 'settings.json')).model ?? null;
@@ -275,6 +306,7 @@ if (runsLog) {
       // What it would sign in with, besides the session folder.
       oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null,
       entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT ?? null,
+      ...(process.env.FAKE_CLAUDE_LOG_FOLDER ? { folder: describeFolder() } : {}),
     })}\n`,
     'utf8',
   );

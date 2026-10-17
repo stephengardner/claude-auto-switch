@@ -1,7 +1,7 @@
 import { getAccount } from '../accounts/registry.js';
 import { setActive } from '../state/active.js';
 import { requestMoves, writeSwitchRequest } from '../state/switch-request.js';
-import { syncEditorPointerIfEnabled } from '../editor/junction.js';
+import { moveEditorToActive } from '../editor/folder.js';
 import { liveLeases, type SessionLease } from '../session/lease.js';
 import { resolveTarget } from '../session/session-target.js';
 import { numberSessions } from '../dashboard/session-choice.js';
@@ -71,7 +71,7 @@ export function useCommand(
   }
 
   setActive(name, context.ctx);
-  syncEditorPointerIfEnabled(context); // keep the editor in sync if it is on
+  void moveEditorToActive(context); // keep the editor in sync if it is on
   context.out(`active account: ${name}`);
   // Each session is asked by its own request, never by one they all race for.
   const running = numberSessions(leases());

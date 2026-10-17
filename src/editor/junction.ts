@@ -52,10 +52,12 @@ export function editorLinkPath(c: PathCtx = {}): string {
 }
 
 /**
- * The editor points CLAUDE_CONFIG_DIR at this stable path, and ccx flips it to
- * whichever account is active. It is the editor's OWN pointer (distinct from the
- * daemon's "active" link) so `ccx editor off` and `ccx daemon uninstall` never
- * disturb each other.
+ * The editor points CLAUDE_CONFIG_DIR at this stable path. It was a link ccx
+ * flipped to whichever account is active; an install still on that link is
+ * moved into a folder of its own at the same path (editor/folder), and this
+ * file keeps the link working until then. It is the editor's OWN path (distinct
+ * from the daemon's "active" link) so `ccx editor off` and `ccx daemon
+ * uninstall` never disturb each other.
  */
 export function editorJunctionPath(context: CliContext): string {
   return editorLinkPath(context.ctx);

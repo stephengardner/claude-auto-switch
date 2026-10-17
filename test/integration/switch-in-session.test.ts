@@ -24,7 +24,8 @@ import type { CliContext } from '../../src/context.js';
 import { dueLogin, freshUsage, renewingTokenEndpoint } from './typeable-claude.js';
 import { useCommand } from '../../src/commands/use.js';
 import { setTarget } from '../../src/daemon/junction.js';
-import { editorLinkPath, editorPointerAccount } from '../../src/editor/junction.js';
+import { editorLinkPath } from '../../src/editor/junction.js';
+import { editorAccount } from '../../src/editor/folder.js';
 import { listAccounts } from '../../src/accounts/registry.js';
 import { CREDENTIALS_LOCK_DIR } from '../../src/claude/locks.js';
 
@@ -666,22 +667,23 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
   }
 
   it('points the editor at once on `ccx use`, and the session still renews the login in place', async () => {
-    // `ccx use B` points the editor at B. Claude, the editor's included, renews
-    // a login under the lock ccx takes (<config dir>/.oauth_refresh.lock, in
-    // B's folder through the pointer) and reads it again there, so the session
-    // may renew B with the editor on it, and need not restart to have it renewed.
+    // `ccx use B` moves the editor's folder to B. ccx renews a login that
+    // folder holds under the lock the editor's Claude takes there as well as
+    // the profile's, and writes the renewal into it before letting go, so the
+    // session may renew B with the editor on it, and need not restart to have
+    // it renewed.
     const { runs, renewals, context } = await switchToDueLogin({
       editorOnA: true,
       byCcxUse: true,
       afterAsking: async (_home, ctx) => {
         await new Promise((resolve) => setImmediate(resolve));
-        expect(editorPointerAccount(listAccounts(ctx.ctx), ctx.ctx)).toBe('B');
+        expect(editorAccount(listAccounts(ctx.ctx), ctx.ctx)).toBe('B');
       },
     });
     expect(runs.filter((r) => r.type === 'launch')).toHaveLength(1);
     expect(runs.filter((r) => r.type === 'reread').pop()?.marker).toBe('B');
     expect(renewals).toBe(1);
-    expect(editorPointerAccount(listAccounts(context.ctx), context.ctx)).toBe('B');
+    expect(editorAccount(listAccounts(context.ctx), context.ctx)).toBe('B');
   });
 
   it('moves a session asked by name though the file naming the active account cannot be read', async () => {
@@ -749,7 +751,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     await sleep(500);
     expect(renewals()).toBe(0);
     // As before: the login is left to whoever uses it first.
-    expect(editorPointerAccount(listAccounts(context.ctx), context.ctx)).toBe('B');
+    expect(editorAccount(listAccounts(context.ctx), context.ctx)).toBe('B');
   });
 
   it('tries the renewal again once the session that was using the login has gone', async () => {

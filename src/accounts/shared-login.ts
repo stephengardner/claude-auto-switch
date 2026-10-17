@@ -159,6 +159,12 @@ export interface PropagateDeps {
   install?: (destDir: string, sourceFile: string) => boolean;
   /** Injectable so an interleaving between the check and the write can be staged. */
   lock?: (dir: string, fn: () => void) => void;
+  /**
+   * Another holder of the login that is not a profile (the editor's folder,
+   * editor/folder-login carryIntoEditor), given the retired login's fingerprint
+   * and the verified copy of the renewal, to take it when it held the retired one.
+   */
+  alsoInto?: (retired: string, snapshotFile: string) => void;
 }
 
 /**
@@ -228,6 +234,11 @@ export function propagateRenewal(input: PropagateInput, deps: PropagateDeps = {}
         // One profile failing must not stop the others: a login left behind is
         // exactly the problem being fixed.
       }
+    }
+    try {
+      deps.alsoInto?.(retired, snapshot);
+    } catch {
+      /* the same: the profiles above are carried whatever happens here */
     }
   } finally {
     try {

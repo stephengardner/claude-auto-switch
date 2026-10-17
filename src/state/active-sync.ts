@@ -2,7 +2,7 @@ import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from './active.js';
 import { loadLedger, cappedNames } from '../ledger/ledger.js';
 import { select } from '../selector/selector.js';
-import { syncEditorPointerIfEnabled } from '../editor/junction.js';
+import { moveEditorToActive } from '../editor/folder.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -28,7 +28,7 @@ export function advanceActiveToHealthy(context: CliContext, loggedIn: Set<string
   if (!sel.ok) return active ?? null;
   if (sel.account.name !== active) {
     setActive(sel.account.name, context.ctx);
-    syncEditorPointerIfEnabled(context);
+    void moveEditorToActive(context);
   }
   return sel.account.name;
 }

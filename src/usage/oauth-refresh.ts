@@ -7,6 +7,7 @@ import { renewOneAtATime } from './renew-one-at-a-time.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import { alreadyRefused, refusalReason, rememberRefused } from './dead-login-memo.js';
 import { loginIsKnownDead, deadLoginReason, rememberDeadLogin, forgetDeadLogin } from './dead-login-store.js';
+import { editorHolding, replaceFolderLogin, type FolderLogin } from '../editor/folder-login.js';
 import type { PathCtx } from '../config/paths.js';
 
 /**
@@ -142,7 +143,61 @@ export async function refreshCredentialIfExpired(
   // Looked at first without the lock, so a login with nothing to do never waits for it.
   const before = assess(credentialPath(accountDir), now, options.ctx, options.renewRejected);
   if (!before.renew) return before.outcome;
-  return oneRenewalPerLogin(sha256Fingerprint(before.refreshToken), () => renewUnderLock(accountDir, options));
+  const login = sha256Fingerprint(before.refreshToken);
+  return oneRenewalPerLogin(login, () => {
+    // Only with a ctx: without one, ccx's own folders are not to be looked in.
+    const editor = options.ctx ? editorHolding(login, options.ctx) : null;
+    return editor ? renewWithEditor(accountDir, options, editor, login) : renewUnderLock(accountDir, options);
+  });
+}
+
+/**
+ * The longest ccx holds the editor folder's login lock for one renewal of the
+ * login the editor holds. Claude 2.1.302 waits for that lock at least 4 s (5
+ * tries, 1 to 2 s apart, in its refresh) and then gives up without renewing, so
+ * ccx lets go well inside that, and the editor's Claude then reads ccx's
+ * renewal under the lock and sends nothing.
+ */
+export const EDITOR_RENEWAL_HOLD_MS = 3_000;
+/** Less of the hold left than this, and the token request is not sent: cut short, it would lose the login it spent. */
+const EDITOR_REQUEST_MIN_MS = 1_000;
+
+/**
+ * Renew a login the editor's folder holds too: under that folder's lock as well
+ * as the profile's, bounded by EDITOR_RENEWAL_HOLD_MS, and written into the
+ * folder before its lock is let go, which is how the old link to the profile
+ * kept the two apart. A folder lock held by the editor's Claude means it is
+ * renewing the login itself, so nothing is sent.
+ */
+async function renewWithEditor(
+  accountDir: string,
+  options: RefreshOptions,
+  editor: FolderLogin,
+  retired: string,
+): Promise<RefreshOutcome> {
+  const deadline = Date.now() + EDITOR_RENEWAL_HOLD_MS;
+  const lock = acquireLockDir(path.join(editor.dir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
+  if (lock.unusable) {
+    return { status: 'unavailable', detail: `the editor folder's lock could not be created (${lock.unusable})` };
+  }
+  if (!lock.held) return { status: 'busy', detail: 'your editor is renewing this login' };
+  try {
+    const outcome = await renewUnderLock(
+      accountDir,
+      { ...options, lockWaitMs: Math.min(options.lockWaitMs ?? EDITOR_REQUEST_MIN_MS, EDITOR_REQUEST_MIN_MS) },
+      deadline,
+    );
+    if (outcome.status === 'refreshed') {
+      try {
+        replaceFolderLogin(editor, retired, readCredential(credentialPath(accountDir)));
+      } catch {
+        /* the profile has it; the editor's next move or refresh takes it */
+      }
+    }
+    return outcome;
+  } finally {
+    lock.release();
+  }
 }
 
 const oneRenewalPerLogin = renewOneAtATime();
@@ -208,8 +263,12 @@ function assess(file: string, now: () => number, ctx: PathCtx | undefined, rejec
   return { renew: true, raw, auth: oauth, refreshToken: oauth.refreshToken, identity };
 }
 
-/** Renew a login found due for renewal: under its lock, having read it again there. */
-async function renewUnderLock(accountDir: string, options: RefreshOptions): Promise<RefreshOutcome> {
+/**
+ * Renew a login found due for renewal: under its lock, having read it again
+ * there. With a `deadline`, nothing is sent once too little of it is left, and
+ * the request may take no longer than what is.
+ */
+async function renewUnderLock(accountDir: string, options: RefreshOptions, deadline?: number): Promise<RefreshOutcome> {
   const now = options.now ?? (() => Date.now());
   const file = credentialPath(accountDir);
   const ctx = options.ctx;
@@ -237,7 +296,16 @@ async function renewUnderLock(accountDir: string, options: RefreshOptions): Prom
     // this login meanwhile, and the token read above is then spent.
     const underLock = assess(file, now, ctx, options.renewRejected);
     if (!underLock.renew) return underLock.outcome;
-    return await performRenewal(accountDir, options, underLock);
+    if (deadline === undefined) return await performRenewal(accountDir, options, underLock);
+    const left = deadline - Date.now();
+    if (left < EDITOR_REQUEST_MIN_MS) {
+      return { status: 'busy', detail: "too little of the editor's wait for its lock was left to renew within it" };
+    }
+    return await performRenewal(
+      accountDir,
+      { ...options, requestTimeoutMs: Math.min(options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS, left) },
+      underLock,
+    );
   } finally {
     lock.release();
   }

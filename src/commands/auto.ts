@@ -1,6 +1,6 @@
 import { getActive, setActive } from '../state/active.js';
 import { requestMoves } from '../state/switch-request.js';
-import { syncEditorPointerIfEnabled } from '../editor/junction.js';
+import { moveEditorToActive } from '../editor/folder.js';
 import { proactiveTick, type TickResult } from '../usage/proactive.js';
 import { DEFAULT_PROACTIVE_PERCENT } from './proactive-config.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
@@ -70,7 +70,7 @@ export async function autoCommand(context: CliContext, options: AutoOptions = {}
       if (options.dryRun) return;
       const leaving = getActive(context.ctx);
       setActive(account, context.ctx);
-      syncEditorPointerIfEnabled(context);
+      void moveEditorToActive(context);
       // Each running session on the account being left is asked by a request
       // of its own and moves in place. A shared request was taken by whichever
       // session looked first, which need not be one on that account at all.

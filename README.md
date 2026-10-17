@@ -158,9 +158,40 @@ be written down before `ccx-claude` ends. The extension also has Claude write
 its debug log to standard error for as long as the chat is open: ccx passes
 all of it on to the editor, never reads a debug line as a limit, and keeps
 only the last 65,536 characters of the rest. `ccx on`
-and `ccx editor on` set up the editor differently: they point its
-`CLAUDE_CONFIG_DIR` at the active account, and no ccx process runs beside the
-editor's Claude.
+and `ccx editor on` set the editor up differently: on a folder of its own
+(below), with no ccx process beside the editor's Claude.
+
+**The editor's own folder.** `ccx on` and `ccx editor on` set the editor's
+`CLAUDE_CONFIG_DIR` (its `claudeCode.environmentVariables` setting) to
+`~/.claude-auto-switch/editor-active`, a folder built like a session's: your
+projects and chats, settings, memory, skills, agents and commands, with only the
+login its own. A switch (`ccx use`, the dashboard, a terminal session moving to
+another account) replaces that login in place, as a session's move does, under
+the lock Claude takes, and on macOS in the Keychain item Claude names after the
+folder as the editor's setting spells it, so a chat open in the editor carries
+on on the next account at its next message. The folder never ends, so ccx
+brings it into step with your files at every switch, `ccx on`, `ccx editor on`,
+`ccx doctor` and every terminal session's start: what the editor changed goes
+into your `settings.json`, `~/.claude.json` and memory, what you changed comes
+into it, and where both changed one setting yours stays and the editor's copy is
+kept in `rescued/`. ccx renews the login the editor holds only while it holds the
+editor folder's lock too, for at most 3 s, well inside the time Claude waits for
+that lock, and writes the renewal into the folder before letting go; a renewal
+the editor's Claude made there goes home before ccx renews that account. A limit
+met inside an editor chat is not noticed by itself yet; the editor moves
+whenever ccx switches accounts. `ccx editor off` hands back what the folder
+holds, saves its login home, and removes it.
+
+An install set up before this had a link at that path to the active account's
+own folder. ccx moves it into the folder by itself at its first switch or
+session start, keeping the path, so the editor's setting stays as it is: the
+chats, checkpoints and prompts in every account folder are merged into your
+`~/.claude` (hard links: nothing is copied, moved or deleted), and an account
+folder's own settings, memory, keybindings and Claude choices that are not yours
+are kept in `rescued/`. A login the editor's Claude kept in a Keychain item of
+its own (#129) goes home to its account. While an editor chat started through
+the link is open, the move waits, for up to a day; if it goes ahead with one
+open, it merges once more after that chat closes.
 
 Two launches still wait for the usage check, because ccx cannot tell that a
 refusal there was the run's own:
@@ -181,10 +212,8 @@ with nothing typed in the input box (set the prompt with `ccx resume-prompt`, or
 the main thread meets the limit. When the next account's login is due for
 renewal, ccx renews it first and then moves in place, unless another session may
 be using that login, since renewing it would sign that session out. Your editor
-being on it does not stop this: Claude renews a login under the same lock ccx
-takes, and reads it again under it. (On macOS, once the editor's Claude has
-saved a login it keeps it in a Keychain item of its own and no longer follows
-the account ccx points it at: #129.)
+being on it does not stop this: ccx renews it under the editor folder's lock as
+well, and writes the renewal into that folder.
 When every account looks out of room, ccx moves the session in place to the
 account a relaunch would have started it on anyway, and says so, because that
 judgement is cached and can be wrong. It never guesses its way onto an account
@@ -542,9 +571,10 @@ usage check, as `ccx config <key>` says.
 | ---------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `~/.claude-auto-switch/profiles/<name>/` | each account's login, owner-only (separate Keychain entries on macOS)                        |
 | `~/.claude-auto-switch/sessions/<pid>/`  | per-session config folders, cleared after the session ends                                   |
+| `~/.claude-auto-switch/editor-active/`   | the editor's config folder: your setup linked in, its own login (a Keychain item on macOS)   |
 | `~/.claude-auto-switch/config.json`      | your settings                                                                                |
 | `~/.claude-auto-switch/events.jsonl`     | what ccx did (`ccx history`)                                                                 |
-| `~/.claude-auto-switch/rescued/`         | session changes that could not be merged back                                                |
+| `~/.claude-auto-switch/rescued/`         | session and editor changes that could not be merged back; account folders' own files         |
 | `~/.claude-auto-switch/artifacts.jsonl`  | each page a session published while page routing was on, and its owner                       |
 | `~/.claude/settings.json`                | the `statusLine` key; the Desktop hooks and the Artifact hooks when enabled; session changes |
 | `~/.claude.json`                         | session changes to your preferences, MCP servers and folder trust                            |

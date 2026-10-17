@@ -2,7 +2,7 @@ import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import { probeAll } from '../health/prober.js';
 import { select } from '../selector/selector.js';
-import { syncEditorPointerIfEnabled } from '../editor/junction.js';
+import { moveEditorToActive } from '../editor/folder.js';
 import { getClaude, type CliContext } from '../context.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { preferredModel, roomOfFromSnapshot } from '../usage/account-room.js';
@@ -29,7 +29,7 @@ export async function rotateCommand(context: CliContext): Promise<number> {
   }
 
   setActive(result.account.name, context.ctx);
-  syncEditorPointerIfEnabled(context);
+  void moveEditorToActive(context);
   context.out(`rotated to: ${result.account.name}`);
   return 0;
 }
