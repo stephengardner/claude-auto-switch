@@ -25,8 +25,7 @@ import { shellCoverage, shellPlans } from '../shell/shells.js';
 import { configHome } from '../config/paths.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { confirmCap } from '../usage/confirm-cap.js';
-import { refusalProof } from '../session/refused-turn.js';
-import { otherLiveWriter } from '../session/other-writers.js';
+import { judgeRefusal } from '../session/refused-turn.js';
 
 /** Show a one-time tip about the transparent shim, after an interactive session. */
 function maybeHintShim(context: CliContext): void {
@@ -151,22 +150,16 @@ export async function runCommand(
           ...(context.capProbe ? { probe: context.capProbe } : {}),
           ...(recorded
             ? {
-                refusal: () =>
-                  refusalProof(
-                    {
-                      ...recorded,
-                      otherWriter: () =>
-                        recorded.conversation === null
-                          ? null
-                          : otherLiveWriter(
-                              recorded.conversation,
-                              { sessionDir: null, claudePid: null, configDirs: accounts.map((a) => a.dir) },
-                              context.ctx,
-                              context.isClaudeProcess ? { isClaude: context.isClaudeProcess } : {},
-                            ),
-                    },
-                    0,
-                  ),
+                refusal: judgeRefusal(
+                  recorded,
+                  {
+                    sessionDir: null,
+                    configDirs: () => accounts.map((a) => a.dir),
+                    ctx: context.ctx,
+                    ...(context.isClaudeProcess ? { isClaude: context.isClaudeProcess } : {}),
+                  },
+                  () => 0,
+                ),
               }
             : {}),
         }),

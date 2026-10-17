@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { refusalProof, type RecordedRefusal, type RefusalProof } from './refused-turn.js';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import {
+  judgeRefusal,
+  limitNamed,
+  refusalProof,
+  type RecordedRefusal,
+  type RefusalProof,
+  type WriterLookup,
+} from './refused-turn.js';
 import type { Refusal } from './transcript.js';
 
 const LAUNCHED = 1_000_000;
@@ -173,5 +183,64 @@ describe('what a refused turn in the record proves on its own', () => {
     );
     await judge(counting);
     expect(asked).toBe(0);
+  });
+});
+
+describe('the limit a refusal names', () => {
+  it("is the whole account's, one model's, or none ccx knows", () => {
+    expect(limitNamed('five_hour')).toEqual({});
+    expect(limitNamed('seven_day')).toEqual({});
+    expect(limitNamed('seven_day_opus')).toEqual({ model: 'Opus' });
+    expect(limitNamed('seven_day_overage_included')).toEqual({ model: 'Fable' });
+    for (const name of ['overage', 'constructor', '', undefined]) expect(limitNamed(name), String(name)).toBeNull();
+  });
+});
+
+describe('judging a refusal for a usage check that cannot answer', () => {
+  const CONVERSATION = '11111111-2222-4333-8444-555555555555';
+  function accounts(): { home: string; account: string; lookup: WriterLookup } {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-judge-'));
+    const account = path.join(home, 'profiles', 'A');
+    mkdirSync(path.join(account, 'sessions'), { recursive: true });
+    const lookup: WriterLookup = {
+      sessionDir: null,
+      configDirs: () => [account],
+      ctx: { env: { HOME: home, USERPROFILE: home } },
+      isClaude: () => true,
+    };
+    return { home, account, lookup };
+  }
+  const now = (): RecordedRefusal => {
+    const at = Date.now() - 1_000;
+    return recorded({ at, resetsAt: at + 60 * 60_000 }, { launchedAt: at - 5_000, conversation: CONVERSATION });
+  };
+
+  it("proves the limit when no other Claude is on the conversation, the judged one's own record aside", async () => {
+    const { account, lookup } = accounts();
+    const own = now();
+    writeFileSync(
+      path.join(account, 'sessions', `${own.claudePid}.json`),
+      JSON.stringify({ pid: own.claudePid, sessionId: CONVERSATION }),
+    );
+    expect((await judgeRefusal(own, lookup, () => 0)()).proves).toBe(true);
+  });
+
+  it("proves nothing while another live Claude's record in an account's folder names the conversation", async () => {
+    const { account, lookup } = accounts();
+    writeFileSync(path.join(account, 'sessions', '7777.json'), JSON.stringify({ pid: 7777, sessionId: CONVERSATION }));
+    expect(await judgeRefusal(now(), lookup, () => 0)()).toEqual({
+      proves: false,
+      why: 'another Claude (pid 7777) is on this conversation too, so the refusal may be its',
+    });
+  });
+
+  it('reads when the login changed as it judges, after the usage check has been asked', async () => {
+    const { lookup } = accounts();
+    const refused = now();
+    let changedAt = 0;
+    const judgement = judgeRefusal(refused, lookup, () => changedAt);
+    // A move under the running Claude while the usage check was out.
+    changedAt = refused.refusal.at! + 1_000;
+    expect((await judgement()).why).toBe('the refusal was recorded before the login under Claude changed');
   });
 });

@@ -1,4 +1,6 @@
 import type { Refusal } from './transcript.js';
+import type { PathCtx } from '../config/paths.js';
+import { otherLiveWriter } from './other-writers.js';
 
 /**
  * Whether a refused turn in Claude's own record proves, on its own, that the
@@ -60,6 +62,17 @@ const MODEL_LIMITS = new Map([
   ['seven_day_overage_included', 'Fable'],
 ]);
 
+/**
+ * The limit Claude's name for it (`limitType`) stands for: the whole
+ * account's (no model), or one model's, or null for a name ccx does not know.
+ */
+export function limitNamed(limitType: string | undefined): { model?: string } | null {
+  const type = limitType ?? '';
+  const model = MODEL_LIMITS.get(type);
+  if (model !== undefined) return { model };
+  return ACCOUNT_LIMITS.has(type) ? {} : null;
+}
+
 /** A refused turn from the record, with what tells whether it is the session's own turn now. */
 export interface RecordedRefusal {
   refusal: Refusal;
@@ -107,10 +120,9 @@ export async function refusalProof(
     return not(`the refusal (${refusal.apiError ?? refusal.error}) does not say a usage limit is spent`);
   }
   const type = refusal.limitType ?? '';
-  const model = MODEL_LIMITS.get(type);
-  if (!ACCOUNT_LIMITS.has(type) && model === undefined) {
-    return not(`the refusal does not say which limit it is (${type || 'no name'})`);
-  }
+  const named = limitNamed(type);
+  if (named === null) return not(`the refusal does not say which limit it is (${type || 'no name'})`);
+  const { model } = named;
   const at = refusal.at;
   if (at === null) return not('the refusal carries no time, so it may not be this turn');
   if (at > now + CLOCK_SKEW_MS) return not('the refusal is stamped in the future');
@@ -140,4 +152,38 @@ export async function refusalProof(
     ...(model !== undefined ? { model } : {}),
     ...(refusal.resetsAt !== undefined ? { resetAt: refusal.resetsAt } : {}),
   };
+}
+
+/** Where another live Claude on a refusal's conversation is looked for (see other-writers). */
+export interface WriterLookup {
+  /** The session's own folder, whose announcement is its own; null for a launch with none. */
+  sessionDir: string | null;
+  /** The accounts' folders, where a Claude started in one keeps its per-process record. */
+  configDirs: () => string[];
+  ctx: PathCtx;
+  /** Whether a pid is a live Claude; injected in tests, where the fake claude runs as `node`. */
+  isClaude?: (pid: number) => boolean;
+}
+
+/**
+ * The judgement a usage check asks for when it cannot answer (confirm-cap's
+ * `refusal`): `recorded` by refusalProof's rules, with another live Claude on
+ * its conversation looked for as `lookup` says. `loginChangedAt` is read when
+ * the judgement is made, since the check comes first.
+ */
+export function judgeRefusal(
+  recorded: RecordedRefusal,
+  lookup: WriterLookup,
+  loginChangedAt: () => number,
+): () => Promise<RefusalProof> {
+  const otherWriter = (): string | null =>
+    recorded.conversation === null
+      ? null
+      : otherLiveWriter(
+          recorded.conversation,
+          { sessionDir: lookup.sessionDir, claudePid: recorded.claudePid, configDirs: lookup.configDirs() },
+          lookup.ctx,
+          lookup.isClaude ? { isClaude: lookup.isClaude } : {},
+        );
+  return () => refusalProof({ ...recorded, otherWriter }, loginChangedAt());
 }

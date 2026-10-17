@@ -60,9 +60,14 @@ import {
   setTerminalOwnedElsewhere,
 } from '../launcher/notify.js';
 import { copyUserSettings, ensureSharedProjects, ensureSharedUserConfig } from '../session/shared-root.js';
-import { confirmSessionCap, usageAnswer, type SessionCapDecision } from '../usage/confirm-cap.js';
-import { refusalProof, type RecordedRefusal } from '../session/refused-turn.js';
-import { otherLiveWriter } from '../session/other-writers.js';
+import {
+  confirmSessionCap,
+  refusalConfirmed,
+  refusalLimitEnd,
+  usageAnswer,
+  type SessionCapDecision,
+} from '../usage/confirm-cap.js';
+import { judgeRefusal, type RecordedRefusal, type WriterLookup } from '../session/refused-turn.js';
 import { resolveSessionIdentity, maskEmail } from '../session/session-identity.js';
 import { createTerminalWriter } from '../ui/terminal-writer.js';
 import { readUsageSnapshot, refreshUsage, renewIdleLogin, snapshotAgeMs } from '../usage/usage-store.js';
@@ -711,16 +716,13 @@ export async function runInteractiveHotSwap(
    * soon after can be the old login's (session/refused-turn).
    */
   let loginChangedAt = 0;
-  /** Another live Claude ccx knows of on the conversation of `recorded`, in words, or null. */
-  const writerBesides = (recorded: RecordedRefusal): string | null =>
-    recorded.conversation === null
-      ? null
-      : otherLiveWriter(
-          recorded.conversation,
-          { sessionDir, claudePid: recorded.claudePid, configDirs: accounts.map((a) => a.dir) },
-          context.ctx,
-          context.isClaudeProcess ? { isClaude: context.isClaudeProcess } : {},
-        );
+  /** Where another live Claude on a refusal's conversation is looked for: this session's folder, and every account's. */
+  const writers: WriterLookup = {
+    sessionDir,
+    configDirs: () => accounts.map((a) => a.dir),
+    ctx: context.ctx,
+    ...(context.isClaudeProcess ? { isClaude: context.isClaudeProcess } : {}),
+  };
 
   /**
    * Tell the rotation how WIDE a limit was, so a spent model does not read as a
@@ -789,7 +791,7 @@ export async function runInteractiveHotSwap(
           modelInUse: runningModel(),
           // Judged only once the usage check has no answer.
           ...(recorded
-            ? { refusal: () => refusalProof({ ...recorded, otherWriter: () => writerBesides(recorded) }, loginChangedAt) }
+            ? { refusal: judgeRefusal(recorded, writers, () => loginChangedAt) }
             : {}),
           ...(context.capProbe ? { probe: context.capProbe } : {}),
         },
@@ -858,18 +860,9 @@ export async function runInteractiveHotSwap(
         }
       }
       if (decision.byRefusal) {
-        // Until the reset the refusal names, which is this turn's own. Without
-        // one, the end already on the ledger for the account (another
-        // session's answered check, moments ago when the endpoint is this
-        // busy), and failing that the configured backoff.
         const owner = capOwner ?? current?.name ?? '';
-        limitedResetAt =
-          decision.resetAt ?? (decision.model ? undefined : accountCapEnd(loadLedger(context.ctx), owner, Date.now()));
-        notice(
-          `the usage check could not answer (${usageAnswer(decision)}), ` +
-            `but ${decision.refusalWhy ?? 'Claude recorded the turn as refused'}, which confirms the limit`,
-          { kind: 'cap-verify', data: refusalData },
-        );
+        limitedResetAt = refusalLimitEnd(decision, () => accountCapEnd(loadLedger(context.ctx), owner, Date.now()));
+        notice(refusalConfirmed(decision), { kind: 'cap-verify', data: refusalData });
       }
     }
     if (verdict !== 'limited') {

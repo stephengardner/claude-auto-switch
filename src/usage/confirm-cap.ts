@@ -169,6 +169,25 @@ export function usageAnswer(decision: CapDecision): string {
   return decision.asks !== undefined ? `${said}, asked ${decision.asks} times` : said;
 }
 
+/** How the log says that Claude's record of a refused turn confirmed a limit the usage check could not. */
+export function refusalConfirmed(decision: CapDecision): string {
+  return (
+    `the usage check could not answer (${usageAnswer(decision)}), ` +
+    `but ${decision.refusalWhy ?? 'Claude recorded the turn as refused'}, which confirms the limit`
+  );
+}
+
+/**
+ * When a limit a refused turn confirmed (`byRefusal`) ends: at the reset the
+ * refusal names, which is that turn's own. Without one, a limit on the whole
+ * account keeps the end already on the ledger for it, `ledgerEnd` (another
+ * session's answered check, moments ago when the endpoint is this busy), and
+ * otherwise undefined, which leaves the configured backoff.
+ */
+export function refusalLimitEnd(decision: CapDecision, ledgerEnd: () => number | undefined): number | undefined {
+  return decision.resetAt ?? (decision.model ? undefined : ledgerEnd());
+}
+
 /** The decision from what the usage check said, and how it was asked. */
 async function decide(asked: Asked, deps: ConfirmCapDeps): Promise<CapDecision> {
   const { result } = asked;

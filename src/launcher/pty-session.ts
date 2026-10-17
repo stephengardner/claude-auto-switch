@@ -3,9 +3,10 @@ import { resetChildTerminalModes } from '../ui/child-terminal-modes.js';
 import type { IPty } from 'node-pty';
 import { nodePty } from '../util/native-pty.js';
 import { matchesCapText, resetAtIn } from './cap-detect.js';
-import { createRefusalFollower, type Refusal } from '../session/transcript.js';
+import type { Refusal } from '../session/transcript.js';
 import type { RecordedRefusal } from '../session/refused-turn.js';
-import { gateRefusals, type RefusalGate } from '../session/refusal-gate.js';
+import type { RefusalGate } from '../session/refusal-gate.js';
+import { createRecordWatch } from '../session/record-watch.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { normalizeExitCode } from './exit-code.js';
@@ -14,7 +15,7 @@ import { createCapOutcome } from './cap-outcome.js';
 import { openTerminalInput, type TerminalInput } from './terminal-input.js';
 import type { SessionOutcome } from './hot-swap.js';
 import { wantsExistingConversation, conversationIdIn } from './conversation.js';
-import { idleForMs, readLiveConversation, readLiveStatus } from '../session/live-conversation.js';
+import { idleForMs, readLiveStatus } from '../session/live-conversation.js';
 import { ACCOUNT_ENV, withoutEnv } from './child-env.js';
 import { createCarryOn, inputBoxEmpty, type CarryOn, type CarryOnTiming } from './carry-on.js';
 import { createKeyboardWatch } from './keyboard-watch.js';
@@ -286,8 +287,6 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     const keyboard = createKeyboardWatch();
     /** Whether this child reads a marked paste as text. */
     const pasteMode = createPasteModeWatch();
-    /** When Claude last recorded a prompt typed at its terminal. */
-    let lastPromptAt = 0;
     /** When a subagent's record was last seen to grow: it was running then. */
     let subagentWroteAt = 0;
     /**
@@ -327,13 +326,17 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     /** Whether a limit turning up now is to be let be (see PtySessionOptions.ignoreLimits). */
     const limitsIgnored = (): boolean =>
       typeof options.ignoreLimits === 'function' ? options.ignoreLimits() : options.ignoreLimits === true;
-    /** The conversation's own record, read as it grows (see session/transcript). */
-    // A launch that starts a new conversation reads its record whole; one that
-    // resumes skips the history it brings with it.
-    const record = gateRefusals(
-      createRefusalFollower(options.configDir, !wantsExistingConversation(options.args)),
-      options.limitGate,
-    );
+    /**
+     * Claude's own records: the conversation it is in, and that conversation's
+     * record, read as it grows (see session/record-watch). It keeps when a
+     * prompt was last typed, too.
+     */
+    const watch = createRecordWatch({
+      configDir: options.configDir,
+      startsNew: !wantsExistingConversation(options.args),
+      launchedAt: startedAt,
+      ...(options.limitGate ? { gate: options.limitGate } : {}),
+    });
     /** Whether that record can be read yet. Until it can, the screen stands in for it. */
     let recordReadable = false;
     let window = '';
@@ -383,14 +386,11 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       }
     };
 
-    let lastConversation: string | null = null;
     /** Ask Claude which conversation the child is in, and pass on a change. */
     const noteConversation = (): void => {
       if (!options.onConversation || !child.pid) return;
-      const id = readLiveConversation(options.configDir, child.pid, startedAt);
-      if (!id || id === lastConversation) return;
-      lastConversation = id;
-      options.onConversation(id);
+      const id = watch.noteConversation(child.pid);
+      if (id) options.onConversation(id);
     };
 
     /** A refusal as evidence: Claude's own codes, and the wording for the checks that read it. */
@@ -409,15 +409,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      * cannot say whether it drew a refusal.
      */
     const recordedOf = (refusal: Refusal | undefined): RecordedRefusal | undefined =>
-      refusal
-        ? {
-            refusal,
-            launchedAt: startedAt,
-            promptAt: lastPromptAt,
-            conversation: lastConversation,
-            claudePid: child.pid || null,
-          }
-        : undefined;
+      refusal ? watch.recorded(refusal, child.pid || null) : undefined;
 
     /**
      * Hand on each turn the conversation's record says was refused, once. This
@@ -425,16 +417,16 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      */
     const checkRecord = (): void => {
       if (cap.isSet() || switching || pendingCapRelief || noConversation) return;
-      const seen = record.poll(lastConversation);
+      // Read in every run, limits watched or not: when a prompt was last typed
+      // (the watch keeps it), whether the input box is empty and whether a
+      // subagent is working decide when Claude may be ended.
+      const seen = watch.poll();
       recordCheckedAt = Date.now();
       recordReadable = seen.readable;
-      // Read in every run, limits watched or not: whether the input box is
-      // empty and whether a subagent is working decide when Claude may be ended.
-      // Before the refusals: one that follows a prompt is judged against it.
-      if (seen.promptAt !== null) lastPromptAt = Math.max(lastPromptAt, seen.promptAt);
       if (seen.subagentsWrote) subagentWroteAt = Date.now();
-      if (lastConversation !== null && lastConversation !== watched.conversation) {
-        watched = { conversation: lastConversation, since: Date.now() };
+      const conversation = watch.conversation();
+      if (conversation !== null && conversation !== watched.conversation) {
+        watched = { conversation, since: Date.now() };
       }
       // Not a limit, so watched even when limits are not.
       if (seen.signedOut !== null) onSignedOut(seen.signedOut);
@@ -493,7 +485,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         status,
         lastKeyAt: keyboard.lastKeyAt(),
         endedOnEnter: keyboard.endedOnEnter(),
-        promptAt: lastPromptAt,
+        promptAt: watch.promptAt(),
         readsPastes: pasteMode.on(),
         subagentWroteAt,
         // Drawn since Claude began waiting, a moment's slack either side: the
@@ -555,7 +547,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         !inputBoxEmpty({
           lastKeyAt: keyboard.lastKeyAt(),
           endedOnEnter: keyboard.endedOnEnter(),
-          promptAt: lastPromptAt,
+          promptAt: watch.promptAt(),
         })
       ) {
         return { kind: 'draft', why: 'something is typed in its input box' };
@@ -817,7 +809,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         // login it had, or the account it moved to is out as well, which the
         // check below says.
         if (carryOn) {
-          carryOn.refused(Date.now(), lastPromptAt);
+          carryOn.refused(Date.now(), watch.promptAt());
           options.onCarryOn?.({ kind: 'refused' });
         }
         // Counted BEFORE the suppression below, and that ordering is the whole
@@ -1095,12 +1087,11 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
          */
         const verifyHeldThenFinalize = (): void => {
           // One last read of the record, for a refusal written just before the
-          // exit; the screen only counts while the record could not be read.
-          const final = record.poll(lastConversation);
+          // exit; the screen only counts while the record could not be read. A
+          // prompt read only now still comes after a refusal held before it.
+          const final = watch.poll();
           const ignoring = limitsIgnored();
           if (final.readable && !ignoring) recordReadable = true;
-          // A prompt read only now still comes after a refusal held before it.
-          if (final.promptAt !== null) lastPromptAt = Math.max(lastPromptAt, final.promptAt);
           // A "Please run /login" written just before the exit is asked about
           // too; finalize waits for the answer.
           if (final.signedOut !== null) onSignedOut(final.signedOut, true);
