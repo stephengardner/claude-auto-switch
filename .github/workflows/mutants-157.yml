@@ -1,0 +1,52 @@
+# Throwaway: lives only on this mutation branch for #157, never on main.
+# ci.yml runs on pushes to main and on pull requests only, so a branch with no
+# pull request runs this workflow and nothing else.
+name: mutants 157
+
+on:
+  push:
+    branches: ['mutants/editor-folder-157-review4']
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+
+  mutants:
+    name: mutants (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: node scripts/mutants-157.mjs --check
+      - run: node scripts/mutants-157.mjs
+
+  old:
+    name: new tests against 2b57c5f (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: node scripts/mutants-157.mjs --old 2b57c5f
