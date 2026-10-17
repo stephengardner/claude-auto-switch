@@ -144,9 +144,12 @@ one Claude answers every turn of a chat and stops only when the chat is
 closed, and what it prints goes to the editor, not through ccx. So ccx follows
 that Claude's own records while it runs: which conversation it is in (a
 `/clear` included) and the turns refused there, judged as they are written by
-the same rules as in a terminal. A confirmed limit is recorded once, however
-many turns Claude refuses on it, and the editor's next chat starts on the next
-account; the chat that met it stays on its account until it is closed. `ccx on`
+the same rules as in a terminal. A confirmed limit is recorded once for as long
+as it lasts, however many turns Claude refuses on it, and the editor's next
+chat starts on the next account; the chat that met it stays on its account
+until it is closed, and meeting the limit again after its reset is recorded
+again. When the extension closes a chat, a check still under way gets 4 s to
+be written down before `ccx-claude` ends. `ccx on`
 and `ccx editor on` set up the editor differently: they point its
 `CLAUDE_CONFIG_DIR` at the active account, and no ccx process runs beside the
 editor's Claude.

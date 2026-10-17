@@ -126,6 +126,19 @@ export function isCapped(ledger: Ledger, account: string, now: number): boolean 
   return ledger.caps.some((c) => c.account === account && !c.model && isActive(c, now));
 }
 
+/**
+ * Whether a limit is on the ledger and still holds at `now`: the whole
+ * account's, which takes in every model, or, given `model`, that model's on
+ * the account. A limit whose reset has passed is not, so the account meeting
+ * a limit again after that is news.
+ */
+export function limitOnLedger(ledger: Ledger, account: string, model: string | undefined, now: number): boolean {
+  return ledger.caps.some(
+    (c) =>
+      c.account === account && isActive(c, now) && (!c.model || (model !== undefined && sameModel(c.model, model))),
+  );
+}
+
 /** The set of accounts that cannot run at all at time `now`. */
 export function cappedNames(ledger: Ledger, now: number): Set<string> {
   return new Set(ledger.caps.filter((c) => !c.model && isActive(c, now)).map((c) => c.account));

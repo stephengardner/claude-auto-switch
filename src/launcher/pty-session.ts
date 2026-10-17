@@ -7,6 +7,7 @@ import type { Refusal } from '../session/transcript.js';
 import type { RecordedRefusal } from '../session/refused-turn.js';
 import type { RefusalGate } from '../session/refusal-gate.js';
 import { createRecordWatch } from '../session/record-watch.js';
+import { createCheckBackoff } from '../session/check-backoff.js';
 import { invokerArgs, type ClaudeInvoker } from '../invoker.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { normalizeExitCode } from './exit-code.js';
@@ -242,7 +243,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      * can veto.
      */
     const blockedWatch = createBlockedWatch(options.blockedWatch);
-    const refuteBackoffMs = options.refuteBackoffMs ?? 20_000;
+    /** When the main thread's refusals may be asked about again (session/check-backoff). */
+    const mainBackoff = createCheckBackoff(options.refuteBackoffMs);
     /**
      * A match that was seen but never probed, because a backoff or an in-flight
      * probe was in the way.
@@ -267,7 +269,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      * within seconds, and the answer to the first stands for all of them, but
      * it must not make the main thread's own refusal wait.
      */
-    let sidechainQuietUntil = 0;
+    const sidechainBackoff = createCheckBackoff(options.refuteBackoffMs);
     /**
      * The main thread was refused while a subagent's refusal was being checked,
      * and that refusal is held in `unprobed`. It is not settled by the
@@ -344,7 +346,6 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     let switching: string | null = null;
     let exited = false;
     let verifying = false;
-    let suppressUntil = 0;
     let lastHit: (Hit & { sidechain: boolean }) | null = null;
     let pendingVerify: Promise<boolean> | null = null;
     /** What Claude showed when its login was turned away, once that was confirmed finished. */
@@ -637,7 +638,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         // screen (and any replay) does not immediately re-trigger, and drop the
         // held match now that it has been acted on.
         window = '';
-        suppressUntil = Date.now() + refuteBackoffMs;
+        mainBackoff.pause(Date.now());
         unprobed = null;
         blockedWatch.changed();
         carryOnAccount = decision.account;
@@ -661,7 +662,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // ends on a subagent's word: the main thread meets the limit itself at its
       // next request, and that refusal takes the path below.
       if (decision.kind === 'left' || pending.sidechain) {
-        sidechainQuietUntil = Date.now() + refuteBackoffMs;
+        sidechainBackoff.pause(Date.now());
         checkMainRefusedMeanwhile();
         return;
       }
@@ -802,7 +803,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      */
     const onLimitEvidence = (hit: Hit, snapshot: string, sidechain: boolean, refusal?: Refusal): void => {
       if (sidechain) {
-        if (Date.now() < sidechainQuietUntil) return;
+        if (sidechainBackoff.paused(Date.now())) return;
       } else {
         // The main thread stopped on a refusal. If a prompt was just typed
         // into it, that prompt is what was refused: Claude was still on the
@@ -847,7 +848,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
 
     /** Ask the account about a refusal, or hold it while that cannot be done yet. */
     const checkRefusal = (hit: Hit, snapshot: string, sidechain: boolean, refusal?: Refusal): void => {
-      if (verifying || Date.now() < suppressUntil) {
+      if (verifying || mainBackoff.paused(Date.now())) {
         if (!sidechain) {
           unprobed = { text: snapshot, hit, ...(refusal ? { refusal } : {}) };
           if (verifying && lastHit?.sidechain) mainRefusedMeanwhile = true;
@@ -863,8 +864,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       }
       /** Not confirmed: do not ask again for a while, about the same kind of refusal. */
       const backOff = (): void => {
-        if (sidechain) sidechainQuietUntil = Date.now() + refuteBackoffMs;
-        else suppressUntil = Date.now() + refuteBackoffMs;
+        if (sidechain) sidechainBackoff.pause(Date.now());
+        else mainBackoff.pause(Date.now());
       };
       verifying = true;
       lastHit = { reason: hit.reason, resetAt: hit.resetAt, sidechain };

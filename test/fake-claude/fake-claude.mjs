@@ -351,6 +351,14 @@ if (process.env.FAKE_CLAUDE_GRANDCHILD && firstLaunch) {
 if (process.env.FAKE_CLAUDE_IGNORE_TERM && firstLaunch) {
   process.on('SIGTERM', () => {});
 }
+// One that says, in the runs log, that it was asked to stop, then stops as a
+// process ended by SIGTERM reports it.
+if (process.env.FAKE_CLAUDE_NOTE_TERM && runsLog) {
+  process.on('SIGTERM', () => {
+    appendFileSync(runsLog, `${JSON.stringify({ type: 'signal', signal: 'SIGTERM' })}\n`, 'utf8');
+    process.exit(143);
+  });
+}
 // Half an event, cut off by the end of the launch, as a kill mid-write leaves it.
 if (process.env.FAKE_CLAUDE_PARTIAL_LINE && outputFormat === 'stream-json' && firstLaunch) {
   process.stdout.write('{"type":"assistant","message":{"content":"cut off mid');
@@ -515,27 +523,27 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
    * The limit a refusal names, as Claude 2.1.29x writes it: its type
    * (FAKE_CLAUDE_LIMIT_TYPE, five_hour by default) and when it resets in
    * epoch seconds (FAKE_CLAUDE_RESETS_AT, an hour on by default, "none" for
-   * no time). `limitType` names it for one refusal instead.
+   * no time). `turn` names either for one refusal instead.
    */
-  const rateLimitInfo = (limitType) => {
-    const resets = process.env.FAKE_CLAUDE_RESETS_AT;
+  const rateLimitInfo = (turn = {}) => {
+    const resets = turn.resetsAt !== undefined ? String(turn.resetsAt) : process.env.FAKE_CLAUDE_RESETS_AT;
     return {
       status: 'rejected',
-      rateLimitType: limitType ?? process.env.FAKE_CLAUDE_LIMIT_TYPE ?? 'five_hour',
+      rateLimitType: turn.limitType ?? process.env.FAKE_CLAUDE_LIMIT_TYPE ?? 'five_hour',
       ...(resets === 'none' ? {} : { resetsAt: resets ? Number(resets) : Math.floor(Date.now() / 1000) + 3600 }),
       overageStatus: 'rejected',
       overageDisabledReason: 'org_level_disabled',
       isUsingOverage: false,
     };
   };
-  const refusalEntry = (extra = {}, limitType = undefined) => ({
+  const refusalEntry = (extra = {}, turn = {}) => ({
     type: 'assistant',
     isSidechain: false,
     isApiErrorMessage: true,
     error: 'rate_limit',
     apiError: 'usage_limit_reached',
     apiErrorStatus: 429,
-    apiErrorParams: { rate_limit_info: rateLimitInfo(limitType) },
+    apiErrorParams: { rate_limit_info: rateLimitInfo(turn) },
     timestamp: new Date(Date.now() - (Number(process.env.FAKE_CLAUDE_REFUSAL_AGE_MS) || 0)).toISOString(),
     message: {
       model: '<synthetic>',
@@ -856,22 +864,29 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
             done();
             return;
           }
-          recordNow([
-            {
-              type: 'user',
-              isSidechain: false,
-              ...(message.origin?.kind === 'human' ? { origin: { kind: 'human' } } : {}),
-              timestamp: new Date().toISOString(),
-              message: { role: 'user', content: text },
-            },
-          ]);
+          // What a test asks of this one turn (`fake`): the limit its refusal
+          // names and when that resets (`limitType`, `resetsAt` in epoch
+          // seconds), or that a subagent meets it (`subagent`), whose record is
+          // its own and whose prompt nobody typed.
+          const asked = message.fake ?? {};
+          const subagent = asked.subagent === true;
+          if (!subagent) {
+            recordNow([
+              {
+                type: 'user',
+                isSidechain: false,
+                ...(message.origin?.kind === 'human' ? { origin: { kind: 'human' } } : {}),
+                timestamp: new Date().toISOString(),
+                message: { role: 'user', content: text },
+              },
+            ]);
+          }
           setStatus('busy');
           setTimeout(() => {
             const marker = loginForRequest();
             const refused = refusedOn(marker);
-            // A test can name the limit of one turn's refusal (`fake.limitType`).
             const answer = refused
-              ? refusalEntry({}, message.fake?.limitType)
+              ? refusalEntry(subagent ? { isSidechain: true, agentId: 'aturn01' } : {}, asked)
               : {
                   type: 'assistant',
                   isSidechain: false,
@@ -890,7 +905,14 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
                     },
                   ]
                 : [];
-            recordNow([answer, ...typedAfter]);
+            if (subagent) {
+              const main = path.join(configDir, 'projects', 'fake-project', `${recordedId}.jsonl`);
+              const file = path.join(path.dirname(main), recordedId, 'subagents', 'agent-aturn01.jsonl');
+              mkdirSync(path.dirname(file), { recursive: true });
+              appendFileSync(file, `${JSON.stringify(answer)}\n`);
+            } else {
+              recordNow([answer, ...typedAfter]);
+            }
             if (runsLog) {
               appendFileSync(runsLog, `${JSON.stringify({ type: 'prompt', text, marker, refused, pid: process.pid })}\n`, 'utf8');
             }

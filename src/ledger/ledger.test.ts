@@ -8,6 +8,7 @@ import {
   modelOnlyLimit,
   activeModelCaps,
   accountCapEnd,
+  limitOnLedger,
 } from './ledger.js';
 import type { Ledger } from './ledger.schema.js';
 
@@ -195,5 +196,26 @@ describe('when an account-wide limit already recorded ends', () => {
     expect(accountCapEnd(l, 'other', 2000)).toBeUndefined();
     const fable = markCapped(empty, { account: 'a', now: 1000, resetAt: 50_000, model: 'Fable' });
     expect(accountCapEnd(fable, 'a', 2000)).toBeUndefined();
+  });
+});
+
+describe('whether a limit is on the ledger now', () => {
+  it("takes in every model for the whole account's limit, and only that model for one model's", () => {
+    const whole = markCapped(empty, { account: 'a', now: 1000, resetAt: 50_000 });
+    expect(limitOnLedger(whole, 'a', undefined, 2000)).toBe(true);
+    expect(limitOnLedger(whole, 'a', 'Opus', 2000)).toBe(true);
+    expect(limitOnLedger(whole, 'b', undefined, 2000)).toBe(false);
+    const opus = markCapped(empty, { account: 'a', now: 1000, resetAt: 50_000, model: 'Opus' });
+    expect(limitOnLedger(opus, 'a', 'opus', 2000)).toBe(true);
+    expect(limitOnLedger(opus, 'a', 'Fable', 2000)).toBe(false);
+    expect(limitOnLedger(opus, 'a', undefined, 2000)).toBe(false);
+  });
+
+  it('is not, once the limit has reset', () => {
+    const whole = markCapped(empty, { account: 'a', now: 1000, resetAt: 50_000 });
+    expect(limitOnLedger(whole, 'a', undefined, 49_999)).toBe(true);
+    expect(limitOnLedger(whole, 'a', undefined, 50_000)).toBe(false);
+    const opus = markCapped(empty, { account: 'a', now: 1000, resetAt: 50_000, model: 'Opus' });
+    expect(limitOnLedger(opus, 'a', 'Opus', 50_000)).toBe(false);
   });
 });

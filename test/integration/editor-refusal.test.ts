@@ -32,6 +32,9 @@ const RESUMED = '34343434-5656-4787-8989-010101010101';
 const CLEARED = '56565656-7878-4909-8a1a-121212121212';
 
 const TURNED_AWAY: LimitProbeResult = { verdict: 'unknown', detail: 'status 429' };
+const ROOM: LimitProbeResult = { verdict: 'allowed', fiveHour: 0.1, sevenDay: 0.1 };
+/** An answer of the usage endpoint; with `waitFor`, given only once that file appears in the home folder. */
+type Answer = LimitProbeResult & { waitFor?: string };
 /** The usage check answering that the whole account is out, until `resetAt`. */
 const OUT = (resetAt: number): LimitProbeResult => ({ verdict: 'limited', fiveHour: 1, sevenDay: 0.4, fiveHourReset: resetAt });
 /** The usage check answering that only Opus is out, until `resetAt`. */
@@ -96,13 +99,24 @@ const capsIn = (home: string): Cap[] => {
 };
 /** Whose login the usage check was asked with, in order. */
 const asked = (home: string): string[] => linesOf(path.join(home, 'asked.txt'));
+/** Let the usage endpoint give an answer that waits for `name` (see wrapperScript). */
+const release = (home: string, name = 'release'): void => writeFileSync(path.join(home, name), '', 'utf8');
+/** Claude's own record of another process of its on `conversation`, in the shared folder: this test's own process stands in for it. */
+function otherClaudeOn(home: string, conversation: string): void {
+  mkdirSync(path.join(home, '.claude', 'sessions'), { recursive: true });
+  writeFileSync(
+    path.join(home, '.claude', 'sessions', `${process.pid}.json`),
+    JSON.stringify({ pid: process.pid, sessionId: conversation, kind: 'interactive' }),
+    'utf8',
+  );
+}
 const recordOf = (home: string, account: string, conversation: string): string =>
   path.join(home, 'profiles', account, 'projects', 'fake-project', `${conversation}.jsonl`);
 
 /** Accounts A and B, both signed in, the editor on A, and the usage endpoint answering as given. */
 async function twoAccounts(
   prefix: string,
-  usage: Record<string, LimitProbeResult[]>,
+  usage: Record<string, Answer[]>,
 ): Promise<{ home: string; ctx: PathCtx }> {
   const home = mkdtempSync(path.join(tmpdir(), prefix));
   const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home } };
@@ -134,9 +148,12 @@ async function twoAccounts(
 /**
  * The wrapper as the extension starts it, in a process of its own: ccx's
  * wrapperLaunch on `<claude> ...args`, with the usage endpoint answering from
- * `usage.json` (each account's answers in turn, the last one standing) and
- * the fake claude, which runs as `node`, counted as a Claude. It reads
- * Claude's records every 100 ms, or every EDITOR_FOLLOW_MS.
+ * `usage.json` (each account's answers in turn, the last one standing; one
+ * with `waitFor` answers once that file appears in the home folder) and the
+ * fake claude, which runs as `node`, counted as a Claude. It reads Claude's
+ * records every 100 ms, or every EDITOR_FOLLOW_MS, and holds refused turns
+ * back for 20 s after a check that confirms nothing, as production does, or
+ * for EDITOR_REFUTE_BACKOFF_MS.
  */
 function wrapperScript(home: string): string {
   const script = path.join(home, 'editor-wrapper.mts');
@@ -144,7 +161,7 @@ function wrapperScript(home: string): string {
   writeFileSync(
     script,
     [
-      `import { appendFileSync, readFileSync } from 'node:fs';`,
+      `import { appendFileSync, existsSync, readFileSync } from 'node:fs';`,
       `import { EOL } from 'node:os';`,
       `import path from 'node:path';`,
       `import { wrapperLaunch } from ${source('src', 'commands', 'editor-launch.ts')};`,
@@ -157,10 +174,16 @@ function wrapperScript(home: string): string {
       `  const account = JSON.parse(readFileSync(credentialsFile, 'utf8')).account ?? '?';`,
       `  appendFileSync(path.join(home, 'asked.txt'), account + EOL);`,
       `  const queue = answers[account] ?? [];`,
-      `  return (queue.length > 1 ? queue.shift() : queue[0]) ?? { verdict: 'allowed', fiveHour: 0.1, sevenDay: 0.1 };`,
+      `  const answer = (queue.length > 1 ? queue.shift() : queue[0]) ?? { verdict: 'allowed', fiveHour: 0.1, sevenDay: 0.1 };`,
+      `  const until = Date.now() + 30000;`,
+      `  while (answer.waitFor && !existsSync(path.join(home, answer.waitFor)) && Date.now() < until) {`,
+      `    await new Promise((resolve) => setTimeout(resolve, 25));`,
+      `  }`,
+      `  return answer;`,
       `};`,
       `const context = { ctx, config: loadConfig(ctx), claude: { bin: process.execPath, prefixArgs: [fake] },`,
       `  capProbe: probe, isClaudeProcess: processIsAlive, editorFollowMs: Number(process.env.EDITOR_FOLLOW_MS) || 100,`,
+      `  refuteBackoffMs: Number(process.env.EDITOR_REFUTE_BACKOFF_MS) || undefined,`,
       `  out: () => {}, err: () => {}, json: false, quiet: false };`,
       `process.exit(await wrapperLaunch(context, [process.execPath, fake, ...claudeArgs]));`,
     ].join('\n'),
@@ -169,19 +192,29 @@ function wrapperScript(home: string): string {
   return script;
 }
 
+/** What the fake claude is asked to do with one turn when it refuses it (see its README). */
+interface Turn {
+  limitType?: string;
+  /** In epoch seconds. */
+  resetsAt?: number;
+  subagent?: boolean;
+}
+
 interface Chat {
-  /**
-   * Tell Claude something, as the extension's webview sends a message
-   * somebody typed. `limitType`: the limit the fake claude names if it
-   * refuses this turn.
-   */
-  send(text: string, limitType?: string): void;
+  /** Tell Claude something, as the extension's webview sends a message somebody typed. */
+  send(text: string, turn?: Turn): void;
   /** Whether Claude has answered `count` turns, within a while. */
   answered(count: number): Promise<boolean>;
   /** Whether the wrapper, and with it Claude, is still running. */
   running(): boolean;
   /** Close the chat, as the extension does: its input ends. The wrapper's exit code. */
   close(): Promise<number | null>;
+  /** End the input without waiting, as the extension does first when it closes a chat. */
+  endInput(): void;
+  /** Send the wrapper `signal`, as the extension does 2 s after closing a chat whose wrapper still runs. */
+  signal(signal: NodeJS.Signals): void;
+  /** The wrapper's exit code, once it has exited. */
+  exited: Promise<number | null>;
 }
 
 const opened: ChildProcess[] = [];
@@ -218,14 +251,14 @@ function openChat(home: string, chatArgs: string[], env: Record<string, string> 
   });
   child.stderr?.resume();
   return {
-    send(text, limitType) {
+    send(text, turn) {
       const message = {
         type: 'user',
         session_id: '',
         parent_tool_use_id: null,
         origin: { kind: 'human' },
         message: { role: 'user', content: [{ type: 'text', text }] },
-        ...(limitType ? { fake: { limitType } } : {}),
+        ...(turn ? { fake: turn } : {}),
       };
       child.stdin?.write(`${JSON.stringify(message)}\n`);
     },
@@ -235,6 +268,13 @@ function openChat(home: string, chatArgs: string[], env: Record<string, string> 
       child.stdin?.end();
       return exited;
     },
+    endInput() {
+      child.stdin?.end();
+    },
+    signal(signal) {
+      child.kill(signal);
+    },
+    exited,
   };
 }
 
@@ -248,7 +288,11 @@ const notMoving = (why: string): string =>
 
 describe('an editor chat that meets a limit while the usage check is turned away (against fake-claude)', () => {
   afterEach(() => {
-    for (const child of opened.splice(0)) if (child.exitCode === null) child.kill();
+    // Its input ended too, so a Claude the wrapper left behind ends as well.
+    for (const child of opened.splice(0)) {
+      child.stdin?.end();
+      if (child.exitCode === null) child.kill();
+    }
   });
 
   it(
@@ -325,10 +369,11 @@ describe('an editor chat that meets a limit while the usage check is turned away
     { timeout: 60_000 },
     async () => {
       const { home, ctx } = await twoAccounts('cas-editor-clear-', { A: [TURNED_AWAY] });
-      const chat = openChat(home, [], { FAKE_CLAUDE_CLEAR_TO: CLEARED });
+      // Held back only briefly after a check that confirms nothing.
+      const chat = openChat(home, [], { FAKE_CLAUDE_CLEAR_TO: CLEARED, EDITOR_REFUTE_BACKOFF_MS: '500' });
       // A first turn, refused for a limit ccx cannot name: its verdict shows
       // that ccx is following the chat's first conversation.
-      chat.send('hello', 'seven_day_someday');
+      chat.send('hello', { limitType: 'seven_day_someday' });
       expect(await chat.answered(1)).toBe(true);
       await until(() => verdicts(home).length > 0);
       expect(verdicts(home)).toEqual([notMoving('the refusal does not say which limit it is (seven_day_someday)')]);
@@ -504,6 +549,225 @@ describe('an editor chat that meets a limit while the usage check is turned away
         expect.objectContaining({ account: 'A', model: 'Opus', capUntil: resetsAt * 1000 }),
       ]);
       expect(said(home, 'A hit its limit (editor)')).toBe(1);
+    },
+  );
+
+  it(
+    'records the limit again when the chat meets it after its reset',
+    { timeout: 60_000 },
+    async () => {
+      // An editor's Claude outlives a limit: refused at 10:00 for one that
+      // resets at 15:00, and at 18:00 for the next, on the same Claude.
+      const { home } = await twoAccounts('cas-editor-again-', { A: [TURNED_AWAY] });
+      const chat = openChat(home, []);
+      const first = Math.floor(Date.now() / 1000) + 4;
+      chat.send('hello', { resetsAt: first });
+      expect(await chat.answered(1)).toBe(true);
+      await until(() => said(home, 'A hit its limit (editor)') === 1);
+      expect(capsIn(home)).toEqual([expect.objectContaining({ account: 'A', capUntil: first * 1000 })]);
+
+      await until(() => Date.now() > first * 1000 + 300, 10_000);
+      const second = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
+      chat.send('hello again', { resetsAt: second });
+      expect(await chat.answered(2)).toBe(true);
+      await until(() => said(home, 'A hit its limit (editor)') === 2);
+
+      expect(chat.running()).toBe(true);
+      expect(asked(home)).toEqual(['A', 'A']);
+      expect(said(home, 'A hit its limit (editor)')).toBe(2);
+      expect(capsIn(home)).toEqual([expect.objectContaining({ account: 'A', capUntil: second * 1000 })]);
+      expect(await chat.close()).toBe(0);
+    },
+  );
+
+  it(
+    "asks about Claude's last words once the limit the record proved has reset",
+    { timeout: 60_000 },
+    async () => {
+      const later = Date.now() + 5 * 60 * 60_000;
+      const { home } = await twoAccounts('cas-editor-again-words-', { A: [TURNED_AWAY, OUT(later)] });
+      const chat = openChat(home, [], {
+        FAKE_CLAUDE_LAST_WORDS: "You've hit your session limit. Run /usage-credits to continue.",
+        FAKE_CLAUDE_EXIT_CODE: '1',
+      });
+      const first = Math.floor(Date.now() / 1000) + 4;
+      chat.send('hello', { resetsAt: first });
+      expect(await chat.answered(1)).toBe(true);
+      await until(() => said(home, 'A hit its limit (editor)') === 1);
+      await until(() => Date.now() > first * 1000 + 300, 10_000);
+
+      expect(await chat.close()).toBe(1);
+      expect(asked(home)).toEqual(['A', 'A']);
+      expect(said(home, 'A hit its limit (editor)')).toBe(2);
+      expect(capsIn(home)).toEqual([expect.objectContaining({ account: 'A', capUntil: later })]);
+    },
+  );
+
+  it(
+    'holds the next refused turns back after a check that confirms nothing, as a terminal session does',
+    { timeout: 60_000 },
+    async () => {
+      const { home } = await twoAccounts('cas-editor-backoff-', { A: [ROOM] });
+      const chat = openChat(home, []);
+      chat.send('hello');
+      expect(await chat.answered(1)).toBe(true);
+      await until(() => verdicts(home).length === 1);
+      // The person tries again at once, and is refused again.
+      chat.send('please');
+      expect(await chat.answered(2)).toBe(true);
+      // Long enough for ccx to have read that refusal several times over.
+      await sleep(1_000);
+      expect(asked(home)).toEqual(['A']);
+      expect(verdicts(home)).toEqual(['Claude recorded a refused turn in the editor, but "A" shows no spent window; nothing recorded']);
+
+      expect(await chat.close()).toBe(0);
+      // The one held back is asked about as Claude exits, as in a terminal.
+      expect(asked(home)).toEqual(['A', 'A']);
+      expect(capsIn(home)).toEqual([]);
+    },
+  );
+
+  it(
+    'judges a held refusal on the conversation it was read from, after a /clear',
+    { timeout: 60_000 },
+    async () => {
+      // The first turn's check waits; meanwhile the session limit refuses the
+      // second turn, read from the first conversation, where another live
+      // Claude is at work; then a /clear moves this Claude elsewhere.
+      const { home } = await twoAccounts('cas-editor-held-conversation-', {
+        A: [{ ...TURNED_AWAY, waitFor: 'release' }, TURNED_AWAY],
+      });
+      otherClaudeOn(home, NEW_CHAT);
+      const chat = openChat(home, [], { FAKE_CLAUDE_CLEAR_TO: CLEARED });
+      chat.send('hello', { limitType: 'seven_day_someday' });
+      expect(await chat.answered(1)).toBe(true);
+      await until(() => asked(home).length === 1);
+      chat.send('please');
+      expect(await chat.answered(2)).toBe(true);
+      await sleep(500);
+      chat.send('/clear');
+      expect(await chat.answered(3)).toBe(true);
+      await sleep(500);
+      release(home);
+      await until(() => verdicts(home).length === 1);
+
+      expect(await chat.close()).toBe(0);
+      expect(capsIn(home)).toEqual([]);
+      expect(verdicts(home)).toEqual([
+        notMoving('the refusal does not say which limit it is (seven_day_someday)'),
+        notMoving(`another Claude (pid ${process.pid}) is on this conversation too, so the refusal may be its`),
+      ]);
+    },
+  );
+
+  it(
+    'keeps a refusal for the whole account held back behind a later one for one model',
+    { timeout: 60_000 },
+    async () => {
+      // While the first turn's check waits, the main thread is refused for the
+      // session limit and then a subagent for its weekly Opus limit.
+      const resetsAt = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
+      const { home } = await twoAccounts('cas-editor-held-scope-', {
+        A: [{ ...TURNED_AWAY, waitFor: 'release' }, TURNED_AWAY],
+      });
+      const chat = openChat(home, [], { FAKE_CLAUDE_RESETS_AT: String(resetsAt) });
+      chat.send('hello', { limitType: 'seven_day_someday' });
+      expect(await chat.answered(1)).toBe(true);
+      await until(() => asked(home).length === 1);
+      chat.send('please');
+      expect(await chat.answered(2)).toBe(true);
+      chat.send('carry on', { subagent: true, limitType: 'seven_day_opus' });
+      expect(await chat.answered(3)).toBe(true);
+      await sleep(500);
+      release(home);
+      await until(() => verdicts(home).length === 1);
+
+      expect(await chat.close()).toBe(0);
+      // The whole account's, asked about first, which takes in Opus too.
+      expect(capsIn(home)).toEqual([expect.objectContaining({ account: 'A', capUntil: resetsAt * 1000 })]);
+      expect(capsIn(home)[0]?.model).toBeUndefined();
+      expect(asked(home)).toEqual(['A', 'A']);
+    },
+  );
+});
+
+/**
+ * How the extension (2.1.302) ends a chat's process: it closes its input,
+ * then sends SIGTERM 2 s later if the wrapper still runs, and SIGKILL 5 s
+ * after that. Off Windows only: there it sends no SIGTERM, only the SIGKILL.
+ */
+describe.skipIf(process.platform === 'win32')('an editor chat ended by the extension (against fake-claude)', () => {
+  afterEach(() => {
+    for (const child of opened.splice(0)) {
+      child.stdin?.end();
+      if (child.exitCode === null) child.kill();
+    }
+  });
+
+  it(
+    'finishes a check under way when the wrapper is asked to end after the chat closed',
+    { timeout: 60_000 },
+    async () => {
+      const { home } = await twoAccounts('cas-editor-term-check-', { A: [{ ...TURNED_AWAY, waitFor: 'release' }] });
+      const chat = openChat(home, []);
+      chat.send('hello');
+      expect(await chat.answered(1)).toBe(true);
+      await until(() => asked(home).length === 1);
+      chat.endInput();
+      await sleep(300);
+      const endedAt = Date.now();
+      chat.signal('SIGTERM');
+      await sleep(500);
+      release(home);
+      const code = await chat.exited;
+
+      expect(capsIn(home)).toEqual([expect.objectContaining({ account: 'A' })]);
+      expect(code).toBe(143);
+      expect(Date.now() - endedAt).toBeLessThan(5_000);
+    },
+  );
+
+  it('passes the end on to its Claude while it runs', { timeout: 60_000 }, async () => {
+    const { home } = await twoAccounts('cas-editor-term-claude-', { A: [TURNED_AWAY] });
+    const runsLog = path.join(home, 'runs.jsonl');
+    const chat = openChat(home, [], {
+      FAKE_CLAUDE_REFUSE_ON: '',
+      FAKE_CLAUDE_RUNS_LOG: runsLog,
+      FAKE_CLAUDE_NOTE_TERM: '1',
+    });
+    chat.send('hello');
+    expect(await chat.answered(1)).toBe(true);
+    chat.signal('SIGTERM');
+    const code = await chat.exited;
+
+    const signals = linesOf(runsLog)
+      .map((l) => JSON.parse(l) as { type?: string; signal?: string })
+      .filter((e) => e.type === 'signal');
+    expect(signals).toEqual([{ type: 'signal', signal: 'SIGTERM' }]);
+    expect(code).toBe(143);
+  });
+
+  it(
+    'gives up on a check that does not answer before the extension would kill it',
+    { timeout: 60_000 },
+    async () => {
+      const { home } = await twoAccounts('cas-editor-term-bound-', { A: [{ ...TURNED_AWAY, waitFor: 'never' }] });
+      const chat = openChat(home, []);
+      chat.send('hello');
+      expect(await chat.answered(1)).toBe(true);
+      await until(() => asked(home).length === 1);
+      chat.endInput();
+      await sleep(300);
+      const endedAt = Date.now();
+      chat.signal('SIGTERM');
+      const code = await chat.exited;
+      const took = Date.now() - endedAt;
+
+      expect(code).toBe(143);
+      // It waited for the check, but not into the extension's SIGKILL.
+      expect(took).toBeGreaterThanOrEqual(3_500);
+      expect(took).toBeLessThan(5_000);
+      expect(capsIn(home)).toEqual([]);
     },
   );
 });

@@ -44,13 +44,17 @@ Its behavior is driven by a **scenario** JSON, resolved in this order:
   events on standard output, staying up until its input ends. Each prompt is
   recorded in the conversation the process is in now, typed by a person when
   the message says `origin: { kind: "human" }`, and refused when the login in
-  use is one `FAKE_CLAUDE_REFUSE_ON` names, for the limit a message's own
-  `fake.limitType` names when it has one. `/clear` moves it to the next
+  use is one `FAKE_CLAUDE_REFUSE_ON` names. A message's own `fake` asks for
+  one turn: the limit its refusal names and when that resets (`limitType`,
+  `resetsAt` in epoch seconds), or that a subagent meets it (`subagent`), in a
+  record of its own with no prompt typed. `/clear` moves it to the next
   conversation in `FAKE_CLAUDE_CLEAR_TO`. `FAKE_CLAUDE_PROMPT_WITH_REFUSAL`
   writes each refusal together with a prompt typed after it, and
   `FAKE_CLAUDE_LAST_WORDS` goes to standard error as the input ends.
   `FAKE_CLAUDE_SESSION_RECORD_AFTER_MS` writes the per-process record only that
   late, as when Claude takes its first turn before it registers itself.
+- `FAKE_CLAUDE_NOTE_TERM` (with `FAKE_CLAUDE_RUNS_LOG`): a SIGTERM is logged
+  as `signal` before the run ends with 143.
 
 ## Scenario shape
 

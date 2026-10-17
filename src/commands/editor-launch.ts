@@ -1,9 +1,17 @@
+import type { ChildProcess } from 'node:child_process';
 import { listAccounts } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import { probeAll } from '../health/prober.js';
 import { select } from '../selector/selector.js';
 import { launchWatched, spawnWatched, type WatchedResult } from '../launcher/launcher.js';
-import { loadLedger, updateLedger, markCapped, cappedNames, accountCapEnd } from '../ledger/ledger.js';
+import {
+  loadLedger,
+  updateLedger,
+  markCapped,
+  cappedNames,
+  accountCapEnd,
+  limitOnLedger,
+} from '../ledger/ledger.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { appendEvent } from '../events/log.js';
@@ -18,8 +26,10 @@ import {
 } from '../usage/confirm-cap.js';
 import { judgeRefusal, limitNamed, type RecordedRefusal, type WriterLookup } from '../session/refused-turn.js';
 import { createRecordWatch, type RecordWatch } from '../session/record-watch.js';
+import { createCheckBackoff } from '../session/check-backoff.js';
 import type { Refusal } from '../session/transcript.js';
 import { conversationIdIn, forksConversation, wantsExistingConversation } from '../launcher/conversation.js';
+import { exitCodeForSignal, type SignalSource } from '../launcher/interruption.js';
 import { normalizeModel } from '../usage/model-preference.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
@@ -44,8 +54,15 @@ async function pickAccount(context: CliContext): Promise<Account | undefined> {
 const FOLLOW_MS = 1_200;
 /** The longest the end of a run waits for a check still under way; the usage check gives up sooner. */
 const CHECK_WAIT_MS = 12_000;
-/** A limit on the whole account, among the limits a launch has recorded; one model's goes by its name. */
+/**
+ * How long ccx-claude goes on once the extension asks it to end. The
+ * extension (2.1.302, ProcessTransport.close) closes Claude's input, sends
+ * SIGTERM 2 s later to a wrapper still running, and SIGKILL 5 s after that.
+ */
+const ENDING_MS = 4_000;
+/** Among refusals held back: the whole account's limit, and one ccx cannot name. A model's goes by its name. */
 const WHOLE_ACCOUNT = 'the whole account';
+const UNNAMED = 'a limit ccx cannot name';
 
 /** Wait for `promise` to settle, or for `ms` to pass, whichever is first. */
 function within(promise: Promise<unknown>, ms: number): Promise<void> {
@@ -59,10 +76,21 @@ function within(promise: Promise<unknown>, ms: number): Promise<void> {
   });
 }
 
+/** A refused turn as read, with the conversation whose record it was read from. */
+interface Seen {
+  refusal: Refusal;
+  conversation: string | null;
+}
+
 interface EditorWatch {
-  /** Told the pid of the Claude just started; following begins. */
-  started(pid: number): void;
-  /** After Claude has exited: its record's last news, the check still under way, then its standard error. */
+  /** Told of the Claude just started; following begins. */
+  started(child: ChildProcess): void;
+  /**
+   * The wrapper is asked to end: Claude is told to end as well while it runs,
+   * and refusals held back are asked about now.
+   */
+  ending(): void;
+  /** After Claude has exited: its record's last news, the checks still due, then its standard error. */
   finished(result: WatchedResult): Promise<void>;
 }
 
@@ -81,10 +109,10 @@ interface EditorWatch {
  *
  * However a limit was seen, one check decides it (`act`): the account's own
  * usage, with Claude's record of the refused turn standing in when that cannot
- * answer, judged by the same rules as a terminal session's. Each limit is
- * recorded, and moves the editor, once per launch: a person retrying a refused
- * turn, or limit text on standard error about a limit the record already
- * proved, records nothing again.
+ * answer, judged by the same rules as a terminal session's. A limit the ledger
+ * already holds for this account is neither asked about nor recorded again,
+ * and a check that confirms nothing holds the next ones back as a terminal
+ * session's does (session/check-backoff).
  */
 function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: string[]): EditorWatch {
   const home = configHome(context.ctx);
@@ -100,16 +128,46 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
     ctx: context.ctx,
     ...(context.isClaudeProcess ? { isClaude: context.isClaudeProcess } : {}),
   };
-  /** The limits this launch has recorded: the whole account's, or one model's by name. */
-  const recordedLimits = new Set<string>();
+  /**
+   * Whether the ledger, which every session writes, holds a limit of this
+   * scope for the account that still holds. An editor's Claude outlives a
+   * limit's reset, and meeting it again after that is news.
+   */
   const covered = (model: string | undefined): boolean =>
-    recordedLimits.has(WHOLE_ACCOUNT) || (model !== undefined && recordedLimits.has(normalizeModel(model)));
+    limitOnLedger(loadLedger(context.ctx), chosen.name, model, Date.now());
+  const backoff = createCheckBackoff(context.refuteBackoffMs);
   let watch: RecordWatch | null = null;
-  let pid: number | null = null;
+  let child: ChildProcess | null = null;
   let timer: NodeJS.Timeout | null = null;
-  /** The check under way for a refused turn, and the newest one read meanwhile, which is asked about next. */
+  /** The check under way for a refused turn. */
   let checking: Promise<void> | null = null;
-  let held: Refusal | null = null;
+  /**
+   * Refused turns waiting to be asked about, the newest of each limit. One
+   * newest of all would let a refusal for one model, read later, push out the
+   * whole account's, which is the only one that keeps the next chat off it.
+   */
+  const held = new Map<string, Seen>();
+  /** Claude is ending or has ended: what is held is asked about now, whatever the back-off says. */
+  let ending = false;
+
+  const scopeOf = (refusal: Refusal): string => {
+    const named = limitNamed(refusal.limitType);
+    if (named === null) return UNNAMED;
+    return named.model === undefined ? WHOLE_ACCOUNT : normalizeModel(named.model);
+  };
+  const hold = (seen: Seen): void => {
+    const scope = scopeOf(seen.refusal);
+    held.delete(scope);
+    held.set(scope, seen);
+  };
+  /** The next refusal held back, the whole account's first, since it takes in every other. */
+  const takeHeld = (): Seen | null => {
+    const scope = held.has(WHOLE_ACCOUNT) ? WHOLE_ACCOUNT : [...held.keys()][0];
+    if (scope === undefined) return null;
+    const seen = held.get(scope) ?? null;
+    held.delete(scope);
+    return seen;
+  };
 
   // The injected verdict when a test supplies one, exactly as the session path
   // does; otherwise the account's own credential, which is the one this Claude
@@ -136,6 +194,7 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
     const seenIn = recorded ? 'record' : 'stderr';
     const seen = recorded ? 'Claude recorded a refused turn in the editor' : 'limit text in the editor';
     if (!decision.limited) {
+      backoff.pause(Date.now());
       appendEvent(
         home,
         decision.unanswered
@@ -147,9 +206,8 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
       );
       return;
     }
-    // Asked again after the check: one that finished first may have recorded it.
+    // Asked again after the check: it may have been recorded meanwhile, here or elsewhere.
     if (covered(decision.model)) return;
-    recordedLimits.add(decision.model === undefined ? WHOLE_ACCOUNT : normalizeModel(decision.model));
     if (decision.byRefusal) {
       appendEvent(home, `in the editor, ${refusalConfirmed(decision)}`, Date.now(), {
         kind: 'cap-verify',
@@ -195,39 +253,49 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
     }
   };
 
-  const refused = (refusal: Refusal): void => {
+  const refused = (seen: Seen): void => {
     // Claude refuses every turn the person tries until a limit resets, and each
     // check spends the usage endpoint's budget, which every session on the
-    // machine shares: a limit already recorded is not asked about again.
-    if (!watch || covered(limitNamed(refusal.limitType)?.model)) return;
-    if (checking) {
-      held = refusal;
+    // machine shares: a limit the ledger holds is not asked about again.
+    if (!watch || covered(limitNamed(seen.refusal.limitType)?.model)) return;
+    if (checking || (!ending && backoff.paused(Date.now()))) {
+      hold(seen);
       return;
     }
-    // Judged as things are when it is asked about: a held refusal against a
-    // prompt typed while it waited.
-    checking = act(refusal.text, refusal.apiError ?? refusal.error, watch.recorded(refusal, pid))
+    // Judged as things are when it is asked about, so a prompt typed while it
+    // waited counts against it, but on the conversation it was read from.
+    const recorded = { ...watch.recorded(seen.refusal, child?.pid ?? null), conversation: seen.conversation };
+    checking = act(seen.refusal.text, seen.refusal.apiError ?? seen.refusal.error, recorded)
       .catch(() => {
         /* a check that fails records nothing */
       })
       .finally(() => {
         checking = null;
-        const next = held;
-        held = null;
+        const next = takeHeld();
         if (next) refused(next);
       });
+  };
+
+  /** Ask about the next refusal held back, unless a check is under way, which does so when it ends. */
+  const askHeld = (): void => {
+    if (checking) return;
+    const next = takeHeld();
+    if (next) refused(next);
   };
 
   /** Read what Claude's records gained. `live`: Claude is running, so which conversation it is in can be asked. */
   const look = (live: boolean): void => {
     if (!watch) return;
-    if (live && pid !== null) watch.noteConversation(pid);
-    for (const refusal of watch.poll().refusals) refused(refusal);
+    const pid = child?.pid;
+    if (live && pid !== undefined) watch.noteConversation(pid);
+    const news = watch.poll();
+    const conversation = watch.conversation();
+    for (const refusal of news.refusals) refused({ refusal, conversation });
   };
 
   return {
-    started(childPid) {
-      pid = childPid;
+    started(claude) {
+      child = claude;
       watch = createRecordWatch({ configDir: chosen.dir, startsNew, launchedAt: Date.now(), resumes });
       timer = setInterval(() => {
         try {
@@ -238,9 +306,15 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
       }, context.editorFollowMs ?? FOLLOW_MS);
       timer.unref?.();
     },
+    ending() {
+      ending = true;
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      askHeld();
+    },
     async finished(result) {
       if (timer) clearInterval(timer);
       timer = null;
+      ending = true;
       // A refusal written just before Claude exited. Its per-process record went
       // with it, so the conversation is the one last seen.
       try {
@@ -248,12 +322,52 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
       } catch {
         /* nothing more to read */
       }
+      askHeld();
       const deadline = Date.now() + CHECK_WAIT_MS;
       while (checking !== null && Date.now() < deadline) await within(checking, deadline - Date.now());
       if (result.classification.kind !== 'capped' || covered(undefined)) return;
       await act(result.stderr, result.classification.reason ?? 'usage cap');
     },
   };
+}
+
+/** Where SIGTERM comes from, and how the wrapper ends itself: the process's own unless a test says. */
+export interface WrapperDeps {
+  signals?: SignalSource;
+  exit?: (code: number) => never;
+}
+
+/**
+ * Run Claude with `watch` following it, and end as the extension asks. Node
+ * dies on SIGTERM unless something listens for it, which would lose a check
+ * under way and the limit it would record. So the first SIGTERM is passed on
+ * to Claude while it runs, and what is under way gets ENDING_MS, inside the 5 s
+ * the extension waits before SIGKILL; a second SIGTERM ends the wrapper at once.
+ */
+async function runFollowed(
+  watch: EditorWatch,
+  run: (started: (child: ChildProcess) => void) => Promise<WatchedResult>,
+  deps: WrapperDeps,
+): Promise<number> {
+  const signals = deps.signals ?? process;
+  const exit = deps.exit ?? ((code: number): never => process.exit(code));
+  const endedCode = exitCodeForSignal('SIGTERM');
+  let asked = false;
+  const onTerm = (): void => {
+    if (asked) exit(endedCode);
+    asked = true;
+    watch.ending();
+    const giveUp = setTimeout(() => exit(endedCode), ENDING_MS);
+    giveUp.unref?.();
+  };
+  signals.on('SIGTERM', onTerm);
+  try {
+    const result = await run(watch.started);
+    await watch.finished(result);
+    return asked ? endedCode : result.exitCode;
+  } finally {
+    signals.removeListener('SIGTERM', onTerm);
+  }
 }
 
 /**
@@ -263,7 +377,7 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
  * recorded and the active account moved, so the next chat starts elsewhere.
  * This is what the editor's claudeProcessWrapper setting points at.
  */
-export async function wrapperLaunch(context: CliContext, argv: string[]): Promise<number> {
+export async function wrapperLaunch(context: CliContext, argv: string[], deps: WrapperDeps = {}): Promise<number> {
   const chosen = await pickAccount(context);
   if (!chosen || argv.length === 0) {
     // No usable account, or nothing to run: exec the command untouched.
@@ -272,9 +386,11 @@ export async function wrapperLaunch(context: CliContext, argv: string[]): Promis
   }
   ensureEditorReady(chosen.dir, context.ctx);
   const watch = watchEditorLaunch(context, chosen, argv.slice(1));
-  const result = await spawnWatched(argv[0]!, argv.slice(1), { CLAUDE_CONFIG_DIR: chosen.dir }, watch.started);
-  await watch.finished(result);
-  return result.exitCode;
+  return runFollowed(
+    watch,
+    (started) => spawnWatched(argv[0]!, argv.slice(1), { CLAUDE_CONFIG_DIR: chosen.dir }, started),
+    deps,
+  );
 }
 
 /**
@@ -282,7 +398,7 @@ export async function wrapperLaunch(context: CliContext, argv: string[]): Promis
  * the chosen account. Used when ccx-claude is invoked directly (not via an
  * editor that passes the full command).
  */
-export async function editorLaunch(context: CliContext, args: string[]): Promise<number> {
+export async function editorLaunch(context: CliContext, args: string[], deps: WrapperDeps = {}): Promise<number> {
   const claude = getClaude(context);
   const chosen = await pickAccount(context);
   if (!chosen) {
@@ -290,9 +406,11 @@ export async function editorLaunch(context: CliContext, args: string[]): Promise
   }
   ensureEditorReady(chosen.dir, context.ctx);
   const watch = watchEditorLaunch(context, chosen, args);
-  const result = await launchWatched(args, { name: chosen.name, dir: chosen.dir }, { claude }, watch.started);
-  await watch.finished(result);
-  return result.exitCode;
+  return runFollowed(
+    watch,
+    (started) => launchWatched(args, { name: chosen.name, dir: chosen.dir }, { claude }, started),
+    deps,
+  );
 }
 
 /** Probe health and select the best eligible account (pinned preferred). */
