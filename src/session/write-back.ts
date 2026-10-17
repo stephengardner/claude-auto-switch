@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -17,7 +18,8 @@ import { defaultClaudeJsonPath } from '../daemon/reference-config.js';
 import { keepOursOver } from '../statusline/settings-install.js';
 import { isOurs } from '../statusline/ours.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
-import { copyUserSettings, defaultClaudeRoot, rescue } from './shared-root.js';
+import { writeSecretFile } from '../util/secret-file.js';
+import { copyUserSettings, defaultClaudeRoot, rescue, rescueText } from './shared-root.js';
 import type { PathCtx } from '../config/paths.js';
 
 /**
@@ -194,7 +196,8 @@ function isSetList(trail: readonly string[], key: string): boolean {
  * objects key by key, set lists entry by entry, anything else as a value. What
  * the user's file changed too stays theirs, and what it removed stays removed,
  * edits inside it included. Returns whether `theirs` changed; what changed is
- * added to `changes`, as dotted paths (`permissions.allow`).
+ * added to `changes`, as dotted paths (`permissions.allow`), and a value both
+ * sides changed differently, where theirs stays, to `clashes`.
  */
 function merge3(
   base: Json,
@@ -202,6 +205,7 @@ function merge3(
   theirs: Json,
   trail: readonly string[] = [],
   changes: string[] = [],
+  clashes: string[] = [],
 ): boolean {
   let changed = false;
   for (const key of new Set([...Object.keys(base), ...Object.keys(ours)])) {
@@ -211,7 +215,7 @@ function merge3(
     if (isDeepStrictEqual(b, o)) continue; // the session did not touch it
     if (isObject(o) && isObject(t) && (b === undefined || isObject(b))) {
       const inner: Json = { ...t };
-      if (merge3(b ?? {}, o, inner, [...trail, key], changes)) {
+      if (merge3(b ?? {}, o, inner, [...trail, key], changes, clashes)) {
         theirs[key] = inner;
         changed = true;
       }
@@ -231,6 +235,7 @@ function merge3(
       }
       continue;
     }
+    if (!isDeepStrictEqual(t, b) && !isDeepStrictEqual(t, o)) clashes.push(where);
     if (carryValue(base, ours, theirs, key)) {
       changed = true;
       // Only the model's value is said: other values (an `env` entry) can hold
@@ -376,11 +381,25 @@ export function returnSettings(sessionDir: string, c: PathCtx = {}): boolean {
     return true;
   }
   const ours = found.legacy ? pick(found.ours, LEGACY_SETTINGS) : found.ours;
+  // Not handed back: tried again later, or kept aside (handBackOrRescue).
+  if (handBackSettings(found.base, ours, userFile, c) === 'failed') return false;
+  return advanceBase(sessionDir, 'settings.json', SETTINGS_BASE);
+}
+
+/** Merge what changed from `base` to `ours` into the user's settings, and say what was written. */
+function handBackSettings(
+  base: Json,
+  ours: Json,
+  userFile: string,
+  c: PathCtx,
+  clashes: string[] = [],
+): 'written' | 'unchanged' | 'failed' {
   let changes: string[] = [];
   const outcome = mergeInto(userFile, c, (theirs) => {
     changes = []; // each attempt merges afresh; the one written is the one said
+    clashes.length = 0;
     const lineBefore = theirs.statusLine;
-    const changed = merge3(found.base, ours, theirs, [], changes);
+    const changed = merge3(base, ours, theirs, [], changes, clashes);
     // A line set inside a session goes in wrapped by ccx's, never over it. One
     // removed inside a session leaves ccx's own, as `ccx on` would with no line.
     if (changed && isOurs(lineBefore) && !isOurs(theirs.statusLine)) {
@@ -389,10 +408,8 @@ export function returnSettings(sessionDir: string, c: PathCtx = {}): boolean {
     }
     return { changed, theirs };
   });
-  // Not handed back: tried again later, or kept aside (handBackOrRescue).
-  if (outcome === 'failed') return false;
   if (outcome === 'written') logHandBack(c, 'settings.json', changes);
-  return advanceBase(sessionDir, 'settings.json', SETTINGS_BASE);
+  return outcome;
 }
 
 /** The user's own choices in Claude's state, and nothing else of it. */
@@ -421,16 +438,28 @@ export function returnState(sessionDir: string, c: PathCtx = {}): boolean {
   } catch {
     return true;
   }
-  const base = stateChoices(found.base);
-  const ours = stateChoices(found.ours);
+  if (handBackState(found.base, found.ours, userFile, c) === 'failed') return false;
+  return advanceBase(sessionDir, '.claude.json', STATE_BASE);
+}
+
+/** Merge the choices that changed from `base` to `ours` into the user's state, and say what was written. */
+function handBackState(
+  base: Json,
+  ours: Json,
+  userFile: string,
+  c: PathCtx,
+  clashes: string[] = [],
+): 'written' | 'unchanged' | 'failed' {
+  const from = stateChoices(base);
+  const to = stateChoices(ours);
   let changes: string[] = [];
   const outcome = mergeInto(userFile, c, (theirs) => {
     changes = [];
-    return { changed: merge3(base, ours, theirs, [], changes), theirs };
+    clashes.length = 0;
+    return { changed: merge3(from, to, theirs, [], changes, clashes), theirs };
   });
-  if (outcome === 'failed') return false;
   if (outcome === 'written') logHandBack(c, '.claude.json', changes);
-  return advanceBase(sessionDir, '.claude.json', STATE_BASE);
+  return outcome;
 }
 
 /** Hand back everything a session changed in the user's settings and state. */
@@ -471,4 +500,225 @@ export function resyncSession(sessionDir: string, c: PathCtx = {}): void {
   const settingsBack = returnSettings(sessionDir, c);
   returnState(sessionDir, c);
   if (settingsBack && copyUserSettings(sessionDir, c)) snapshotSettingsBase(sessionDir);
+}
+
+/* A folder that never ends (the editor's): its settings and state kept in step both ways. */
+
+/**
+ * How ccx's own entries pass between a long-lived folder's settings and the
+ * user's: taken out on the way to the user's file and put back on the way in,
+ * so the user's file never holds them.
+ */
+export interface SettingsPassage {
+  outgoing?: (settings: Json) => Json;
+  incoming?: (settings: Json) => Json;
+}
+
+/** One file of a long-lived folder brought into step, not yet (written meanwhile, try again), or not possible. */
+export type FolderSync = 'synced' | 'again' | 'failed';
+
+/**
+ * Bring a long-lived folder's settings.json and the user's into step, both ways.
+ *
+ * A session folder copies the user's settings in at its start and hands what it
+ * changed back at its end. A folder that never ends does both at every refresh,
+ * judged against what the two last agreed on, its base: what the folder changed
+ * since goes into the user's file, exactly as a session's hand-back does, and
+ * then the user's file, holding both, becomes the folder's. Where both changed
+ * one setting differently the user's stays, as in a hand-back, and the folder's
+ * file is kept in `rescued/` first. The base moves only once both are written.
+ */
+export function syncSettings(dir: string, c: PathCtx = {}, passage: SettingsPassage = {}): FolderSync {
+  const own = path.join(dir, 'settings.json');
+  const ownText = readText(own);
+  if (ownText === undefined) return 'failed';
+  const ours = ownText === null ? null : parseObject(ownText);
+  // It may hold the only copy of a change, so it is never replaced unread.
+  if (ownText !== null && !ours) return 'failed';
+  const baseFile = path.join(dir, SETTINGS_BASE);
+  const baseText = readText(baseFile);
+  if (baseText === undefined) return 'failed';
+  const base = baseText === null ? null : parseObject(baseText);
+  if (baseText !== null && !base) return 'failed';
+  let userFile: string;
+  try {
+    userFile = path.join(defaultClaudeRoot(c), 'settings.json');
+  } catch {
+    return 'failed';
+  }
+  const out = passage.outgoing ?? ((s: Json): Json => s);
+  const into = passage.incoming ?? ((s: Json): Json => s);
+  if (ours !== null) {
+    // With no record of what they last agreed on, only its model goes, as from a folder an older ccx left.
+    const going = base === null ? pick(out(ours), LEGACY_SETTINGS) : out(ours);
+    const clashes: string[] = [];
+    if (handBackSettings(base ?? {}, going, userFile, c, clashes) === 'failed') return 'failed';
+    if (clashes.length > 0 && !keptAside(dir, 'settings.json', ownText ?? '', clashes, c)) return 'failed';
+  }
+  const userText = readText(userFile);
+  if (userText === undefined) return 'failed';
+  const user = userText === null || userText.trim() === '' ? {} : parseObject(userText);
+  if (!user) return 'failed';
+  // What only the folder holds, when there is no record to judge it by, is kept rather than replaced unseen.
+  if (base === null && ours !== null && !isDeepStrictEqual(out(ours), user)) {
+    if (!rescueText(ownText ?? '', `${path.basename(dir)}-settings.json`, c)) return 'failed';
+  }
+  // Over what was read only: a change Claude made here meanwhile goes out at the next sync.
+  if (readText(own) !== ownText) return 'again';
+  try {
+    writeFileAtomic(own, `${JSON.stringify(into(user), null, 2)}\n`);
+    writeFileAtomic(baseFile, `${JSON.stringify(user, null, 2)}\n`);
+  } catch {
+    return 'failed';
+  }
+  return 'synced';
+}
+
+/**
+ * The same for Claude's state, `.claude.json`, where the user's MCP servers,
+ * trusted folders and preferences live: the choices stateChoices names, both
+ * ways, and nothing of the folder's own account or Claude's bookkeeping. The
+ * folder's file is written under the lock Claude takes to write it,
+ * `<file>.lock`, under which Claude 2.1.302 reads the file again before it
+ * applies its own change (saveConfigWithLock), so neither change is lost.
+ */
+export function syncState(dir: string, c: PathCtx = {}): FolderSync {
+  const own = path.join(dir, '.claude.json');
+  const ownText = readText(own);
+  if (ownText === undefined) return 'failed';
+  if (ownText === null) return 'synced'; // no state yet: the folder's first login builds it
+  const ours = parseObject(ownText);
+  if (!ours) return 'failed';
+  const baseFile = path.join(dir, STATE_BASE);
+  const baseText = readText(baseFile);
+  if (baseText === undefined) return 'failed';
+  const base = baseText === null ? null : parseObject(baseText);
+  if (baseText !== null && !base) return 'failed';
+  let userFile: string;
+  try {
+    userFile = defaultClaudeJsonPath(c);
+  } catch {
+    return 'failed';
+  }
+  // With no record of what they last agreed on nothing goes, as from a folder an older ccx left.
+  if (base !== null) {
+    const clashes: string[] = [];
+    if (handBackState(base, ours, userFile, c, clashes) === 'failed') return 'failed';
+    const kept = `${JSON.stringify(stateChoices(ours), null, 2)}\n`;
+    if (clashes.length > 0 && !keptAside(dir, 'claude-choices.json', kept, clashes, c)) return 'failed';
+  }
+  const userText = readText(userFile);
+  if (userText === undefined) return 'failed';
+  const user = userText === null || userText.trim() === '' ? {} : parseObject(userText);
+  if (!user) return 'failed';
+  // What only the folder holds, when there is no record to judge it by, is kept rather than replaced unseen.
+  if (base === null && !isDeepStrictEqual(stateChoices(ours), stateChoices(user))) {
+    if (!rescueText(`${JSON.stringify(stateChoices(ours), null, 2)}\n`, `${path.basename(dir)}-claude-choices.json`, c)) {
+      return 'failed';
+    }
+  }
+  const lock = acquireLockDir(`${own}.lock`, { waitMs: 500 });
+  if (!lock.held) return 'again';
+  try {
+    if (readText(own) !== ownText) return 'again';
+    const next = withChoices(ours, stateChoices(user));
+    writeSecretFile(own, JSON.stringify(next));
+    writeSecretFile(baseFile, JSON.stringify(next));
+    return 'synced';
+  } catch {
+    return 'failed';
+  } finally {
+    lock.release();
+  }
+}
+
+/** `state` with every choice stateChoices reads taken from `choices`, and the rest of it (its account, Claude's bookkeeping) as it was. */
+function withChoices(state: Json, choices: Json): Json {
+  const next: Json = { ...state };
+  for (const key of STATE_PREFS) {
+    if (key in choices) next[key] = choices[key];
+    else delete next[key];
+  }
+  if (isObject(choices.mcpServers)) next.mcpServers = choices.mcpServers;
+  else delete next.mcpServers;
+  const mine = isObject(state.projects) ? state.projects : {};
+  const theirs = isObject(choices.projects) ? choices.projects : {};
+  const projects: Json = {};
+  for (const folder of new Set([...Object.keys(mine), ...Object.keys(theirs)])) {
+    const was = mine[folder];
+    const chosen = theirs[folder];
+    const record: Json = isObject(was) ? { ...was } : {};
+    const picked: Json = isObject(chosen) ? chosen : {};
+    for (const key of PROJECT_CHOICES) {
+      if (key in picked) record[key] = picked[key];
+      else delete record[key];
+    }
+    projects[folder] = record;
+  }
+  if (isObject(state.projects) || isObject(choices.projects)) next.projects = projects;
+  return next;
+}
+
+/** A folder's copy of `name`, which both sides changed, kept in `rescued/` before the user's wins; false when that failed. */
+function keptAside(dir: string, name: string, text: string, clashes: readonly string[], c: PathCtx): boolean {
+  const folder = path.basename(dir);
+  if (!rescueText(text, `${folder}-${name}`, c)) return false;
+  try {
+    appendEvent(
+      configHome(c),
+      `${clashes.join(', ')} changed both in ${folder} and in your own file: yours stays, and ${folder}'s ${name} is kept in rescued/`,
+      Date.now(),
+      { kind: 'write-back', data: { file: name, clashes: [...clashes] } },
+    );
+  } catch {
+    /* the log is a record, never a reason to fail */
+  }
+  return true;
+}
+
+/**
+ * Change one of the user's own files (CLAUDE.md, keybindings.json,
+ * history.jsonl) under ccx's write-back lock, as `plan` says from what is
+ * there once the lock is held: written whole, or added to the end of.
+ */
+export function writeUserFile(
+  file: string,
+  c: PathCtx,
+  plan: () => { text: string; append?: boolean } | null,
+): 'written' | 'unchanged' | 'failed' {
+  const outcome = withWriteBackLock(c, (): 'written' | 'unchanged' | 'failed' => {
+    try {
+      const step = plan();
+      if (!step) return 'unchanged';
+      if (step.append) {
+        mkdirSync(path.dirname(file), { recursive: true });
+        appendFileSync(file, step.text);
+      } else {
+        writeFileAtomic(file, step.text);
+      }
+      return 'written';
+    } catch {
+      return 'failed';
+    }
+  });
+  return outcome ?? 'failed';
+}
+
+/**
+ * Keep the choices an account's own folder holds in Claude's state aside in
+ * `rescued/` when they are not the user's, before the editor stops running
+ * there: an MCP server or a trusted folder added in the editor while it ran on
+ * that account would otherwise be found nowhere.
+ */
+export function rescueStateChoices(folder: string, label: string, c: PathCtx = {}): void {
+  try {
+    const theirs = readObject(path.join(folder, '.claude.json'));
+    if (!theirs) return;
+    const user = readObject(defaultClaudeJsonPath(c)) ?? {};
+    const choices = stateChoices(theirs);
+    if (isDeepStrictEqual(choices, stateChoices(user))) return;
+    rescueText(`${JSON.stringify(choices, null, 2)}\n`, `${label}-claude-choices.json`, c);
+  } catch {
+    /* the account folder keeps its own; nothing is lost */
+  }
 }

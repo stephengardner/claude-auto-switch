@@ -17,7 +17,7 @@ import { CREDENTIALS_FILE, PREVIOUS_FILE } from '../accounts/credential-vault.js
 import { TOKEN_FILE } from '../daemon/token-store.js';
 import { detectEditors } from '../editor/settings.js';
 import { readEditorEnvVar } from '../editor/install.js';
-import { editorTargetAccount } from '../editor/junction.js';
+import { editorStanding, refreshEditor } from '../editor/folder.js';
 import { isShimInstalled, shimHasFallback, shimIsCurrent } from '../shell/install-shim.js';
 import { shellPlans, type ShellPlan } from '../shell/shells.js';
 import { isLink, readTarget } from '../daemon/junction.js';
@@ -752,7 +752,7 @@ export function auditEditor(context: CliContext): DoctorCheck {
   if (editors.length === 0) {
     return { name: 'editor', ok: true, detail: 'no Cursor or VS Code found' };
   }
-  const target = editorTargetAccount(context);
+  const target = editorStanding(context);
   const unset = editors.filter((e) => readEditorEnvVar(e, 'CLAUDE_CONFIG_DIR', context.ctx) === null);
   if (unset.length === editors.length) {
     return {
@@ -924,6 +924,8 @@ export async function doctorCommand(
   options: { fix?: boolean } = {},
 ): Promise<number> {
   if (options.fix) repairClaudeIfBroken(context, deps);
+  // The editor's folder never ends; a checkup is one of the times it is brought into step.
+  await refreshEditor(context);
   const { checks, ok } = await runDoctor(context, deps);
   const color = process.stdout.isTTY === true && !context.json;
 

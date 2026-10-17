@@ -44,7 +44,7 @@ import { secureMkdir } from '../util/secret-file.js';
 import { appendEvent, readEvents, formatEvent } from '../events/log.js';
 import { ccxVersion } from '../util/version.js';
 import { toStatePayload, STATE_SCHEMA_VERSION } from '../dashboard/state-payload.js';
-import { syncEditorPointerIfEnabled } from '../editor/junction.js';
+import { moveEditorToActive } from '../editor/folder.js';
 import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
 import { claimRawTerminal } from '../ui/raw-terminal.js';
@@ -405,7 +405,7 @@ export async function dashboardCommand(
       // The account new sessions start on, and the editor's, whichever
       // sessions move; then each chosen session by its own request.
       setActive(a.name, context.ctx);
-      syncEditorPointerIfEnabled(context);
+      void moveEditorToActive(context);
       const moving = requestMoves(a.name, chosen, mode, context.ctx);
       const how = mode === 'restart' ? 'now, restarting' : 'in place, within ~30s';
       const said =
@@ -561,7 +561,7 @@ export async function dashboardCommand(
         .sort(orderComparator(context.config.rotation.accountOrder, roomOf))[0];
       if (next) {
         setActive(next.name, context.ctx);
-        syncEditorPointerIfEnabled(context);
+        void moveEditorToActive(context);
         pushEvent(`rotated to ${next.name}`);
       } else {
         pushEvent('no other healthy account to rotate to');

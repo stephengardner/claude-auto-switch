@@ -10,7 +10,16 @@ import { readCredential } from '../accounts/credential-storage.js';
  */
 export function readExpiresAt(credentialsFile: string): number {
   try {
-    const parsed = JSON.parse(readCredential(credentialsFile)) as {
+    return loginExpiresAt(readCredential(credentialsFile));
+  } catch {
+    return 0;
+  }
+}
+
+/** readExpiresAt for a login already read, as text. */
+export function loginExpiresAt(text: string): number {
+  try {
+    const parsed = JSON.parse(text) as {
       claudeAiOauth?: { expiresAt?: unknown };
     };
     const at = parsed.claudeAiOauth?.expiresAt;

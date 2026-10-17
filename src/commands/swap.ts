@@ -10,7 +10,7 @@ import { isSessionDir, pidOfSessionDir, processIsAlive } from '../session/sessio
 import { liveLeases } from '../session/lease.js';
 import { writeSwitchRequest } from '../state/switch-request.js';
 import { setActive } from '../state/active.js';
-import { syncEditorPointerIfEnabled } from '../editor/junction.js';
+import { moveEditorToActive } from '../editor/folder.js';
 import { listAccounts } from '../accounts/registry.js';
 import {
   called,
@@ -402,7 +402,7 @@ export async function swapCommand(
   }
 
   setActive(name, context.ctx);
-  syncEditorPointerIfEnabled(context);
+  void moveEditorToActive(context);
   context.out(
     `New sessions start on ${name}. Running ones stay where they are (ccx use ${name} moves them too).`,
   );

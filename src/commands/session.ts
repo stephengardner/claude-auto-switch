@@ -1,17 +1,12 @@
-import { hasCredential, removeCredential } from '../accounts/credential-storage.js';
+import { hasCredential } from '../accounts/credential-storage.js';
 import { thrownReason } from '../util/thrown-reason.js';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { newerInstall } from '../update/newer-install.js';
-import {
-  forgetEarlierStart,
-  resyncSession,
-  returnSessionChanges,
-  snapshotSettingsBase,
-  snapshotStateBase,
-} from '../session/write-back.js';
-import { configHome, type PathCtx } from '../config/paths.js';
+import { resyncSession, returnSessionChanges } from '../session/write-back.js';
+import { buildClaudeFolder, moveFolderLogin, sessionLoginStore } from '../session/claude-folder.js';
+import { configHome } from '../config/paths.js';
 import { configStamp, fileStamp, loadConfig } from '../config/config.js';
 import { sweepAbandonedTemps } from '../util/fs-json.js';
 import { listAccounts, registryFilePath } from '../accounts/registry.js';
@@ -25,7 +20,8 @@ import {
 } from '../state/switch-request.js';
 import { startProactiveRotation } from '../usage/proactive.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
-import { syncEditorPointerIfEnabled } from '../editor/junction.js';
+import { moveEditorToActive, takeUpEditorRenewal } from '../editor/folder.js';
+import { carryIntoEditor } from '../editor/folder-login.js';
 import {
   loadLedger,
   updateLedger,
@@ -36,13 +32,11 @@ import {
   accountCapEnd,
 } from '../ledger/ledger.js';
 import { readToken } from '../daemon/token-store.js';
-import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { runHotSwapSession, type SessionOutcome } from '../launcher/hot-swap.js';
 import { lastResortStart } from '../session/last-resort.js';
 import {
   sessionDirFor,
   sweepDeadSessionDirs,
-  retireKeptSettings,
   retireLeftoverSessionDir,
 } from '../session/session-dir.js';
 import {
@@ -59,7 +53,6 @@ import {
   notifyTerminal,
   setTerminalOwnedElsewhere,
 } from '../launcher/notify.js';
-import { copyUserSettings, ensureSharedProjects, ensureSharedUserConfig } from '../session/shared-root.js';
 import {
   confirmSessionCap,
   refusalConfirmed,
@@ -100,10 +93,8 @@ import {
 import { DEFAULT_RESUME_PROMPT } from '../config/config.schema.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
-import { secureMkdir, writeSecretFile } from '../util/secret-file.js';
 import {
   installCredential,
-  rollbackCredential,
   isUsableCredential,
   identityKey,
   sessionIdentityEmail,
@@ -153,7 +144,6 @@ import { ensureLoginUsable, readinessMessage } from '../session/preflight.js';
 import { renewalIsDue, refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { probeUsage } from '../usage/limit-probe.js';
 import {
-  withCredentialLock,
   withCredentialLockIfFree,
   acquireLockDir,
   lockDirHeld,
@@ -239,92 +229,6 @@ function readJsonSafe(file: string): Record<string, unknown> | null {
     return JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
   } catch {
     return null;
-  }
-}
-
-const IDENTITY_KEYS = ['oauthAccount', 'userID'] as const;
-
-/** The account-identity fields that must follow the active account across swaps. */
-function identityFields(accountDir: string): Record<string, unknown> {
-  const account = readJsonSafe(path.join(accountDir, '.claude.json')) ?? {};
-  const id: Record<string, unknown> = {};
-  for (const key of IDENTITY_KEYS) {
-    if (key in account) id[key] = account[key];
-  }
-  return id;
-}
-
-/**
- * Put the identity fields of a session's .claude.json back to `before`, what
- * identityFields read from the session folder ahead of a move that failed.
- * Only those fields: Claude may have written the rest of the file meanwhile.
- */
-function restoreSessionIdentity(sessionDir: string, before: Record<string, unknown>): void {
-  const file = path.join(sessionDir, '.claude.json');
-  const now = readJsonSafe(file);
-  if (!now) return;
-  const next = { ...now };
-  for (const key of IDENTITY_KEYS) {
-    if (key in before) next[key] = before[key];
-    else delete next[key];
-  }
-  writeJsonSafe(file, next);
-}
-
-/**
- * Build/refresh the session's .claude.json so the interactive app treats it as
- * fully onboarded and logged in as the active account.
- * - First build: inherit the user's onboarding flags (from their default config)
- *   so login/theme/trust prompts are skipped, mark the cwd trusted, and stamp the
- *   account identity.
- * - Later swaps: only re-stamp the identity, PRESERVING everything the user has
- *   answered in this session dir (so prompts do not reappear).
- */
-function applyAccountIdentity(sessionDir: string, accountDir: string, ctx: PathCtx): void {
-  const sessionPath = path.join(sessionDir, '.claude.json');
-  const existing = readJsonSafe(sessionPath);
-  const identity = identityFields(accountDir);
-
-  if (existing && existing.hasCompletedOnboarding) {
-    writeJsonSafe(sessionPath, { ...existing, ...identity });
-    return;
-  }
-
-  // First build: inherit the user's FULL working config (onboarding done, theme,
-  // trusted folders, MCP servers, all preferences), then overlay this account's
-  // identity and mark the current folder trusted. This reproduces their normal
-  // environment exactly, minus the account, so no first-run prompts appear.
-  const reference = readReferenceConfig(ctx);
-  const base = Object.keys(reference).length > 0 ? { ...reference } : onboardingFlags({});
-  // Guard identity bleed: if the target account has no identity of its own, do
-  // not let the default account's identity (inherited via `base`) survive.
-  if (!('oauthAccount' in identity)) delete base.oauthAccount;
-  if (!('userID' in identity)) delete base.userID;
-  const cwd = process.cwd();
-  const projects: Record<string, unknown> =
-    typeof base.projects === 'object' && base.projects
-      ? { ...(base.projects as Record<string, unknown>) }
-      : {};
-  projects[cwd] = {
-    ...(projects[cwd] as Record<string, unknown>),
-    hasTrustDialogAccepted: true,
-    hasCompletedProjectOnboarding: true,
-  };
-
-  writeJsonSafe(sessionPath, {
-    ...base,
-    hasCompletedOnboarding: true,
-    ...identity,
-    projects,
-  });
-}
-
-/** Write the session config owner-only: it carries the account's identity. */
-function writeJsonSafe(file: string, data: unknown): void {
-  try {
-    writeSecretFile(file, JSON.stringify(data));
-  } catch {
-    /* best effort */
   }
 }
 
@@ -483,29 +387,11 @@ export async function runInteractiveHotSwap(
   // this pid, because the pid is alive again: it is this one. Taking it over as
   // found would hand this session that process's conversation and armed prompt.
   retireLeftoverSessionDir(sessionDir, context.ctx);
-  secureMkdir(sessionDir);
-  // What an earlier session here started from, if its folder could not be
-  // cleared, is not this one's start.
-  forgetEarlierStart(sessionDir);
+  // The user's own Claude but for the login, as every folder ccx runs Claude in.
+  buildClaudeFolder(sessionDir, context.ctx);
   const sessionCreds = path.join(sessionDir, CREDS);
   /** Where nudgeLoginReread looks for the session's login when its file is gone. */
   const loginStore = context.loginInKeychain ? { keychainHolds: context.loginInKeychain } : {};
-  // Share the user's REAL ~/.claude session/memory store (projects) so /resume
-  // and project memories are complete and identical in ccx sessions and plain
-  // `claude` alike. Self-heals each start; skips safely if files are busy.
-  ensureSharedProjects(sessionDir, context.ctx);
-  // And everything else of ~/.claude but the login: prompt history, /rewind
-  // checkpoints, plugins, the editor link, skills (ccx's own `/ccx` among
-  // them), agents, commands, memory, keybindings. See ensureSharedUserConfig.
-  ensureSharedUserConfig(sessionDir, context.ctx);
-  // The user's real settings, exactly: a ccx session is their own Claude but
-  // for the account. Nothing is laid over them any more, neither an account
-  // folder's settings nor ccx's old store of session settings, which is folded
-  // into the real file once and retired.
-  retireKeptSettings(context.ctx);
-  copyUserSettings(sessionDir, context.ctx);
-  // What the session starts with, so what it changes can be handed back.
-  snapshotSettingsBase(sessionDir);
   // Drop any stale switch request so a fresh session starts on the active account
   // and only a NEW mid-session pick triggers an in-place swap. Both the broadcast
   // request AND this pid's own per-session request: pids are reused, and a
@@ -963,6 +849,8 @@ export async function runInteractiveHotSwap(
         carryTargets(account, accounts),
         // Keeps the account's previous credential as a rollback cushion.
         () => void installCredential(account.dir, sessionCreds),
+        // The editor's folder too, when it held the login this session's Claude just replaced.
+        { alsoInto: carryIntoEditor(context.ctx) },
       );
     } catch {
       // A local write failure, not a decision. It might not repeat, and giving
@@ -1108,10 +996,24 @@ export async function runInteractiveHotSwap(
    * sides" and it needs checking, not checking every 400ms.
    */
   let lastPullCheck = 0;
+  /** Whether a look for a renewal the editor made is under way, so one tick does not start another. */
+  let lookingAtEditor = false;
   const pullRenewedLogin = (account: Account): void => {
     const now = Date.now();
     if (now - lastPullCheck < 5_000) return;
     lastPullCheck = now;
+    // The editor's folder holds its own copy of its account's login, with no
+    // ccx process beside it to bring a renewal home: this session, on the same
+    // account, does, and the pull below takes it up from the profile.
+    if (!lookingAtEditor) {
+      lookingAtEditor = true;
+      void takeUpEditorRenewal(context.ctx, {
+        account: account.name,
+        ...(context.lookupOwner ? { lookupOwner: context.lookupOwner } : {}),
+      }).finally(() => {
+        lookingAtEditor = false;
+      });
+    }
     if (pullProfileIntoSession(account, sessionDir, context.ctx) === 'pulled') {
       // What was just installed came FROM the profile, so it is not a change
       // to mirror back; settling it here saves an identity lookup per pull.
@@ -1121,11 +1023,6 @@ export async function runInteractiveHotSwap(
         data: { account: account.name, direction: 'pull' },
       });
     }
-  };
-
-  /** Remove the live credential from the shared session dir so it never lingers. */
-  const scrubSessionCreds = (): void => {
-    removeCredential(sessionCreds);
   };
 
   /**
@@ -1151,53 +1048,27 @@ export async function runInteractiveHotSwap(
         capUnregisteredEmail = null;
       },
       install: () => {
-        withCredentialLock(sessionDir, () => {
-          const leaving = current;
-          if (
-            leaving &&
-            leaving.name !== account.name &&
-            savesOnLeaving(
-              { temporary: how.temporary === true },
-              () => readExpiresAt(sessionCreds),
-              () => readExpiresAt(path.join(leaving.dir, CREDS)),
-            )
-          ) {
-            saveBack(leaving);
-          }
-          const src = path.join(account.dir, CREDS);
-          // Who the session says it is signed in as, put back with the login if this fails.
-          const identityBefore = identityFields(sessionDir);
-          // Always replace (or clear) the session credential so one account's login
-          // can never linger into another account's session.
-          try {
-            // A refused credential (missing, or signed out with empty tokens) must
-            // CLEAR the session, never leave the previous account's login in place:
-            // the session would keep running as that account while ccx believed it
-            // had moved, and its limit would then be blamed on the wrong account.
-            if (!installCredential(sessionDir, src)) {
-              scrubSessionCreds();
+        moveFolderLogin(sessionDir, account.dir, context.ctx, sessionLoginStore(sessionDir, context.loginInKeychain), {
+          leaving: () => {
+            const leaving = current;
+            if (
+              leaving &&
+              leaving.name !== account.name &&
+              savesOnLeaving(
+                { temporary: how.temporary === true },
+                () => readExpiresAt(sessionCreds),
+                () => readExpiresAt(path.join(leaving.dir, CREDS)),
+              )
+            ) {
+              saveBack(leaving);
             }
-            // Stamp the account's identity (oauthAccount/userID) so the interactive
-            // app sees a logged-in account instead of prompting for login.
-            applyAccountIdentity(sessionDir, account.dir, context.ctx);
-            // Once, as first built: later swaps only change the identity in it.
-            snapshotStateBase(sessionDir);
-            // What we just put there is by definition already in the profile, so it
-            // is not a change to mirror back.
+          },
+          // What we just put there is by definition already in the profile, so it
+          // is not a change to mirror back.
+          installed: () => {
             mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
-            // A Claude already running here keeps the login it read until the
-            // file's time changes, which a Keychain write does not do. A move
-            // away for one call is undone when that cannot be made sure of,
-            // since the call goes out at once. Any other move stands: Claude
-            // reads the new login within 30 seconds regardless.
-            if (!nudgeLoginReread(sessionDir, new Date(), loginStore) && how.mustReread) {
-              throw new Error('the time of its login file could not be changed');
-            }
-          } catch (e) {
-            restoreSessionIdentity(sessionDir, identityBefore);
-            rollbackCredential(sessionDir);
-            throw e;
-          }
+          },
+          ...(how.mustReread ? { mustReread: true } : {}),
         });
       },
     });
@@ -1255,7 +1126,10 @@ export async function runInteractiveHotSwap(
    * whatever is using it is signed out.
    */
   const renewBeforeMove = async (account: Account): Promise<MoveRenewal> => {
-    const { refusal, renewal, lease } = await renewIdleLogin(account, accounts, context.ctx, { renew: renewLogin });
+    const { refusal, renewal, lease } = await renewIdleLogin(account, accounts, context.ctx, {
+      renew: renewLogin,
+      ...(context.lookupOwner ? { lookupOwner: context.lookupOwner } : {}),
+    });
     if (refusal !== null) return { ok: false, why: lease ? 'in-use' : 'editor', detail: refusal };
     if (renewal.status === 'refreshed' || renewal.status === 'not-needed') return { ok: true };
     return {
@@ -1805,7 +1679,7 @@ export async function runInteractiveHotSwap(
         notice(`${reason}; moving to "${account}" before this account runs out`);
         if (!worker) {
           setActive(account, context.ctx);
-          syncEditorPointerIfEnabled(context);
+          void moveEditorToActive(context);
         }
         // Addressed to THIS session. A shared request is taken by whichever
         // session looks first, so this one's early move could move another.
@@ -1979,6 +1853,12 @@ export async function runInteractiveHotSwap(
       // A new child on a new account. Whatever refusals were adding up belonged
       // to the last one, and carrying them over would escalate here on evidence
       // gathered somewhere else.
+      // A renewal the editor's Claude made of this login comes home first, or
+      // the readiness check below would renew a token that renewal retired.
+      await takeUpEditorRenewal(context.ctx, {
+        account: account.name,
+        ...(context.lookupOwner ? { lookupOwner: context.lookupOwner } : {}),
+      });
       // Read BEFORE the renewal: it rotates the token, so afterwards there is
       // no shared value left to identify who was sharing it.
       const sharing = snapshotSharing(account, accounts, carryTargets(account, accounts));
@@ -2070,14 +1950,15 @@ export async function runInteractiveHotSwap(
       // to use, so it is not one the worker ran on.
       if (interruption?.exitCode != null) return { kind: 'ok', exitCode: interruption.exitCode };
       activate(account);
-      // Track the account we are actually on so the editor pointer follows it.
-      // Skipped for a session started by a TARGETED restart switch: that move was
-      // aimed at this one session and must leave the global active account and the
-      // editor pointer where they were. Consumed once, so the next ordinary start
-      // updates them again.
+      // Track the account we are actually on so the editor follows it, and its
+      // folder, which never ends, is brought into step with the user's files: a
+      // session's first start is always one of these. Skipped for a session
+      // started by a TARGETED restart switch: that move was aimed at this one
+      // session and must leave the global active account and the editor where
+      // they were. Consumed once, so the next ordinary start updates them again.
       if (!nextStartTargeted && !worker) {
         setActive(account.name, context.ctx);
-        syncEditorPointerIfEnabled(context);
+        void moveEditorToActive(context);
       }
       nextStartTargeted = false;
       const token = readToken(account.dir);
@@ -2207,7 +2088,7 @@ export async function runInteractiveHotSwap(
         // either way; only the global surfaces are gated.
         if (!targeted && !worker) {
           setActive(target.name, context.ctx);
-          syncEditorPointerIfEnabled(context);
+          void moveEditorToActive(context);
         }
         notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
         notifyAccountSwitch(target.name, 'switched in place');
@@ -2328,7 +2209,7 @@ export async function runInteractiveHotSwap(
         // and the editor pointer SHOULD follow, same as the swap loop's own moves.
         if (!worker) {
           setActive(relievedTo.name, context.ctx);
-          syncEditorPointerIfEnabled(context);
+          void moveEditorToActive(context);
         }
         notice(
           anyway !== null

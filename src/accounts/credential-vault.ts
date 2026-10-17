@@ -28,7 +28,16 @@ export const PREVIOUS_FILE = '.credentials.prev.json';
  */
 export function credentialFingerprint(dir: string): string | null {
   try {
-    const parsed = JSON.parse(readCredential(credentialPath(dir))) as {
+    return loginTextFingerprint(readCredential(credentialPath(dir)));
+  } catch {
+    return null;
+  }
+}
+
+/** credentialFingerprint for a login already read, as text. */
+export function loginTextFingerprint(text: string): string | null {
+  try {
+    const parsed = JSON.parse(text) as {
       claudeAiOauth?: { refreshToken?: string; accessToken?: string };
     };
     const material = parsed.claudeAiOauth?.refreshToken ?? parsed.claudeAiOauth?.accessToken;
@@ -78,7 +87,15 @@ export function previousCredentialPath(dir: string): string {
  */
 export function isUsableCredential(file: string): boolean {
   try {
-    const text = readCredential(file);
+    return usableLoginText(readCredential(file));
+  } catch {
+    return false;
+  }
+}
+
+/** isUsableCredential for a login already read, as text. */
+export function usableLoginText(text: string): boolean {
+  try {
     if (text.trim().length === 0) return false;
     const parsed = JSON.parse(text) as Record<string, unknown>;
     if (typeof parsed !== 'object' || parsed === null) return false;

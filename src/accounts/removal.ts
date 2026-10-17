@@ -4,6 +4,7 @@ import { listAccounts } from './registry.js';
 import { getActive } from '../state/active.js';
 import { liveLeases, type SessionLease } from '../session/lease.js';
 import { editorLinkPath } from '../editor/junction.js';
+import { editorFolderPath, isEditorFolder, readEditorRecord } from '../editor/folder-login.js';
 import { activeLinkPath } from '../daemon/install.js';
 import { configHome, profilesDir, type PathCtx } from '../config/paths.js';
 import { isInside } from '../util/names.js';
@@ -27,7 +28,7 @@ export interface RemovalStanding {
   active: boolean;
   /** No account is left once it is gone. */
   last: boolean;
-  /** The editor reads its login straight from this folder. */
+  /** The editor is on it: its own folder holds this account's login, or the old link to this folder is still in place. */
   editor: boolean;
   /** So does every Claude outside ccx, through the link `ccx daemon install` keeps. */
   daemon: boolean;
@@ -60,7 +61,9 @@ export function removalStanding(
     leases: leases().filter((l) => l.account === name),
     active: getActive(c) === name,
     last: accounts.length === 1,
-    editor: taken(editorLinkPath(c)),
+    editor: isEditorFolder(c)
+      ? readEditorRecord(editorFolderPath(c))?.account === name
+      : taken(editorLinkPath(c)),
     daemon: taken(activeLinkPath(configHome(c))),
     others: accounts.filter((a) => a.name !== name && taken(a.dir)).map((a) => a.name),
     // Where it lands, not how its path reads: a delete follows a link in the

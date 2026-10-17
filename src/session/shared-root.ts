@@ -8,6 +8,7 @@ import {
   renameSync,
   linkSync,
   copyFileSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -15,6 +16,7 @@ import {
 import path from 'node:path';
 import { configHome, homeDir, type PathCtx } from '../config/paths.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
+import { writeSecretFile } from '../util/secret-file.js';
 import { setTarget, isLink } from '../daemon/junction.js';
 
 /**
@@ -326,7 +328,18 @@ export function rescue(from: string, name: string, c: PathCtx): boolean {
   }
 }
 
-export function ensureSharedUserConfig(sessionDir: string, c: PathCtx = {}): void {
+/** Keep `text` in `rescued/` as `name`, owner-only, since it can hold a setting's secret. False when that failed. */
+export function rescueText(text: string, name: string, c: PathCtx): boolean {
+  try {
+    writeSecretFile(path.join(configHome(c), 'rescued', `${Date.now()}-${name}`), text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Link every folder of ~/.claude into `sessionDir` (ensureSharedDir): the known ones, and whatever else is there. */
+export function linkSharedDirs(sessionDir: string, c: PathCtx = {}): void {
   let root: string;
   try {
     root = defaultClaudeRoot(c);
@@ -334,6 +347,16 @@ export function ensureSharedUserConfig(sessionDir: string, c: PathCtx = {}): voi
     return;
   }
   for (const name of sharedDirNames(root)) ensureSharedDir(sessionDir, name, c);
+}
+
+export function ensureSharedUserConfig(sessionDir: string, c: PathCtx = {}): void {
+  let root: string;
+  try {
+    root = defaultClaudeRoot(c);
+  } catch {
+    return;
+  }
+  linkSharedDirs(sessionDir, c);
   for (const { name, merge } of SHARED_FILES) {
     const from = path.join(root, name);
     const to = path.join(sessionDir, name);
@@ -439,5 +462,149 @@ function readJson(file: string): Record<string, unknown> | null {
       : null;
   } catch {
     return null;
+  }
+}
+
+/** How a change goes into one of the user's own files: under ccx's write-back lock, as `plan` says then (write-back writeUserFile). */
+export type UserFileWriter = (
+  file: string,
+  plan: () => { text: string; append?: boolean } | null,
+) => 'written' | 'unchanged' | 'failed';
+
+/**
+ * Bring a long-lived folder's copies of the user's files (SHARED_FILES) into
+ * step with the user's, both ways, and make each the user's file again.
+ *
+ * They are hard links, one file, until something saves one by writing a new
+ * file in its place; then the two have drifted apart. They are compared as a
+ * session's hand-back compares them (planWhole against the folder's base, or
+ * the history's missing lines), what goes back is written into the user's file,
+ * an edit both sides made is kept in `rescued/` while the user's stays, and the
+ * folder's becomes a link to the user's again, its base moved to it. The
+ * folder's copy is moved aside first, so a write Claude makes to it meanwhile
+ * lands in a new file, which the next sync takes up, rather than being lost.
+ * True when every file is in step.
+ */
+export function syncSharedFiles(dir: string, c: PathCtx, writeUser: UserFileWriter): boolean {
+  let root: string;
+  try {
+    root = defaultClaudeRoot(c);
+  } catch {
+    return true;
+  }
+  let inStep = true;
+  for (const { name, merge } of SHARED_FILES) {
+    try {
+      if (!syncSharedFile(dir, root, name, merge, c, writeUser)) inStep = false;
+    } catch {
+      inStep = false;
+    }
+  }
+  return inStep;
+}
+
+function syncSharedFile(
+  dir: string,
+  root: string,
+  name: string,
+  merge: 'whole' | 'lines',
+  c: PathCtx,
+  writeUser: UserFileWriter,
+): boolean {
+  const mine = path.join(dir, name);
+  const theirs = path.join(root, name);
+  if (!lstatOrNull(mine)) return takeTheirs(dir, name, merge, theirs, mine);
+  if (existsSync(theirs) && sameFile(mine, theirs)) return true;
+  const aside = uniquePath(`${mine}.ccx-sync`);
+  renameSync(mine, aside);
+  let keepAside = false;
+  const outcome = writeUser(theirs, () => {
+    if (merge === 'lines') {
+      const added = missingLines(aside, theirs);
+      return added === null ? null : { text: added, append: true };
+    }
+    const plan = planWhole(aside, theirs, baseOf(dir, name));
+    keepAside = plan.keepAside;
+    return plan.write === null ? null : { text: plan.write };
+  });
+  if (outcome === 'failed' || (keepAside && !rescue(aside, name, c))) {
+    // Put back as it was, so nothing in it is lost; one Claude wrote meanwhile is newer, and stays.
+    if (!lstatOrNull(mine)) renameSync(aside, mine);
+    else if (rescue(aside, name, c)) rmSync(aside, { force: true });
+    return false;
+  }
+  rmSync(aside, { force: true });
+  // Written meanwhile: the user's file has what was aside, and the next sync compares the new one.
+  if (lstatOrNull(mine)) return false;
+  return takeTheirs(dir, name, merge, theirs, mine);
+}
+
+/** The folder's copy of `name` becomes the user's file again, and what both agree on is its base. */
+function takeTheirs(dir: string, name: string, merge: 'whole' | 'lines', theirs: string, mine: string): boolean {
+  if (existsSync(theirs)) {
+    try {
+      linkSync(theirs, mine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      copyFileSync(theirs, mine);
+    }
+  }
+  if (merge === 'whole') writeFileAtomic(baseOf(dir, name), existsSync(theirs) ? readFileSync(theirs, 'utf8') : '');
+  return true;
+}
+
+/**
+ * Bring what an account's own folder holds of the user's Claude into the
+ * user's ~/.claude, from when the editor ran there: its chats, checkpoints and
+ * other folders merged in (never over what is there, hard links where the
+ * volume allows, so nothing is copied and the account folder keeps its own),
+ * and the prompts the user's history lacks. With `rescueFiles`, its own
+ * settings, memory and keybindings that are not the user's are kept in
+ * `rescued/` rather than applied.
+ */
+export function adoptFolderHistory(
+  folder: string,
+  label: string,
+  c: PathCtx,
+  writeUser: UserFileWriter,
+  rescueFiles: boolean,
+): void {
+  let root: string;
+  try {
+    root = defaultClaudeRoot(c);
+  } catch {
+    return;
+  }
+  for (const name of ['projects', ...sharedDirNames(root)]) {
+    // Another Claude's install, live records and editor links are no history.
+    if (name === 'plugins' || name === 'sessions' || name === 'ide') continue;
+    const own = path.join(folder, name);
+    try {
+      if (!existsSync(own) || isLink(own) || !lstatSync(own).isDirectory()) continue;
+      mkdirSync(path.join(root, name), { recursive: true });
+      mergeTree(own, path.join(root, name));
+    } catch {
+      /* the rest still merge */
+    }
+  }
+  const history = path.join(folder, 'history.jsonl');
+  const theirs = path.join(root, 'history.jsonl');
+  if (existsSync(history) && !isLink(history)) {
+    writeUser(theirs, () => {
+      const added = missingLines(history, theirs);
+      return added === null ? null : { text: added, append: true };
+    });
+  }
+  if (!rescueFiles) return;
+  for (const name of ['settings.json', 'CLAUDE.md', 'keybindings.json']) {
+    const own = path.join(folder, name);
+    try {
+      if (!existsSync(own) || isLink(own)) continue;
+      const user = path.join(root, name);
+      if (existsSync(user) && readFileSync(own).equals(readFileSync(user))) continue;
+      rescue(own, `${label}-${name}`, c);
+    } catch {
+      /* the account folder keeps its own; nothing is lost */
+    }
   }
 }
