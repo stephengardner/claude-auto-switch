@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
-## [2.6.17]
+## [2.6.18]
 
 ### Fixed
 
@@ -26,6 +26,39 @@ semantic versioning.
   watch now hands out each refusal with the conversation it was read from, and
   every check takes it from there, in the terminal and in the editor alike;
   the time of the last typed prompt is still read when the check is made.
+
+## [2.6.17]
+
+### Fixed
+
+- **On Windows, ending a Claude that has just ended no longer kills some other
+  process five seconds later (#152).** node-pty reports a terminal's exit a
+  second or more after it happens, so ccx can set out to end a Claude that is
+  already gone: one that said there was nothing to resume and exited, or one
+  that exited by itself on a limit as ccx confirmed it. taskkill then failed,
+  and ccx fell back to node-pty's own kill(), which starts a helper to list the
+  terminal's processes. The helper cannot attach to an ended terminal, and five
+  seconds later node-pty kills Claude's old pid, whichever process Windows has
+  given it to by then. ccx no longer hands a Claude to node-pty's kill() on
+  Windows: when taskkill fails, a Claude still running is ended by its pid, and
+  one that has ended is left to report its exit.
+- **A limit recorded while another ccx is held up in the middle of a change is
+  no longer lost (#152).** A change to the limits ledger holds its lock for a
+  few milliseconds. ccx waited 5 s for a holder that was still running and then
+  wrote without the lock, so when the machine stalled for a few seconds the
+  holder, as it went on, wrote back what it had read and erased the change.
+  The Windows CI runner stalled that long: a 1 s timer in another test fired
+  8.3 s late. A running holder is now waited for until its lock is a minute
+  old and then taken over, and one that has exited is still taken over at
+  once. The wait holds up whatever asked for as long as the holder holds,
+  which is milliseconds unless the machine is stalled.
+- **The two Windows tests #152 still held open wait for events (#152).** The
+  terminal probe at the top of each terminal test file killed a probe that had
+  already ended, so five seconds later node-pty killed its pid. In the
+  usage-check file that kill lands in the second test just after its Claude
+  starts (39 rounds of 40), and the one time that test failed, its session
+  ended right then. The probe is shared now and is never killed. The ledger race tests held the lock for a fixed 2 s; the other
+  process now holds it until ccx is seen waiting for it.
 
 ## [2.6.16]
 

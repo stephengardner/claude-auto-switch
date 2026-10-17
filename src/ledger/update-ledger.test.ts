@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { acquireOwnedLock } from '../claude/locks.js';
@@ -102,6 +102,50 @@ describe('updateLedger', () => {
     expect(accounts(loadLedger(c))).toEqual(['A', 'D']);
     expect(unlockedWrites(dir)).toEqual([]);
   });
+
+  it('waits for a running holder held up for seconds, and keeps its change and this one', async () => {
+    // A holder that reads the ledger, is held up for 6.5 s as a stalled
+    // machine holds one up, then writes back what it read with its own change.
+    // A change that wrote past it would be erased by that write.
+    const { home: dir, c } = home();
+    const file = ledgerFilePath(c);
+    const holder = spawn(
+      process.execPath,
+      [
+        '-e',
+        [
+          `const fs = require('node:fs');`,
+          `const [file, holdMs] = process.argv.slice(1);`,
+          `fs.writeFileSync(file + '.lock', String(process.pid), { flag: 'wx' });`,
+          `const ledger = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { caps: [] };`,
+          `fs.writeFileSync(file + '.held', '');`,
+          `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(holdMs));`,
+          `ledger.caps.push({ account: 'B', capUntil: Date.now() + 3600000, reason: 'another session', at: Date.now() });`,
+          `fs.writeFileSync(file + '.tmp', JSON.stringify(ledger));`,
+          `fs.renameSync(file + '.tmp', file);`,
+          // Forced: if its lock was taken over, the ledger check below says so.
+          `fs.rmSync(file + '.lock', { force: true });`,
+        ].join('\n'),
+        file,
+        '6500',
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    holder.stderr.on('data', (d) => (stderr += String(d)));
+    const exited = new Promise<number | null>((resolve) => holder.on('exit', resolve));
+    await vi.waitUntil(() => existsSync(`${file}.held`) || holder.exitCode !== null, {
+      timeout: 20_000,
+      interval: 10,
+    });
+    expect(existsSync(`${file}.held`), stderr).toBe(true);
+
+    updateLedger(c, capFor('A'));
+    expect(await exited, stderr).toBe(0);
+    // Built on the holder's write, which only a change made after it can be.
+    expect(accounts(loadLedger(c))).toEqual(['A', 'B']);
+    expect(unlockedWrites(dir)).toEqual([]);
+  }, 30_000);
 
   it('takes over at once a lock left by a process that has exited', () => {
     const { home: dir, c } = home();

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { vi } from 'vitest';
-import { nodePty } from '../../src/util/native-pty.js';
+import { probeTerminal } from './terminal-probe.js';
 import {
   runPtySession,
   type CapContext,
@@ -72,36 +72,13 @@ export async function waitFor<T>(
   );
 }
 
-// Through the loader every part of ccx uses, so these tests open terminals
-// exactly as ccx does, including what it does to make that possible.
-const { spawn } = nodePty();
-let ptyProblem = '';
-function canSpawnPty(): boolean {
-  try {
-    const probe = spawn(process.execPath, ['-e', 'process.exit(0)'], {
-      name: 'xterm-256color',
-      cols: 80,
-      rows: 24,
-      cwd: process.cwd(),
-      env: process.env as Record<string, string>,
-    });
-    try {
-      probe.kill();
-    } catch {
-      /* already gone */
-    }
-    return true;
-  } catch (err) {
-    ptyProblem = (err as Error).message;
-    return false;
-  }
-}
-export const PTY_AVAILABLE = canSpawnPty();
+const terminal = probeTerminal();
+export const PTY_AVAILABLE = terminal.open;
 // Skipped only on a developer machine without a terminal. In CI a terminal
 // that cannot open is a failure: skipping is how an install that could not
 // start `claude` at all on macOS still passed.
 if (!PTY_AVAILABLE && !process.env.CI) {
-  console.warn(`[skipped] carry-on tests: no pseudo-terminal here (${ptyProblem}).`);
+  console.warn(`[skipped] carry-on tests: no pseudo-terminal here (${terminal.problem}).`);
 }
 
 export const FAKE_ENV = [

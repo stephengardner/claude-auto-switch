@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { nodePty } from '../../src/util/native-pty.js';
+import { probeTerminal } from './terminal-probe.js';
 import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive, getActive } from '../../src/state/active.js';
@@ -131,34 +131,9 @@ async function firstLaunch(runsLog: string, timeoutMs = 20_000): Promise<RunEntr
  *
  * Deliberately noisy about it: a silently skipped test reads as a passing one.
  */
-// Through the loader every part of ccx uses, so these tests open terminals
-// exactly as ccx does, including what it does to make that possible.
-const { spawn } = nodePty();
-let ptyProblem = '';
-function canSpawnPty(): boolean {
-  try {
-    const probe = spawn(process.execPath, ['-e', 'process.exit(0)'], {
-      name: 'xterm-256color',
-      cols: 80,
-      rows: 24,
-      cwd: process.cwd(),
-      env: process.env as Record<string, string>,
-    });
-    try {
-      probe.kill();
-    } catch {
-      /* already gone */
-    }
-    return true;
-  } catch (err) {
-    // Recorded and printed, so a skip explains itself instead of leaving the
-    // next person to guess (that guessing is what this file cost once already).
-    ptyProblem = (err as Error).message;
-    return false;
-  }
-}
-
-const PTY_AVAILABLE = canSpawnPty();
+const terminal = probeTerminal();
+const PTY_AVAILABLE = terminal.open;
+const ptyProblem = terminal.problem;
 // Skipped only on a developer machine without a terminal. In CI a terminal
 // that cannot open is a failure: skipping is how an install that could not
 // start `claude` at all on macOS still passed.
