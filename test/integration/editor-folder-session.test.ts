@@ -205,6 +205,7 @@ describe('every folder ccx runs Claude in, made by one piece of code', () => {
 
   it('takes up, in a terminal session on the account the editor is on, a renewal the editor made while both run', { timeout: 60_000 }, async () => {
     const s = await sandbox(['A', 'B']);
+    s.context.editorTakeUpMs = 1_000;
     await editorOn(s);
     process.env.FAKE_CLAUDE_IDLE_MS = '16000';
     const running = runCommand(s.context, []);
@@ -281,6 +282,48 @@ describe('every folder ccx runs Claude in, made by one piece of code', () => {
     expect(isRealFolder(s.folder)).toBe(true);
     expect(asked.filter((url) => url.includes('oauth/token'))).toEqual([]);
     expect(launches(s.runsLog)[0]?.marker).toBe('A-renewed');
+  });
+
+  it("starts on the login it has, neither renewing nor asking about it, while the editor's newer one cannot be confirmed", { timeout: 60_000 }, async () => {
+    const s = await sandbox(['A']);
+    writeFileSync(path.join(s.dirOf('A'), '.credentials.json'), login('A', 'A1', 1, Date.now() + 60_000));
+    await editorOn(s);
+    writeFileSync(path.join(s.folder, '.credentials.json'), login('A', 'A-renewed', 2));
+    // Whose the editor's login is cannot be asked, and the profile's token reads as turned away.
+    s.context.lookupOwner = () => Promise.resolve(null);
+    s.context.loginProbe = () => Promise.resolve({ verdict: 'unknown' as const, rejected: { message: 'status 401', token: 'x' } });
+    const asked: string[] = [];
+    vi.stubGlobal('fetch', (url: unknown) => {
+      asked.push(String(url));
+      return Promise.resolve(new Response('{}', { status: 503 }));
+    });
+    const io: WorkerIo = { stdout: () => {}, stderr: () => {}, signals: new EventEmitter() };
+
+    expect(await workerCommand(s.context, ['hi'], {}, [], io)).toBe(0);
+
+    expect(isRealFolder(s.folder)).toBe(true);
+    expect(asked.filter((url) => url.includes('oauth/token'))).toEqual([]);
+    expect(launches(s.runsLog)[0]?.marker).toBe('A1');
+  });
+
+  it('looks for a renewal the editor made at most once a minute while a session runs', { timeout: 60_000 }, async () => {
+    const s = await sandbox(['A']);
+    await editorOn(s);
+    writeFileSync(path.join(s.folder, '.credentials.json'), login('A', 'A-renewed', 2));
+    // Never answered, so every look asks again: what it costs is what is counted.
+    let looks = 0;
+    s.context.lookupOwner = () => {
+      looks += 1;
+      return Promise.resolve(null);
+    };
+    process.env.FAKE_CLAUDE_IDLE_MS = '11000';
+
+    expect(await runCommand(s.context, [])).toBe(0);
+
+    expect(isRealFolder(s.folder)).toBe(true);
+    // The start's own look, the editor brought up at the start, and the first tick's.
+    expect(looks).toBeGreaterThan(0);
+    expect(looks).toBeLessThanOrEqual(3);
   });
 
   it('brings the editor folder into step with your files at a terminal session start', { timeout: 60_000 }, async () => {

@@ -44,7 +44,9 @@ semantic versioning.
   nothing while the editor's Claude holds the lock. A renewal made elsewhere of
   that login is carried into the folder, and one the editor's Claude made there
   goes home, once the API confirms whose it is, before ccx renews that account,
-  including at a session start and from a terminal session on the same account.
+  including at a session start and, looking once a minute, from a terminal
+  session on the same account. While whose it is cannot be asked, ccx renews
+  nothing of that account, and a session start goes ahead on the login it has.
 - **An existing install moves into the folder by itself, losing nothing.** At
   the first switch or session start, the old link is replaced by the folder at
   the same path, so the editor's setting is not changed and the editor need not

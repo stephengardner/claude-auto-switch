@@ -169,6 +169,12 @@ const CHECK_BUDGET_MS = 10_000;
 const BUSY_RETRY_MS = 200;
 /** How long a session start waits to hear whether its account's token is still accepted. */
 const PREFLIGHT_PROBE_MS = 3_000;
+/**
+ * How often a running session looks for a renewal the editor's Claude made of
+ * the login they share. The editor renews it once every few hours, so a minute
+ * is soon enough for this session's next pull and the next start to take it up.
+ */
+const EDITOR_TAKE_UP_MS = 60_000;
 
 /** What became of renewing an account's login so a session could be moved onto it in place. */
 type MoveRenewal =
@@ -996,16 +1002,20 @@ export async function runInteractiveHotSwap(
    * sides" and it needs checking, not checking every 400ms.
    */
   let lastPullCheck = 0;
-  /** Whether a look for a renewal the editor made is under way, so one tick does not start another. */
+  /** Whether a look for a renewal the editor made is under way, so one tick does not start another, and when the last began. */
   let lookingAtEditor = false;
+  let lastEditorLook = 0;
   const pullRenewedLogin = (account: Account): void => {
     const now = Date.now();
     if (now - lastPullCheck < 5_000) return;
     lastPullCheck = now;
     // The editor's folder holds its own copy of its account's login, with no
     // ccx process beside it to bring a renewal home: this session, on the same
-    // account, does, and the pull below takes it up from the profile.
-    if (!lookingAtEditor) {
+    // account, does, and a later pull takes it up from the profile. Less often
+    // than the pull: on macOS each look runs `security` on this thread, which
+    // also relays the terminal.
+    if (!lookingAtEditor && now - lastEditorLook >= (context.editorTakeUpMs ?? EDITOR_TAKE_UP_MS)) {
+      lastEditorLook = now;
       lookingAtEditor = true;
       void takeUpEditorRenewal(context.ctx, {
         account: account.name,
@@ -1855,10 +1865,15 @@ export async function runInteractiveHotSwap(
       // gathered somewhere else.
       // A renewal the editor's Claude made of this login comes home first, or
       // the readiness check below would renew a token that renewal retired.
-      await takeUpEditorRenewal(context.ctx, {
+      // One whose owner cannot be asked yet stays in the editor's folder, and
+      // the start then goes ahead on the login it has, neither renewing nor
+      // asking about it: that token is spent, and the answer would mark a
+      // working account dead.
+      const editorCopy = await takeUpEditorRenewal(context.ctx, {
         account: account.name,
         ...(context.lookupOwner ? { lookupOwner: context.lookupOwner } : {}),
       });
+      const editorHoldsNewer = editorCopy === 'unconfirmed';
       // Read BEFORE the renewal: it rotates the token, so afterwards there is
       // no shared value left to identify who was sharing it.
       const sharing = snapshotSharing(account, accounts, carryTargets(account, accounts));
@@ -1870,7 +1885,7 @@ export async function runInteractiveHotSwap(
       const checkReadiness = () =>
         ensureLoginUsable({
           hasLogin: () => hasLogin(account.dir),
-          renewalDue: () => renewalIsDue(account.dir),
+          renewalDue: () => !editorHoldsNewer && renewalIsDue(account.dir),
           // Before Claude starts, nothing is relayed, so this one may wait for the lock.
           renew: (rejected) =>
             refreshCredentialIfExpired(account.dir, {
@@ -1880,6 +1895,7 @@ export async function runInteractiveHotSwap(
           // One usage request, which costs no tokens, kept short: a slow answer
           // must not hold up a session start, and no answer starts as before.
           turnedAway: async () => {
+            if (editorHoldsNewer) return null;
             const probe =
               context.loginProbe ?? ((file: string) => probeUsage(file, fetch, PREFLIGHT_PROBE_MS));
             return (await probe(path.join(account.dir, CREDS))).rejected?.token ?? null;

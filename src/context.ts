@@ -77,6 +77,11 @@ export interface CliContext {
    * while it runs. Production reads them as often as a terminal session does.
    */
   editorFollowMs?: number;
+  /**
+   * Injected in tests: how often a running session looks for a renewal the
+   * editor's Claude made of its login. Production looks once a minute.
+   */
+  editorTakeUpMs?: number;
   /** Injected in tests: overrides the API lookup of who a stored login belongs to. */
   lookupOwner?: (dir: string) => Promise<string | null>;
   /** Injected in tests: a newer ccx installed under this one (update/newer-install). */
