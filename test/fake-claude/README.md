@@ -38,6 +38,18 @@ Its behavior is driven by a **scenario** JSON, resolved in this order:
   `FAKE_CLAUDE_IDLE_MS` as a backstop. With `FAKE_CLAUDE_LOG_CAP_WORDS`, each
   showing of the repeated limit words (`FAKE_CLAUDE_CAP_EVERY_MS`) is logged as
   `cap-words`, so a test can count them.
+- with `--input-format stream-json` (and `FAKE_CLAUDE_SESSION_RECORD` and
+  `FAKE_CLAUDE_TRANSCRIPT` set) it is the editor's Claude: it takes one turn per
+  stream-json user message on standard input and answers each as stream-json
+  events on standard output, staying up until its input ends. Each prompt is
+  recorded in the conversation the process is in now, typed by a person when
+  the message says `origin: { kind: "human" }`, and refused when the login in
+  use is one `FAKE_CLAUDE_REFUSE_ON` names. `/clear` moves it to the next
+  conversation in `FAKE_CLAUDE_CLEAR_TO`. `FAKE_CLAUDE_PROMPT_WITH_REFUSAL`
+  writes each refusal together with a prompt typed after it, and
+  `FAKE_CLAUDE_LAST_WORDS` goes to standard error as the input ends.
+  `FAKE_CLAUDE_SESSION_RECORD_AFTER_MS` writes the per-process record only that
+  late, as when Claude takes its first turn before it registers itself.
 
 ## Scenario shape
 

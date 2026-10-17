@@ -118,20 +118,23 @@ export async function launchWatched(
   args: string[],
   account: LaunchTarget,
   deps: LaunchDeps,
+  started?: (pid: number) => void,
 ): Promise<WatchedResult> {
   const argv = invokerArgs(deps.claude, args);
-  return spawnWatched(deps.claude.bin, argv, { CLAUDE_CONFIG_DIR: account.dir });
+  return spawnWatched(deps.claude.bin, argv, { CLAUDE_CONFIG_DIR: account.dir }, started);
 }
 
 /**
  * Spawn any command with inherited stdin/stdout (transparent) while teeing and
  * watching stderr for the rate-limit signal. Used to run claude directly AND to
- * run an editor's exact "run this" command on a chosen account.
+ * run an editor's exact "run this" command on a chosen account. `started` is
+ * told the process's pid as soon as it has one.
  */
 export async function spawnWatched(
   bin: string,
   args: string[],
   extraEnv: Record<string, string> = {},
+  started?: (pid: number) => void,
 ): Promise<WatchedResult> {
   const child = spawn(bin, args, {
     // On the account ccx chose: a login variable inherited from wherever ccx
@@ -139,6 +142,7 @@ export async function spawnWatched(
     env: { ...withoutEnv(process.env, ACCOUNT_ENV), ...extraEnv },
     stdio: ['inherit', 'inherit', 'pipe'],
   });
+  if (child.pid !== undefined) started?.(child.pid);
 
   let stderr = '';
   // Decoded as a stream, so a character split between two reads stays whole.

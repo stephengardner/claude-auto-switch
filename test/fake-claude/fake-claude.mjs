@@ -5,6 +5,7 @@
 // <CLAUDE_CONFIG_DIR>/fake-scenario.json. No network, no model spend, no logins.
 import { readFileSync, writeFileSync, writeSync, existsSync, mkdirSync, appendFileSync, rmSync, statSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 const args = process.argv.slice(2);
@@ -146,6 +147,12 @@ const applied = {
   model: valueOf('--model'),
   prompt: parsed.operands[0] ?? null,
 };
+// Turns arriving on standard input as stream-json, as the editor's extension
+// (2.1.302) runs Claude: no `--print`, and the process stays up across turns
+// until its input ends. Only with the records it keeps (see below).
+const streamTurns =
+  valueOf('--input-format') === 'stream-json' &&
+  Boolean(process.env.FAKE_CLAUDE_SESSION_RECORD && process.env.FAKE_CLAUDE_TRANSCRIPT);
 
 function loadScenario() {
   const explicit = process.env.FAKE_CLAUDE_SCENARIO;
@@ -361,9 +368,9 @@ if (process.env.CLAUDE_CONFIG_DIR) {
     writeJson(file, { ...readObject(file), ...JSON.parse(process.env[variable]) });
   }
 }
-// On standard error in print mode with a format: standard output there is the
-// answer, and a program reads it whole.
-(outputFormat ? process.stderr : process.stdout).write(`fake-claude ran: ${args.join(' ')}\n`);
+// On standard error in print mode with a format, and for turns over
+// stream-json: standard output there is the answer, and a program reads it.
+(outputFormat || streamTurns ? process.stderr : process.stdout).write(`fake-claude ran: ${args.join(' ')}\n`);
 
 // Arbitrary output at start, standing in for a replayed conversation.
 if (process.env.FAKE_CLAUDE_SAY) process.stdout.write(`${process.env.FAKE_CLAUDE_SAY}\n`);
@@ -431,8 +438,13 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
       /* written without one, as an older Claude does */
     }
   }
+  // With FAKE_CLAUDE_SESSION_RECORD_AFTER_MS the record is first written that
+  // late, as when Claude has taken its first turn before it registers itself.
+  const registerAfter = Number(process.env.FAKE_CLAUDE_SESSION_RECORD_AFTER_MS) || 0;
+  let registered = registerAfter === 0;
   const writeRecord = (sessionId) => {
     recordedId = sessionId;
+    if (!registered) return;
     writeJson(record, {
       pid: process.pid,
       sessionId,
@@ -450,6 +462,13 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
     if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'status', status })}\n`, 'utf8');
   };
   writeRecord(recordedId);
+  if (!registered) {
+    const t = setTimeout(() => {
+      registered = true;
+      writeRecord(recordedId);
+    }, registerAfter);
+    if (t.unref) t.unref();
+  }
   // A change of what it rests in, "<ms>:<status>": a subagent finishing
   // ("1500:idle"), a dialog opening.
   if (process.env.FAKE_CLAUDE_STATUS_THEN) {
@@ -802,6 +821,113 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
       });
       process.stdin.resume();
     }
+
+    // Turns over stream-json (streamTurns), one user message per line in and
+    // its answer as events out. Each prompt goes into the record of the
+    // conversation the process is in now, marked typed by a person when the
+    // message says so (the editor's webview sends `origin: { kind: "human" }`,
+    // and 2.1.302 keeps it), and the turn is refused when the login in use is
+    // one FAKE_CLAUDE_REFUSE_ON names. "/clear" moves the process to a new
+    // conversation, the next of FAKE_CLAUDE_CLEAR_TO. With
+    // FAKE_CLAUDE_PROMPT_WITH_REFUSAL a refusal is written with a prompt typed
+    // just after it, in one write, as when the person tried again before
+    // anyone read the record. FAKE_CLAUDE_LAST_WORDS is written to standard
+    // error as the input ends.
+    if (streamTurns) {
+      const recordNow = (entries) => {
+        const file = path.join(configDir, 'projects', 'fake-project', `${recordedId}.jsonl`);
+        mkdirSync(path.dirname(file), { recursive: true });
+        appendFileSync(file, entries.map((entry) => `${JSON.stringify(entry)}\n`).join(''));
+      };
+      const say = (event) => process.stdout.write(`${JSON.stringify({ ...event, session_id: recordedId })}\n`);
+      const textOf = (content) =>
+        typeof content === 'string'
+          ? content
+          : Array.isArray(content)
+            ? content.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('')
+            : '';
+      const clearTo = (process.env.FAKE_CLAUDE_CLEAR_TO ?? '').split(',').filter(Boolean);
+      const turn = (message) =>
+        new Promise((done) => {
+          const text = textOf(message.message?.content);
+          if (text.trim() === '/clear') {
+            writeRecord(clearTo.shift() ?? randomUUID());
+            say({ type: 'result', subtype: 'success', is_error: false, result: 'cleared' });
+            done();
+            return;
+          }
+          recordNow([
+            {
+              type: 'user',
+              isSidechain: false,
+              ...(message.origin?.kind === 'human' ? { origin: { kind: 'human' } } : {}),
+              timestamp: new Date().toISOString(),
+              message: { role: 'user', content: text },
+            },
+          ]);
+          setStatus('busy');
+          setTimeout(() => {
+            const marker = loginForRequest();
+            const refused = refusedOn(marker);
+            const answer = refused
+              ? refusalEntry()
+              : {
+                  type: 'assistant',
+                  isSidechain: false,
+                  timestamp: new Date().toISOString(),
+                  message: { role: 'assistant', content: [{ type: 'text', text: 'carrying on' }] },
+                };
+            const typedAfter =
+              refused && process.env.FAKE_CLAUDE_PROMPT_WITH_REFUSAL
+                ? [
+                    {
+                      type: 'user',
+                      isSidechain: false,
+                      origin: { kind: 'human' },
+                      timestamp: new Date(Date.parse(answer.timestamp) + 1).toISOString(),
+                      message: { role: 'user', content: 'trying again' },
+                    },
+                  ]
+                : [];
+            recordNow([answer, ...typedAfter]);
+            if (runsLog) {
+              appendFileSync(runsLog, `${JSON.stringify({ type: 'prompt', text, marker, refused, pid: process.pid })}\n`, 'utf8');
+            }
+            say({ type: 'assistant', message: answer.message });
+            say({ type: 'result', subtype: 'success', is_error: refused, result: answer.message.content[0].text });
+            setStatus(resting ?? 'idle');
+            done();
+          }, Number(process.env.FAKE_CLAUDE_TURN_MS) || 100);
+        });
+      // One turn at a time, in the order they came, as Claude takes them.
+      let turns = Promise.resolve();
+      let unread = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (chunk) => {
+        unread += chunk;
+        for (let end = unread.indexOf('\n'); end !== -1; end = unread.indexOf('\n')) {
+          const line = unread.slice(0, end).trim();
+          unread = unread.slice(end + 1);
+          let message = null;
+          try {
+            message = line === '' ? null : JSON.parse(line);
+          } catch {
+            message = null;
+          }
+          if (message?.type === 'user') turns = turns.then(() => turn(message));
+        }
+      });
+      process.stdin.on('end', () => {
+        void turns.then(() => {
+          const code = Number(process.env.FAKE_CLAUDE_EXIT_CODE) || 0;
+          const last = process.env.FAKE_CLAUDE_LAST_WORDS;
+          // Once written out: a pipe takes writes asynchronously.
+          if (last) process.stderr.write(`${last}\n`, () => process.exit(code));
+          else process.exit(code);
+        });
+      });
+      say({ type: 'system', subtype: 'init' });
+    }
   }
   // A conversation switch made inside the session, at human speed.
   const switchTo = process.env.FAKE_CLAUDE_SWITCH_TO;
@@ -1044,7 +1170,8 @@ if (idleMs > 0) {
     if (runsLog) appendFileSync(runsLog, `${JSON.stringify({ type: 'reread', marker: readMarker() })}\n`, 'utf8');
     printResult(() => process.exit(endCode));
   }, idleMs);
-} else {
+} else if (!streamTurns) {
+  // A run taking its turns over stream-json ends when its input does instead.
   printResult(() => process.exit(endCode));
 }
 // Ended once a file the test names appears, the stay above being only a

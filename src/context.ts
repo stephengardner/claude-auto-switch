@@ -72,6 +72,11 @@ export interface CliContext {
    * runs as `node`, which the real check would never count.
    */
   isClaudeProcess?: (pid: number) => boolean;
+  /**
+   * Injected in tests: how often an editor launch reads its Claude's records
+   * while it runs. Production reads them as often as a terminal session does.
+   */
+  editorFollowMs?: number;
   /** Injected in tests: overrides the API lookup of who a stored login belongs to. */
   lookupOwner?: (dir: string) => Promise<string | null>;
   /** Injected in tests: a newer ccx installed under this one (update/newer-install). */
