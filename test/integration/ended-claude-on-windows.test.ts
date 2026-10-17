@@ -29,10 +29,10 @@ describe.runIf(process.platform === 'win32')('a Claude that has already ended, o
     const killed: number[] = [];
     vi.spyOn(pty, 'spawn').mockImplementation((file, args, options) => {
       const terminal = open(file, args, options);
-      const kill = terminal.kill.bind(terminal);
-      terminal.kill = (signal?: string): void => {
+      // Noted and not passed on: the real one would start the very kill five
+      // seconds later that this test is here to stop.
+      terminal.kill = (): void => {
         killed.push(terminal.pid);
-        kill(signal);
       };
       return terminal;
     });
