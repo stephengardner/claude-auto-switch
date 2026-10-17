@@ -135,7 +135,8 @@ async function twoAccounts(
  * The wrapper as the extension starts it, in a process of its own: ccx's
  * wrapperLaunch on `<claude> ...args`, with the usage endpoint answering from
  * `usage.json` (each account's answers in turn, the last one standing) and
- * the fake claude, which runs as `node`, counted as a Claude.
+ * the fake claude, which runs as `node`, counted as a Claude. It reads
+ * Claude's records every 100 ms, or every EDITOR_FOLLOW_MS.
  */
 function wrapperScript(home: string): string {
   const script = path.join(home, 'editor-wrapper.mts');
@@ -159,7 +160,7 @@ function wrapperScript(home: string): string {
       `  return (queue.length > 1 ? queue.shift() : queue[0]) ?? { verdict: 'allowed', fiveHour: 0.1, sevenDay: 0.1 };`,
       `};`,
       `const context = { ctx, config: loadConfig(ctx), claude: { bin: process.execPath, prefixArgs: [fake] },`,
-      `  capProbe: probe, isClaudeProcess: processIsAlive, editorFollowMs: 100,`,
+      `  capProbe: probe, isClaudeProcess: processIsAlive, editorFollowMs: Number(process.env.EDITOR_FOLLOW_MS) || 100,`,
       `  out: () => {}, err: () => {}, json: false, quiet: false };`,
       `process.exit(await wrapperLaunch(context, [process.execPath, fake, ...claudeArgs]));`,
     ].join('\n'),
@@ -169,8 +170,12 @@ function wrapperScript(home: string): string {
 }
 
 interface Chat {
-  /** Tell Claude something, as the extension's webview sends a message somebody typed. */
-  send(text: string): void;
+  /**
+   * Tell Claude something, as the extension's webview sends a message
+   * somebody typed. `limitType`: the limit the fake claude names if it
+   * refuses this turn.
+   */
+  send(text: string, limitType?: string): void;
   /** Whether Claude has answered `count` turns, within a while. */
   answered(count: number): Promise<boolean>;
   /** Whether the wrapper, and with it Claude, is still running. */
@@ -213,13 +218,14 @@ function openChat(home: string, chatArgs: string[], env: Record<string, string> 
   });
   child.stderr?.resume();
   return {
-    send(text) {
+    send(text, limitType) {
       const message = {
         type: 'user',
         session_id: '',
         parent_tool_use_id: null,
         origin: { kind: 'human' },
         message: { role: 'user', content: [{ type: 'text', text }] },
+        ...(limitType ? { fake: { limitType } } : {}),
       };
       child.stdin?.write(`${JSON.stringify(message)}\n`);
     },
@@ -294,8 +300,12 @@ describe('an editor chat that meets a limit while the usage check is turned away
       writeFileSync(record, old(60 * 60_000) + old(30_000), 'utf8');
 
       // The extension starts Claude to send the turn the person just wrote, and
-      // here Claude is refused before it says which conversation it is in.
-      const chat = openChat(home, [`--resume=${RESUMED}`], { FAKE_CLAUDE_SESSION_RECORD_AFTER_MS: '2000' });
+      // here Claude is refused before ccx first reads its records (every 2 s,
+      // as in production), and before Claude says which conversation it is in.
+      const chat = openChat(home, [`--resume=${RESUMED}`], {
+        EDITOR_FOLLOW_MS: '2000',
+        FAKE_CLAUDE_SESSION_RECORD_AFTER_MS: '3000',
+      });
       chat.send('hello again');
       expect(await chat.answered(1)).toBe(true);
       await until(() => getActive(ctx) === 'B');
@@ -316,21 +326,28 @@ describe('an editor chat that meets a limit while the usage check is turned away
     async () => {
       const { home, ctx } = await twoAccounts('cas-editor-clear-', { A: [TURNED_AWAY] });
       const chat = openChat(home, [], { FAKE_CLAUDE_CLEAR_TO: CLEARED });
-      chat.send('/clear');
+      // A first turn, refused for a limit ccx cannot name: its verdict shows
+      // that ccx is following the chat's first conversation.
+      chat.send('hello', 'seven_day_someday');
       expect(await chat.answered(1)).toBe(true);
+      await until(() => verdicts(home).length > 0);
+      expect(verdicts(home)).toEqual([notMoving('the refusal does not say which limit it is (seven_day_someday)')]);
+      chat.send('/clear');
+      expect(await chat.answered(2)).toBe(true);
       // A person types the next message seconds later; ccx reads Claude's
       // records every 100 ms here.
       await sleep(1_500);
       chat.send('hello');
-      expect(await chat.answered(2)).toBe(true);
+      expect(await chat.answered(3)).toBe(true);
       await until(() => getActive(ctx) === 'B');
 
       expect(chat.running()).toBe(true);
-      // The refused turn is in the new conversation's record only.
-      expect(readFileSync(recordOf(home, 'A', CLEARED), 'utf8')).toContain('usage_limit_reached');
-      expect(readFileSync(recordOf(home, 'A', NEW_CHAT), 'utf8')).not.toContain('usage_limit_reached');
+      // The turn refused for a limit ccx can name is in the new conversation's record only.
+      expect(readFileSync(recordOf(home, 'A', CLEARED), 'utf8')).toContain('"rateLimitType":"five_hour"');
+      expect(readFileSync(recordOf(home, 'A', NEW_CHAT), 'utf8')).not.toContain('"rateLimitType":"five_hour"');
       expect(capsIn(home)).toEqual([expect.objectContaining({ account: 'A' })]);
       expect(getActive(ctx)).toBe('B');
+      expect(verdicts(home)[1]).toMatch(confirmedByRefusal('five_hour'));
       expect(await chat.close()).toBe(0);
     },
   );

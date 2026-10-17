@@ -44,7 +44,8 @@ Its behavior is driven by a **scenario** JSON, resolved in this order:
   events on standard output, staying up until its input ends. Each prompt is
   recorded in the conversation the process is in now, typed by a person when
   the message says `origin: { kind: "human" }`, and refused when the login in
-  use is one `FAKE_CLAUDE_REFUSE_ON` names. `/clear` moves it to the next
+  use is one `FAKE_CLAUDE_REFUSE_ON` names, for the limit a message's own
+  `fake.limitType` names when it has one. `/clear` moves it to the next
   conversation in `FAKE_CLAUDE_CLEAR_TO`. `FAKE_CLAUDE_PROMPT_WITH_REFUSAL`
   writes each refusal together with a prompt typed after it, and
   `FAKE_CLAUDE_LAST_WORDS` goes to standard error as the input ends.

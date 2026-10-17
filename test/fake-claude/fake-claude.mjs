@@ -515,27 +515,27 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
    * The limit a refusal names, as Claude 2.1.29x writes it: its type
    * (FAKE_CLAUDE_LIMIT_TYPE, five_hour by default) and when it resets in
    * epoch seconds (FAKE_CLAUDE_RESETS_AT, an hour on by default, "none" for
-   * no time).
+   * no time). `limitType` names it for one refusal instead.
    */
-  const rateLimitInfo = () => {
+  const rateLimitInfo = (limitType) => {
     const resets = process.env.FAKE_CLAUDE_RESETS_AT;
     return {
       status: 'rejected',
-      rateLimitType: process.env.FAKE_CLAUDE_LIMIT_TYPE ?? 'five_hour',
+      rateLimitType: limitType ?? process.env.FAKE_CLAUDE_LIMIT_TYPE ?? 'five_hour',
       ...(resets === 'none' ? {} : { resetsAt: resets ? Number(resets) : Math.floor(Date.now() / 1000) + 3600 }),
       overageStatus: 'rejected',
       overageDisabledReason: 'org_level_disabled',
       isUsingOverage: false,
     };
   };
-  const refusalEntry = (extra = {}) => ({
+  const refusalEntry = (extra = {}, limitType = undefined) => ({
     type: 'assistant',
     isSidechain: false,
     isApiErrorMessage: true,
     error: 'rate_limit',
     apiError: 'usage_limit_reached',
     apiErrorStatus: 429,
-    apiErrorParams: { rate_limit_info: rateLimitInfo() },
+    apiErrorParams: { rate_limit_info: rateLimitInfo(limitType) },
     timestamp: new Date(Date.now() - (Number(process.env.FAKE_CLAUDE_REFUSAL_AGE_MS) || 0)).toISOString(),
     message: {
       model: '<synthetic>',
@@ -869,8 +869,9 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
           setTimeout(() => {
             const marker = loginForRequest();
             const refused = refusedOn(marker);
+            // A test can name the limit of one turn's refusal (`fake.limitType`).
             const answer = refused
-              ? refusalEntry()
+              ? refusalEntry({}, message.fake?.limitType)
               : {
                   type: 'assistant',
                   isSidechain: false,
