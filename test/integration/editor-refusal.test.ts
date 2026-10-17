@@ -725,23 +725,22 @@ describe('an editor chat that meets a limit while the usage check is turned away
     'asks about every refusal held back, past one the ledger already holds',
     { timeout: 60_000 },
     async () => {
-      // While the first turn's check waits, a subagent meets its weekly Opus
-      // limit and then the main thread its weekly Sonnet limit. Another
-      // session records the Opus one, and the chat is closed, all before that
-      // check answers: the Opus refusal is held first, and the Sonnet one is
-      // only reached past it.
-      const { home, ctx } = await twoAccounts('cas-editor-held-past-', {
-        A: [{ ...TURNED_AWAY, waitFor: 'release' }, TURNED_AWAY],
-      });
+      // The first turn's check confirms nothing, so the next refused turns
+      // are held back for a while: a subagent's weekly Opus limit, then the
+      // main thread's weekly Sonnet limit. Another session records the Opus
+      // one, and the chat is closed: as Claude exits, the Sonnet refusal is
+      // reached only past the Opus one, with no check after it to pick it up.
+      const { home, ctx } = await twoAccounts('cas-editor-held-past-', { A: [TURNED_AWAY] });
       const chat = openChat(home, []);
       chat.send('hello', { limitType: 'seven_day_someday' });
       expect(await chat.answered(1)).toBe(true);
-      await until(() => asked(home).length === 1);
+      await until(() => verdicts(home).length === 1);
       chat.send('carry on', { subagent: true, limitType: 'seven_day_opus' });
       expect(await chat.answered(2)).toBe(true);
       chat.send('please', { limitType: 'seven_day_sonnet' });
       expect(await chat.answered(3)).toBe(true);
       await sleep(500);
+      expect(asked(home)).toEqual(['A']);
       updateLedger(ctx, (ledger) =>
         markCapped(ledger, {
           account: 'A',
@@ -751,11 +750,8 @@ describe('an editor chat that meets a limit while the usage check is turned away
           reason: 'another session',
         }),
       );
-      chat.endInput();
-      await sleep(500);
-      release(home);
 
-      expect(await chat.exited).toBe(0);
+      expect(await chat.close()).toBe(0);
       expect(capsIn(home)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ account: 'A', model: 'Sonnet' }),
