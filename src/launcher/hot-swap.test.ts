@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   runHotSwapSession,
   type HotSwapDeps,
@@ -687,32 +687,38 @@ describe('an unproven hold, which is a nudge rather than a verdict', () => {
   });
 
   it('says what it sets aside at the moment it is asked, so a hold that has lifted no longer counts', async () => {
-    const accounts = pool(['a', 'b']);
-    let setAside: (() => Set<string>) | null = null;
-    const seen: Array<string[]> = [];
-    const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-    const deps: HotSwapDeps = {
-      nextAccount: (ex) => accounts.find((a) => !ex.has(a.name)) ?? null,
-      resolveAccount: (name) => accounts.find((a) => a.name === name) ?? null,
-      setAsideNow: (read) => {
-        setAside = read;
-      },
-      runSession: async (account) => {
-        if (account.name === 'a') {
-          // Held off for a moment only: nothing confirmed a limit.
-          return { kind: 'capped', exitCode: 1, unproven: true, resetAt: Date.now() + 100 } as SessionOutcome;
-        }
-        seen.push([...(setAside?.() ?? [])]);
-        await sleep(200);
-        seen.push([...(setAside?.() ?? [])]);
-        return { kind: 'ok', exitCode: 0 } as SessionOutcome;
-      },
-      markCapped: () => {},
-      notify: () => {},
-      report: () => {},
-    };
+    // On a clock the test moves: the hold is still on at the first look
+    // however slowly the machine gets there, and over at the second.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const accounts = pool(['a', 'b']);
+      let setAside: (() => Set<string>) | null = null;
+      const seen: Array<string[]> = [];
+      const deps: HotSwapDeps = {
+        nextAccount: (ex) => accounts.find((a) => !ex.has(a.name)) ?? null,
+        resolveAccount: (name) => accounts.find((a) => a.name === name) ?? null,
+        setAsideNow: (read) => {
+          setAside = read;
+        },
+        runSession: async (account) => {
+          if (account.name === 'a') {
+            // Held off for a moment only: nothing confirmed a limit.
+            return { kind: 'capped', exitCode: 1, unproven: true, resetAt: Date.now() + 100 } as SessionOutcome;
+          }
+          seen.push([...(setAside?.() ?? [])]);
+          vi.setSystemTime(Date.now() + 200);
+          seen.push([...(setAside?.() ?? [])]);
+          return { kind: 'ok', exitCode: 0 } as SessionOutcome;
+        },
+        markCapped: () => {},
+        notify: () => {},
+        report: () => {},
+      };
 
-    expect(await runHotSwapSession(deps)).toBe(0);
-    expect(seen).toEqual([['a'], []]);
+      expect(await runHotSwapSession(deps)).toBe(0);
+      expect(seen).toEqual([['a'], []]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

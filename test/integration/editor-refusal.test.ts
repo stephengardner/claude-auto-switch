@@ -94,9 +94,26 @@ const verdicts = (home: string): string[] =>
     .filter((e) => e.kind === 'cap-verify')
     .map((e) => e.msg);
 const said = (home: string, msg: string): number => eventsIn(home).filter((e) => e.msg === msg).length;
+/** The `n`th verdict ccx gives on a refused turn, once it has given that many. */
+async function verdictNumber(home: string, n: number): Promise<string> {
+  await until(() => verdicts(home).length >= n);
+  return verdicts(home)[n - 1] ?? `no verdict ${n}: ${JSON.stringify(verdicts(home))}`;
+}
 const capsIn = (home: string): Cap[] => {
   const file = path.join(home, 'ledger.json');
   return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as { caps: Cap[] }).caps : [];
+};
+/**
+ * The limits recorded for `account` as they stand once their reset has
+ * passed. The ledger is what tells ccx whether meeting a limit again is news,
+ * so a test reaches "after the reset" here rather than by waiting for it.
+ */
+const resetOnLedger = (ctx: PathCtx, account: string): void => {
+  updateLedger(ctx, (ledger) => ({
+    caps: ledger.caps.map((cap) =>
+      cap.account === account ? { ...cap, capUntil: Date.now() - 1_000 } : cap,
+    ),
+  }));
 };
 /** Whose login the usage check was asked with, in order. */
 const asked = (home: string): string[] => linesOf(path.join(home, 'asked.txt'));
@@ -585,19 +602,22 @@ describe('an editor chat that meets a limit while the usage check is turned away
     async () => {
       // An editor's Claude outlives a limit: refused at 10:00 for one that
       // resets at 15:00, and at 18:00 for the next, on the same Claude.
-      const { home } = await twoAccounts('cas-editor-again-', { A: [TURNED_AWAY] });
+      const { home, ctx } = await twoAccounts('cas-editor-again-', { A: [TURNED_AWAY] });
       const chat = openChat(home, []);
-      const first = Math.floor(Date.now() / 1000) + 4;
+      // Far enough out to hold however slowly the first turn is judged.
+      const first = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
       chat.send('hello', { resetsAt: first });
       expect(await chat.answered(1)).toBe(true);
-      await until(() => said(home, 'A hit its limit (editor)') === 1);
+      expect(await verdictNumber(home, 1)).toMatch(confirmedByRefusal('five_hour'));
+      expect(await until(() => said(home, 'next editor chat will use B') === 1)).toBe(true);
       expect(capsIn(home)).toEqual([expect.objectContaining({ account: 'A', capUntil: first * 1000 })]);
 
-      await until(() => Date.now() > first * 1000 + 300, 10_000);
-      const second = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
+      resetOnLedger(ctx, 'A');
+      const second = first + 60 * 60;
       chat.send('hello again', { resetsAt: second });
       expect(await chat.answered(2)).toBe(true);
-      await until(() => said(home, 'A hit its limit (editor)') === 2);
+      expect(await verdictNumber(home, 2)).toMatch(confirmedByRefusal('five_hour'));
+      expect(await until(() => said(home, 'A hit its limit (editor)') === 2)).toBe(true);
 
       expect(chat.running()).toBe(true);
       expect(asked(home)).toEqual(['A', 'A']);
@@ -612,16 +632,18 @@ describe('an editor chat that meets a limit while the usage check is turned away
     { timeout: 60_000 },
     async () => {
       const later = Date.now() + 5 * 60 * 60_000;
-      const { home } = await twoAccounts('cas-editor-again-words-', { A: [TURNED_AWAY, OUT(later)] });
+      const { home, ctx } = await twoAccounts('cas-editor-again-words-', { A: [TURNED_AWAY, OUT(later)] });
       const chat = openChat(home, [], {
         FAKE_CLAUDE_LAST_WORDS: "You've hit your session limit. Run /usage-credits to continue.",
         FAKE_CLAUDE_EXIT_CODE: '1',
       });
-      const first = Math.floor(Date.now() / 1000) + 4;
+      // Far enough out to hold however slowly the first turn is judged.
+      const first = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
       chat.send('hello', { resetsAt: first });
       expect(await chat.answered(1)).toBe(true);
-      await until(() => said(home, 'A hit its limit (editor)') === 1);
-      await until(() => Date.now() > first * 1000 + 300, 10_000);
+      expect(await verdictNumber(home, 1)).toMatch(confirmedByRefusal('five_hour'));
+      expect(await until(() => said(home, 'next editor chat will use B') === 1)).toBe(true);
+      resetOnLedger(ctx, 'A');
 
       expect(await chat.close()).toBe(1);
       expect(asked(home)).toEqual(['A', 'A']);
