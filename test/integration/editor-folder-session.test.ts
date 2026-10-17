@@ -164,11 +164,21 @@ describe('every folder ccx runs Claude in, made by one piece of code', () => {
     keychain.clear();
   });
 
+  /** Where a path lands, or null when there is nothing there. */
+  const landsAt = (p: string): string | null => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return null;
+    }
+  };
   /** What a folder of ccx's holds: the user's projects, skills and settings, and the account's identity. */
   const expectAccountFolder = (s: Sandbox, folder: Folder | undefined): void => {
-    expect(path.dirname(folder?.configDir ?? '')).toBe(realpathSync(path.join(s.home, 'sessions')));
-    expect(folder?.projects).toBe(realpathSync(path.join(s.home, '.claude', 'projects')));
-    expect(folder?.skills).toBe(realpathSync(path.join(s.home, '.claude', 'skills')));
+    expect(path.dirname(folder?.configDir ?? '')).toBe(landsAt(path.join(s.home, 'sessions')));
+    expect(folder?.projects).not.toBeNull();
+    expect(folder?.projects).toBe(landsAt(path.join(s.home, '.claude', 'projects')));
+    expect(folder?.skills).not.toBeNull();
+    expect(folder?.skills).toBe(landsAt(path.join(s.home, '.claude', 'skills')));
     expect(folder?.settings).toEqual({ model: 'fable' });
     expect(folder?.email).toBe('a@example.com');
   };

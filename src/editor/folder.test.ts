@@ -330,7 +330,9 @@ describe('the editor folder kept in step with your own files', () => {
 
     expect(json(s.user('settings.json')).model).toBe('haiku');
     expect(json(path.join(s.folder, 'settings.json')).model).toBe('haiku');
-    const kept = readdirSync(rescued).filter((name) => name.endsWith('editor-active-settings.json'));
+    const kept = (existsSync(rescued) ? readdirSync(rescued) : []).filter((name) =>
+      name.endsWith('editor-active-settings.json'),
+    );
     expect(kept).toHaveLength(1);
     expect(json(path.join(rescued, kept[0]!)).model).toBe('sonnet');
   });
@@ -585,7 +587,8 @@ describe('an install on the old link, moved into the folder', () => {
     expect(read(s.user(path.join('projects', '-work', 'old.jsonl')))).toBe('from A\n');
     expect(read(s.user(path.join('projects', '-other', 'older.jsonl')))).toBe('from B\n');
     expect(read(s.user('history.jsonl'))).toContain('typed in the editor');
-    const rescued = readdirSync(path.join(s.ccx, 'rescued'));
+    const rescuedDir = path.join(s.ccx, 'rescued');
+    const rescued = existsSync(rescuedDir) ? readdirSync(rescuedDir) : [];
     const settingsKept = rescued.find((name) => name.endsWith('A-settings.json'));
     expect(settingsKept).toBeDefined();
     expect(json(path.join(s.ccx, 'rescued', settingsKept!)).model).toBe('haiku');
@@ -612,6 +615,24 @@ describe('an install on the old link, moved into the folder', () => {
     expect(tokenOf(profileLogin(s, 'A'))).toBe('a-A-2');
     expect(tokenOf(keychain.get(s.folder))).toBe('a-B-1');
     expect(tokenOf(profileLogin(s, 'B'))).toBe('a-B-1');
+  });
+
+  it("gives back, as it moves, the login file its Claude's first save took, though whose it is can be asked only then", async () => {
+    const s = await onTheLink('A');
+    keychain.set(s.folder, login('A', 2));
+    rmSync(path.join(s.dirOf('A'), '.credentials.json'));
+    // The API answers once, for the move, and not again.
+    let answers = 0;
+    s.context.lookupOwner = (dir) => {
+      answers += 1;
+      return Promise.resolve(answers === 1 ? ownerOf(readFileSync(path.join(dir, '.credentials.json'), 'utf8')) : null);
+    };
+
+    await use(s, 'A', () => isRealFolder(s.folder));
+
+    expect(isRealFolder(s.folder)).toBe(true);
+    expect(tokenOf(profileLogin(s, 'A'))).toBe('a-A-2');
+    expect(tokenOf(keychain.get(s.folder))).toBe('a-A-2');
   });
 
   it('waits while an editor chat started through the link is open, and goes ahead a day on', async () => {
