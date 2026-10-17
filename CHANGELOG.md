@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.16]
+
+### Fixed
+
+- **An editor chat through `ccx-claude` moves the editor off a spent account
+  while the chat is still open, even while ccx's usage check is turned away
+  (#153).** One Claude answers every turn of an editor chat and ends only when
+  the chat closes, and ccx looked only at its standard error then, long after
+  a refusal stops speaking for the turn in front of it. ccx now follows that
+  Claude's own records while it runs, as it does a terminal session's: the
+  conversation from the per-process record Claude keeps in the account's
+  folder (a new chat, a resumed one, and a `/clear` inside one process), and
+  that conversation's record as it grows. A turn refused for a spent limit is
+  judged by the same rules as in a terminal: a limit Claude names, newer than
+  this Claude's start and its last typed prompt, not yet reset, and no other
+  live Claude on the conversation. A confirmed limit is recorded on the ledger
+  and the editor's active account moves, once per limit: a retried turn, or
+  limit text on standard error at the end about a limit the record already
+  proved, records nothing again. A resumed chat's record is read from where it
+  ended at launch, since the extension starts Claude to send a turn at once.
+- **One follower and one judgement for every launch.** The terminal session and
+  the editor now follow Claude's records through one piece
+  (`session/record-watch`), and the terminal, the editor and `claude -p` judge
+  a refused turn, other live writers included, through one function
+  (`judgeRefusal`). The terminal and `claude -p` behave as before.
+
 ## [2.6.15]
 
 ### Fixed

@@ -127,7 +127,8 @@ already recorded for the account, if there is one; anything else takes the
 configured backoff. Any other refusal waits for the usage check, and even the
 right one never counts while ccx knows of another live Claude on the same
 conversation, since every Claude on a conversation writes to the same record.
-That covers sessions in the terminal, workers and `claude -p` runs through ccx.
+That covers sessions in the terminal, workers, `claude -p` runs through ccx,
+and editor chats whose Claude is started by `ccx-claude` (below).
 A `claude -p` run that names no conversation (no `--resume`, `--continue`,
 `--session-id`, `--fork-session`, or `--from-pr`, `--teleport` or `--cloud` and
 its old name `--remote`) is started with a new one of ccx's own
@@ -137,13 +138,22 @@ mode with `--continue`), and puts every flag it adds before any `--`, after
 which Claude reads everything as the prompt. Text on screen that talks about
 usage limits never moves a session.
 
-Three launches still wait for the usage check, because ccx cannot tell that a
+**Editor chats through `ccx-claude`.** When the Claude Code extension starts
+Claude through `ccx-claude` (its `claudeCode.claudeProcessWrapper` setting),
+one Claude answers every turn of a chat and stops only when the chat is
+closed, and what it prints goes to the editor, not through ccx. So ccx follows
+that Claude's own records while it runs: which conversation it is in (a
+`/clear` included) and the turns refused there, judged as they are written by
+the same rules as in a terminal. A confirmed limit is recorded once, however
+many turns Claude refuses on it, and the editor's next chat starts on the next
+account; the chat that met it stays on its account until it is closed. `ccx on`
+and `ccx editor on` set up the editor differently: they point its
+`CLAUDE_CONFIG_DIR` at the active account, and no ccx process runs beside the
+editor's Claude.
+
+Two launches still wait for the usage check, because ccx cannot tell that a
 refusal there was the run's own:
 
-- **The editor launch.** An editor chat is one Claude that answers turn after
-  turn and stops only when the chat is closed, usually long after the 2 minutes
-  in which a refusal still speaks for the turn in front of it. What it prints
-  goes to the editor, not through ccx.
 - **A `claude -p` run with headless rotation turned off.** Its answer goes
   straight to you, not through ccx, so ccx cannot check that the refusal is in
   it.
