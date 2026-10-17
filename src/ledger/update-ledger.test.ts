@@ -123,7 +123,8 @@ describe('updateLedger', () => {
           `ledger.caps.push({ account: 'B', capUntil: Date.now() + 3600000, reason: 'another session', at: Date.now() });`,
           `fs.writeFileSync(file + '.tmp', JSON.stringify(ledger));`,
           `fs.renameSync(file + '.tmp', file);`,
-          `fs.rmSync(file + '.lock');`,
+          // Forced: if its lock was taken over, the ledger check below says so.
+          `fs.rmSync(file + '.lock', { force: true });`,
         ].join('\n'),
         file,
         '6500',
