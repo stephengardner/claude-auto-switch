@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -103,6 +103,8 @@ async function sandbox(names: string[]): Promise<Sandbox> {
     config: loadConfig(ctx),
     claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
     verifyCap: () => Promise.resolve('allowed' as const),
+    // Never a made-up token to Anthropic: whether a stored login is turned away is asked of nobody.
+    loginProbe: () => Promise.resolve({ verdict: 'unknown' as const }),
     isClaudeProcess: processIsAlive,
     // Who a login belongs to, as the API would say: by the account its token was made for.
     lookupOwner: (dir) => {
@@ -149,7 +151,13 @@ async function editorOn(s: Sandbox): Promise<void> {
 
 const TOUCHED = ['FAKE_CLAUDE_RUNS_LOG', 'FAKE_CLAUDE_IDLE_MS', 'FAKE_CLAUDE_LOG_FOLDER'];
 
+/** Every request a test does not answer itself fails, so nothing reaches Anthropic. */
+const offline = (): Promise<Response> => Promise.resolve(new Response('{}', { status: 503 }));
+
 describe('every folder ccx runs Claude in, made by one piece of code', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', offline);
+  });
   afterEach(() => {
     for (const name of TOUCHED) delete process.env[name];
     vi.unstubAllGlobals();
