@@ -32,8 +32,9 @@ semantic versioning.
   each retried turn no longer asks the shared usage endpoint again; one held
   back is asked about as Claude exits. A refusal held back is judged on the
   conversation it was read from, so a `/clear` meanwhile cannot hide another
-  live Claude on it, and one held for the whole account is no longer pushed
-  out by a later one for one model.
+  live Claude on it, one held for the whole account is no longer pushed out
+  by a later one for one model, and none is left unasked behind one the
+  ledger has meanwhile come to hold.
 - **`ccx-claude` finishes a check under way when the extension ends it.** The
   extension sends SIGTERM 2 s after it closes a chat whose wrapper still runs,
   and SIGKILL 5 s later. The wrapper now passes SIGTERM on to Claude while it
