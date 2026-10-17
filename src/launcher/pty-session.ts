@@ -576,24 +576,35 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
 
     let weKilled = false;
     /**
-     * End the child. On Windows we terminate the process tree directly instead
-     * of calling node-pty's kill(): that path spawns a console-enumeration
-     * helper and tears the pseudo-terminal down asynchronously, which races the
-     * next session's spawn during an account swap and can corrupt the host
-     * process. Killing the process makes node-pty observe an ordinary exit.
+     * End the child. On Windows the process tree is ended directly, never
+     * through node-pty's kill(), which starts a helper that attaches to the
+     * terminal to list its processes and tears the terminal down while the
+     * next session's Claude starts. When Claude has already ended (ccx hears
+     * of it a second or more later), that helper cannot attach, and five
+     * seconds on node-pty kills Claude's old pid, whichever process Windows
+     * has given it to by then. taskkill fails on an ended Claude as well, so
+     * after it fails only a Claude still running is ended, by its pid. Either
+     * way node-pty reports an ordinary exit.
      */
     const safeKill = (): void => {
       if (exited) return;
       // Last chance to learn the conversation: the record goes with the child.
       noteConversation();
       weKilled = true;
-      if (process.platform === 'win32' && child.pid) {
+      if (process.platform === 'win32') {
+        if (!child.pid) return;
         try {
           execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
           return;
         } catch {
-          /* fall through to node-pty's own kill */
+          /* ended already, or taskkill could not end it */
         }
+        try {
+          if (childIsAlive()) process.kill(child.pid);
+        } catch {
+          /* ended meanwhile */
+        }
+        return;
       }
       try {
         child.kill();
@@ -673,11 +684,9 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         cap.confirm(pending);
         // Kill ONLY a child that is genuinely still alive. When it is already gone
         // (its exit event just lags, which is why we ask the OS and not `exited`),
-        // safeKill would run taskkill on a dead pid and fall through to node-pty's
-        // own kill, re-entering its async Windows teardown and racing the next
-        // spawn. The lagging exit event will resolve the confirmed cap. Liveness is
-        // re-checked INSIDE the timer, not reused from `alive` above, because the
-        // child can exit during the 150ms wait.
+        // there is nothing to end, and the lagging exit event will resolve the
+        // confirmed cap. Liveness is re-checked INSIDE the timer, not reused from
+        // `alive` above, because the child can exit during the 150ms wait.
         if (alive && !exited) {
           setTimeout(() => {
             if (childIsAlive() && !exited) safeKill();

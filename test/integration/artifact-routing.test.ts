@@ -23,7 +23,7 @@ vi.mock('../../src/accounts/credential-vault.js', async (importOriginal) => {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { nodePty } from '../../src/util/native-pty.js';
+import { probeTerminal } from './terminal-probe.js';
 import { addCommand } from '../../src/commands/add.js';
 import { updateAccount } from '../../src/accounts/registry.js';
 import { runCommand } from '../../src/commands/run.js';
@@ -119,29 +119,9 @@ function entries(runsLog: string): Entry[] {
     .map((line) => JSON.parse(line) as Entry);
 }
 
-const { spawn } = nodePty();
-let ptyProblem = '';
-function canSpawnPty(): boolean {
-  try {
-    const probe = spawn(process.execPath, ['-e', 'process.exit(0)'], {
-      name: 'xterm-256color',
-      cols: 80,
-      rows: 24,
-      cwd: process.cwd(),
-      env: process.env as Record<string, string>,
-    });
-    try {
-      probe.kill();
-    } catch {
-      /* already gone */
-    }
-    return true;
-  } catch (err) {
-    ptyProblem = (err as Error).message;
-    return false;
-  }
-}
-const PTY_AVAILABLE = canSpawnPty();
+const terminal = probeTerminal();
+const PTY_AVAILABLE = terminal.open;
+const ptyProblem = terminal.problem;
 if (!PTY_AVAILABLE && !process.env.CI) {
   console.warn(`[skipped] page routing tests: no pseudo-terminal here (${ptyProblem}).`);
 }

@@ -11,9 +11,13 @@ const FILENAME = 'ledger.json';
 /**
  * Every change holds this lock while it reads the file, applies the change and
  * writes the result, a few milliseconds. A holder that has exited is taken over
- * at once, and a lock that names no holder after five seconds.
+ * at once, and a lock that names no holder after five seconds. One whose
+ * holder is still running is waited for until the lock is a minute old, then
+ * taken over; the wait runs a little past that, so that it ends in the
+ * takeover, never in a write past a running holder. See updateLedger.
  */
-const LOCK = { waitMs: 5_000, staleMs: 5_000 };
+const LONGEST_HOLD_MS = 60_000;
+const LOCK = { waitMs: LONGEST_HOLD_MS + 5_000, staleMs: 5_000, maxHoldMs: LONGEST_HOLD_MS };
 
 // -- persistence -----------------------------------------------------------
 
@@ -45,15 +49,19 @@ let changing = false;
  * updateLedger: that throws, since it would wait on its own lock and its write
  * would then be overwritten by the outer one.
  *
- * A lock that is not free within `waitMs`, or cannot be made at all, is not
- * waited on further: the change is written without it, and the event log says
- * so. Waiting longer would freeze the session that asked, and dropping the
- * change would lose a limit for certain. Written past, a change and the
- * holder's can still erase one another as every write could before 2.6.11: a
- * holder that resumes after stalling writes back what it read before, over
- * this change, and a holder that writes first is overwritten by it. A holder
- * only reads and writes one small file, so one still holding the lock after
- * seconds is stopped, or gone with its pid now another program's.
+ * A running holder is waited for until its lock is older than the longest
+ * hold, however long that takes. A holder needs milliseconds, so one that has
+ * held for seconds was held up by the machine (a stall, a disk that stopped
+ * answering) and will finish; written past it, this change would be lost when
+ * it resumes and writes back what it read before.
+ * Past the longest hold the lock is taken over whatever its pid says, since
+ * that pid may by now be another program's. The wait freezes whatever asked,
+ * a session's terminal included, for as long as the holder holds.
+ *
+ * A lock that cannot be made at all, or is not free when `waitMs` runs out,
+ * is written past rather than drop the change, which would lose a limit for
+ * certain, and the event log says so. The two changes can then erase each
+ * other.
  */
 export function updateLedger(
   c: PathCtx,

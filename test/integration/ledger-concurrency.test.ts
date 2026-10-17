@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -24,10 +24,11 @@ import type { LimitProbeResult, LimitVerdict } from '../../src/usage/limit-probe
  * progress, and writes after it, erases that change: a limit another session
  * recorded is gone, and the account goes back into rotation while it is out.
  *
- * The other process here takes the ledger's lock, reads the file, and only
- * writes it back a while later, as any change does in the moment between its
- * read and its write. Each writer under test must wait for it and build on what
- * it wrote. Children run through tsx (a devDependency), so no build is needed.
+ * The other process here takes the ledger's lock, reads the file, and writes it
+ * back only once the writer under test has found the lock taken, as any change
+ * does in the moment between its read and its write. Each writer under test
+ * must wait for it and build on what it wrote. Children run through tsx (a
+ * devDependency), so no build is needed.
  */
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -53,19 +54,43 @@ const unlockedWrites = (home: string) => readEvents(home, 100).filter((e) => e.k
 interface OtherWriter {
   /** Settles once it is running and waiting to be told to go. */
   ready: Promise<void>;
-  /** Tell it to go, and settle once it holds the lock and has read the ledger. */
+  /**
+   * Tell it to go, and settle once it holds the lock and has read the ledger.
+   * From then it lets go as soon as ccx, in this process, finds the lock taken.
+   */
   go: () => Promise<void>;
+  /** Whether ccx found the lock taken while this writer held it. */
+  waitedFor: () => boolean;
   exited: Promise<{ code: number | null; stderr: string }>;
 }
 
 /**
- * Another process recording a limit for `account`. Told to go, it takes the
- * lock, reads the ledger, holds the lock for `holdMs` (well inside the 5 s a
- * change waits for it), then writes and lets go. Started ahead of time and
- * told to go from inside the step under test, so its own start-up never
- * delays that step.
+ * ccx asks whether the process a held lock names is still running each time
+ * it finds the lock taken (process.kill with signal 0), and only then: it is
+ * how this process is seen waiting. `then` is called on the first such ask
+ * about `holder`. Undone by `vi.restoreAllMocks()`.
  */
-function anotherWriter(home: string, account: string, holdMs = 2_000): OtherWriter {
+function onWaitFor(holder: number, then: () => void): void {
+  const kill = process.kill.bind(process);
+  let seen = false;
+  vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+    if (pid === holder && signal === 0 && !seen) {
+      seen = true;
+      then();
+    }
+    return kill(pid, signal);
+  });
+}
+
+/**
+ * Another process recording a limit for `account`. Told to go, it takes the
+ * lock and reads the ledger, then holds the lock until ccx is seen waiting for
+ * it (onWaitFor), however long ccx takes to get there, and only then writes
+ * and lets go. Started ahead of time and told to go from inside the step under
+ * test, so its own start-up never delays that step. Never let go, it writes
+ * after 30 s all the same and fails, saying so.
+ */
+function anotherWriter(home: string, account: string): OtherWriter {
   const script = path.join(home, `writer-${account}.ts`);
   const marker = (name: string): string => path.join(home, `writer-${account}.${name}`);
   writeFileSync(
@@ -75,7 +100,7 @@ function anotherWriter(home: string, account: string, holdMs = 2_000): OtherWrit
       `import path from 'node:path';`,
       `import { acquireOwnedLock } from ${moduleAt('claude', 'locks.ts')};`,
       `import { writeJsonFile } from ${moduleAt('util', 'fs-json.ts')};`,
-      `const [home, account, ready, go, read, holdMs] = process.argv.slice(2);`,
+      `const [home, account, ready, go, read, release] = process.argv.slice(2);`,
       `const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);`,
       `writeFileSync(ready, '');`,
       `const giveUpAt = Date.now() + 60000;`,
@@ -87,19 +112,23 @@ function anotherWriter(home: string, account: string, holdMs = 2_000): OtherWrit
       `const lock = acquireOwnedLock(file + '.lock', { waitMs: 30000, staleMs: 5000 });`,
       `if (!lock.held) throw new Error('the other writer could not take the ledger lock');`,
       `const ledger = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { caps: [] };`,
-      `writeFileSync(read, '');`,
-      `pause(Number(holdMs));`,
+      // Its own pid, which is the one the lock names.
+      `writeFileSync(read, String(process.pid));`,
+      `const holdUntil = Date.now() + 30000;`,
+      `while (!existsSync(release) && Date.now() < holdUntil) pause(10);`,
       `ledger.caps.push({ account, capUntil: Date.now() + 3600000, reason: 'another session', at: Date.now() });`,
       `writeJsonFile(file, ledger);`,
       `lock.release();`,
+      `if (!existsSync(release)) throw new Error('ccx never found the lock taken in 30 s');`,
     ].join('\n'),
     'utf8',
   );
 
   let stderr = '';
   let ended = false;
+  let waited = false;
   const exited = new Promise<{ code: number | null; stderr: string }>((resolve) => {
-    const args = [script, home, account, marker('ready'), marker('go'), marker('read'), String(holdMs)];
+    const args = [script, home, account, marker('ready'), marker('go'), marker('read'), marker('release')];
     const child = spawn(TSX, args, { stdio: ['ignore', 'ignore', 'pipe'], shell: process.platform === 'win32' });
     child.stderr.on('data', (d) => {
       stderr += String(d);
@@ -121,7 +150,12 @@ function anotherWriter(home: string, account: string, holdMs = 2_000): OtherWrit
       await ready;
       writeFileSync(marker('go'), '');
       await reached('read');
+      onWaitFor(Number(readFileSync(marker('read'), 'utf8')), () => {
+        waited = true;
+        writeFileSync(marker('release'), '');
+      });
     },
+    waitedFor: () => waited,
     exited,
   };
 }
@@ -167,6 +201,10 @@ const REFUSING: Record<string, string> = {
 };
 
 describe('two processes changing the limits ledger at once', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('ccx cap waits for a change already in progress, and both limits are kept', async () => {
     const { home, context } = setup(['A']);
     const other = anotherWriter(home, 'B');
@@ -175,6 +213,7 @@ describe('two processes changing the limits ledger at once', () => {
     expect(capCommand(context, 'A')).toBe(0);
     const { code, stderr } = await other.exited;
     expect(code, stderr).toBe(0);
+    expect(other.waitedFor(), 'ccx never found the lock taken').toBe(true);
 
     expect(accountsIn(home)).toEqual(['A', 'B']);
     // Waited for the lock, rather than writing past it once the wait ran out.
@@ -189,6 +228,7 @@ describe('two processes changing the limits ledger at once', () => {
     expect(capCommand(context, 'A', { clear: true })).toBe(0);
     const { code, stderr } = await other.exited;
     expect(code, stderr).toBe(0);
+    expect(other.waitedFor(), 'ccx never found the lock taken').toBe(true);
 
     expect(accountsIn(home)).toEqual(['B']);
     expect(unlockedWrites(home)).toEqual([]);
@@ -202,6 +242,7 @@ describe('two processes changing the limits ledger at once', () => {
     renameAccount('old', 'new', {}, context.ctx);
     const { code, stderr } = await other.exited;
     expect(code, stderr).toBe(0);
+    expect(other.waitedFor(), 'ccx never found the lock taken').toBe(true);
 
     expect(accountsIn(home)).toEqual(['B', 'new']);
     expect(unlockedWrites(home)).toEqual([]);
@@ -209,10 +250,9 @@ describe('two processes changing the limits ledger at once', () => {
 
   it('a session that meets a limit records it on top of a change in progress (a worker here)', async () => {
     // The usage check confirms A is out just after the other process has read
-    // the ledger. The session then ends that launch and records the limit, so
-    // the other process holds the lock longer here, to still be holding it then.
+    // the ledger. The session then ends that launch and records the limit.
     const { home, context } = setup(['A', 'B']);
-    const other = anotherWriter(home, 'other', 4_000);
+    const other = anotherWriter(home, 'other');
     await other.ready;
     let checks = 0;
     context.verifyCap = async (): Promise<LimitVerdict> => {
@@ -235,6 +275,7 @@ describe('two processes changing the limits ledger at once', () => {
     }
     const { code, stderr } = await other.exited;
     expect(code, stderr).toBe(0);
+    expect(other.waitedFor(), 'ccx never found the lock taken').toBe(true);
 
     expect(accountsIn(home)).toEqual(['A', 'other']);
     expect(unlockedWrites(home)).toEqual([]);
@@ -252,6 +293,7 @@ describe('two processes changing the limits ledger at once', () => {
     expect(await editorLaunch(context, ['chat'])).toBe(1);
     const { code, stderr } = await other.exited;
     expect(code, stderr).toBe(0);
+    expect(other.waitedFor(), 'ccx never found the lock taken').toBe(true);
 
     expect(accountsIn(home)).toEqual(['A', 'other']);
     expect(unlockedWrites(home)).toEqual([]);
@@ -271,6 +313,7 @@ describe('two processes changing the limits ledger at once', () => {
     expect(await runCommand(context, ['-p', 'hi'])).toBe(1);
     const { code, stderr } = await other.exited;
     expect(code, stderr).toBe(0);
+    expect(other.waitedFor(), 'ccx never found the lock taken').toBe(true);
 
     expect(accountsIn(home)).toEqual(['A', 'other']);
     expect(unlockedWrites(home)).toEqual([]);

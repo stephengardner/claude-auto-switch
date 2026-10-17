@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { nodePty } from '../../src/util/native-pty.js';
+import { probeTerminal } from './terminal-probe.js';
 import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive } from '../../src/state/active.js';
@@ -70,29 +70,9 @@ function launchesIn(runsLog: string): RunEntry[] {
     .filter((r) => r.type === 'launch');
 }
 
-const { spawn } = nodePty();
-let ptyProblem = '';
-function canSpawnPty(): boolean {
-  try {
-    const probe = spawn(process.execPath, ['-e', 'process.exit(0)'], {
-      name: 'xterm-256color',
-      cols: 80,
-      rows: 24,
-      cwd: process.cwd(),
-      env: process.env as Record<string, string>,
-    });
-    try {
-      probe.kill();
-    } catch {
-      /* already gone */
-    }
-    return true;
-  } catch (err) {
-    ptyProblem = (err as Error).message;
-    return false;
-  }
-}
-const PTY_AVAILABLE = canSpawnPty();
+const terminal = probeTerminal();
+const PTY_AVAILABLE = terminal.open;
+const ptyProblem = terminal.problem;
 if (!PTY_AVAILABLE && !process.env.CI)
   console.warn(`[skipped] signed-out tests: no pseudo-terminal here (${ptyProblem}).`);
 
