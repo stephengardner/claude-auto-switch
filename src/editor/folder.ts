@@ -594,23 +594,32 @@ async function moveIntoFolder(context: CliContext): Promise<Moved> {
 const lateMergeFile = (c: PathCtx): string => path.join(configHome(c), 'editor-move-late.json');
 
 /**
- * One more merge of the account folders' history once the editor chats that
- * were open at the move have all closed. Such a chat writes by path into the
- * folder that is now at the editor's path, but a file it kept open, such as its
- * prompt history, goes on growing where the link led, and those lines are
- * copied over, not shared by a hard link. The caller holds the editor lock.
+ * One more merge of the account folders' history, after a move whose own merge
+ * failed, or once the editor chats that were open at the move have all closed.
+ * Such a chat writes by path into the folder that is now at the editor's path,
+ * but a file it kept open, such as its prompt history, goes on growing where
+ * the link led, and those lines are copied over, not shared by a hard link.
+ * The note stays until every account folder has merged. Never throws: the
+ * editor's switch comes after it. The caller holds the editor lock.
  */
 function finishLateMerge(c: PathCtx): void {
-  let target: unknown;
   try {
-    target = (JSON.parse(readFileSync(lateMergeFile(c), 'utf8')) as { target?: unknown }).target;
+    let target: unknown;
+    try {
+      target = (JSON.parse(readFileSync(lateMergeFile(c), 'utf8')) as { target?: unknown }).target;
+    } catch {
+      return;
+    }
+    if (typeof target === 'string' && editorChatsOpen(target)) return;
+    const writer = userFileWriter(c);
+    let merged = true;
+    for (const a of listAccounts(c)) {
+      if (!adoptFolderHistory(a.dir, a.name, c, writer, false)) merged = false;
+    }
+    if (merged) rmSync(lateMergeFile(c), { force: true });
   } catch {
-    return;
+    /* the note stays, for the next refresh */
   }
-  if (typeof target === 'string' && editorChatsOpen(target)) return;
-  const writer = userFileWriter(c);
-  for (const a of listAccounts(c)) adoptFolderHistory(a.dir, a.name, c, writer, false);
-  rmSync(lateMergeFile(c), { force: true });
 }
 
 function moveNow(
@@ -667,9 +676,12 @@ function moveNow(
     rescueStateChoices(a.dir, a.name, c);
   }
   if (!swapIn(dir, temp, target, c)) return 'failed';
-  for (const a of accounts) adoptFolderHistory(a.dir, a.name, c, writer, false);
+  let merged = true;
+  for (const a of accounts) {
+    if (!adoptFolderHistory(a.dir, a.name, c, writer, false)) merged = false;
+  }
   rmSync(path.join(configHome(c), 'editor-move-held.json'), { force: true });
-  if (chatsOpen && target !== null) {
+  if (chatsOpen || !merged) {
     try {
       writeFileAtomic(lateMergeFile(c), `${JSON.stringify({ target })}\n`);
     } catch {

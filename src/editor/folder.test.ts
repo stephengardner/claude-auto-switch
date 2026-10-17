@@ -685,6 +685,20 @@ describe('an install on the old link, moved into the folder', () => {
     expect(read(s.user('history.jsonl'))).toContain('after the move');
   });
 
+  it("tries the account folders' history again at a later refresh when the move could not merge it", async () => {
+    const s = await onTheLink('A');
+    writeFileSync(path.join(s.dirOf('A'), 'history.jsonl'), '{"display":"typed in the editor"}\n');
+    // Your prompt history cannot be added to while the move runs.
+    mkdirSync(s.user('history.jsonl'));
+
+    await use(s, 'A', () => isRealFolder(s.folder));
+    expect(isRealFolder(s.folder)).toBe(true);
+
+    rmSync(s.user('history.jsonl'), { recursive: true });
+    await use(s, 'A', () => read(s.user('history.jsonl'))?.includes('typed in the editor') === true);
+    expect(read(s.user('history.jsonl'))).toContain('typed in the editor');
+  });
+
   it('moves with a chat file held open under the old target, as Windows keeps one', async () => {
     const s = await onTheLink('A');
     const chat = path.join(s.dirOf('A'), 'projects', '-work', 'open.jsonl');

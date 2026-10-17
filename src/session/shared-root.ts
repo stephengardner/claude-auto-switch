@@ -560,7 +560,8 @@ function takeTheirs(dir: string, name: string, merge: 'whole' | 'lines', theirs:
  * volume allows, so nothing is copied and the account folder keeps its own),
  * and the prompts the user's history lacks. With `rescueFiles`, its own
  * settings, memory and keybindings that are not the user's are kept in
- * `rescued/` rather than applied.
+ * `rescued/` rather than applied. False when the history or a folder could
+ * not be merged, so the caller can try again.
  */
 export function adoptFolderHistory(
   folder: string,
@@ -568,13 +569,14 @@ export function adoptFolderHistory(
   c: PathCtx,
   writeUser: UserFileWriter,
   rescueFiles: boolean,
-): void {
+): boolean {
   let root: string;
   try {
     root = defaultClaudeRoot(c);
   } catch {
-    return;
+    return true; // no ~/.claude to merge into, now or later
   }
+  let merged = true;
   for (const name of ['projects', ...sharedDirNames(root)]) {
     // Another Claude's install, live records and editor links are no history.
     if (name === 'plugins' || name === 'sessions' || name === 'ide') continue;
@@ -584,18 +586,19 @@ export function adoptFolderHistory(
       mkdirSync(path.join(root, name), { recursive: true });
       mergeTree(own, path.join(root, name));
     } catch {
-      /* the rest still merge */
+      merged = false; // the rest still merge
     }
   }
   const history = path.join(folder, 'history.jsonl');
   const theirs = path.join(root, 'history.jsonl');
   if (existsSync(history) && !isLink(history)) {
-    writeUser(theirs, () => {
+    const outcome = writeUser(theirs, () => {
       const added = missingLines(history, theirs);
       return added === null ? null : { text: added, append: true };
     });
+    if (outcome === 'failed') merged = false;
   }
-  if (!rescueFiles) return;
+  if (!rescueFiles) return merged;
   for (const name of ['settings.json', 'CLAUDE.md', 'keybindings.json']) {
     const own = path.join(folder, name);
     try {
@@ -607,4 +610,5 @@ export function adoptFolderHistory(
       /* the account folder keeps its own; nothing is lost */
     }
   }
+  return merged;
 }
