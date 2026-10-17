@@ -568,13 +568,14 @@ describe('an install on the old link, moved into the folder', () => {
     expect(installEditorEnvVar('cursor', 'CLAUDE_CONFIG_DIR', s.folder, s.context.ctx).ok).toBe(true);
     return s;
   }
+  const put = (file: string, text: string): void => {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, text);
+  };
+  const list = (dir: string): string[] => (existsSync(dir) ? readdirSync(dir).sort() : []);
 
   it("moves at the first switch, at the same path, with the account folders' chats merged and their own files kept aside", async () => {
     const s = await onTheLink('A');
-    const put = (file: string, text: string): void => {
-      mkdirSync(path.dirname(file), { recursive: true });
-      writeFileSync(file, text);
-    };
     put(path.join(s.dirOf('A'), 'projects', '-work', 'old.jsonl'), 'from A\n');
     put(path.join(s.dirOf('B'), 'projects', '-other', 'older.jsonl'), 'from B\n');
     put(path.join(s.dirOf('A'), 'history.jsonl'), '{"display":"typed in the editor"}\n');
@@ -697,6 +698,56 @@ describe('an install on the old link, moved into the folder', () => {
     rmSync(s.user('history.jsonl'), { recursive: true });
     await use(s, 'A', () => read(s.user('history.jsonl'))?.includes('typed in the editor') === true);
     expect(read(s.user('history.jsonl'))).toContain('typed in the editor');
+  });
+
+  it('tries a chat again at a later refresh when the move could not merge it', async () => {
+    const s = await onTheLink('A');
+    const agent = path.join('projects', '-work', 'chat', 'subagents', 'agent.jsonl');
+    put(path.join(s.dirOf('A'), agent), 'from A\n');
+    // A file of yours stands where the chat's folder would go.
+    put(s.user(path.join('projects', '-work', 'chat')), 'in the way');
+
+    await use(s, 'A', () => isRealFolder(s.folder));
+    expect(isRealFolder(s.folder)).toBe(true);
+    expect(read(s.user(agent))).toBeNull();
+
+    rmSync(s.user(path.join('projects', '-work', 'chat')));
+    await use(s, 'A', () => read(s.user(agent)) === 'from A\n');
+    expect(read(s.user(agent))).toBe('from A\n');
+  });
+
+  it('adds to a chat you already have what the copy in an account folder went on to hold', async () => {
+    const s = await onTheLink('A');
+    const chat = path.join('projects', '-work', 'chat.jsonl');
+    put(path.join(s.dirOf('A'), chat), 'line 1\nline 2\n');
+    put(s.user(chat), 'line 1\n');
+
+    await use(s, 'A', () => isRealFolder(s.folder));
+    expect(isRealFolder(s.folder)).toBe(true);
+
+    expect(read(s.user(chat))).toBe('line 1\nline 2\n');
+    expect(list(path.join(s.ccx, 'rescued', 'A-projects'))).toEqual([]);
+  });
+
+  it('keeps aside, once, an account copy that differs from yours, and leaves yours as it is', async () => {
+    const s = await onTheLink('A');
+    const chat = path.join('projects', '-work', 'chat.jsonl');
+    const older = path.join('projects', '-work', 'older.jsonl');
+    put(path.join(s.dirOf('A'), chat), 'line 1\ntheirs\n');
+    put(s.user(chat), 'line 1\nmine\n');
+    // Yours holds all of this one and more.
+    put(path.join(s.dirOf('A'), older), 'line 1\n');
+    put(s.user(older), 'line 1\nline 2\n');
+
+    await use(s, 'A', () => isRealFolder(s.folder));
+    expect(isRealFolder(s.folder)).toBe(true);
+
+    expect(read(s.user(chat))).toBe('line 1\nmine\n');
+    expect(read(s.user(older))).toBe('line 1\nline 2\n');
+    const kept = path.join(s.ccx, 'rescued', 'A-projects', '-work');
+    expect(list(kept)).toEqual(['chat.jsonl']);
+    expect(read(path.join(kept, 'chat.jsonl'))).toBe('line 1\ntheirs\n');
+    expect(read(path.join(s.dirOf('A'), chat))).toBe('line 1\ntheirs\n');
   });
 
   it('moves with a chat file held open under the old target, as Windows keeps one', async () => {

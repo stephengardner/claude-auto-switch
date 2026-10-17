@@ -1,10 +1,15 @@
 import {
   appendFileSync,
+  type BigIntStats,
+  closeSync,
+  constants as fsConstants,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   linkSync,
   copyFileSync,
@@ -396,29 +401,137 @@ function latestBackup(sessionDir: string, name = 'projects'): string {
   return last ? path.join(sessionDir, last) : '';
 }
 
-/** Merge src into dest without overwriting anything that already exists. */
-function mergeTree(src: string, dest: string): void {
-  if (!src || !existsSync(src)) return;
+/** Where src and dest both have a file: true once it is dealt with, false when it could not be. */
+type Clash = (from: string, to: string, relative: string) => boolean;
+
+/**
+ * Merge src into dest, never over what is there: where both have a file,
+ * `clash` decides, and without one dest's stays. False when something in src
+ * could not be merged, so a caller can try again.
+ */
+function mergeTree(src: string, dest: string, clash?: Clash, relative = ''): boolean {
+  if (!src || !existsSync(src)) return true;
+  let merged = true;
   for (const entry of readdirSync(src)) {
     const from = path.join(src, entry);
     const to = path.join(dest, entry);
+    const rel = path.join(relative, entry);
     try {
       const st = lstatSync(from);
       if (st.isSymbolicLink()) continue; // never follow links out of the tree
       if (st.isDirectory()) {
         mkdirSync(to, { recursive: true });
-        mergeTree(from, to);
-      } else if (!existsSync(to)) {
-        try {
-          linkSync(from, to); // same volume: hardlink shares bytes, no copy cost
-        } catch {
-          copyFileSync(from, to);
-        }
+        if (!mergeTree(from, to, clash, rel)) merged = false;
+      } else if (!placeFile(from, to) && clash && !clash(from, to, rel)) {
+        merged = false;
       }
     } catch {
-      /* skip unreadable entries; merge the rest */
+      if (lstatOrNull(from)) merged = false; // one gone since it was listed has nothing to merge
     }
   }
+  return merged;
+}
+
+/** Put `from` at `to`, a hard link where the volume allows, else a copy. False when `to` is already there. */
+function placeFile(from: string, to: string): boolean {
+  try {
+    linkSync(from, to);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+  }
+  try {
+    copyFileSync(from, to, fsConstants.COPYFILE_EXCL);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  }
+}
+
+/** Whether the first `length` bytes of two files are the same. */
+function sameStart(a: string, b: string, length: bigint): boolean {
+  const total = Number(length);
+  const fa = openSync(a, 'r');
+  try {
+    const fb = openSync(b, 'r');
+    try {
+      const chunk = 64 * 1024;
+      const ba = Buffer.alloc(chunk);
+      const bb = Buffer.alloc(chunk);
+      for (let at = 0; at < total; at += chunk) {
+        const want = Math.min(chunk, total - at);
+        if (readSync(fa, ba, 0, want, at) !== want || readSync(fb, bb, 0, want, at) !== want) return false;
+        if (!ba.subarray(0, want).equals(bb.subarray(0, want))) return false;
+      }
+      return true;
+    } finally {
+      closeSync(fb);
+    }
+  } finally {
+    closeSync(fa);
+  }
+}
+
+/** The bytes of `file` from `start` to `end`. */
+function readRange(file: string, start: bigint, end: bigint): Buffer {
+  const out = Buffer.alloc(Number(end - start));
+  const fd = openSync(file, 'r');
+  try {
+    if (readSync(fd, out, 0, out.length, Number(start)) !== out.length) throw new Error(`${file} is shorter than it was`);
+  } finally {
+    closeSync(fd);
+  }
+  return out;
+}
+
+const bigStatOrNull = (p: string): BigIntStats | null => {
+  try {
+    return statSync(p, { bigint: true });
+  } catch {
+    return null;
+  }
+};
+
+/** Keep `from` at `base` (or `base-2` and on), once: a later pass finds it there and keeps no second copy. */
+function keepFileAside(from: string, base: string): boolean {
+  mkdirSync(path.dirname(base), { recursive: true });
+  const size = statSync(from, { bigint: true }).size;
+  let at = base;
+  for (let i = 2; lstatOrNull(at); i += 1) {
+    const there = bigStatOrNull(at);
+    if (sameFile(from, at) || (there?.isFile() && there.size === size && sameStart(from, at, size))) return true;
+    at = `${base}-${i}`;
+  }
+  return placeFile(from, at);
+}
+
+/**
+ * Where an account folder's tree and the user's both have a file: nothing to
+ * do when the user's holds all of the account's; where the account's is the
+ * user's and more, as a chat that ran on where the old link led leaves it, the
+ * rest is added; otherwise the user's stays and the account's is kept in
+ * `rescued/<label>/`.
+ */
+function adoptClash(label: string, c: PathCtx): Clash {
+  return (from, to, relative) => {
+    try {
+      const theirs = statSync(from, { bigint: true });
+      const yours = bigStatOrNull(to); // through a link a dotfiles setup made
+      if (yours?.isFile()) {
+        if (theirs.ino === yours.ino && theirs.dev === yours.dev) return true;
+        if (theirs.size <= yours.size && sameStart(from, to, theirs.size)) return true;
+        // Never written to through a link: that file is not ccx's to grow.
+        if (theirs.size > yours.size && !isLink(to) && sameStart(from, to, yours.size)) {
+          appendFileSync(to, readRange(from, yours.size, theirs.size));
+          return true;
+        }
+      }
+      return keepFileAside(from, path.join(configHome(c), 'rescued', label, relative));
+    } catch {
+      return false;
+    }
+  };
 }
 
 /**
@@ -557,8 +670,9 @@ function takeTheirs(dir: string, name: string, merge: 'whole' | 'lines', theirs:
  * Bring what an account's own folder holds of the user's Claude into the
  * user's ~/.claude, from when the editor ran there: its chats, checkpoints and
  * other folders merged in (never over what is there, hard links where the
- * volume allows, so nothing is copied and the account folder keeps its own),
- * and the prompts the user's history lacks. With `rescueFiles`, its own
+ * volume allows, so nothing is copied and the account folder keeps its own;
+ * a file both have is settled by adoptClash), and the prompts the user's
+ * history lacks. With `rescueFiles`, its own
  * settings, memory and keybindings that are not the user's are kept in
  * `rescued/` rather than applied. False when the history or a folder could
  * not be merged, so the caller can try again.
@@ -584,7 +698,7 @@ export function adoptFolderHistory(
     try {
       if (!existsSync(own) || isLink(own) || !lstatSync(own).isDirectory()) continue;
       mkdirSync(path.join(root, name), { recursive: true });
-      mergeTree(own, path.join(root, name));
+      if (!mergeTree(own, path.join(root, name), adoptClash(`${label}-${name}`, c))) merged = false;
     } catch {
       merged = false; // the rest still merge
     }

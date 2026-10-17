@@ -51,7 +51,10 @@ semantic versioning.
   the first switch or session start, the old link is replaced by the folder at
   the same path, so the editor's setting is not changed and the editor need not
   restart. The chats, checkpoints and prompts in every account folder are
-  merged into `~/.claude` by hard link. An account folder's own
+  merged into `~/.claude` by hard link. Where `~/.claude` already has a file of
+  that name, a chat that ran on in the account folder has the rest of it added,
+  and a file that differs otherwise is kept in `rescued/` while the user's
+  stays. An account folder's own
   `settings.json`, `CLAUDE.md`, `keybindings.json` and Claude choices that are
   not the user's are kept in `rescued/` rather than applied, and nothing in an
   account folder is moved or deleted. A login the editor's Claude kept in a
