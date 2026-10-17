@@ -692,6 +692,36 @@ describe('an editor chat that meets a limit while the usage check is turned away
   );
 
   it(
+    "asks about the whole account's held refusal first, whichever came first",
+    { timeout: 60_000 },
+    async () => {
+      // While the first turn's check waits, a subagent meets its weekly Opus
+      // limit, and then the main thread its session limit.
+      const resetsAt = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
+      const { home } = await twoAccounts('cas-editor-held-order-', {
+        A: [{ ...TURNED_AWAY, waitFor: 'release' }, TURNED_AWAY],
+      });
+      const chat = openChat(home, [], { FAKE_CLAUDE_RESETS_AT: String(resetsAt) });
+      chat.send('hello', { limitType: 'seven_day_someday' });
+      expect(await chat.answered(1)).toBe(true);
+      await until(() => asked(home).length === 1);
+      chat.send('carry on', { subagent: true, limitType: 'seven_day_opus' });
+      expect(await chat.answered(2)).toBe(true);
+      chat.send('please');
+      expect(await chat.answered(3)).toBe(true);
+      await sleep(500);
+      release(home);
+      await until(() => verdicts(home).length === 1);
+
+      expect(await chat.close()).toBe(0);
+      // One check, for the whole account, which takes in Opus.
+      expect(asked(home)).toEqual(['A', 'A']);
+      expect(capsIn(home)).toEqual([expect.objectContaining({ account: 'A', capUntil: resetsAt * 1000 })]);
+      expect(capsIn(home)[0]?.model).toBeUndefined();
+    },
+  );
+
+  it(
     'asks about every refusal held back, past one the ledger already holds',
     { timeout: 60_000 },
     async () => {
