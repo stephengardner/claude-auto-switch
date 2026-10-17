@@ -120,7 +120,14 @@ const KNOWN_SHARED_DIRS = [
  */
 const OWN_DIRS = new Set(['backups', 'projects']);
 
-/** The folders a session links to ~/.claude: the known ones, and whatever else is there. */
+/**
+ * A lock Claude or ccx holds as a folder (`.oauth_refresh.lock` and the like):
+ * each Claude folder's own, never shared or merged, since a link to another
+ * folder's would hand one Claude's lock to another.
+ */
+const isLockFolder = (name: string): boolean => name.endsWith('.lock');
+
+/** The folders a session links to ~/.claude: the known ones, and whatever else is there but locks. */
 export function sharedDirNames(root: string): string[] {
   const names = new Set(KNOWN_SHARED_DIRS);
   try {
@@ -132,7 +139,7 @@ export function sharedDirNames(root: string): string[] {
   } catch {
     /* no ~/.claude yet: the known ones */
   }
-  return [...names].filter((n) => !OWN_DIRS.has(n));
+  return [...names].filter((n) => !OWN_DIRS.has(n) && !isLockFolder(n));
 }
 
 const lstatOrNull = (p: string): ReturnType<typeof lstatSync> | null => {
@@ -233,16 +240,17 @@ export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): bool
   // A folder that should have been a link but is the session's own (one made
   // before it was shared, or a link that could not be made) is merged in,
   // never over what is there: /rewind checkpoints and todos made in it go
-  // on being found. Plugins are not: an install is the user's own to manage.
+  // on being found, and the session folder stays while one cannot be.
+  // Plugins are not: an install is the user's own to manage.
   for (const name of sharedDirNames(root)) {
     if (name === 'plugins' || name === 'sessions') continue;
     const own = path.join(sessionDir, name);
     try {
       if (!existsSync(own) || isLink(own) || !lstatSync(own).isDirectory()) continue;
       mkdirSync(path.join(root, name), { recursive: true });
-      mergeTree(own, path.join(root, name));
+      if (!mergeTree(own, path.join(root, name))) kept = false;
     } catch {
-      /* best effort, as at the start */
+      kept = false;
     }
   }
   return kept;
@@ -722,6 +730,46 @@ export function adoptFolderHistory(
       rescue(own, `${label}-${name}`, c);
     } catch {
       /* the account folder keeps its own; nothing is lost */
+    }
+  }
+  return merged;
+}
+
+/** Claude's own backups of the folder's state, an install, live records and editor links: nothing to keep. */
+const NOT_KEPT_AT_REMOVAL = new Set(['backups', 'plugins', 'sessions', 'ide']);
+
+/**
+ * Before a long-lived Claude folder is removed, bring into ~/.claude every
+ * folder it holds of its own rather than by link, by adoptFolderHistory's rule
+ * for a file both have: one its Claude made that ~/.claude did not have, and
+ * one moved aside when it was linked (`<name>.pre-share`). False when one
+ * could not be merged, so the folder must stay.
+ */
+export function returnOwnFolders(dir: string, label: string, c: PathCtx): boolean {
+  let root: string;
+  try {
+    root = defaultClaudeRoot(c);
+  } catch {
+    return true; // no ~/.claude to bring them into, now or later, as for a session's
+  }
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return false;
+  }
+  let merged = true;
+  for (const entry of entries) {
+    const own = path.join(dir, entry);
+    const aside = entry.indexOf('.pre-share');
+    const name = aside > 0 ? entry.slice(0, aside) : entry;
+    if (NOT_KEPT_AT_REMOVAL.has(name) || isLockFolder(name)) continue;
+    try {
+      if (isLink(own) || !lstatSync(own).isDirectory()) continue;
+      mkdirSync(path.join(root, name), { recursive: true });
+      if (!mergeTree(own, path.join(root, name), adoptClash(`${label}-${name}`, c))) merged = false;
+    } catch {
+      merged = false;
     }
   }
   return merged;

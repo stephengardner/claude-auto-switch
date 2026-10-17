@@ -38,7 +38,7 @@ import {
   type FolderLoginStore,
 } from '../session/claude-folder.js';
 import { handBackOrRescue, rescueStateChoices, snapshotStateBase, writeUserFile } from '../session/write-back.js';
-import { adoptFolderHistory, returnSharedUserFiles, type UserFileWriter } from '../session/shared-root.js';
+import { adoptFolderHistory, returnOwnFolders, returnSharedUserFiles, type UserFileWriter } from '../session/shared-root.js';
 import { removeSessionDir } from '../session/session-dir.js';
 import { processIsAlive } from '../session/lease.js';
 import { editorPointerAccount, editorTargetAccount, syncEditorPointerIfEnabled } from './junction.js';
@@ -728,7 +728,8 @@ function swapIn(dir: string, temp: string, target: string | null, c: PathCtx): b
 /**
  * Retire the editor's folder (`ccx editor off`, `ccx off`), losing nothing:
  * its login goes home when its Claude renewed it there, its settings, Claude
- * choices and the user's files it holds are handed back, and only then is it
+ * choices and the user's files it holds are handed back, any folder it holds
+ * of its own rather than by link is merged into ~/.claude, and only then is it
  * removed, with the login wherever a Claude on it could read it: `spellings`,
  * read before the editor's setting went, name its Keychain items. The old link
  * is removed as before.
@@ -752,7 +753,7 @@ export function retireEditor(context: CliContext, spellings?: string[]): boolean
     const handedBack =
       (synced.settings === 'synced' && synced.state === 'synced' && synced.files) ||
       (handBackOrRescue(dir, c) && returnSharedUserFiles(dir, c));
-    if (!handedBack) return false;
+    if (!handedBack || !returnOwnFolders(dir, 'editor', c)) return false;
     try {
       removeFolderLogin(login);
     } catch {

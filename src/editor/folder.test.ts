@@ -816,4 +816,53 @@ describe('ccx editor off', () => {
     expect(readEditorEnvVar('vscode', 'CLAUDE_CONFIG_DIR', s.context.ctx)).toBe(s.folder);
     expect(tokenOf(folderLogin(s))).toBe('a-A-1');
   });
+
+  it('brings the folders it holds of its own into your ~/.claude, and never its locks or backups', async () => {
+    const s = await scene();
+    await editorOn(s);
+    const own = (rel: string, text: string): void => {
+      mkdirSync(path.dirname(path.join(s.folder, rel)), { recursive: true });
+      writeFileSync(path.join(s.folder, rel), text);
+    };
+    // One its Claude made that your ~/.claude did not have, and one moved aside when it was linked.
+    own(path.join('jobs', 'one.json'), '{"job":1}');
+    own(path.join('todos.pre-share', 'list.json'), '[]');
+    own(path.join('install.lock', 'pid'), '1');
+    own(path.join('backups', '.claude.json.backup'), '{}');
+
+    expect(editorCommand(s.context, 'off')).toBe(0);
+
+    expect(existsSync(s.folder)).toBe(false);
+    expect(read(s.user(path.join('jobs', 'one.json')))).toBe('{"job":1}');
+    expect(read(s.user(path.join('todos', 'list.json')))).toBe('[]');
+    expect(existsSync(s.user('install.lock'))).toBe(false);
+    expect(existsSync(s.user('backups'))).toBe(false);
+  });
+
+  it('keeps the folder while a folder it holds of its own cannot go into yours', async () => {
+    const s = await scene();
+    await editorOn(s);
+    mkdirSync(path.join(s.folder, 'jobs'));
+    writeFileSync(path.join(s.folder, 'jobs', 'one.json'), '{"job":1}');
+    // A file of yours where that folder would go.
+    writeFileSync(s.user('jobs'), 'in the way');
+
+    expect(editorCommand(s.context, 'off')).toBe(1);
+
+    expect(read(path.join(s.folder, 'jobs', 'one.json'))).toBe('{"job":1}');
+  });
+
+  it('keeps the folder while something deeper in a folder of its own cannot go into yours', async () => {
+    const s = await scene();
+    await editorOn(s);
+    mkdirSync(path.join(s.folder, 'jobs', 'one'), { recursive: true });
+    writeFileSync(path.join(s.folder, 'jobs', 'one', 'state.json'), '{}');
+    // Your own jobs folder, with a file where that one would go.
+    mkdirSync(s.user('jobs'));
+    writeFileSync(s.user(path.join('jobs', 'one')), 'in the way');
+
+    expect(editorCommand(s.context, 'off')).toBe(1);
+
+    expect(isRealFolder(s.folder)).toBe(true);
+  });
 });

@@ -64,9 +64,17 @@ semantic versioning.
   closes, for what it went on writing where the link led, and a merge that
   fails is tried again at later refreshes until it succeeds.
 - **`ccx editor off` retires the folder losing nothing.** Its login goes home,
-  what it holds of the user's files is handed back, it is removed with the
-  login wherever a Claude on it could read it, and the editor's setting is
-  removed.
+  what it holds of the user's files is handed back, any folder its Claude made
+  of its own is merged into `~/.claude`, it is removed with the login wherever
+  a Claude on it could read it, and the editor's setting is removed. While
+  something in it cannot be merged, the folder stays, and `ccx editor off`
+  says so.
+- **A Claude folder never shares a lock.** A folder in `~/.claude` that is a
+  lock, such as the one Claude holds while it renews its login, is no longer
+  linked into a session's or the editor's folder as it starts; the link handed
+  one Claude's lock to another. A terminal session's folder also stays, for
+  the next clean-up, while a folder of its own could not be merged into
+  `~/.claude`, where it used to be removed with it.
 - **One kind of folder for every Claude ccx runs in a terminal or as a worker.**
   The build a session folder had inline is now one piece
   (`session/claude-folder`), used by terminal sessions, workers and the editor.

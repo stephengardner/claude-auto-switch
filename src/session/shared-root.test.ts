@@ -178,6 +178,15 @@ describe('ensureSharedUserConfig', () => {
     returnSharedUserFiles(sessionDir, c);
     expect(readFileSync(theirs, 'utf8')).toBe('user memory');
   });
+
+  it("never links a lock folder of ~/.claude's into a session, as Claude holds one while it renews its login", () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(home, '.claude', '.oauth_refresh.lock'), { recursive: true });
+
+    ensureSharedUserConfig(sessionDir, c);
+    expect(existsSync(path.join(sessionDir, '.oauth_refresh.lock'))).toBe(false);
+    expect(lstatSync(path.join(sessionDir, 'todos')).isSymbolicLink()).toBe(true);
+  });
 });
 
 describe('returnSharedUserFiles', () => {
@@ -356,5 +365,26 @@ describe('returnSharedUserFiles', () => {
     expect(returnSharedUserFiles(sessionDir, c)).toBe(true);
     expect(readFileSync(path.join(real, 'v1'), 'utf8')).toBe('user');
     expect(readFileSync(path.join(real, 'v2'), 'utf8')).toBe('only in the session');
+  });
+
+  it('keeps the session folder when something in a folder of its own cannot go into yours', () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(sessionDir, 'todos', 'agent'), { recursive: true });
+    writeFileSync(path.join(sessionDir, 'todos', 'agent', 'list.json'), '[]', 'utf8');
+    // A file of yours where that folder would go.
+    mkdirSync(path.join(home, '.claude', 'todos'), { recursive: true });
+    writeFileSync(path.join(home, '.claude', 'todos', 'agent'), 'in the way', 'utf8');
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(false);
+  });
+
+  it('keeps the session folder when a folder of its own cannot go into yours at all', () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(sessionDir, 'plans'), { recursive: true });
+    writeFileSync(path.join(sessionDir, 'plans', 'p.md'), 'a plan', 'utf8');
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    writeFileSync(path.join(home, '.claude', 'plans'), 'in the way', 'utf8');
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(false);
   });
 });

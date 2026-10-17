@@ -180,15 +180,18 @@ that lock, and writes the renewal into the folder before letting go; a renewal
 the editor's Claude made there goes home before ccx renews that account. A limit
 met inside an editor chat is not noticed by itself yet; the editor moves
 whenever ccx switches accounts. `ccx editor off` hands back what the folder
-holds, saves its login home, and removes it.
+holds, folders its Claude made of its own included, saves its login home, and
+removes it; while something in it cannot be handed back, it stays.
 
 An install set up before this had a link at that path to the active account's
 own folder. ccx moves it into the folder by itself at its first switch or
 session start, keeping the path, so the editor's setting stays as it is: the
 chats, checkpoints and prompts in every account folder are merged into your
-`~/.claude` (hard links: nothing is copied, moved or deleted), and an account
-folder's own settings, memory, keybindings and Claude choices that are not yours
-are kept in `rescued/`. A login the editor's Claude kept in a Keychain item of
+`~/.claude` (hard links: nothing is copied, moved or deleted; a chat you
+already have gains what the account folder's copy went on to hold, and a file
+that differs otherwise is kept in `rescued/`), and an account folder's own
+settings, memory, keybindings and Claude choices that are not yours are kept in
+`rescued/`. A login the editor's Claude kept in a Keychain item of
 its own (#129) goes home to its account. While an editor chat started through
 the link is open, the move waits, for up to a day; if it goes ahead with one
 open, it merges once more after that chat closes.
