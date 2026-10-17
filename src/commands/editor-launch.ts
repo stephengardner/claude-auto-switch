@@ -160,13 +160,13 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
     held.delete(scope);
     held.set(scope, seen);
   };
-  /** The next refusal held back, the whole account's first, since it takes in every other. */
-  const takeHeld = (): Seen | null => {
-    const scope = held.has(WHOLE_ACCOUNT) ? WHOLE_ACCOUNT : [...held.keys()][0];
-    if (scope === undefined) return null;
-    const seen = held.get(scope) ?? null;
-    held.delete(scope);
-    return seen;
+  /** Every refusal held back, the whole account's first, since it takes in every other. */
+  const takeHeld = (): Seen[] => {
+    const all = [...held.entries()]
+      .sort(([one], [other]) => Number(other === WHOLE_ACCOUNT) - Number(one === WHOLE_ACCOUNT))
+      .map(([, seen]) => seen);
+    held.clear();
+    return all;
   };
 
   // The injected verdict when a test supplies one, exactly as the session path
@@ -271,16 +271,17 @@ function watchEditorLaunch(context: CliContext, chosen: Account, claudeArgs: str
       })
       .finally(() => {
         checking = null;
-        const next = takeHeld();
-        if (next) refused(next);
+        askHeld();
       });
   };
 
-  /** Ask about the next refusal held back, unless a check is under way, which does so when it ends. */
+  /**
+   * Ask about what is held back, each once: one the ledger now holds is let
+   * go, and the first that starts a check holds the rest back again until it
+   * ends, as the pause does while it lasts.
+   */
   const askHeld = (): void => {
-    if (checking) return;
-    const next = takeHeld();
-    if (next) refused(next);
+    for (const seen of takeHeld()) refused(seen);
   };
 
   /** Read what Claude's records gained. `live`: Claude is running, so which conversation it is in can be asked. */

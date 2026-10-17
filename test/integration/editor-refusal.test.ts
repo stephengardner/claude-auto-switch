@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { addCommand } from '../../src/commands/add.js';
 import { loadConfig } from '../../src/config/config.js';
 import { getActive, setActive } from '../../src/state/active.js';
+import { markCapped, updateLedger } from '../../src/ledger/ledger.js';
 import type { CliContext } from '../../src/context.js';
 import type { PathCtx } from '../../src/config/paths.js';
 import type { LimitProbeResult } from '../../src/usage/limit-probe.js';
@@ -686,6 +687,49 @@ describe('an editor chat that meets a limit while the usage check is turned away
       // The whole account's, asked about first, which takes in Opus too.
       expect(capsIn(home)).toEqual([expect.objectContaining({ account: 'A', capUntil: resetsAt * 1000 })]);
       expect(capsIn(home)[0]?.model).toBeUndefined();
+      expect(asked(home)).toEqual(['A', 'A']);
+    },
+  );
+
+  it(
+    'asks about every refusal held back, past one the ledger already holds',
+    { timeout: 60_000 },
+    async () => {
+      // While the first turn's check waits, the main thread is refused for its
+      // weekly Sonnet limit and then a subagent for its weekly Opus limit, and
+      // before Claude exits another session records the Opus one.
+      const { home, ctx } = await twoAccounts('cas-editor-held-past-', {
+        A: [{ ...TURNED_AWAY, waitFor: 'release' }, TURNED_AWAY],
+      });
+      const chat = openChat(home, []);
+      chat.send('hello', { limitType: 'seven_day_someday' });
+      expect(await chat.answered(1)).toBe(true);
+      await until(() => asked(home).length === 1);
+      chat.send('please', { limitType: 'seven_day_sonnet' });
+      expect(await chat.answered(2)).toBe(true);
+      chat.send('carry on', { subagent: true, limitType: 'seven_day_opus' });
+      expect(await chat.answered(3)).toBe(true);
+      await sleep(500);
+      release(home);
+      await until(() => verdicts(home).length === 1);
+      updateLedger(ctx, (ledger) =>
+        markCapped(ledger, {
+          account: 'A',
+          now: Date.now(),
+          resetAt: Date.now() + 2 * 60 * 60_000,
+          model: 'Opus',
+          reason: 'another session',
+        }),
+      );
+
+      expect(await chat.close()).toBe(0);
+      expect(capsIn(home)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ account: 'A', model: 'Sonnet' }),
+          expect.objectContaining({ account: 'A', model: 'Opus' }),
+        ]),
+      );
+      // Sonnet asked about; the Opus refusal let go, since the ledger holds it.
       expect(asked(home)).toEqual(['A', 'A']);
     },
   );
