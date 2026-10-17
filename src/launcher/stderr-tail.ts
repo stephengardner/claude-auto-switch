@@ -13,10 +13,11 @@
  * and name models on every request, so they are neither judged nor kept, which
  * also stops them pushing Claude's own words out of what is kept.
  *
- * The bound: a limit message from 2.1.302 is one line of under 300 characters
- * ("You've hit your usage limit · resets <time>", the longest with an admin's
- * address and a second reset in it), so the last 64 KiB of Claude's own words
- * hold it with room for hundreds of lines after it.
+ * The bound is in characters, not bytes: it is there to cap what is held, and
+ * a limit message from 2.1.302 is one line of under 300 characters ("You've
+ * hit your usage limit · resets <time>", the longest with an admin's address
+ * and a second reset in it), so the last 65,536 characters of Claude's own
+ * words hold it with room for hundreds of lines after it.
  */
 export const STDERR_TAIL_CHARS = 64 * 1024;
 

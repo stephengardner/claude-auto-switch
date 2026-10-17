@@ -33,7 +33,7 @@ describe('launchWatched', () => {
   });
 });
 
-/** Ten times what is kept of standard error, 64 KiB. */
+/** Ten times what is kept of standard error, 65,536 characters. */
 const FAR_MORE = 10 * 64 * 1024;
 /** A debug line Claude writes in an ordinary turn, as 2.1.302 formats one with --debug-to-stderr. */
 const RATE_LIMIT_DEBUG =

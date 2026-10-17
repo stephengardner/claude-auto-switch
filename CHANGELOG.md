@@ -12,8 +12,8 @@ semantic versioning.
   extension starts every chat's Claude with `--debug --debug-to-stderr`, and
   that Claude runs until the chat closes, so ccx held a string that grew for
   hours and read all of it for limit words as the chat ended. ccx now passes
-  standard error on as before and keeps only the last 64 KiB of Claude's own
-  words there. Claude 2.1.302 writes each debug entry as one line,
+  standard error on as before and keeps only the last 65,536 characters of
+  Claude's own words there. Claude 2.1.302 writes each debug entry as one line,
   `<time> [LEVEL] <message>`, and those lines are never kept or judged: they
   talk about rate limits in ordinary turns, and they name models, which could
   narrow what the usage check reported. A chat that closes on such a line no
