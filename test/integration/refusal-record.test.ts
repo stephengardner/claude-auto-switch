@@ -31,7 +31,7 @@ interface RunEntry {
 
 type Verdict = 'limited' | 'allowed' | 'unknown';
 
-function makeContext(home: string, verifyCap: () => Promise<Verdict>): CliContext {
+function makeContext(home: string, verifyCap: (text: string) => Promise<Verdict>): CliContext {
   const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home } };
   return {
     ctx,
@@ -82,6 +82,8 @@ const FAKE_ENV = [
   'FAKE_CLAUDE_REFUSE_AFTER_MS',
   'FAKE_CLAUDE_CAP_EVERY_MS',
   'FAKE_CLAUDE_CAP_AFTER_MS',
+  'FAKE_CLAUDE_CAP_WORDS',
+  'FAKE_CLAUDE_RESUMED_IDLE_MS',
 ];
 
 describe.skipIf(!PTY_AVAILABLE && !process.env.CI)("a session's own record decides whether it hit a wall", () => {
@@ -193,6 +195,70 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)("a session's own record decid
       expect(launches[0]?.marker).toBe('A');
       expect(launches[1]?.marker).toBe('C');
       expect(launches.map((l) => l.marker)).not.toContain('B');
+    },
+  );
+});
+
+/**
+ * Until the conversation's record can be read, the screen stands in for it:
+ * here the fake keeps no record at all, and shows Claude 2.1.302's words again
+ * and again. The usage check is told what was on the screen, and says A is
+ * out and that B, where the session moves, has room.
+ */
+describe.skipIf(!PTY_AVAILABLE && !process.env.CI)("Claude 2.1.302's words on a session's screen", () => {
+  afterEach(() => {
+    for (const name of FAKE_ENV) delete process.env[name];
+  });
+
+  async function sessionShowing(prefix: string, words: string): Promise<{ asked: string[]; launches: RunEntry[] }> {
+    const home = mkdtempSync(path.join(tmpdir(), prefix));
+    const runsLog = path.join(home, 'runs.jsonl');
+    Object.assign(process.env, {
+      FAKE_CLAUDE_RUNS_LOG: runsLog,
+      FAKE_CLAUDE_IDLE_MS: '4000',
+      FAKE_CLAUDE_RESUMED_IDLE_MS: '1500',
+      FAKE_CLAUDE_CAP_EVERY_MS: '300',
+      FAKE_CLAUDE_CAP_WORDS: words,
+    });
+    const asked: string[] = [];
+    const context = makeContext(home, (text) => {
+      asked.push(text);
+      return Promise.resolve(asked.length === 1 ? 'limited' : 'allowed');
+    });
+    // Production's: three walls over two minutes, out of this test's reach, so
+    // only a check that confirms a limit moves the session.
+    delete context.blockedWatch;
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    expect(await runCommand(context, [])).toBe(0);
+    return { asked, launches: launchesIn(runsLog) };
+  }
+
+  it(
+    'moves on its words for a limit of the account, once the usage check confirms it',
+    { timeout: 60_000 },
+    async () => {
+      const { asked, launches } = await sessionShowing(
+        'cas-screen-hit-',
+        "You've hit your limit · resets 9pm (America/New_York)",
+      );
+      expect(asked).not.toEqual([]);
+      expect(launches.map((l) => l.marker)).toEqual(['A', 'B']);
+    },
+  );
+
+  it(
+    'asks nothing about its fast limit, which it meets by going on at standard speed',
+    { timeout: 60_000 },
+    async () => {
+      const { asked, launches } = await sessionShowing(
+        'cas-screen-fast-',
+        'Fast limit reached and temporarily disabled · resets in 4m 12s',
+      );
+      expect(asked).toEqual([]);
+      expect(launches.map((l) => l.marker)).toEqual(['A']);
     },
   );
 });

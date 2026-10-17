@@ -52,11 +52,44 @@ const GAUGE_PATTERNS = [
   new RegExp(`\\d+%\\s+of\\s+your\\s+[^.\\n]{0,40}?limit${RESETS_CLAUSE}`, 'gi'),
   // A warning that one is coming is not one arriving.
   /approaching\s+[^.\n]{0,40}?limit/gi,
+  // The hint Claude 2.1.302 can end a gauge line with, its only use of these
+  // phrases: "... · resets Oct 22, 1pm (America/New_York) · /usage-credits to
+  // keep using Claude Code". The resets clause stops at the comma in a date,
+  // so without this the hint is left behind, and it names /usage-credits.
+  /(?:run\s+)?\/usage-credits\s+to\s+(?:keep using claude code|turn on extra usage for your org|ask your admin for more|raise the cap)/gi,
 ];
 
-/** Strip the gauge lines so only a real announcement can match. */
-function withoutGauges(text: string): string {
-  return GAUGE_PATTERNS.reduce((acc, re) => acc.replace(re, ' '), text);
+/**
+ * Claude 2.1.302's words for limits that leave the account working, removed
+ * like the gauges so a real announcement beside one is still found.
+ *
+ * Fast mode has a limit of its own. At it Claude sends the same request again
+ * at standard speed, so the turn goes on, and an account that is out says so
+ * in its own words on that retry. Its notification, the /fast picker and the
+ * line for usage credits stopping fast mode are about fast mode only.
+ *
+ * "You've hit your monthly limit" is the usage-credits panel, which says the
+ * credits' own monthly limit is reached when it is opened; it never comes with
+ * a refused turn, which brings its own "You've hit your ..." line.
+ */
+const NOT_THE_ACCOUNT_PATTERNS = [
+  // "Fast limit reached and temporarily disabled · resets in 4m 12s"
+  new RegExp(`fast limit reached and temporarily disabled${RESETS_CLAUSE}`, 'gi'),
+  // "You've hit your fast limit · resets in 4m 12s"
+  new RegExp(`you'?ve hit your fast limit${RESETS_CLAUSE}`, 'gi'),
+  // "Fast mode disabled · usage credit limit reached", or "· usage credits exhausted"
+  new RegExp(`fast mode disabled${GAUGE_SEPARATORS}usage credits?\\b[^\\u00b7.\\n]{0,40}`, 'gi'),
+  /you'?ve hit your monthly limit\b/gi,
+];
+
+const NON_CAP_PATTERNS = [...GAUGE_PATTERNS, ...NOT_THE_ACCOUNT_PATTERNS];
+
+/**
+ * Strip the gauge lines, and the limits that leave the account working, so
+ * only a real announcement can match.
+ */
+function withoutNonCaps(text: string): string {
+  return NON_CAP_PATTERNS.reduce((acc, re) => acc.replace(re, ' '), text);
 }
 
 /**
@@ -72,6 +105,12 @@ const CAP_PATTERNS = [
   /you'?ve reached your/i,
   /\/usage-credits/i,
   /switch models with \/model/i,
+  // Claude 2.1.302 says every limit of the account's own as "You've hit your
+  // <limit><details>": "You've hit your session limit · resets 6pm", "You've
+  // hit your limit · resets 9pm", "You've hit your monthly spend limit · raise
+  // it at <url> · your session limit resets 6pm", "You've hit your team's
+  // shared budget". It records such a turn as usage_limit_reached.
+  /you'?ve hit your [^.\n]{0,40}?\b(?:limit|budget)\b/i,
   // Other known phrasings.
   /usage limit reached/i,
   /rate ?limit/i,
@@ -88,7 +127,7 @@ export function classifyRun(outcome: RunOutcome): CapClassification {
   if (outcome.exitCode === 0) return { kind: 'ok' };
 
   const combined = `${outcome.stderr}\n${outcome.stdout ?? ''}`;
-  const text = withoutGauges(combined);
+  const text = withoutNonCaps(combined);
   if (CAP_PATTERNS.some((re) => re.test(text))) {
     // From the ORIGINAL text, not the filtered one: the gauge filter can
     // remove the very timestamp the resets clause carried, and a cap that
@@ -98,8 +137,8 @@ export function classifyRun(outcome: RunOutcome): CapClassification {
     // from the LINE that matched: the raw first line can be the gauge, an
     // unrelated warning, or the wrong stream entirely, and each of those has
     // been recorded as "the reason" at some point.
-    const filteredErr = withoutGauges(outcome.stderr);
-    const filteredOut = withoutGauges(outcome.stdout ?? '');
+    const filteredErr = withoutNonCaps(outcome.stderr);
+    const filteredOut = withoutNonCaps(outcome.stdout ?? '');
     const source = CAP_PATTERNS.some((re) => re.test(filteredErr)) ? filteredErr : filteredOut;
     return {
       kind: 'capped',
@@ -117,7 +156,7 @@ export function classifyRun(outcome: RunOutcome): CapClassification {
  */
 export function matchesCapText(text: string): CapClassification | null {
   const plain = stripAnsi(text);
-  const clean = withoutGauges(plain);
+  const clean = withoutNonCaps(plain);
   if (!CAP_PATTERNS.some((re) => re.test(clean))) return null;
   // The unfiltered text, for the same reason as classifyRun: the gauge filter
   // can take the reset timestamp with it.

@@ -153,3 +153,101 @@ describe('classifyRun', () => {
     });
   });
 });
+
+/**
+ * Claude 2.1.302's own words, from its binary, filled in as it fills them. Its
+ * message at a limit of the account's own is made one way, "You've hit your
+ * <limit><details>", with the limit's name ("session limit", "Opus limit", or
+ * just "limit") and a reset time or what to do.
+ */
+describe("Claude 2.1.302's words at a limit", () => {
+  const capped = (line: string): void => {
+    expect(matchesCapText(line)?.kind).toBe('capped');
+    expect(classifyRun({ exitCode: 1, stderr: line })).toMatchObject({ kind: 'capped', reason: line });
+    expect(classifyRun({ exitCode: 1, stderr: '', stdout: line })).toMatchObject({
+      kind: 'capped',
+      reason: line,
+    });
+  };
+  const notCapped = (line: string): void => {
+    expect(matchesCapText(line)).toBeNull();
+    expect(classifyRun({ exitCode: 1, stderr: line }).kind).toBe('error');
+  };
+
+  describe('the account out of one of its limits', () => {
+    for (const line of [
+      // Usage credits were tried and turned away: the limit has no name.
+      "You've hit your limit · resets 9pm (America/New_York)",
+      "You've hit your session limit · resets 6pm (America/New_York)",
+      "You've hit your Opus limit · resets Oct 22, 1pm (America/New_York)",
+      "You've hit your Sonnet limit · resets Oct 22, 1pm (America/New_York)",
+      "You've hit your Fable limit · resets Oct 22, 1pm (America/New_York)",
+      "You've hit your usage limit · resets 6pm (America/New_York)",
+      "You've hit your usage limit · contact your admin to increase it",
+    ]) {
+      it(`takes "${line}" for a limit`, () => capped(line));
+    }
+  });
+
+  describe('a spend limit on usage credits, met as a turn is refused', () => {
+    // Usage credits would carry the account past its plan, and the spend
+    // limit stops them; the usage check reads a spent plan window as out then.
+    for (const line of [
+      "You've hit your monthly spend limit · raise it at https://claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 6pm (America/New_York)",
+      "You've hit your channel's monthly spend limit · an org owner or channel manager can raise it in the channel's Claude settings · your session limit resets 6pm (America/New_York)",
+      "You've hit your org's monthly spend limit · ask your admin to raise it at https://claude.ai/admin-settings/usage",
+      "You've hit your team's shared budget · raise it at https://claude.ai/admin-settings/usage",
+      // A model that runs only on usage credits.
+      "You've hit your monthly spend limit. Switch to another model to continue.",
+      "You've hit your channel's monthly spend limit. Switch to another model to continue.",
+    ]) {
+      it(`takes "${line.slice(0, 60)}" for a limit`, () => capped(line));
+    }
+  });
+
+  describe('fast mode, which Claude leaves for standard speed and carries on', () => {
+    for (const line of [
+      // The notification.
+      'Fast limit reached and temporarily disabled · resets in 4m 12s',
+      // The /fast picker.
+      "You've hit your fast limit · resets in 4m 12s",
+      // Usage credits stopping fast mode.
+      'Fast mode disabled · usage credit limit reached',
+      'Fast mode disabled · usage credits exhausted',
+    ]) {
+      it(`asks nothing about "${line}"`, () => notCapped(line));
+    }
+
+    it('still finds the account out of its own limit beside it', () => {
+      // On the retry at standard speed, an account that is out says so.
+      const screen = [
+        'Fast limit reached and temporarily disabled · resets in 4m 12s',
+        "You've hit your session limit · resets 6pm (America/New_York)",
+      ].join('\n');
+      expect(matchesCapText(screen)?.kind).toBe('capped');
+      expect(classifyRun({ exitCode: 1, stderr: screen })).toMatchObject({
+        kind: 'capped',
+        reason: "You've hit your session limit · resets 6pm (America/New_York)",
+      });
+    });
+  });
+
+  it("asks nothing about the usage-credits panel's monthly limit", () => {
+    // Shown when the panel is opened, about the credits; a refused turn brings its own line.
+    const dash = String.fromCharCode(0x2014);
+    notCapped(`You've hit your monthly limit ${dash} raise it below, or it resets next month.`);
+  });
+
+  describe('its gauge, which still is not a limit', () => {
+    for (const line of [
+      "You've used 90% of your session limit · resets 6pm (America/New_York)",
+      // The hint at its end, past a reset with a comma in it.
+      "You've used 90% of your weekly limit · resets Oct 22, 1pm (America/New_York) · /usage-credits to keep using Claude Code",
+      'Approaching session limit · resets 6pm (America/New_York) · Run /usage-credits to turn on extra usage for your org',
+      "You've used 95% of your usage credits · Run /usage-credits to raise the cap",
+      "You're close to your usage credit limit",
+    ]) {
+      it(`asks nothing about "${line.slice(0, 60)}"`, () => notCapped(line));
+    }
+  });
+});

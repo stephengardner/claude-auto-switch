@@ -136,7 +136,12 @@ its old name `--remote`) is started with a new one of ccx's own
 reads these flags as Claude does, short ones in a cluster too (`-pc` is print
 mode with `--continue`), and puts every flag it adds before any `--`, after
 which Claude reads everything as the prompt. Text on screen that talks about
-usage limits never moves a session.
+usage limits never moves a session. Where Claude's words are all ccx has (a
+terminal before its record can be read, a print run's output, an editor chat's
+closing words), they only start the usage check. ccx knows Claude 2.1.302's
+("You've hit your session limit · resets 6pm", a spend limit on usage credits
+included), and leaves out its usage gauge and its fast mode's own limit, at
+which Claude goes on at standard speed.
 
 **Editor chats through `ccx-claude`.** When the Claude Code extension starts
 Claude through `ccx-claude` (its `claudeCode.claudeProcessWrapper` setting),

@@ -41,7 +41,8 @@ Its behavior is driven by a **scenario** JSON, resolved in this order:
   in). `FAKE_CLAUDE_REFUSALS_AT_ONCE` writes that many refused turns in one
   write each time the main thread is refused. With `FAKE_CLAUDE_LOG_CAP_WORDS`, each
   showing of the repeated limit words (`FAKE_CLAUDE_CAP_EVERY_MS`) is logged as
-  `cap-words`, so a test can count them.
+  `cap-words`, so a test can count them. `FAKE_CLAUDE_CAP_WORDS` replaces those
+  words with a test's own.
 - with `--input-format stream-json` (and `FAKE_CLAUDE_SESSION_RECORD` and
   `FAKE_CLAUDE_TRANSCRIPT` set) it is the editor's Claude: it takes one turn per
   stream-json user message on standard input and answers each as stream-json

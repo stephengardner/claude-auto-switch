@@ -44,7 +44,7 @@ interface Launch {
 
 type Verdict = 'limited' | 'allowed' | 'unknown';
 
-function makeContext(home: string, verifyCap: () => Promise<Verdict>, said: string[]): CliContext {
+function makeContext(home: string, verifyCap: (text: string) => Promise<Verdict>, said: string[]): CliContext {
   const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home } };
   return {
     ctx,
@@ -104,7 +104,7 @@ function capture(): { io: WorkerIo; out: () => string; err: () => string; signal
 
 async function setup(
   names: string[],
-  verifyCap: () => Promise<Verdict> = () => Promise.resolve('allowed'),
+  verifyCap: (text: string) => Promise<Verdict> = () => Promise.resolve('allowed'),
 ): Promise<{ home: string; context: CliContext; runsLog: string; said: string[] }> {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-worker-'));
   const runsLog = path.join(home, 'runs.jsonl');
@@ -224,6 +224,7 @@ const TOUCHED = [
   'FAKE_CLAUDE_SUBAGENT_REFUSE_AFTER_MS',
   'FAKE_CLAUDE_STREAM_REFUSALS',
   'FAKE_CLAUDE_RESUMED_IDLE_MS',
+  'FAKE_CLAUDE_SCENARIO',
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_ENTRYPOINT',
   'CLAUDECODE',
@@ -703,6 +704,34 @@ describe('ccx worker (against fake-claude)', () => {
     // The failure A printed is not the answer; B's is.
     expect(answer).toMatchObject({ is_error: false, result: `done: ${WORKER_CARRY_ON}` });
     expect(answer.ccx.accounts).toEqual(['A', 'B']);
+  });
+
+  it("asks about Claude 2.1.302's words at a limit when the run keeps no record", { timeout: 60_000 }, async () => {
+    // Every launch prints the words and fails before it writes any record, so
+    // they are all ccx has. The usage check says A is out, then B has room.
+    const words = "You've hit your limit · resets 9pm (America/New_York)";
+    const asked: string[] = [];
+    const { home, context } = await setup(['A', 'B'], (text) => {
+      asked.push(text);
+      return Promise.resolve(asked.length === 1 ? 'limited' : 'allowed');
+    });
+    const scenario = path.join(home, 'limit-words.json');
+    writeFileSync(
+      scenario,
+      JSON.stringify({
+        authStatus: { loggedIn: true, subscriptionType: 'max', email: 'worker@example.com' },
+        capped: true,
+        capMessage: words,
+        capExitCode: 1,
+      }),
+      'utf8',
+    );
+    process.env.FAKE_CLAUDE_SCENARIO = scenario;
+    await workerCommand(context, ['hi'], {}, [], capture().io);
+
+    // Asked about A's words, which moved it to B, and then about B's.
+    expect(asked).toHaveLength(2);
+    expect(asked[0]).toContain(words);
   });
 
   it('moves on when the usage check is turned away and Claude recorded the refusal', { timeout: 60_000 }, async () => {

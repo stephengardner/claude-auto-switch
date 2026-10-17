@@ -31,7 +31,11 @@ function makeContext(home: string, verdict: LimitVerdict = 'limited'): CliContex
   };
 }
 
-function seed(dir: string, capped: boolean): void {
+function seed(
+  dir: string,
+  capped: boolean,
+  capMessage = "You've reached your Fable 5 limit. Run /usage-credits to continue.",
+): void {
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, '.credentials.json'), '{}', 'utf8');
   writeFileSync(
@@ -39,7 +43,7 @@ function seed(dir: string, capped: boolean): void {
     JSON.stringify({
       authStatus: { loggedIn: true, subscriptionType: 'max', email: 'x@y.com' },
       capped,
-      capMessage: "You've reached your Fable 5 limit. Run /usage-credits to continue.",
+      capMessage,
       capExitCode: 1,
     }),
     'utf8',
@@ -78,5 +82,21 @@ describe('wrapperLaunch (runs the editor-supplied command on the active account)
     expect(exit).toBe(1);
     expect(loadLedger(context.ctx).caps.map((c) => c.account)).toContain('A');
     expect(getActive(context.ctx)).toBe('B'); // next editor chat uses B
+  });
+
+  it("flips the active account when the command ends on Claude 2.1.302's words at a limit", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-wrap-'));
+    const context = makeContext(home);
+    const dirA = path.join(home, 'profiles', 'A');
+    const dirB = path.join(home, 'profiles', 'B');
+    await addCommand(context, 'A', { dir: dirA, login: false });
+    await addCommand(context, 'B', { dir: dirB, login: false });
+    seed(dirA, true, "You've hit your limit · resets 9pm (America/New_York)");
+    seed(dirB, false);
+    useCommand(context, 'A');
+
+    expect(await wrapperLaunch(context, [process.execPath, fakeClaude, 'chat'])).toBe(1);
+    expect(loadLedger(context.ctx).caps.map((c) => c.account)).toEqual(['A']);
+    expect(getActive(context.ctx)).toBe('B');
   });
 });

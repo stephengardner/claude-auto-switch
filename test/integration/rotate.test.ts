@@ -60,6 +60,29 @@ describe('autoRotateHeadless', () => {
     expect(message).toContain('capped');
   });
 
+  it("rotates on Claude 2.1.302's words at a limit, with no refused turn in the run's record", async () => {
+    const words = "You've hit your limit · resets 9pm (America/New_York)";
+    const asked: string[] = [];
+    const run = async (_bin: string, _args: string[], opts?: RunOptions) =>
+      opts?.env?.CLAUDE_CONFIG_DIR === '/dir/A'
+        ? { stdout: `${words}\n`, stderr: '', exitCode: 1 }
+        : { stdout: 'hello from B', stderr: '', exitCode: 0 };
+
+    const result = await autoRotateHeadless(['-p', 'hi'], {
+      ...base,
+      ledger: { caps: [] },
+      run,
+      confirmCap: (_account, text) => {
+        asked.push(text);
+        return Promise.resolve({ limited: true });
+      },
+    });
+    // The words only start the check, which is asked with them.
+    expect(asked).toEqual([words]);
+    expect(result.account).toBe('B');
+    expect(result.ledger.caps.map((c) => c.account)).toEqual(['A']);
+  });
+
   it('does not rotate when the first account succeeds', async () => {
     const run = async () => ({ stdout: 'ok', stderr: '', exitCode: 0 });
     const result = await autoRotateHeadless(['-p', 'hi'], { ...base, ledger: { caps: [] }, run });
