@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.19]
+
+### Fixed
+
+- **ccx knows Claude 2.1.302's words at a limit (#164).** 2.1.302 says every
+  limit of the account's own as "You've hit your …" ("You've hit your session
+  limit · resets 6pm", "You've hit your limit · resets 9pm", "You've hit your
+  monthly spend limit · raise it at …"), and none of ccx's limit words matched
+  it. Where Claude's words are all ccx has (a terminal before its record can be
+  read, a `claude -p` run or a worker that keeps none, an editor chat's closing
+  words), a spent account went unnoticed. Those words now start the usage
+  check, which still decides. A spend limit on usage credits counts: Claude
+  says it only for a refused turn, and records that turn as a spent usage
+  limit. Fast mode's own limit does not: Claude goes on at standard speed, so
+  its notice ("Fast limit reached and temporarily disabled") no longer starts
+  a check, nor do the usage-credits panel or the hint at the end of the usage
+  gauge ("· /usage-credits to keep using Claude Code").
+- **Two editor tests no longer depend on a 4 s window (#163).** They gave the
+  first refused turn a reset 3 to 4 s after sending it, so a Windows runner
+  that took longer to judge it saw the limit as already over. The reset is now
+  hours away, each test waits for ccx's verdict, and "after the reset" is
+  reached by moving the recorded limit's end on the test's ledger. A hot-swap
+  test with a 100 ms hold now runs on a clock it moves itself.
+
 ## [2.6.18]
 
 ### Fixed
