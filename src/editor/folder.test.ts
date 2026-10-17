@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { spawn } from 'node:child_process';
 import {
+  appendFileSync,
   closeSync,
   existsSync,
   lstatSync,
@@ -654,6 +656,33 @@ describe('an install on the old link, moved into the folder', () => {
     writeFileSync(path.join(s.ccx, 'editor-move-held.json'), JSON.stringify({ since: Date.now() - 25 * HOURS }));
     await use(s, 'B', () => isRealFolder(s.folder));
     expect(isRealFolder(s.folder)).toBe(true);
+  });
+
+  it('merges once more, after the editor chat open at the move closes, the prompts it went on writing where the link led', async () => {
+    const s = await onTheLink('A');
+    // An editor chat's Claude, started through the link and still running a day on.
+    const chat = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+    const exited = new Promise((resolve) => chat.once('exit', resolve));
+    try {
+      mkdirSync(path.join(s.dirOf('A'), 'sessions'), { recursive: true });
+      writeFileSync(
+        path.join(s.dirOf('A'), 'sessions', `${chat.pid}.json`),
+        JSON.stringify({ pid: chat.pid, entrypoint: 'claude-vscode', sessionId: '22222222-2222-4222-8222-222222222222' }),
+      );
+      writeFileSync(path.join(s.ccx, 'editor-move-held.json'), JSON.stringify({ since: Date.now() - 25 * HOURS }));
+      await use(s, 'A', () => isRealFolder(s.folder));
+      expect(isRealFolder(s.folder)).toBe(true);
+      // It goes on adding to the prompt history it kept open where the link led.
+      appendFileSync(path.join(s.dirOf('A'), 'history.jsonl'), '{"display":"after the move"}\n');
+      await use(s, 'A');
+      expect(read(s.user('history.jsonl')) ?? '').not.toContain('after the move');
+    } finally {
+      chat.kill();
+    }
+    await exited;
+
+    await use(s, 'A', () => read(s.user('history.jsonl'))?.includes('after the move') === true);
+    expect(read(s.user('history.jsonl'))).toContain('after the move');
   });
 
   it('moves with a chat file held open under the old target, as Windows keeps one', async () => {

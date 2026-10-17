@@ -190,7 +190,8 @@ chats, checkpoints and prompts in every account folder are merged into your
 folder's own settings, memory, keybindings and Claude choices that are not yours
 are kept in `rescued/`. A login the editor's Claude kept in a Keychain item of
 its own (#129) goes home to its account. While an editor chat started through
-the link is open, the move waits, for up to a day.
+the link is open, the move waits, for up to a day; if it goes ahead with one
+open, it merges once more after that chat closes.
 
 Two launches still wait for the usage check, because ccx cannot tell that a
 refusal there was the run's own:

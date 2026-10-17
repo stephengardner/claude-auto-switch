@@ -188,6 +188,7 @@ async function bringEditorUp(context: CliContext, how: { move: boolean; setUp: b
     if (kind === 'missing' && !createEditorFolder(c)) return;
     await takeUpEditorRenewal(c, context.lookupOwner ? { lookupOwner: context.lookupOwner } : {});
     await underEditorLock(c, () => {
+      finishLateMerge(c);
       refreshClaudeFolder(dir, c);
       pullProfileIntoEditor(c);
       if (how.move) moveEditorLogin(c);
@@ -577,18 +578,48 @@ async function moveIntoFolder(context: CliContext): Promise<Moved> {
   const c = context.ctx;
   const dir = editorFolderPath(c);
   const target = readTarget(dir);
-  if (target !== null && editorChatsOpen(target) && !waitedLongEnough(c)) return 'deferred';
+  const chatsOpen = target !== null && editorChatsOpen(target);
+  if (chatsOpen && !waitedLongEnough(c)) return 'deferred';
   const item = firstItem(editorFolderLogin(c));
   let owner: string | null = null;
   if (item !== null) {
     owner = await ownerOfLogin(item, c, context.lookupOwner);
     if (owner === null) return 'deferred';
   }
-  const moved = withEditorLock(c, () => moveNow(c, target, item, owner));
+  const moved = withEditorLock(c, () => moveNow(c, target, item, owner, chatsOpen));
   return moved.ran ? moved.value : 'deferred';
 }
 
-function moveNow(c: PathCtx, target: string | null, item: string | null, owner: string | null): Moved {
+/** Where the move remembers the folder the old link led to while an editor chat started through it is still open. */
+const lateMergeFile = (c: PathCtx): string => path.join(configHome(c), 'editor-move-late.json');
+
+/**
+ * One more merge of the account folders' history once the editor chats that
+ * were open at the move have all closed. Such a chat writes by path into the
+ * folder that is now at the editor's path, but a file it kept open, such as its
+ * prompt history, goes on growing where the link led, and those lines are
+ * copied over, not shared by a hard link. The caller holds the editor lock.
+ */
+function finishLateMerge(c: PathCtx): void {
+  let target: unknown;
+  try {
+    target = (JSON.parse(readFileSync(lateMergeFile(c), 'utf8')) as { target?: unknown }).target;
+  } catch {
+    return;
+  }
+  if (typeof target === 'string' && editorChatsOpen(target)) return;
+  const writer = userFileWriter(c);
+  for (const a of listAccounts(c)) adoptFolderHistory(a.dir, a.name, c, writer, false);
+  rmSync(lateMergeFile(c), { force: true });
+}
+
+function moveNow(
+  c: PathCtx,
+  target: string | null,
+  item: string | null,
+  owner: string | null,
+  chatsOpen: boolean,
+): Moved {
   const dir = editorFolderPath(c);
   // Looked at again under the lock: another ccx may have moved it, or the
   // editor's Claude renewed its login since it was asked about.
@@ -638,6 +669,13 @@ function moveNow(c: PathCtx, target: string | null, item: string | null, owner: 
   if (!swapIn(dir, temp, target, c)) return 'failed';
   for (const a of accounts) adoptFolderHistory(a.dir, a.name, c, writer, false);
   rmSync(path.join(configHome(c), 'editor-move-held.json'), { force: true });
+  if (chatsOpen && target !== null) {
+    try {
+      writeFileAtomic(lateMergeFile(c), `${JSON.stringify({ target })}\n`);
+    } catch {
+      /* the account folders keep what they hold; a later move cannot merge it */
+    }
+  }
   appendEvent(
     configHome(c),
     `the editor moved into a folder of its own, on ${account?.name ?? 'no account yet'}: your chats, settings and memory are its own now`,

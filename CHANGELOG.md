@@ -56,7 +56,9 @@ semantic versioning.
   not the user's are kept in `rescued/` rather than applied, and nothing in an
   account folder is moved or deleted. A login the editor's Claude kept in a
   Keychain item of its own goes home to the account it belongs to. While an
-  editor chat started through the link is open, the move waits for up to a day.
+  editor chat started through the link is open, the move waits for up to a day;
+  when it goes ahead with one still open, it merges once more after that chat
+  closes, for what it went on writing where the link led.
 - **`ccx editor off` retires the folder losing nothing.** Its login goes home,
   what it holds of the user's files is handed back, it is removed with the
   login wherever a Claude on it could read it, and the editor's setting is
