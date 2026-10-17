@@ -126,17 +126,41 @@ const candidates = ranked.map((a) => modelUsageFor(a.name, usageOf(a.name), [], 
 const standing = (name) => standingOf(usageOf(name), NOW, 'opus', POLICY.holdBackAtPercent);
 const picks = numberPicks(candidates, PREFERENCE, true, standing);
 
-const dashboardAccounts = ACCOUNTS.map((a, i) => ({
-  name: a.name,
-  email: a.email,
-  plan: a.plan,
-  loggedIn: true,
-  active: a.active,
-  enabled: true,
-  priority: i,
-  usage: usageOf(a.name),
-  ...(picks.has(a.name) ? { pick: picks.get(a.name) } : {}),
-}));
+const dashboardAccounts = [
+  ...ACCOUNTS.map((a, i) => ({
+    name: a.name,
+    email: a.email,
+    plan: a.plan,
+    loggedIn: true,
+    active: a.active,
+    enabled: true,
+    priority: i,
+    usage: usageOf(a.name),
+    ...(picks.has(a.name) ? { pick: picks.get(a.name) } : {}),
+  })),
+  // Out of rotation, for the two reasons an account can be: signed out, and
+  // put on hold by Anthropic, which signing in again does not fix. Only the
+  // dashboard shows them; `ccx usage` has no numbers to show for either.
+  {
+    name: 'laptop',
+    email: 'laptop@example.com',
+    plan: 'pro',
+    loggedIn: false,
+    active: false,
+    enabled: true,
+    priority: ACCOUNTS.length,
+  },
+  {
+    name: 'trial',
+    email: 'trial@example.com',
+    plan: 'max',
+    loggedIn: false,
+    onHold: true,
+    active: false,
+    enabled: true,
+    priority: ACCOUNTS.length + 1,
+  },
+];
 // Clock times read in UTC here, so the picture is the same on every machine.
 // The dashboard itself reads them in the local zone.
 const utcClock = (epochMs) => {
