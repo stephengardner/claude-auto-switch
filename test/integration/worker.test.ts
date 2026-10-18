@@ -13,6 +13,7 @@ import { loadConfig } from '../../src/config/config.js';
 import { leasePath, processIsAlive } from '../../src/session/lease.js';
 import { sessionDirFor } from '../../src/session/session-dir.js';
 import { updateLedger } from '../../src/ledger/ledger.js';
+import { readEvents } from '../../src/events/log.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
 import { saveToken } from '../../src/daemon/token-store.js';
 import type { CliContext } from '../../src/context.js';
@@ -245,6 +246,46 @@ describe('ccx worker (against fake-claude)', () => {
     }
     process.chdir(startedIn);
     vi.unstubAllGlobals();
+  });
+
+  it('has what it logged in the event log once it returns, though another process holds the log', { timeout: 60_000 }, async () => {
+    // A line that finds the log's lock taken is kept and written once the
+    // holder lets go. A session that ends first writes it as it ends, past a
+    // holder that has not let go within five seconds, as an append once did.
+    const { home, context } = await setup(['A']);
+    const lockFile = path.join(home, 'events.jsonl.compact.lock');
+    const go = path.join(home, 'holder-go');
+    const holder = spawn(
+      process.execPath,
+      [
+        '-e',
+        [
+          `const fs = require('node:fs');`,
+          `const [lock, go] = process.argv.slice(1);`,
+          `fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });`,
+          `const startedAt = Date.now();`,
+          `const look = setInterval(() => {`,
+          `  if (!fs.existsSync(go) && Date.now() - startedAt < 60000) return;`,
+          `  clearInterval(look);`,
+          `  fs.rmSync(lock, { force: true });`,
+          `}, 20);`,
+        ].join('\n'),
+        lockFile,
+        go,
+      ],
+      { stdio: 'ignore' },
+    );
+    const exited = new Promise<number | null>((resolve) => holder.on('exit', resolve));
+    await vi.waitUntil(() => existsSync(lockFile) || holder.exitCode !== null, { timeout: 20_000, interval: 10 });
+    try {
+      expect(existsSync(lockFile)).toBe(true);
+      const seen = capture();
+      expect(await workerCommand(context, ['hi'], {}, [], seen.io)).toBe(0);
+      expect(readEvents(home, 100).map((r) => r.msg)).toContain('session on A');
+    } finally {
+      writeFileSync(go, '');
+    }
+    expect(await exited).toBe(0);
   });
 
   it("runs the brief headless and prints Claude's answer with the accounts that did it", { timeout: 60_000 }, async () => {

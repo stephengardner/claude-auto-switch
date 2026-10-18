@@ -13,6 +13,7 @@ import { runCommand } from '../../src/commands/run.js';
 import { workerCommand } from '../../src/commands/worker.js';
 import { loadConfig } from '../../src/config/config.js';
 import { readEvents } from '../../src/events/log.js';
+import { acquireOwnedLock } from '../../src/claude/locks.js';
 import { processIsAlive } from '../../src/session/lease.js';
 import { setActive } from '../../src/state/active.js';
 import type { CliContext } from '../../src/context.js';
@@ -316,6 +317,53 @@ describe('two processes changing the limits ledger at once', () => {
     expect(other.waitedFor(), 'ccx never found the lock taken').toBe(true);
 
     expect(accountsIn(home)).toEqual(['A', 'other']);
+    expect(unlockedWrites(home)).toEqual([]);
+  }, 60_000);
+
+  it('a limit still waiting for the lock when its process exits is written as it exits', async () => {
+    // A session that met a limit while another process held the ledger, and
+    // ended before that process let go.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-ledger-exit-'));
+    const script = path.join(home, 'meets-a-limit.ts');
+    const asked = path.join(home, 'asked');
+    writeFileSync(
+      script,
+      [
+        `import { writeFileSync } from 'node:fs';`,
+        `import { markCapped, updateLedgerAsync } from ${moduleAt('ledger', 'ledger.ts')};`,
+        `const [home, asked] = process.argv.slice(2);`,
+        `const now = Date.now();`,
+        `void updateLedgerAsync({ env: { CLAUDE_AUTO_SWITCH_HOME: home } }, (ledger) =>`,
+        `  markCapped(ledger, { account: 'A', now, resetAt: now + 3600000, reason: 'met as it ended' }),`,
+        `);`,
+        `writeFileSync(asked, '');`,
+      ].join('\n'),
+      'utf8',
+    );
+    // Held as a running ccx holds it: by this process, which the child sees running.
+    const holder = acquireOwnedLock(path.join(home, 'ledger.json.lock'), { waitMs: 0, staleMs: 5_000 });
+    expect(holder.held).toBe(true);
+    let exited: Promise<{ code: number | null; stderr: string }>;
+    try {
+      exited = new Promise((resolve) => {
+        const child = spawn(TSX, [script, home, asked], {
+          stdio: ['ignore', 'ignore', 'pipe'],
+          shell: process.platform === 'win32',
+        });
+        let stderr = '';
+        child.stderr.on('data', (d) => (stderr += String(d)));
+        child.on('exit', (code) => resolve({ code, stderr }));
+      });
+      await vi.waitUntil(() => existsSync(asked), { timeout: 30_000, interval: 20 });
+      // Its last statement, so by now it is exiting, waiting for the lock.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(accountsIn(home)).toEqual([]);
+    } finally {
+      holder.release();
+    }
+    const { code, stderr } = await exited;
+    expect(code, stderr).toBe(0);
+    expect(accountsIn(home)).toEqual(['A']);
     expect(unlockedWrites(home)).toEqual([]);
   }, 60_000);
 });

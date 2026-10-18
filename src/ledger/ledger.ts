@@ -1,9 +1,10 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { acquireOwnedLock } from '../claude/locks.js';
+import { acquireOwnedLock, withOwnedLockAsync, type LockHandle } from '../claude/locks.js';
 import { configHome, type PathCtx } from '../config/paths.js';
-import { appendEvent } from '../events/log.js';
+import { appendEvent, flushQueuedEvents } from '../events/log.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
+import { thrownReason } from '../util/thrown-reason.js';
 import { LedgerSchema, type CapRecord, type Ledger } from './ledger.schema.js';
 
 const FILENAME = 'ledger.json';
@@ -27,14 +28,53 @@ export function ledgerFilePath(c: PathCtx = {}): string {
   return p.join(configHome(c), FILENAME);
 }
 
+type Change = (ledger: Ledger) => Ledger;
+interface Waiting {
+  file: string;
+  c: PathCtx;
+  change: Change;
+}
+
+/**
+ * Changes updateLedgerAsync is waiting to write, oldest first. Whoever next
+ * takes a file's lock in this process writes all of that file's first, in this
+ * order, so this process's changes reach the file in the order it made them.
+ */
+const pending: Waiting[] = [];
+
+/** Take every change waiting for `file` off the list, oldest first. */
+function takePending(file: string): Waiting[] {
+  const taken = pending.filter((waiting) => waiting.file === file);
+  for (const waiting of taken) pending.splice(pending.indexOf(waiting), 1);
+  return taken;
+}
+
 /**
  * The ledger as it is now, read without the lock: for deciding, never for
  * writing back, since a ledger changed from this copy erases whatever another
  * process recorded after it was read. Every write replaces the file in one
  * step, so a read gets the old ledger or the new one, never part of one.
+ *
+ * Changes this process is still waiting to write are applied to what is read,
+ * so it decides as if they were written: a limit it has just met counts at
+ * once, whoever holds the lock.
  */
 export function loadLedger(c: PathCtx = {}): Ledger {
-  return readJsonFile(ledgerFilePath(c), LedgerSchema) ?? { caps: [] };
+  const file = ledgerFilePath(c);
+  let ledger = readLedgerFile(file);
+  for (const waiting of pending) {
+    if (waiting.file !== file) continue;
+    try {
+      ledger = waiting.change(ledger);
+    } catch {
+      /* it throws when written too, and is then dropped */
+    }
+  }
+  return ledger;
+}
+
+function readLedgerFile(file: string): Ledger {
+  return readJsonFile(file, LedgerSchema) ?? { caps: [] };
 }
 
 /** Set while a change runs, so a change that calls updateLedger itself is refused rather than written over. */
@@ -47,7 +87,9 @@ let changing = false;
  * ledger as it is now and returns the new one; returning the one it was handed
  * writes nothing. Returns the ledger as it now stands. A change must not call
  * updateLedger: that throws, since it would wait on its own lock and its write
- * would then be overwritten by the outer one.
+ * would then be overwritten by the outer one. Changes this process is still
+ * waiting to write (updateLedgerAsync) are written first, so every change of
+ * this process reaches the file in the order it was made.
  *
  * A running holder is waited for until its lock is older than the longest
  * hold, however long that takes. A holder needs milliseconds, so one that has
@@ -55,48 +97,166 @@ let changing = false;
  * answering) and will finish; written past it, this change would be lost when
  * it resumes and writes back what it read before.
  * Past the longest hold the lock is taken over whatever its pid says, since
- * that pid may by now be another program's. The wait freezes whatever asked,
- * a session's terminal included, for as long as the holder holds.
+ * that pid may by now be another program's. The wait blocks the thread for as
+ * long as the holder holds: a running session uses updateLedgerAsync.
  *
  * A lock that cannot be made at all, or is not free when `waitMs` runs out,
  * is written past rather than drop the change, which would lose a limit for
  * certain, and the event log says so. The two changes can then erase each
  * other.
  */
-export function updateLedger(
-  c: PathCtx,
-  change: (ledger: Ledger) => Ledger,
-  options: { waitMs?: number } = {},
-): Ledger {
+export function updateLedger(c: PathCtx, change: Change, options: { waitMs?: number } = {}): Ledger {
   if (changing) throw new Error('updateLedger was called from inside a change to the ledger');
   const file = ledgerFilePath(c);
   const waitMs = options.waitMs ?? LOCK.waitMs;
   // The lock lives beside the ledger, so a first write needs the folder first.
   mkdirSync(path.dirname(file), { recursive: true });
-  const lock = acquireOwnedLock(`${file}.lock`, { ...LOCK, waitMs });
+  return writeUnderLock(c, file, acquireOwnedLock(`${file}.lock`, { ...LOCK, waitMs }), waitMs, { change });
+}
+
+/**
+ * updateLedger for a running session, whose thread relays Claude's terminal:
+ * by the same rules, but never blocking. Written before this returns when the
+ * lock is free, as nearly always, after anything of this process's still
+ * waiting for it. Otherwise it waits between the session's other work, and
+ * until it is written loadLedger in this process applies it. A process that
+ * exits meanwhile writes it as it exits, waiting as updateLedger does.
+ */
+export function updateLedgerAsync(c: PathCtx, change: Change, options: { waitMs?: number } = {}): Promise<Ledger> {
   try {
-    const current = loadLedger(c);
-    changing = true;
-    let next: Ledger;
+    if (changing) throw new Error('updateLedger was called from inside a change to the ledger');
+    const file = ledgerFilePath(c);
+    const waitMs = options.waitMs ?? LOCK.waitMs;
+    mkdirSync(path.dirname(file), { recursive: true });
+    const lockFile = `${file}.lock`;
+    const free = acquireOwnedLock(lockFile, { ...LOCK, waitMs: 0 });
+    if (free.held || free.unusable) return Promise.resolve(writeUnderLock(c, file, free, waitMs, { change }));
+    const mine = { file, c, change };
+    pending.push(mine);
+    writePendingAtExit();
+    // Written by whoever takes the lock first, which need not be this wait.
+    return withOwnedLockAsync(lockFile, { ...LOCK, waitMs }, (lock) => writeUnderLock(c, file, lock, waitMs, { mine }));
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+/**
+ * Write now, blocking as updateLedger does, every change updateLedgerAsync is
+ * still waiting to write. For when this process stops running its timers: as
+ * it exits, and before it hands a session over to a newer ccx.
+ */
+export function flushPendingLedgerChanges(): void {
+  for (let next = pending[0]; next !== undefined; next = pending[0]) {
+    let lock: LockHandle = { held: false, release: () => {} };
     try {
-      next = change(current);
-    } finally {
-      changing = false;
+      lock = acquireOwnedLock(`${next.file}.lock`, LOCK);
+    } catch {
+      /* written past it */
     }
-    if (next === current) return current;
-    writeJsonFile(file, next);
-    if (!lock.held) {
-      const why = lock.unusable
-        ? `the lock could not be made (${lock.unusable})`
-        : `the lock was not free within ${waitMs / 1000} s`;
-      appendEvent(
-        configHome(c),
-        `ledger written without its lock: ${why}; a change another session made at that moment may be lost`,
-        Date.now(),
-        { kind: 'ledger-unlocked', data: { waitMs, ...(lock.unusable ? { unusable: lock.unusable } : {}) } },
-      );
+    try {
+      // Takes the file's waiting changes before anything that can throw, so
+      // this loop always moves on.
+      writeUnderLock(next.c, next.file, lock, LOCK.waitMs);
+    } catch {
+      /* each change it took has said so in the event log */
     }
+  }
+}
+
+/** A change this process waited to write and could not: its own wait can no longer say so. */
+function reportLost(waiting: Waiting, error: unknown): void {
+  appendEvent(
+    configHome(waiting.c),
+    `a ledger change that waited for the lock could not be written (${thrownReason(error)})`,
+    Date.now(),
+    { kind: 'ledger-write-failed' },
+  );
+}
+
+function applying(change: Change, ledger: Ledger): Ledger {
+  changing = true;
+  try {
+    return change(ledger);
+  } finally {
+    changing = false;
+  }
+}
+
+let writesAtExit = false;
+/** Once: a change still waiting when the process exits is written then. */
+function writePendingAtExit(): void {
+  if (writesAtExit) return;
+  writesAtExit = true;
+  process.on('exit', () => {
+    flushPendingLedgerChanges();
+    // The event log's own write at exit may have run already, and these
+    // writes can log.
+    flushQueuedEvents();
+  });
+}
+
+/**
+ * Under `lock` (taken, or waited out and written past): read the ledger, apply
+ * every change this process is waiting to write for it, oldest first, then
+ * `change`, write the result once, and let the lock go. A waiting change that
+ * throws is dropped, and the event log says so. `change` throwing, or `mine`
+ * (the caller's own waiting change), is thrown once the rest is written.
+ */
+function writeUnderLock(
+  c: PathCtx,
+  file: string,
+  lock: LockHandle,
+  waitMs: number,
+  ours: { change?: Change; mine?: Waiting } = {},
+): Ledger {
+  // Taken first, so none is left behind for a later writer to put after this one.
+  const waiting = takePending(file);
+  const unreported = new Set(waiting.filter((w) => w !== ours.mine));
+  try {
+    const current = readLedgerFile(file);
+    let next = current;
+    let failure: { error: unknown } | null = null;
+    for (const w of waiting) {
+      try {
+        next = applying(w.change, next);
+      } catch (error) {
+        if (w === ours.mine) {
+          failure = { error };
+        } else {
+          unreported.delete(w);
+          reportLost(w, error);
+        }
+      }
+    }
+    if (ours.change) {
+      try {
+        next = applying(ours.change, next);
+      } catch (error) {
+        failure = { error };
+      }
+    }
+    if (next !== current) {
+      writeJsonFile(file, next);
+      if (!lock.held) {
+        const why = lock.unusable
+          ? `the lock could not be made (${lock.unusable})`
+          : `the lock was not free within ${waitMs / 1000} s`;
+        appendEvent(
+          configHome(c),
+          `ledger written without its lock: ${why}; a change another session made at that moment may be lost`,
+          Date.now(),
+          { kind: 'ledger-unlocked', data: { waitMs, ...(lock.unusable ? { unusable: lock.unusable } : {}) } },
+        );
+      }
+    }
+    unreported.clear();
+    if (failure) throw failure.error;
     return next;
+  } catch (error) {
+    // The file could not be read or written, and what was taken went with it.
+    for (const w of unreported) reportLost(w, error);
+    throw error;
   } finally {
     lock.release();
   }

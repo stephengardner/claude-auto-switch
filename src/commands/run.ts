@@ -14,7 +14,7 @@ import {
   markCapped,
   type LedgerChange,
 } from '../ledger/ledger.js';
-import { appendEvent } from '../events/log.js';
+import { appendEvent, flushQueuedEvents } from '../events/log.js';
 import { thrownReason } from '../util/thrown-reason.js';
 import { preferredModel, roomOfFromSnapshot } from '../usage/account-room.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -112,7 +112,13 @@ export async function runCommand(
   // Interactive sessions with stored tokens get transparent hot-swap: the token
   // selects the account, so we skip the slow per-account health probe.
   if (!headless && hasAnyUsableAccount(context)) {
-    const code = await runInteractiveHotSwap(context, passthroughArgs, options);
+    let code: number;
+    try {
+      code = await runInteractiveHotSwap(context, passthroughArgs, options);
+    } finally {
+      // What the session logged is in the file once it has ended.
+      flushQueuedEvents();
+    }
     maybeHintShim(context); // one-time tip after the session, if the shim is off
     return code;
   }

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, appendFileSync, mkdirSync, statSync, renameSync, rmSync } from 'node:fs';
-import { acquireOwnedLock, type LockHandle } from '../claude/locks.js';
+import { acquireOwnedLock, withOwnedLockAsync, type LockHandle } from '../claude/locks.js';
 import path from 'node:path';
 import { writeSecretFile } from '../util/secret-file.js';
 import { ccxVersion } from '../util/version.js';
@@ -24,8 +24,8 @@ const LOCK_SUFFIX = '.compact.lock';
 /**
  * A holder lets go within milliseconds. One that has exited is taken over at
  * once, and an older build's, which names no holder, after five seconds. A
- * writer waits up to five seconds for a holder still running, then writes
- * without the lock rather than drop the line.
+ * line is written up to five seconds after it found a running holder, then
+ * without the lock rather than dropped.
  */
 const LOCK = { waitMs: 5_000, staleMs: 5_000 };
 const MAX = 200;
@@ -219,6 +219,13 @@ export const TRIM_BYTES = 64 * 1024;
  * Opening the file and writing the line are two steps, though, and a compaction
  * between them would move, archive and delete the file this writer then writes
  * into. So the line is written under the lock every compaction holds.
+ *
+ * Never waiting for that lock: the thread that asks may be relaying a
+ * session's terminal. A line that finds the lock taken is queued, and written
+ * once the holder lets go, or past it as LOCK says, on a timer that never keeps
+ * the process alive; a process that exits first writes what is queued as it
+ * exits (flushQueuedEvents). While a line for a file is queued, later lines
+ * for it join the queue, so each process's lines keep their order.
  */
 export function appendEvent(
   configHome: string,
@@ -240,9 +247,18 @@ export function appendEvent(
       ...(detail.kind ? { kind: detail.kind } : {}),
       ...(detail.data ? { data: detail.data } : {}),
     };
-    // Written even when the wait runs out, rather than dropped: see LOCK.
-    lock = acquireOwnedLock(`${file}${LOCK_SUFFIX}`, LOCK);
-    writeLine(file, `${JSON.stringify(record)}\n`);
+    const line = { configHome, file, line: `${JSON.stringify(record)}\n`, writeLine };
+    if (queued.some((q) => q.file === file)) {
+      enqueue(line);
+      return;
+    }
+    lock = acquireOwnedLock(`${file}${LOCK_SUFFIX}`, { ...LOCK, waitMs: 0 });
+    // A lock that cannot be made at all is written past at once: no wait cures it.
+    if (!lock.held && lock.unusable === undefined) {
+      enqueue(line);
+      return;
+    }
+    writeLine(file, line.line);
   } catch {
     return; // a lost log line must never break a session
   } finally {
@@ -253,6 +269,86 @@ export function appendEvent(
 
 function appendLine(file: string, line: string): void {
   appendFileSync(file, line, { mode: 0o600 });
+}
+
+interface QueuedLine {
+  configHome: string;
+  file: string;
+  line: string;
+  writeLine: (file: string, line: string) => void;
+}
+
+/** Lines that found the lock taken, oldest first. */
+const queued: QueuedLine[] = [];
+let draining = false;
+let flushesAtExit = false;
+
+function enqueue(line: QueuedLine): void {
+  queued.push(line);
+  if (!flushesAtExit) {
+    flushesAtExit = true;
+    process.on('exit', flushQueuedEvents);
+  }
+  if (!draining) void drain();
+}
+
+const UNHELD: LockHandle = { held: false, release: () => {} };
+
+/** Ends in the same step that finds the queue empty, so no line can be left behind it. */
+async function drain(): Promise<void> {
+  draining = true;
+  try {
+    for (let next = queued[0]; next !== undefined; next = queued[0]) {
+      const file = next.file;
+      await withOwnedLockAsync(`${file}${LOCK_SUFFIX}`, LOCK, (lock) => writeQueued(file, lock));
+    }
+  } catch {
+    /* what is still queued goes with the next line, or at exit */
+  } finally {
+    draining = false;
+  }
+}
+
+/**
+ * Write what is queued, now, blocking for up to LOCK's wait in all, then past
+ * the lock. Run at exit, and where a session ends, so that what the session
+ * logged is in the file once it returns.
+ */
+export function flushQueuedEvents(): void {
+  const deadline = Date.now() + LOCK.waitMs;
+  for (let next = queued[0]; next !== undefined; next = queued[0]) {
+    let lock = UNHELD;
+    try {
+      lock = acquireOwnedLock(`${next.file}${LOCK_SUFFIX}`, { ...LOCK, waitMs: Math.max(0, deadline - Date.now()) });
+    } catch {
+      /* written past it */
+    }
+    writeQueued(next.file, lock);
+  }
+}
+
+/** Write, in order, every line queued for `file`, under `lock` or past it, then let it go. */
+function writeQueued(file: string, lock: LockHandle): void {
+  let home: string | null = null;
+  try {
+    for (let i = 0; i < queued.length; ) {
+      const q = queued[i] as QueuedLine;
+      if (q.file !== file) {
+        i += 1;
+        continue;
+      }
+      queued.splice(i, 1);
+      home = q.configHome;
+      try {
+        q.writeLine(q.file, q.line);
+      } catch {
+        /* a lost log line must never break a session */
+      }
+    }
+  } finally {
+    lock.release();
+  }
+  if (home !== null) trimIfLong(home);
 }
 
 /**

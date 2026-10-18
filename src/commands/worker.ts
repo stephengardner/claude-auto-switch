@@ -6,6 +6,7 @@ import type { CliContext } from '../context.js';
 import { readCommandLine, withOptions } from '../launcher/claude-args.js';
 import { handleInterruption, type SignalSource } from '../launcher/interruption.js';
 import { runInteractiveHotSwap } from './session.js';
+import { flushQueuedEvents } from '../events/log.js';
 
 /**
  * `ccx worker`: one task, run headless on an account, for an orchestrator.
@@ -401,6 +402,8 @@ export async function workerCommand(
   } finally {
     if (deadline) clearTimeout(deadline);
     interruption.dispose();
+    // What the session logged is in the file once it has ended.
+    flushQueuedEvents();
   }
   // The session's own code, which is the timeout's or the signal's whenever
   // ending the worker stopped work. An end that came after Claude had answered

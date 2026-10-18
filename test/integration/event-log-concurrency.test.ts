@@ -83,8 +83,8 @@ describe('several processes writing the event log at once', () => {
     // Asked through the READER, not by opening one file. Compaction moves older
     // records into an archive beside the live file, so reading only events.jsonl
     // reports them missing when they are simply somewhere else. What matters is
-    // what the operator can see, and that is what readEvents returns.
-    expect(existsSync(path.join(home, 'events.jsonl'))).toBe(true);
+    // what the operator can see, and that is what readEvents returns. The live
+    // file itself can be gone, when the last write was the one that compacted.
     const present = new Set(
       // The padding exists only to reach the compaction threshold.
       readEvents(home, 10_000).map((r) => r.msg.split(' ')[0] ?? ''),
@@ -98,10 +98,12 @@ describe('several processes writing the event log at once', () => {
     expect(missing).toEqual([]);
   }, 60_000);
 
-  it('waits while another process holds the log, and writes once it lets go', async () => {
+  it('keeps a line while another process holds the log, and writes it as it exits, once the holder lets go', async () => {
     // A writer that went ahead while a compaction held the log could open the
     // file just before the compaction moved it, and write into it after the
-    // compaction had read it. The line then went with the file.
+    // compaction had read it. The line then went with the file. The append
+    // never waits, so the child has nothing left to do but exit, and writes
+    // the line as it does.
     const home = mkdtempSync(path.join(tmpdir(), 'cas-evhold-'));
     const marker = path.join(home, 'about-to-append');
     const child = path.join(home, 'held-writer.ts');
@@ -127,8 +129,8 @@ describe('several processes writing the event log at once', () => {
     try {
       exited = runChild(child, [home, marker]);
       await vi.waitUntil(() => existsSync(marker), { timeout: 30_000, interval: 20 });
-      // The append is the child's next statement, so by now it has either
-      // written or is waiting.
+      // The append is the child's next statement and its last, so by now it
+      // has either written or is waiting at its exit.
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(readEvents(home, 10)).toEqual([]);
     } finally {

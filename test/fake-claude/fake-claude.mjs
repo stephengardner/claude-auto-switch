@@ -1261,9 +1261,12 @@ if (exitWhen && idleMs > 0) {
 }
 
 // Ordinary output with no limit in it. Used to prove a single cap message does
-// not keep re-matching from the rolling buffer as later output arrives.
+// not keep re-matching from the rolling buffer as later output arrives. With
+// FAKE_CLAUDE_CHATTER_STAMP=1 each line ends with when it was written
+// (Date.now()), so a test can tell how long ccx held it before relaying it.
 const chatterEvery = Number(process.env.FAKE_CLAUDE_CHATTER_EVERY_MS) || 0;
 if (chatterEvery > 0) {
-  const c = setInterval(() => { process.stdout.write("working on it" + String.fromCharCode(10)); }, chatterEvery);
+  const stamp = process.env.FAKE_CLAUDE_CHATTER_STAMP === '1';
+  const c = setInterval(() => { process.stdout.write("working on it" + (stamp ? ` ${Date.now()}` : '') + String.fromCharCode(10)); }, chatterEvery);
   if (c.unref) c.unref();
 }

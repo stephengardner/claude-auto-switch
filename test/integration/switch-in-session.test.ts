@@ -8,11 +8,12 @@ import {
   existsSync,
   rmSync,
 } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { probeTerminal } from './terminal-probe.js';
+import { triesWhileALineWaited, watchLockDirTries, watchRelay } from './relay-watch.js';
 import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive, getActive } from '../../src/state/active.js';
@@ -179,6 +180,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     delete process.env.FAKE_CLAUDE_SUBAGENT_WRITES_UNTIL_MS;
     delete process.env.FAKE_CLAUDE_EXIT_WHEN;
+    delete process.env.FAKE_CLAUDE_CHATTER_STAMP;
   });
 
   it('replayed cap text is refuted by the API check: no false cap, no cascade', async () => {
@@ -714,25 +716,207 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
   it("keeps Claude's terminal flowing while another process holds the login's lock", async () => {
     // ccx relays Claude's output, and the keys typed into it, on the same
     // thread that renews: a renewal that waited for the lock stopped both.
-    const relayedAt: number[] = [];
-    const write = process.stdout.write;
-    process.stdout.write = function (this: NodeJS.WriteStream, ...args: Parameters<typeof write>) {
-      relayedAt.push(Date.now());
-      return write.apply(this, args);
-    } as typeof write;
+    // Judged by what Claude wrote while it ran and each time ccx found the
+    // lock taken, so neither a stalled machine nor the quiet after Claude
+    // exits can fail it (see relay-watch).
+    const relay = watchRelay();
+    let lock: ReturnType<typeof watchLockDirTries> | null = null;
+    process.env.FAKE_CLAUDE_CHATTER_STAMP = '1';
     let result: Awaited<ReturnType<typeof switchToDueLogin>>;
     try {
-      result = await switchToDueLogin({ bLockHeld: true, chatterMs: 100 });
+      result = await switchToDueLogin({
+        bLockHeld: true,
+        chatterMs: 100,
+        afterAsking: async (home) => {
+          lock = watchLockDirTries(path.join(home, 'profiles', 'B', CREDENTIALS_LOCK_DIR));
+        },
+      });
     } finally {
-      process.stdout.write = write;
+      relay.stop();
+      (lock as ReturnType<typeof watchLockDirTries> | null)?.stop();
     }
-    const gaps = relayedAt.slice(1).map((at, i) => at - relayedAt[i]!);
-    expect(relayedAt.length).toBeGreaterThan(20);
-    expect(Math.max(...gaps)).toBeLessThan(1_500);
+    const lines = relay.lines();
+    const tries = (lock as ReturnType<typeof watchLockDirTries> | null)?.tries() ?? [];
+    expect(lines.length).toBeGreaterThan(20);
+    // ccx went on trying the login's lock while Claude was running...
+    const firstLine = lines[0]!.relayedAt;
+    const lastLine = lines.at(-1)!.relayedAt;
+    expect(tries.filter((at) => at > firstLine && at < lastLine).length).toBeGreaterThanOrEqual(2);
+    // ...and no line Claude wrote meanwhile waited for its relay while ccx
+    // kept trying. A wait on this thread tries every 50 ms with the relay
+    // stopped, twenty times a second; otherwise a written line is relayed
+    // within a turn or two of the event loop, a try at most in each.
+    expect(triesWhileALineWaited(lines, tries)).toBeLessThan(10);
     // The login stays held, so nothing was renewed and the session stayed where it was.
     expect(result.renewals).toBe(0);
     expect(result.runs.filter((r) => r.type === 'reread').pop()?.marker).toBe('A');
   });
+
+  it('has what the session logged in the event log once it returns, though another process holds the log', async () => {
+    // Kept while the log's lock is taken, and written as the session ends,
+    // past a holder that has not let go within five seconds.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-log-held-'));
+    process.env.FAKE_CLAUDE_IDLE_MS = '300';
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    setActive('A', context.ctx);
+    const lockFile = path.join(home, 'events.jsonl.compact.lock');
+    const go = path.join(home, 'holder-go');
+    const holder = spawn(
+      process.execPath,
+      [
+        '-e',
+        [
+          `const fs = require('node:fs');`,
+          `const [lock, go] = process.argv.slice(1);`,
+          `fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });`,
+          `const startedAt = Date.now();`,
+          `const look = setInterval(() => {`,
+          `  if (!fs.existsSync(go) && Date.now() - startedAt < 60000) return;`,
+          `  clearInterval(look);`,
+          `  fs.rmSync(lock, { force: true });`,
+          `}, 20);`,
+        ].join('\n'),
+        lockFile,
+        go,
+      ],
+      { stdio: 'ignore' },
+    );
+    const exited = new Promise<number | null>((resolve) => holder.on('exit', resolve));
+    await waitFor('the holder to take the lock', () => existsSync(lockFile) || holder.exitCode !== null, Boolean, 20_000);
+    try {
+      expect(existsSync(lockFile)).toBe(true);
+      expect(await runCommand(context, [])).toBe(0);
+      const log = path.join(home, 'events.jsonl');
+      expect(existsSync(log) ? readFileSync(log, 'utf8') : '').toContain('session on A');
+    } finally {
+      writeFileSync(go, '');
+    }
+    expect(await exited).toBe(0);
+  }, 45_000);
+
+  it('keeps relaying while a limit it met waits for the ledger, which another process holds', async () => {
+    // A limit met under a running Claude is written to the ledger from the
+    // session's poll. Another process holds the ledger's lock, as a running
+    // ccx does while it changes the ledger, and lets go only once Claude's
+    // output has been seen to keep coming while this session waits for it, or
+    // ten seconds after the session started waiting, whichever is first.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-ledger-wait-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    const ledger = path.join(home, 'ledger.json');
+    const signal = (name: string): string => path.join(home, `holder-${name}`);
+    Object.assign(process.env, {
+      FAKE_CLAUDE_RUNS_LOG: runsLog,
+      FAKE_CLAUDE_EMIT_CAP: '1',
+      FAKE_CLAUDE_CHATTER_EVERY_MS: '100',
+      FAKE_CLAUDE_CHATTER_STAMP: '1',
+      FAKE_CLAUDE_IDLE_MS: '40000',
+      FAKE_CLAUDE_EXIT_WHEN: signal('claude-exit'),
+    });
+    let calls = 0;
+    const context = makeContext(home, () => {
+      calls += 1;
+      return Promise.resolve(calls === 1 ? 'limited' : 'allowed');
+    });
+    context.config.resume.auto = false;
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    const holder = spawn(
+      process.execPath,
+      [
+        '-e',
+        [
+          `const fs = require('node:fs');`,
+          `const [file, waiting, go, released] = process.argv.slice(1);`,
+          `fs.writeFileSync(file + '.lock', String(process.pid), { flag: 'wx' });`,
+          `fs.writeFileSync(file + '.held', '');`,
+          `const startedAt = Date.now();`,
+          `const look = setInterval(() => {`,
+          `  const waitingSince = fs.existsSync(waiting) ? fs.statSync(waiting).mtimeMs : null;`,
+          `  const now = Date.now();`,
+          `  if (!fs.existsSync(go) && (waitingSince === null || now - waitingSince < 10000) && now - startedAt < 60000) return;`,
+          `  clearInterval(look);`,
+          `  const ledger = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { caps: [] };`,
+          `  ledger.caps.push({ account: 'C', capUntil: Date.now() + 3600000, reason: 'another session', at: Date.now() });`,
+          `  fs.writeFileSync(file + '.tmp', JSON.stringify(ledger));`,
+          // Windows refuses the rename for a moment while the ledger is being read.
+          `  for (let i = 0; ; i++) { try { fs.renameSync(file + '.tmp', file); break; } catch (e) { if (i >= 50) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } }`,
+          `  const at = Date.now();`,
+          `  fs.rmSync(file + '.lock', { force: true });`,
+          `  fs.writeFileSync(released, String(at));`,
+          `}, 20);`,
+        ].join('\n'),
+        ledger,
+        signal('waiting'),
+        signal('go'),
+        signal('released'),
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let holderErr = '';
+    holder.stderr.on('data', (d) => (holderErr += String(d)));
+    const holderExited = new Promise<number | null>((resolve) => holder.on('exit', resolve));
+    await waitFor('the holder to take the lock', () => existsSync(`${ledger}.held`) || holder.exitCode !== null, Boolean, 20_000);
+    expect(existsSync(`${ledger}.held`), holderErr).toBe(true);
+
+    // ccx asks whether the process a held lock names is running each time it
+    // finds the lock taken: that is when it is waiting.
+    const tries: number[] = [];
+    const kill = process.kill.bind(process);
+    const spy = vi.spyOn(process, 'kill').mockImplementation((pid: number, sig?: string | number) => {
+      if (pid === holder.pid && sig === 0) {
+        tries.push(Date.now());
+        // Written here, at once, so the holder hears of it even while this
+        // thread is held up.
+        if (tries.length === 1) writeFileSync(signal('waiting'), '');
+      }
+      return kill(pid, sig);
+    });
+    const relay = watchRelay();
+    let exit: number;
+    try {
+      const running = runCommand(context, []);
+      await waitFor(
+        'Claude to be relayed while the session waits for the ledger',
+        () => (tries.length === 0 ? 0 : relay.lines().filter((l) => l.relayedAt > tries[0]!).length),
+        (n) => n >= 5,
+        30_000,
+      );
+      writeFileSync(signal('go'), '');
+      await waitFor('the holder to let go', () => existsSync(signal('released')), Boolean, 30_000);
+      await waitFor(
+        "A's limit on the ledger",
+        () => (existsSync(ledger) ? (JSON.parse(readFileSync(ledger, 'utf8')) as { caps: Array<{ account: string }> }).caps : []),
+        (caps) => caps.some((c) => c.account === 'A'),
+        10_000,
+      );
+      writeFileSync(signal('claude-exit'), '');
+      exit = await running;
+    } finally {
+      relay.stop();
+      spy.mockRestore();
+    }
+    expect(exit).toBe(0);
+    expect(await holderExited, holderErr).toBe(0);
+
+    const releasedAt = Number(readFileSync(signal('released'), 'utf8'));
+    const lines = relay.lines();
+    expect(tries.length).toBeGreaterThan(0);
+    // Claude's output kept coming while the session waited for the lock.
+    const whileWaiting = lines.filter((l) => l.relayedAt > tries[0]! && l.relayedAt <= releasedAt);
+    expect(whileWaiting.length).toBeGreaterThanOrEqual(5);
+    expect(triesWhileALineWaited(lines, tries)).toBeLessThan(10);
+    // Moved in place, and both limits stand: the holder's, and the one the
+    // session met, written once the holder let go.
+    const runs = readRuns(runsLog);
+    expect(runs.filter((r) => r.type === 'launch')).toHaveLength(1);
+    const log = path.join(home, 'events.jsonl');
+    expect(existsSync(log) ? readFileSync(log, 'utf8') : '').toContain('seamless cap relief: A -> B');
+    const caps = (JSON.parse(readFileSync(ledger, 'utf8')) as { caps: Array<{ account: string }> }).caps;
+    expect(caps.map((c) => c.account).sort()).toEqual(['A', 'C']);
+  }, 60_000);
 
   it('`ccx use` with no session to move renews nothing, and points the editor at once', async () => {
     // A command that ends as soon as it has printed must not leave a renewal
