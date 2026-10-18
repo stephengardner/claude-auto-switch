@@ -750,6 +750,49 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     expect(result.runs.filter((r) => r.type === 'reread').pop()?.marker).toBe('A');
   });
 
+  it('has what the session logged in the event log once it returns, though another process holds the log', async () => {
+    // Kept while the log's lock is taken, and written as the session ends,
+    // past a holder that has not let go within five seconds.
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-log-held-'));
+    process.env.FAKE_CLAUDE_IDLE_MS = '300';
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    setActive('A', context.ctx);
+    const lockFile = path.join(home, 'events.jsonl.compact.lock');
+    const go = path.join(home, 'holder-go');
+    const holder = spawn(
+      process.execPath,
+      [
+        '-e',
+        [
+          `const fs = require('node:fs');`,
+          `const [lock, go] = process.argv.slice(1);`,
+          `fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });`,
+          `const startedAt = Date.now();`,
+          `const look = setInterval(() => {`,
+          `  if (!fs.existsSync(go) && Date.now() - startedAt < 60000) return;`,
+          `  clearInterval(look);`,
+          `  fs.rmSync(lock, { force: true });`,
+          `}, 20);`,
+        ].join('\n'),
+        lockFile,
+        go,
+      ],
+      { stdio: 'ignore' },
+    );
+    const exited = new Promise<number | null>((resolve) => holder.on('exit', resolve));
+    await waitFor('the holder to take the lock', () => existsSync(lockFile) || holder.exitCode !== null, Boolean, 20_000);
+    try {
+      expect(existsSync(lockFile)).toBe(true);
+      expect(await runCommand(context, [])).toBe(0);
+      const log = path.join(home, 'events.jsonl');
+      expect(existsSync(log) ? readFileSync(log, 'utf8') : '').toContain('session on A');
+    } finally {
+      writeFileSync(go, '');
+    }
+    expect(await exited).toBe(0);
+  }, 45_000);
+
   it('keeps relaying while a limit it met waits for the ledger, which another process holds', async () => {
     // A limit met under a running Claude is written to the ledger from the
     // session's poll. Another process holds the ledger's lock, as a running
