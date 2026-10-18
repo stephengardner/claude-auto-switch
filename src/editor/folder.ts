@@ -756,7 +756,13 @@ export function retireEditor(context: CliContext, spellings?: string[]): boolean
     const accounts = listAccounts(c);
     // Kept for a try after this one, when the editor's setting is gone and only the record knows them.
     const known = [...new Set([...(spellings ?? []), ...editorFolderLogin(c).spellings])];
-    if (record) writeEditorRecord(dir, { ...record, spellings: known });
+    if (record) {
+      try {
+        writeEditorRecord(dir, { ...record, spellings: known });
+      } catch {
+        /* this try goes on with them; only a later one would not know them */
+      }
+    }
     const login = { dir, spellings: known };
     const account = record?.account ? accounts.find((a) => a.name === record.account) : undefined;
     if (account) saveEditorLoginHome(account, accounts, login, c);
