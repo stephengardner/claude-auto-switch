@@ -17,8 +17,9 @@ semantic versioning.
   change. The ledger's wait now leaves the thread free, by the same rules: a
   live holder is still waited for until its lock is a minute old. Until the
   limit is written, the session counts it as written. A log line that finds
-  the lock taken is kept and written once the holder lets go, in order, and a
-  process that ends first writes what it kept as it exits.
+  the lock taken is kept and written once the holder lets go, in order. What
+  is still waiting is written as the process exits, and before a session
+  hands itself over to a newer ccx.
 - **The relay test of #165 measures the relay.** It failed once on Windows
   with a 1,863 ms gap. That gap was the quiet after Claude exits, which on
   Windows is always over a second: node-pty reports an exit only a second
