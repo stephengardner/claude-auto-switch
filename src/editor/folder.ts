@@ -308,7 +308,8 @@ const userFileWriter = (c: PathCtx): UserFileWriter => (file, plan) => writeUser
 /**
  * Write `text`, a login of `account`'s that the profile does not have, into its
  * profile from a private copy, carrying it to the profiles sharing the one it
- * replaces, as a session's save-back does (writeAndCarry).
+ * replaces, as a session's save-back does (writeAndCarry). False, never a
+ * throw, when it could not be written.
  */
 function installFromText(account: Account, accounts: Account[], text: string, c: PathCtx, detail: string): boolean {
   const snapshot = path.join(configHome(c), `.editor-login.${process.pid}.tmp`);
@@ -323,7 +324,11 @@ function installFromText(account: Account, accounts: Account[], text: string, c:
   } catch {
     return false;
   } finally {
-    rmSync(snapshot, { force: true });
+    try {
+      rmSync(snapshot, { force: true });
+    } catch {
+      /* something not ccx's at that path stays, and the answer stands */
+    }
   }
 }
 
@@ -434,8 +439,8 @@ export type TakeUp = 'none' | 'taken' | 'unconfirmed';
  * when the folder holds a newer login than the profile, and only once the API
  * says whose it is, since a sign-in inside the editor changes the login before
  * the folder's record of who it is signed in as. 'unconfirmed' when the folder
- * holds a newer login that could not be checked yet: renewing the profile's
- * then would spend a token that renewal already retired.
+ * holds a newer login that could not be checked, or saved home, yet: renewing
+ * the profile's then would spend a token that renewal already retired.
  */
 export async function takeUpEditorRenewal(
   c: PathCtx,
@@ -477,7 +482,10 @@ export async function takeUpEditorRenewal(
       askedAbout.delete(asked);
       return 'none';
     }
-    return installFromText(account, accounts, text, c, 'the editor renewed this login; saved home') ? 'taken' : 'none';
+    if (installFromText(account, accounts, text, c, 'the editor renewed this login; saved home')) return 'taken';
+    // Asked about again at the next look; meanwhile nothing renews the token that renewal retired.
+    askedAbout.delete(asked);
+    return 'unconfirmed';
   } catch {
     return 'none';
   }
@@ -746,7 +754,10 @@ export function retireEditor(context: CliContext, spellings?: string[]): boolean
   const retired = withEditorLock(c, () => {
     const record = readEditorRecord(dir);
     const accounts = listAccounts(c);
-    const login = spellings ? { dir, spellings } : editorFolderLogin(c);
+    // Kept for a try after this one, when the editor's setting is gone and only the record knows them.
+    const known = [...new Set([...(spellings ?? []), ...editorFolderLogin(c).spellings])];
+    if (record) writeEditorRecord(dir, { ...record, spellings: known });
+    const login = { dir, spellings: known };
     const account = record?.account ? accounts.find((a) => a.name === record.account) : undefined;
     if (account) saveEditorLoginHome(account, accounts, login, c);
     const synced = refreshClaudeFolder(dir, c);

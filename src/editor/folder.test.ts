@@ -558,6 +558,33 @@ describe('renewing the login the editor holds', () => {
     expect(renewed).toBe(0);
     expect(tokenOf(profileLogin(s, 'A'))).toBe('a-A-1');
   });
+
+  it('does not renew that account while that renewal could not be saved home, and saves it at the next look', async () => {
+    const s = await dueOnA();
+    writeFileSync(path.join(s.folder, '.credentials.json'), login('A', 2));
+    const accounts = listAccounts(s.context.ctx);
+    const a = accounts.find((x) => x.name === 'A')!;
+    // Where ccx keeps its private copy of a login it saves home, taken: the save cannot be made.
+    const copy = path.join(s.ccx, `.editor-login.${process.pid}.tmp`);
+    mkdirSync(copy);
+    const seen: Array<string | null> = [];
+    const options = {
+      renew: (dir: string) => {
+        seen.push(tokenOf(read(path.join(dir, '.credentials.json'))));
+        return Promise.resolve({ status: 'refreshed' as const });
+      },
+      ...(s.context.lookupOwner ? { lookupOwner: s.context.lookupOwner } : {}),
+    };
+
+    const first = await renewIdleLogin(a, accounts, s.context.ctx, options);
+    expect(first.refusal).not.toBeNull();
+    expect(seen).toEqual([]);
+
+    rmSync(copy, { recursive: true });
+    await renewIdleLogin(a, accounts, s.context.ctx, options);
+    expect(tokenOf(profileLogin(s, 'A'))).toBe('a-A-2');
+    expect(seen.every((token) => token === 'a-A-2')).toBe(true);
+  });
 });
 
 describe('an install on the old link, moved into the folder', () => {
@@ -802,6 +829,31 @@ describe('ccx editor off', () => {
     expect(keychain.has(spelled)).toBe(false);
     expect(keychain.has(s.folder)).toBe(false);
     expect(tokenOf(profileLogin(s, 'A'))).toBe('a-A-2');
+  });
+
+  it("still knows the setting's spelling at a second ccx editor off, after the first could not retire the folder", async () => {
+    const s = await scene();
+    await editorOn(s);
+    const spelled = `${s.folder}${path.sep}`;
+    expect(installEditorEnvVar('cursor', 'CLAUDE_CONFIG_DIR', spelled, s.context.ctx).ok).toBe(true);
+    keychain.set(spelled, login('A', 2));
+    rmSync(path.join(s.folder, '.credentials.json'));
+    // Something of the folder's own that cannot go into yours yet.
+    mkdirSync(path.join(s.folder, 'jobs'));
+    writeFileSync(path.join(s.folder, 'jobs', 'one.json'), '{}');
+    writeFileSync(s.user('jobs'), 'in the way');
+    expect(editorCommand(s.context, 'off')).toBe(1);
+
+    // A switch meanwhile reaches the item a Claude started before the setting went still reads.
+    await use(s, 'B', () => tokenOf(keychain.get(spelled)) === 'a-B-1');
+    expect(tokenOf(keychain.get(spelled))).toBe('a-B-1');
+
+    rmSync(s.user('jobs'));
+    expect(editorCommand(s.context, 'off')).toBe(0);
+
+    expect(keychain.has(spelled)).toBe(false);
+    expect(tokenOf(profileLogin(s, 'A'))).toBe('a-A-2');
+    expect(tokenOf(profileLogin(s, 'B'))).toBe('a-B-1');
   });
 
   it('keeps the folder while another editor is still set to it', async () => {

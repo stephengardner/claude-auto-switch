@@ -43,22 +43,30 @@ export interface EditorRecord {
   account: string | null;
   /** When ccx last replaced the login under the editor's Claude, epoch ms. */
   loginChangedAt: number;
+  /** How editor settings spelled the folder when ccx tried to retire it, each naming a Keychain item. */
+  spellings?: string[];
 }
 
 export function readEditorRecord(dir: string): EditorRecord | null {
   try {
     const parsed = JSON.parse(readFileSync(path.join(dir, EDITOR_RECORD), 'utf8')) as Partial<EditorRecord>;
+    const spellings = Array.isArray(parsed.spellings)
+      ? parsed.spellings.filter((s): s is string => typeof s === 'string')
+      : [];
     return {
       account: typeof parsed.account === 'string' ? parsed.account : null,
       loginChangedAt: typeof parsed.loginChangedAt === 'number' ? parsed.loginChangedAt : 0,
+      ...(spellings.length > 0 ? { spellings } : {}),
     };
   } catch {
     return null;
   }
 }
 
+/** Write the folder's record; one without spellings keeps those the record already holds. */
 export function writeEditorRecord(dir: string, record: EditorRecord): void {
-  writeFileAtomic(path.join(dir, EDITOR_RECORD), `${JSON.stringify(record)}\n`);
+  const spellings = record.spellings ?? readEditorRecord(dir)?.spellings;
+  writeFileAtomic(path.join(dir, EDITOR_RECORD), `${JSON.stringify(spellings ? { ...record, spellings } : record)}\n`);
 }
 
 /** Whether the editor's folder is one ccx made: a real folder with its record, not the old link. */
@@ -134,10 +142,14 @@ export interface FolderLogin {
   spellings: string[];
 }
 
-/** The editor folder's login, as the editors' Claudes are pointed at it. */
+/**
+ * The editor folder's login, as the editors' Claudes are pointed at it, and as
+ * they were when a setting was taken away: a Claude started before then still
+ * reads the item named after it.
+ */
 export function editorFolderLogin(c: PathCtx = {}): FolderLogin {
   const dir = editorFolderPath(c);
-  return { dir, spellings: folderSpellings(dir, c) };
+  return { dir, spellings: [...new Set([...folderSpellings(dir, c), ...(readEditorRecord(dir)?.spellings ?? [])])] };
 }
 
 const fileOf = (login: FolderLogin): string => path.join(login.dir, CREDENTIALS_FILE);

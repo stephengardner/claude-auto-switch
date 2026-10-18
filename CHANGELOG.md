@@ -45,8 +45,9 @@ semantic versioning.
   that login is carried into the folder, and one the editor's Claude made there
   goes home, once the API confirms whose it is, before ccx renews that account,
   including at a session start and, looking once a minute, from a terminal
-  session on the same account. While whose it is cannot be asked, ccx renews
-  nothing of that account, and a session start goes ahead on the login it has.
+  session on the same account. While whose it is cannot be asked, or it cannot
+  be saved home, ccx renews nothing of that account, and a session start goes
+  ahead on the login it has.
 - **An existing install moves into the folder by itself, losing nothing.** At
   the first switch or session start, the old link is replaced by the folder at
   the same path, so the editor's setting is not changed and the editor need not
@@ -69,7 +70,8 @@ semantic versioning.
   of its own is merged into `~/.claude`, it is removed with the login wherever
   a Claude on it could read it, and the editor's setting is removed. While
   something in it cannot be merged, the folder stays, and `ccx editor off`
-  says so.
+  says so; the next try still knows how the setting spelled the folder, so
+  the Keychain item named after it is not left behind.
 - **A Claude folder never shares a lock.** A folder in `~/.claude` that is a
   lock, such as the one Claude holds while it renews its login, is no longer
   linked into a session's or the editor's folder as it starts; the link handed
