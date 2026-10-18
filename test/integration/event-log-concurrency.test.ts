@@ -83,8 +83,8 @@ describe('several processes writing the event log at once', () => {
     // Asked through the READER, not by opening one file. Compaction moves older
     // records into an archive beside the live file, so reading only events.jsonl
     // reports them missing when they are simply somewhere else. What matters is
-    // what the operator can see, and that is what readEvents returns.
-    expect(existsSync(path.join(home, 'events.jsonl'))).toBe(true);
+    // what the operator can see, and that is what readEvents returns. The live
+    // file itself can be gone, when the last write was the one that compacted.
     const present = new Set(
       // The padding exists only to reach the compaction threshold.
       readEvents(home, 10_000).map((r) => r.msg.split(' ')[0] ?? ''),

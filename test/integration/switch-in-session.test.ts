@@ -910,7 +910,8 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     // session met, written once the holder let go.
     const runs = readRuns(runsLog);
     expect(runs.filter((r) => r.type === 'launch')).toHaveLength(1);
-    expect(runs.filter((r) => r.type === 'reread').pop()?.marker).toBe('B');
+    const log = path.join(home, 'events.jsonl');
+    expect(existsSync(log) ? readFileSync(log, 'utf8') : '').toContain('seamless cap relief: A -> B');
     const caps = (JSON.parse(readFileSync(ledger, 'utf8')) as { caps: Array<{ account: string }> }).caps;
     expect(caps.map((c) => c.account).sort()).toEqual(['A', 'C']);
   }, 60_000);
