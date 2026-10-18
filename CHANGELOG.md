@@ -16,7 +16,9 @@ semantic versioning.
   and five seconds for the log, whenever another ccx was in the middle of a
   change. The ledger's wait now leaves the thread free, by the same rules: a
   live holder is still waited for until its lock is a minute old. Until the
-  limit is written, the session counts it as written. A log line that finds
+  limit is written, the session counts it as written, and any later ledger
+  change of that process writes it first, so the changes reach the file in the
+  order they were made. A log line that finds
   the lock taken is kept and written once the holder lets go, in order. What
   is still waiting is written as the process exits, and before a session
   hands itself over to a newer ccx.

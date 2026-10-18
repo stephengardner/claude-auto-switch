@@ -335,6 +335,79 @@ describe('updateLedgerAsync', () => {
     expect(onDisk(c)).toEqual([]);
   });
 
+  describe('keeps the order the changes were made in', () => {
+    // An account-wide limit replaces every record of the account, so the
+    // change written last is the one that stands.
+    const capA = (reason: string): ((ledger: Ledger) => Ledger) => (ledger) =>
+      markCapped(ledger, { account: 'A', now: Date.now(), resetAt: Date.now() + HOUR, reason });
+    const reasons = (ledger: Ledger): string[] => ledger.caps.map((cap) => cap.reason);
+    const reasonsOnDisk = (c: { env: NodeJS.ProcessEnv }): string[] =>
+      existsSync(ledgerFilePath(c))
+        ? reasons(JSON.parse(readFileSync(ledgerFilePath(c), 'utf8')) as Ledger)
+        : [];
+    /** The ledger's lock, held here until let go. */
+    const holdLock = (c: { env: NodeJS.ProcessEnv }) => {
+      const file = ledgerFilePath(c);
+      mkdirSync(path.dirname(file), { recursive: true });
+      return acquireOwnedLock(`${file}.lock`, { waitMs: 0, staleMs: 5_000 });
+    };
+
+    it("writes a waiting change before a later updateLedger's, so the later one stands", async () => {
+      // As a session records a limit from its poll while another process
+      // holds the ledger, then the swap loop records it again, fresher, once
+      // Claude has exited.
+      const { c } = home();
+      const holder = holdLock(c);
+      const earlier = updateLedgerAsync(c, capA('met under a running Claude'), { waitMs: 5_000 });
+      holder.release();
+      updateLedger(c, capA('recorded once Claude exited'));
+      await earlier;
+      expect(reasonsOnDisk(c)).toEqual(['recorded once Claude exited']);
+      expect(reasons(loadLedger(c))).toEqual(['recorded once Claude exited']);
+    });
+
+    it('writes two waiting changes in the order they were made, whichever wait takes the lock', async () => {
+      const { c } = home();
+      const holder = holdLock(c);
+      const first = updateLedgerAsync(c, capA('first'), { waitMs: 5_000 });
+      const second = updateLedgerAsync(c, capA('second'), { waitMs: 5_000 });
+      // Let go during the first wait's next try, once it has found the lock
+      // taken (it asks whether the holder, this process, is running), so the
+      // second wait's try is the next to come.
+      const kill = process.kill.bind(process);
+      let armed = true;
+      const spy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+        if (armed && pid === process.pid && signal === 0) {
+          armed = false;
+          holder.release();
+        }
+        return kill(pid, signal);
+      });
+      try {
+        await Promise.all([first, second]);
+      } finally {
+        spy.mockRestore();
+        holder.release();
+      }
+      expect(armed).toBe(false);
+      expect(reasonsOnDisk(c)).toEqual(['second']);
+    });
+
+    it('reads, while changes wait, what the file holds once they are written', async () => {
+      const { c } = home();
+      const holder = holdLock(c);
+      const first = updateLedgerAsync(c, capA('first'), { waitMs: 5_000 });
+      holder.release();
+      // The lock is free by now, and this one still goes behind the first.
+      const second = updateLedgerAsync(c, capA('second'), { waitMs: 5_000 });
+      const readWhileWaiting = reasons(loadLedger(c));
+      expect(readWhileWaiting).toEqual(['second']);
+      await Promise.all([first, second]);
+      expect(reasonsOnDisk(c)).toEqual(readWhileWaiting);
+      expect(reasons(loadLedger(c))).toEqual(readWhileWaiting);
+    });
+  });
+
   it('refuses to be called from inside a change to the ledger', async () => {
     const { c } = home();
     let inner: Promise<Ledger> | null = null;
