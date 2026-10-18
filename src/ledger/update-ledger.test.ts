@@ -8,6 +8,7 @@ import { readEvents } from '../events/log.js';
 import {
   applyLedgerChange,
   clearDisproved,
+  flushPendingLedgerChanges,
   ledgerFilePath,
   loadLedger,
   markCapped,
@@ -290,6 +291,26 @@ describe('updateLedgerAsync', () => {
     // And the next change is written at once.
     await updateLedgerAsync(c, capFor('B'));
     expect(onDisk(c)).toEqual(['A', 'B']);
+  });
+
+  it('writes a waiting change when flushed, and only once, though its own wait ends later', async () => {
+    // Flushed before a newer ccx takes the session over, while this thread
+    // is held by the spawn and runs no timers.
+    const { c } = home();
+    const file = ledgerFilePath(c);
+    mkdirSync(path.dirname(file), { recursive: true });
+    const holder = acquireOwnedLock(`${file}.lock`, { waitMs: 0, staleMs: 5_000 });
+    // Adds a record each time it is written, where markCapped would replace one.
+    const addA = (ledger: Ledger): Ledger => ({
+      caps: [...ledger.caps, { account: 'A', capUntil: Date.now() + HOUR, reason: 'once', at: Date.now() }],
+    });
+    const waiting = updateLedgerAsync(c, addA, { waitMs: 5_000 });
+    holder.release();
+    flushPendingLedgerChanges();
+    expect(onDisk(c)).toEqual(['A']);
+    expect(accounts(await waiting)).toEqual(['A']);
+    expect(onDisk(c)).toEqual(['A']);
+    expect(accounts(loadLedger(c))).toEqual(['A']);
   });
 
   it('refuses to be called from inside a change to the ledger', async () => {

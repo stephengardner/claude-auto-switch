@@ -30,6 +30,7 @@ import {
   loadLedger,
   updateLedger,
   updateLedgerAsync,
+  flushPendingLedgerChanges,
   markCapped,
   cappedNames,
   modelOnlyLimit,
@@ -162,7 +163,7 @@ import {
   CREDENTIALS_LOCK_DIR,
 } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
-import { appendEvent, type EventDetail } from '../events/log.js';
+import { appendEvent, flushQueuedEvents, type EventDetail } from '../events/log.js';
 import { claudeForSession, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 
@@ -2754,6 +2755,10 @@ function handOverTo(
     kind: 'update',
     data: { to: plan.version, account: plan.account },
   });
+  // spawnSync holds this thread until the newer ccx ends, hours from now, so
+  // nothing still waiting for a lock would be written meanwhile.
+  flushPendingLedgerChanges();
+  flushQueuedEvents();
   const result = spawnSync(
     process.execPath,
     [

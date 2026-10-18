@@ -124,14 +124,16 @@ export function updateLedgerAsync(
     const waiting = { file, c, change };
     pending.push(waiting);
     writePendingAtExit();
-    const settled = (): void => {
+    /** False when it was written meanwhile, by flushPendingLedgerChanges. */
+    const settled = (): boolean => {
       const at = pending.indexOf(waiting);
-      if (at >= 0) pending.splice(at, 1);
+      if (at < 0) return false;
+      pending.splice(at, 1);
+      return true;
     };
-    return withOwnedLockAsync(lockFile, { ...LOCK, waitMs }, (lock) => {
-      settled();
-      return changeUnderLock(c, file, change, lock, waitMs);
-    }).catch((error: unknown) => {
+    return withOwnedLockAsync(lockFile, { ...LOCK, waitMs }, (lock) =>
+      settled() ? changeUnderLock(c, file, change, lock, waitMs) : readLedgerFile(file),
+    ).catch((error: unknown) => {
       settled();
       throw error;
     });
@@ -140,19 +142,28 @@ export function updateLedgerAsync(
   }
 }
 
+/**
+ * Write now, blocking as updateLedger does, every change updateLedgerAsync is
+ * still waiting to write. For when this process stops running its timers: as
+ * it exits, and before it hands a session over to a newer ccx.
+ */
+export function flushPendingLedgerChanges(): void {
+  for (const waiting of pending.splice(0)) {
+    try {
+      updateLedger(waiting.c, waiting.change);
+    } catch {
+      /* nothing more can be done with it */
+    }
+  }
+}
+
 let writesAtExit = false;
-/** Once: a change still waiting when the process exits is written then, blocking as updateLedger does. */
+/** Once: a change still waiting when the process exits is written then. */
 function writePendingAtExit(): void {
   if (writesAtExit) return;
   writesAtExit = true;
   process.on('exit', () => {
-    for (const waiting of pending.splice(0)) {
-      try {
-        updateLedger(waiting.c, waiting.change);
-      } catch {
-        /* nothing more can be done with it */
-      }
-    }
+    flushPendingLedgerChanges();
     // The event log's own write at exit may have run already, and these
     // writes can log.
     flushQueuedEvents();
