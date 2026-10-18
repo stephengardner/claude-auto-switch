@@ -4,6 +4,7 @@ import { acquireOwnedLock, withOwnedLockAsync, type LockHandle } from '../claude
 import { configHome, type PathCtx } from '../config/paths.js';
 import { appendEvent, flushQueuedEvents } from '../events/log.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
+import { thrownReason } from '../util/thrown-reason.js';
 import { LedgerSchema, type CapRecord, type Ledger } from './ledger.schema.js';
 
 const FILENAME = 'ledger.json';
@@ -151,8 +152,15 @@ export function flushPendingLedgerChanges(): void {
   for (const waiting of pending.splice(0)) {
     try {
       updateLedger(waiting.c, waiting.change);
-    } catch {
-      /* nothing more can be done with it */
+    } catch (error) {
+      // Its own wait, if it ever ends, finds it written and fails nothing, so
+      // this is the only record of it.
+      appendEvent(
+        configHome(waiting.c),
+        `a ledger change that waited for the lock could not be written (${thrownReason(error)})`,
+        Date.now(),
+        { kind: 'ledger-write-failed' },
+      );
     }
   }
 }

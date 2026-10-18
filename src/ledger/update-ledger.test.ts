@@ -313,6 +313,28 @@ describe('updateLedgerAsync', () => {
     expect(accounts(loadLedger(c))).toEqual(['A']);
   });
 
+  it('says in the event log when a flushed change could not be written, as its own wait would have', async () => {
+    const { home: dir, c } = home();
+    const file = ledgerFilePath(c);
+    mkdirSync(path.dirname(file), { recursive: true });
+    const holder = acquireOwnedLock(`${file}.lock`, { waitMs: 0, staleMs: 5_000 });
+    const waiting = updateLedgerAsync(
+      c,
+      () => {
+        throw new Error('the change failed');
+      },
+      { waitMs: 5_000 },
+    );
+    holder.release();
+    flushPendingLedgerChanges();
+    await waiting;
+    const failed = readEvents(dir, 100).filter((e) => e.kind === 'ledger-write-failed');
+    expect(failed.map((e) => e.msg)).toEqual([
+      'a ledger change that waited for the lock could not be written (the change failed)',
+    ]);
+    expect(onDisk(c)).toEqual([]);
+  });
+
   it('refuses to be called from inside a change to the ledger', async () => {
     const { c } = home();
     let inner: Promise<Ledger> | null = null;
