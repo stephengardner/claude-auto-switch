@@ -331,8 +331,8 @@ program
   .option('--shell <shell>', 'set up only this shell, even if unused: zsh, bash, powershell or pwsh')
   .option('--no-editor', 'set up the terminal only, not editors')
   .option('--no-statusline', "leave Claude's status line alone")
-  .action((opts: { profile?: string; shell?: string; editor?: boolean }) => {
-    process.exitCode = onCommand(context(), opts);
+  .action(async (opts: { profile?: string; shell?: string; editor?: boolean }) => {
+    process.exitCode = await onCommand(context(), opts);
   });
 
 program
@@ -350,8 +350,8 @@ program
   .command('editor [action]')
   .description('make your editor (Cursor/VS Code) launch Claude through ccx: on|off')
   .option('--editor <name>', 'cursor or vscode (defaults to cursor)')
-  .action((action: string | undefined, opts: { editor?: string }) => {
-    process.exitCode = editorCommand(context(), action, opts);
+  .action(async (action: string | undefined, opts: { editor?: string }) => {
+    process.exitCode = await editorCommand(context(), action, opts);
   });
 
 program

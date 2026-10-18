@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { verifyAccountIdentities } from './identity-check.js';
+import { fetchTokenOwner, verifyAccountIdentities } from './identity-check.js';
 import { credentialPath } from './credential-vault.js';
 
 /** A profile dir holding `token`, claiming to be `claims`. */
@@ -99,5 +99,26 @@ describe('verifyAccountIdentities', () => {
       offline,
     );
     expect(findings[0]?.kind).toBe('unknown');
+  });
+});
+
+describe('fetchTokenOwner', () => {
+  it('gives up on a profile lookup that does not answer within its time, with no owner', async () => {
+    let aborted = false;
+    const silent = ((_url: unknown, init?: { signal?: AbortSignal }) =>
+      new Promise(() => {
+        init?.signal?.addEventListener('abort', () => {
+          aborted = true;
+        });
+      })) as unknown as typeof fetch;
+    const started = Date.now();
+    const owner = await Promise.race([
+      fetchTokenOwner(profile('t-slow'), silent, 300),
+      new Promise((resolve) => setTimeout(() => resolve('no answer'), 5_000)),
+    ]);
+
+    expect(owner).toBeNull();
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(aborted).toBe(true);
   });
 });

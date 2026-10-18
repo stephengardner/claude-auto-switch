@@ -166,22 +166,27 @@ and `ccx editor on` set the editor up differently: on a folder of its own
 `~/.claude-auto-switch/editor-active`, a folder built like a session's: your
 projects and chats, settings, memory, skills, agents and commands, with only the
 login its own. A switch (`ccx use`, the dashboard, a terminal session moving to
-another account) replaces that login in place, as a session's move does, under
-the lock Claude takes, and on macOS in the Keychain item Claude names after the
-folder as the editor's setting spells it, so a chat open in the editor carries
-on on the next account at its next message. The folder never ends, so ccx
+another account) replaces that login in place, as a session's move does, only
+while the locks Claude takes are free (it waits for them, or leaves the move to
+its next event, but never writes past them), and on macOS in the Keychain item
+Claude names after the folder as the editor's setting spells it, so a chat open
+in the editor carries on on the next account at its next message. The folder never ends, so ccx
 brings it into step with your files at every switch, `ccx on`, `ccx editor on`,
 `ccx doctor` and every terminal session's start: what the editor changed goes
 into your `settings.json`, `~/.claude.json` and memory, what you changed comes
 into it, and where both changed one setting yours stays and the editor's copy is
 kept in `rescued/`. ccx renews the login the editor holds only while it holds the
-editor folder's lock too, for at most 3 s, well inside the time Claude waits for
-that lock, and writes the renewal into the folder before letting go; a renewal
-the editor's Claude made there goes home before ccx renews that account. A limit
-met inside an editor chat is not noticed by itself yet; the editor moves
-whenever ccx switches accounts. `ccx editor off` hands back what the folder
-holds, folders its Claude made of its own included, saves its login home, and
-removes it; while something in it cannot be handed back, it stays.
+editor folder's lock too, for the whole renewal, and writes the renewal into the
+folder before letting go; a renewal the editor's Claude made there goes home
+before ccx renews that account. A limit met inside an editor chat is not noticed
+by itself yet; the editor moves whenever ccx switches accounts. `ccx editor off`
+hands back what the folder holds, folders its Claude made of its own included,
+saves its login home, and removes it; while an editor chat started through it is
+open, or something in it cannot be handed back, it stays, and ccx retires it at a
+later event. A folder at that path that ccx did not make (an editor's Claude
+makes one when it runs on with ccx's folder gone) is taken over once no editor
+chat is open in it, its chats and files kept, and `ccx editor on` says when the
+editor could not be set up yet.
 
 An install set up before this had a link at that path to the active account's
 own folder. ccx moves it into the folder by itself at its first switch or

@@ -115,6 +115,27 @@ export function lockDirHeld(lockDir: string, freshMs: number = DEFAULTS.staleMs,
  * the wait elapsed; callers proceed either way and must always release().
  */
 export function acquireLockDir(lockDir: string, options: LockOptions = {}): LockHandle {
+  return runBlocking(lockDirTries(lockDir, options));
+}
+
+/**
+ * acquireLockDir without blocking, for a session, which must go on relaying
+ * while it waits: the same rules, with the thread free between tries. `work`
+ * is handed the lock as acquireLockDir would hand it back (held, or the wait
+ * run out), runs at once, and the lock is let go as it returns, so it must be
+ * synchronous (withOwnedLockAsync's shape).
+ */
+export function withLockDirAsync<T>(lockDir: string, options: LockOptions, work: (lock: LockHandle) => T): Promise<T> {
+  return runOnTimers(lockDirTries(lockDir, options), (lock) => {
+    try {
+      return work(lock);
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+function* lockDirTries(lockDir: string, options: LockOptions): Tries<LockHandle> {
   const waitMs = options.waitMs ?? DEFAULTS.waitMs;
   const staleMs = options.staleMs ?? DEFAULTS.staleMs;
   const touchMs = options.touchMs ?? DEFAULTS.touchMs;
@@ -145,7 +166,7 @@ export function acquireLockDir(lockDir: string, options: LockOptions = {}): Lock
         }
       }
       if (now() >= deadline) break; // bounded: never hang the operator's swap
-      sleepSync(50);
+      yield 50;
     }
   }
 

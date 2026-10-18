@@ -44,9 +44,9 @@ function blocks(file: string): number {
 }
 
 describe('ccx on, in every shell', () => {
-  it('sets up each shell in use, in every file that shell reads', () => {
+  it('sets up each shell in use, in every file that shell reads', async () => {
     const s = sandbox({ '.bash_profile': 'export A=1\n' });
-    expect(onCommand(s.context, terminalOnly)).toBe(0);
+    expect(await onCommand(s.context, terminalOnly)).toBe(0);
     expect(blocks(s.at('.zshrc'))).toBe(1);
     // A Mac terminal starts bash as a login shell, which reads .bash_profile
     // and not .bashrc; a bash started from another shell reads only .bashrc.
@@ -90,9 +90,9 @@ describe('ccx on, in every shell', () => {
     expect(readFileSync(s.at('.bash_profile'), 'utf8')).toContain(loader.trim());
   });
 
-  it('sets up a named shell even when nothing shows it is used', () => {
+  it('sets up a named shell even when nothing shows it is used', async () => {
     const s = sandbox();
-    expect(onCommand(s.context, { ...terminalOnly, shell: 'bash' })).toBe(0);
+    expect(await onCommand(s.context, { ...terminalOnly, shell: 'bash' })).toBe(0);
     expect(blocks(s.at('.bashrc'))).toBe(1);
     expect(blocks(s.at('.profile'))).toBe(1);
     // Only the shell named.
@@ -106,9 +106,9 @@ describe('ccx on, in every shell', () => {
     expect(existsSync(s.at('.zshrc'))).toBe(false);
   });
 
-  it('refuses a shell it does not know, and changes nothing', () => {
+  it('refuses a shell it does not know, and changes nothing', async () => {
     const s = sandbox();
-    expect(onCommand(s.context, { ...terminalOnly, shell: 'fish' })).toBe(1);
+    expect(await onCommand(s.context, { ...terminalOnly, shell: 'fish' })).toBe(1);
     expect(s.said.join('\n')).toContain('unknown shell "fish"');
     expect(existsSync(s.at('.zshrc'))).toBe(false);
   });
@@ -141,13 +141,13 @@ describe('ccx on, PowerShell', () => {
     expect(s.said.join('\n')).toContain(`removed the older copy in ${s.at('ps/Microsoft.PowerShell_profile.ps1')}`);
   });
 
-  it('writes nothing where the execution policy would refuse to run it, and gives the command that allows it', () => {
+  it('writes nothing where the execution policy would refuse to run it, and gives the command that allows it', async () => {
     const s = sandbox();
     const fix = 'powershell -NoProfile -Command Set-ExecutionPolicy -Scope CurrentUser RemoteSigned';
     const plans = [
       powershellPlan(s.at('ps'), { blocked: { detail: 'its execution policy is Restricted', fix } }),
     ];
-    expect(onCommand(s.context, terminalOnly, { plans })).toBe(0);
+    expect(await onCommand(s.context, terminalOnly, { plans })).toBe(0);
     // A profile it may not run puts an error in every window it opens.
     expect(existsSync(s.at('ps/profile.ps1'))).toBe(false);
     const said = s.said.join('\n');
@@ -155,11 +155,11 @@ describe('ccx on, PowerShell', () => {
     expect(said).toContain(fix);
   });
 
-  it('reports a profile it cannot write, and fails', () => {
+  it('reports a profile it cannot write, and fails', async () => {
     const s = sandbox();
     // A folder where the file should be: nothing can be written there.
     mkdirSync(s.at('ps/profile.ps1'), { recursive: true });
-    expect(onCommand(s.context, terminalOnly, { plans: [powershellPlan(s.at('ps'))] })).toBe(1);
+    expect(await onCommand(s.context, terminalOnly, { plans: [powershellPlan(s.at('ps'))] })).toBe(1);
     expect(s.said.join('\n')).toContain('Windows PowerShell not set up: could not write');
   });
 });

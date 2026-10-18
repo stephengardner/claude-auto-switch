@@ -7,7 +7,7 @@ import {
 } from '../accounts/keychain.js';
 import { CREDENTIALS_FILE } from '../accounts/credential-storage.js';
 import { loginTextFingerprint, nudgeLoginReread, usableLoginText } from '../accounts/credential-vault.js';
-import { withCredentialLock } from '../claude/locks.js';
+import { CREDENTIALS_LOCK_DIR, withLockDirAsync } from '../claude/locks.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { configHome, type PathCtx } from '../config/paths.js';
@@ -220,11 +220,21 @@ export function nudgeFolderLogin(login: FolderLogin, now: Date = new Date()): bo
   return nudgeLoginReread(login.dir, now, { keychainHolds: () => folderKeychainHolds(login) });
 }
 
-/** The editor folder's login when it holds exactly the login `fingerprint` names, else null. */
-export function editorHolding(fingerprint: string | null, c: PathCtx = {}): FolderLogin | null {
+/**
+ * The editor folder's login when it holds exactly the login `fingerprint`
+ * names, null when it does not, and 'unreadable' when that cannot be told: a
+ * Keychain read that failed is not a Keychain with nothing in it.
+ */
+export function editorHolding(fingerprint: string | null, c: PathCtx = {}): FolderLogin | 'unreadable' | null {
   if (fingerprint === null || !isEditorFolder(c)) return null;
   const login = editorFolderLogin(c);
-  return folderLoginFingerprint(login) === fingerprint ? login : null;
+  let text: string | null;
+  try {
+    text = readFolderLogin(login);
+  } catch {
+    return 'unreadable';
+  }
+  return text !== null && loginTextFingerprint(text) === fingerprint ? login : null;
 }
 
 /**
@@ -244,17 +254,53 @@ export function replaceFolderLogin(login: FolderLogin, retired: string, text: st
  * the login that renewal retired, under the lock its Claude takes, as a profile
  * sharing that login is carried into. Without it, a terminal session that renews
  * a login the editor holds too leaves the editor on a token the server has
- * retired.
+ * retired. It runs on the thread that relays a terminal, so it waits for the
+ * lock on timers, never blocking that thread; one whose wait runs out is made
+ * by retryEditorCarry, at the session's next look.
  */
 export function carryIntoEditor(c: PathCtx): (retired: string, snapshotFile: string) => void {
   return (retired, snapshotFile) => {
-    const login = editorHolding(retired, c);
-    if (login === null) return;
+    let text: string;
     try {
-      const text = readFileSync(snapshotFile, 'utf8');
-      withCredentialLock(login.dir, () => void replaceFolderLogin(login, retired, text));
+      text = readFileSync(snapshotFile, 'utf8');
     } catch {
-      /* the editor keeps what it has; its own Claude renews it next */
+      return;
     }
+    pendingCarries.set(configHome(c), { retired, text });
+    void retryEditorCarry(c);
   };
+}
+
+/** Carries into the editor's folder not made yet, by ccx home: at most one, the newest. */
+const pendingCarries = new Map<string, { retired: string; text: string }>();
+/** The ccx homes a carry is waiting for the editor's lock in, so a look does not start a second wait. */
+const carrying = new Set<string>();
+
+/**
+ * Make a carry into the editor's folder not made yet, under the lock its
+ * Claude takes, waiting for it on timers. It goes once made, or once the folder
+ * no longer holds the login it would replace.
+ */
+export async function retryEditorCarry(c: PathCtx): Promise<void> {
+  const key = configHome(c);
+  const pending = pendingCarries.get(key);
+  if (!pending || carrying.has(key)) return;
+  carrying.add(key);
+  try {
+    const holding = editorHolding(pending.retired, c);
+    if (holding === 'unreadable') return;
+    let done = true;
+    if (holding !== null) {
+      const login: FolderLogin = holding;
+      done = await withLockDirAsync(path.join(login.dir, CREDENTIALS_LOCK_DIR), {}, (lock) => {
+        if (lock.held) replaceFolderLogin(login, pending.retired, pending.text);
+        return lock.held;
+      });
+    }
+    if (done && pendingCarries.get(key) === pending) pendingCarries.delete(key);
+  } catch {
+    /* tried again at the next look */
+  } finally {
+    carrying.delete(key);
+  }
 }

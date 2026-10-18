@@ -125,7 +125,11 @@ function removeShells(context: CliContext, options: ShimOptions, deps: ShimDeps)
  * for any editor you have installed, point it at your active ccx account. Pass
  * `editor: false` (--no-editor) to set up the terminal only.
  */
-export function onCommand(context: CliContext, options: ShimOptions = {}, deps: ShimDeps = {}): number {
+export async function onCommand(
+  context: CliContext,
+  options: ShimOptions = {},
+  deps: ShimDeps = {},
+): Promise<number> {
   const shells = installShells(context, options, deps);
   if (shells === 'refused') return 1;
 
@@ -166,7 +170,7 @@ export function onCommand(context: CliContext, options: ShimOptions = {}, deps: 
         // The RESULT, not just the absence of a throw: enableEditor reports an
         // expected failure as { ok: false }, so reading only exceptions let a
         // genuine failure exit 0 and report success.
-        const result = enableEditor(context, editor);
+        const result = await enableEditor(context, editor);
         context.out(result.message);
         if (!result.ok) editorFailed = true;
       } catch (err) {

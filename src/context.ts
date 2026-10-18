@@ -82,6 +82,12 @@ export interface CliContext {
    * editor's Claude made of its login. Production looks once a minute.
    */
   editorTakeUpMs?: number;
+  /**
+   * Injected in tests: how long a move of the editor's login keeps looking for
+   * its Claude's locks to come free before it leaves the move to ccx's next
+   * event. Production looks for 10 s.
+   */
+  editorMoveRetryMs?: number;
   /** Injected in tests: overrides the API lookup of who a stored login belongs to. */
   lookupOwner?: (dir: string) => Promise<string | null>;
   /** Injected in tests: a newer ccx installed under this one (update/newer-install). */

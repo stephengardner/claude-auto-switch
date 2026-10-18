@@ -41,7 +41,7 @@ describe('ccx editor on/off (env-var approach)', () => {
     );
     useCommand(context, 'A');
 
-    expect(editorCommand(context, 'on')).toBe(0);
+    expect(await editorCommand(context, 'on')).toBe(0);
     await settled();
 
     // The folder is on account A, and doctor can name it.
@@ -58,15 +58,15 @@ describe('ccx editor on/off (env-var approach)', () => {
     expect(lstatSync(folder).isSymbolicLink()).toBe(false);
 
     // Off removes the injected variable, and the folder.
-    expect(editorCommand(context, 'off')).toBe(0);
+    expect(await editorCommand(context, 'off')).toBe(0);
     const after = JSON.parse(readFileSync(editorSettingsPath('cursor', context.ctx), 'utf8'));
     expect((after[ENV_KEY] as unknown[]) ?? []).toHaveLength(0);
     expect(existsSync(folder)).toBe(false);
   });
 
-  it('refuses when there is no active account', () => {
+  it('refuses when there is no active account', async () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cas-edcmd-'));
-    expect(editorCommand(makeContext(home), 'on')).toBe(1);
+    expect(await editorCommand(makeContext(home), 'on')).toBe(1);
   });
 });
 
@@ -89,7 +89,7 @@ describe('what ccx reports about the account the editor is on', () => {
       'utf8',
     );
     useCommand(context, 'empty');
-    expect(editorCommand(context, 'on')).toBe(0);
+    expect(await editorCommand(context, 'on')).toBe(0);
     await settled();
 
     expect(editorStanding(context)).toEqual({ name: 'empty', loggedIn: false });
@@ -109,7 +109,7 @@ describe('what ccx reports about the account the editor is on', () => {
       'utf8',
     );
     useCommand(context, 'refused');
-    expect(editorCommand(context, 'on')).toBe(0);
+    expect(await editorCommand(context, 'on')).toBe(0);
     await settled();
 
     // Recorded by the REAL renewal against a rejecting endpoint, not seeded with

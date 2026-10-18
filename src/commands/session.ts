@@ -21,7 +21,7 @@ import {
 import { startProactiveRotation } from '../usage/proactive.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
 import { moveEditorToActive, takeUpEditorRenewal } from '../editor/folder.js';
-import { carryIntoEditor } from '../editor/folder-login.js';
+import { carryIntoEditor, retryEditorCarry } from '../editor/folder-login.js';
 import {
   loadLedger,
   updateLedger,
@@ -1012,6 +1012,8 @@ export async function runInteractiveHotSwap(
     const now = Date.now();
     if (now - lastPullCheck < 5_000) return;
     lastPullCheck = now;
+    // A renewal of this session's whose carry into the editor's folder found its lock taken.
+    void retryEditorCarry(context.ctx);
     // The editor's folder holds its own copy of its account's login, with no
     // ccx process beside it to bring a renewal home: this session, on the same
     // account, does, and a later pull takes it up from the profile. Less often

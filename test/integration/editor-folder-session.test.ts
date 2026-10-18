@@ -144,7 +144,7 @@ const launches = (runsLog: string): Entry[] => entries(runsLog).filter((e) => e.
 
 /** `ccx editor on`, and the folder it gives the editor. */
 async function editorOn(s: Sandbox): Promise<void> {
-  expect(editorCommand(s.context, 'on')).toBe(0);
+  expect(await editorCommand(s.context, 'on')).toBe(0);
   await waitFor(() => isRealFolder(s.folder) && tokenOf(read(path.join(s.folder, '.credentials.json'))) !== null);
   expect(isRealFolder(s.folder)).toBe(true);
 }

@@ -38,10 +38,18 @@ export interface CheckableAccount {
 export async function fetchTokenOwner(
   dir: string,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs?: number,
 ): Promise<string | null> {
   const token = accessTokenOf(dir);
-  return token ? whoAmI(token, fetchImpl) : null;
+  return token ? whoAmI(token, fetchImpl, timeoutMs) : null;
 }
+
+/**
+ * How long a step that waits on an owner lookup gives it: as long as a session
+ * start gives its other network check (PREFLIGHT_PROBE_MS in commands/session).
+ * Unanswered, the owner is unknown.
+ */
+export const OWNER_LOOKUP_MS = 3_000;
 
 function accessTokenOf(dir: string): string | null {
   try {
@@ -55,17 +63,34 @@ function accessTokenOf(dir: string): string | null {
   }
 }
 
-/** Ask the API which account a token belongs to. */
-async function whoAmI(token: string, fetchImpl: typeof fetch): Promise<string | null> {
+/** Ask the API which account a token belongs to; null, unanswered, once `timeoutMs` has passed. */
+async function whoAmI(token: string, fetchImpl: typeof fetch, timeoutMs?: number): Promise<string | null> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const gaveUp = new Promise<null>((resolve) => {
+    if (timeoutMs === undefined) return;
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, timeoutMs);
+  });
+  const asked = (async (): Promise<string | null> => {
+    try {
+      const res = await fetchImpl(PROFILE_URL, {
+        headers: { authorization: `Bearer ${token}`, 'anthropic-beta': OAUTH_BETA },
+        signal: controller.signal,
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { account?: { email_address?: string; email?: string } };
+      return data.account?.email_address ?? data.account?.email ?? null;
+    } catch {
+      return null;
+    }
+  })();
   try {
-    const res = await fetchImpl(PROFILE_URL, {
-      headers: { authorization: `Bearer ${token}`, 'anthropic-beta': OAUTH_BETA },
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { account?: { email_address?: string; email?: string } };
-    return data.account?.email_address ?? data.account?.email ?? null;
-  } catch {
-    return null;
+    return await Promise.race([asked, gaveUp]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

@@ -18,10 +18,13 @@ semantic versioning.
   terminal session's folder: `projects` and the rest of `~/.claude` linked in,
   the user's settings, and Claude's state built from the user's own, with only
   the login the editor's.
-- **A switch moves the editor in place.** The next account's login is written
-  into the editor's folder as a terminal session's move does it, under the
-  lock Claude takes, and on macOS into the Keychain item Claude names after the
-  folder exactly as the editor's setting spells it (a trailing separator or a
+- **A switch moves the editor in place.** The next account's login and identity
+  are written into the editor's folder only while ccx holds both locks its
+  Claude takes, its login's and its state's; while either is taken, ccx looks
+  again every 200 ms for 10 s without holding anything up, then leaves the move
+  to its next event, `ccx doctor` included, and never writes past them. On
+  macOS the login goes into the Keychain item Claude names after the folder
+  exactly as the editor's setting spells it (a trailing separator or a
   different case included). On macOS the editor stopped following switches once
   its Claude had saved a login, and that save removed a profile's login file
   (#129); now its save goes into its own folder, and no profile loses its file.
@@ -38,16 +41,20 @@ semantic versioning.
   the lock Claude takes for it, every file is written whole, and two refreshes
   never run at once.
 - **Renewing the login the editor holds keeps the two apart.** ccx renews it
-  only while holding the editor folder's lock as well as the profile's, for at
-  most 3 s (Claude 2.1.302 waits at least 4 s for that lock and then does not
-  renew), writes the renewal into the folder before letting go, and sends
-  nothing while the editor's Claude holds the lock. A renewal made elsewhere of
-  that login is carried into the folder, and one the editor's Claude made there
+  only while holding the editor folder's lock as well as the profile's, for
+  the whole renewal, with the token request's usual 30 s, writes the renewal
+  into the folder before letting go, and sends nothing while the editor's Claude
+  holds the lock. Claude 2.1.302 renews only within 5 minutes of expiry, ccx 10
+  minutes ahead, so on schedule they never meet; when they do, Claude finds the
+  lock busy, sends nothing, and reads ccx's renewal at its next look. A renewal
+  made elsewhere of that login is carried into the folder, waiting for its lock
+  without holding up a terminal session, and one the editor's Claude made there
   goes home, once the API confirms whose it is, before ccx renews that account,
   including at a session start and, looking once a minute, from a terminal
-  session on the same account. While whose it is cannot be asked, or it cannot
-  be saved home, ccx renews nothing of that account, and a session start goes
-  ahead on the login it has.
+  session on the same account. While whose it is cannot be asked (the lookup
+  gets 3 s), it cannot be saved home, or the Keychain item it would be in cannot
+  be read, ccx renews nothing of that account, and a session start goes ahead
+  on the login it has.
 - **An existing install moves into the folder by itself, losing nothing.** At
   the first switch or session start, the old link is replaced by the folder at
   the same path, so the editor's setting is not changed and the editor need not
@@ -68,10 +75,21 @@ semantic versioning.
 - **`ccx editor off` retires the folder losing nothing.** Its login goes home,
   what it holds of the user's files is handed back, any folder its Claude made
   of its own is merged into `~/.claude`, it is removed with the login wherever
-  a Claude on it could read it, and the editor's setting is removed. While
-  something in it cannot be merged, the folder stays, and `ccx editor off`
-  says so; the next try still knows how the setting spelled the folder, so
-  the Keychain item named after it is not left behind.
+  a Claude on it could read it, and the editor's setting is removed. While an
+  editor chat started through it is open, the folder stays, and ccx retires it
+  at its next event after those have closed; while something in it cannot be
+  merged, it stays too, and ccx tries again at its next event. `ccx editor off`
+  says which. How each editor's setting spelled the folder is kept before the
+  setting goes, two editors included, so the Keychain item named after it is
+  never left behind with a login in it.
+- **A folder at the editor's path that ccx did not make is taken over.** An
+  editor's Claude makes one when it runs on that path with ccx's folder gone.
+  ccx used to leave it, and `ccx editor on` still said the editor was set up.
+  Once no editor chat is open in it, its chats and files go into `~/.claude`
+  by the move's rule, its own settings and the like into `rescued/`, the login
+  its Claude ran on home to its account (into `rescued/` when ccx has no such
+  account), and ccx's folder is built in its place. `ccx editor on` and
+  `ccx on` now say when the editor could not be set up, and why.
 - **A Claude folder never shares a lock.** A folder in `~/.claude` that is a
   lock, such as the one Claude holds while it renews its login, is no longer
   linked into a session's or the editor's folder as it starts; the link handed
