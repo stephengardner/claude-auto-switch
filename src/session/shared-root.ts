@@ -750,7 +750,7 @@ export function returnOwnFolders(dir: string, label: string, c: PathCtx): boolea
   try {
     root = defaultClaudeRoot(c);
   } catch {
-    return true; // no ~/.claude to bring them into, now or later, as for a session's
+    return false; // with no ~/.claude to link to, the folder holds everything of its own
   }
   let entries: string[];
   try {

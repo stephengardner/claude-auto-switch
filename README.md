@@ -186,10 +186,11 @@ removes it; while something in it cannot be handed back, it stays.
 An install set up before this had a link at that path to the active account's
 own folder. ccx moves it into the folder by itself at its first switch or
 session start, keeping the path, so the editor's setting stays as it is: the
-chats, checkpoints and prompts in every account folder are merged into your
-`~/.claude` (hard links: nothing is copied, moved or deleted; a chat you
+chats and checkpoints in every account folder are merged into your `~/.claude`
+by hard link where the volume allows (nothing is moved or deleted; a chat you
 already have gains what the account folder's copy went on to hold, and a file
-that differs otherwise is kept in `rescued/`), and an account folder's own
+that differs otherwise is kept in `rescued/`), the prompts your history lacks
+are added to it, and an account folder's own
 settings, memory, keybindings and Claude choices that are not yours are kept in
 `rescued/`. A login the editor's Claude kept in a Keychain item of
 its own (#129) goes home to its account. While an editor chat started through

@@ -14,9 +14,10 @@ import { refreshCredentialIfExpired } from '../../src/usage/oauth-refresh.js';
 import type { CliContext } from '../../src/context.js';
 
 function makeContext(home: string): CliContext {
-  // HOME/APPDATA both point at the temp home so the editor settings path resolves
-  // on any OS; no platform override so the folder's links are the runner's native kind.
-  const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, APPDATA: home } };
+  // HOME, USERPROFILE and APPDATA all point at the temp home so the editor
+  // settings path and ~/.claude resolve on any OS; no platform override so the
+  // folder's links are the runner's native kind.
+  const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home, APPDATA: home } };
   return { ctx, config: loadConfig(ctx), out: () => {}, err: () => {}, json: false, quiet: false };
 }
 

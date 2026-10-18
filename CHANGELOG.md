@@ -50,8 +50,9 @@ semantic versioning.
 - **An existing install moves into the folder by itself, losing nothing.** At
   the first switch or session start, the old link is replaced by the folder at
   the same path, so the editor's setting is not changed and the editor need not
-  restart. The chats, checkpoints and prompts in every account folder are
-  merged into `~/.claude` by hard link. Where `~/.claude` already has a file of
+  restart. The chats and checkpoints in every account folder are merged into
+  `~/.claude` by hard link where the volume allows, and the prompts the user's
+  history lacks are added to it. Where `~/.claude` already has a file of
   that name, a chat that ran on in the account folder has the rest of it added,
   and a file that differs otherwise is kept in `rescued/` while the user's
   stays. An account folder's own
