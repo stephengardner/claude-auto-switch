@@ -18,6 +18,7 @@ import {
   createOwnedLockFile,
   withCredentialLock,
   withCredentialLockIfFree,
+  withOwnedLockAsync,
   CREDENTIALS_LOCK_DIR,
 } from './locks.js';
 
@@ -319,6 +320,88 @@ describe('acquireOwnedLock', () => {
     });
     expect(elsewhere.held).toBe(false); // EPERM there means the path is unusable
     expect(attempts).toBe(1);
+  });
+});
+
+describe('withOwnedLockAsync', () => {
+  const owner = (lock: string): string => readFileSync(lock, 'utf8').trim().split(/\s+/)[0] ?? '';
+  const options = { waitMs: 5_000, staleMs: 5_000 };
+
+  it('waits for a running holder with the thread free, and does the work once it lets go', async () => {
+    // Held here, by a holder that lets go on a timer: only a wait that leaves
+    // the thread free lets that timer run.
+    const lock = path.join(dir(), 'x.lock');
+    const holder = acquireOwnedLock(lock, { waitMs: 0, staleMs: 5_000 });
+    expect(holder.held).toBe(true);
+    let ticks = 0;
+    const ticker = setInterval(() => (ticks += 1), 10);
+    setTimeout(() => holder.release(), 300);
+    try {
+      const seen = await withOwnedLockAsync(lock, options, (h) => ({ held: h.held, owner: owner(lock) }));
+      expect(seen).toEqual({ held: true, owner: String(process.pid) });
+      expect(ticks).toBeGreaterThan(5);
+    } finally {
+      clearInterval(ticker);
+      holder.release();
+    }
+    // Let go once the work was done.
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('hands the work the lock unheld once the wait runs out, and leaves the holder its lock', async () => {
+    const lock = path.join(dir(), 'x.lock');
+    const holder = acquireOwnedLock(lock, { waitMs: 0, staleMs: 5_000 });
+    try {
+      expect(await withOwnedLockAsync(lock, { ...options, waitMs: 150 }, (h) => h.held)).toBe(false);
+      expect(owner(lock)).toBe(String(process.pid));
+      expect(existsSync(lock)).toBe(true);
+    } finally {
+      holder.release();
+    }
+  });
+
+  it('does the work before it returns when the lock is free', async () => {
+    const lock = path.join(dir(), 'x.lock');
+    let held: boolean | null = null;
+    const done = withOwnedLockAsync(lock, options, (h) => {
+      held = h.held;
+      return 'done';
+    });
+    expect(held).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+    expect(await done).toBe('done');
+  });
+
+  it('takes over at once the lock of a holder that has exited, by the same rules', async () => {
+    const lock = path.join(dir(), 'x.lock');
+    writeFileSync(lock, '4242', 'utf8');
+    const isRunning = (pid: number): boolean => pid !== 4242;
+    expect(await withOwnedLockAsync(lock, { ...options, isRunning }, (h) => h.held)).toBe(true);
+  });
+
+  it('takes over a running holder once its lock is older than the longest hold, while it waits', async () => {
+    // Fresh when the wait begins: only waiting it out lets it go.
+    const lock = path.join(dir(), 'x.lock');
+    writeFileSync(lock, '4242', 'utf8');
+    // Asked only of a lock younger than the longest hold.
+    let asked = 0;
+    const isRunning = (pid: number): boolean => {
+      asked += 1;
+      return pid === 4242;
+    };
+    const held = await withOwnedLockAsync(lock, { ...options, maxHoldMs: 300, isRunning }, (h) => h.held);
+    expect(held).toBe(true);
+    expect(asked).toBeGreaterThan(0);
+  });
+
+  it('lets go of the lock when the work throws, and fails with what it threw', async () => {
+    const lock = path.join(dir(), 'x.lock');
+    await expect(
+      withOwnedLockAsync(lock, options, () => {
+        throw new Error('the work failed');
+      }),
+    ).rejects.toThrow('the work failed');
+    expect(existsSync(lock)).toBe(false);
   });
 });
 

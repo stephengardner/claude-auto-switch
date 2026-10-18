@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.21]
+
+### Fixed
+
+- **A running session no longer freezes Claude's terminal while it waits for
+  the limits ledger or the event log (#165).** ccx relays Claude's output, and
+  the keys typed into it, on the same thread that records a limit met under a
+  running Claude and writes each line of the event log. Both waited for their
+  lock by blocking that thread: up to a minute for the ledger (since 2.6.17)
+  and five seconds for the log, whenever another ccx was in the middle of a
+  change. The ledger's wait now leaves the thread free, by the same rules: a
+  live holder is still waited for until its lock is a minute old. Until the
+  limit is written, the session counts it as written. A log line that finds
+  the lock taken is kept and written once the holder lets go, in order, and a
+  process that ends first writes what it kept as it exits.
+- **The relay test of #165 measures the relay.** It failed once on Windows
+  with a 1,863 ms gap. That gap was the quiet after Claude exits, which on
+  Windows is always over a second: node-pty reports an exit only a second
+  after it, and ccx then waits for the last output. In 20 rounds it was
+  1,267 to 1,365 ms, against a 1,500 ms limit. The test now judges only what
+  Claude wrote while it ran, against each time ccx found the lock taken, so a
+  stalled machine cannot fail it and a wait on the relay's thread does.
+
 ## [2.6.19]
 
 ### Fixed

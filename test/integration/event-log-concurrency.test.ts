@@ -98,10 +98,12 @@ describe('several processes writing the event log at once', () => {
     expect(missing).toEqual([]);
   }, 60_000);
 
-  it('waits while another process holds the log, and writes once it lets go', async () => {
+  it('keeps a line while another process holds the log, and writes it as it exits, once the holder lets go', async () => {
     // A writer that went ahead while a compaction held the log could open the
     // file just before the compaction moved it, and write into it after the
-    // compaction had read it. The line then went with the file.
+    // compaction had read it. The line then went with the file. The append
+    // never waits, so the child has nothing left to do but exit, and writes
+    // the line as it does.
     const home = mkdtempSync(path.join(tmpdir(), 'cas-evhold-'));
     const marker = path.join(home, 'about-to-append');
     const child = path.join(home, 'held-writer.ts');
@@ -127,8 +129,8 @@ describe('several processes writing the event log at once', () => {
     try {
       exited = runChild(child, [home, marker]);
       await vi.waitUntil(() => existsSync(marker), { timeout: 30_000, interval: 20 });
-      // The append is the child's next statement, so by now it has either
-      // written or is waiting.
+      // The append is the child's next statement and its last, so by now it
+      // has either written or is waiting at its exit.
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(readEvents(home, 10)).toEqual([]);
     } finally {

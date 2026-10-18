@@ -29,12 +29,14 @@ import { syncEditorPointerIfEnabled } from '../editor/junction.js';
 import {
   loadLedger,
   updateLedger,
+  updateLedgerAsync,
   markCapped,
   cappedNames,
   modelOnlyLimit,
   activeModelCaps,
   accountCapEnd,
 } from '../ledger/ledger.js';
+import type { Ledger } from '../ledger/ledger.schema.js';
 import { readToken } from '../daemon/token-store.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { runHotSwapSession, type SessionOutcome } from '../launcher/hot-swap.js';
@@ -1554,7 +1556,12 @@ export async function runInteractiveHotSwap(
    * swap loop, the spent model went unrecorded, and every other session kept
    * choosing it.
    */
-  const recordCap = (accountName: string, reason: string, resetAt: number | undefined): void => {
+  const recordCap = (
+    accountName: string,
+    reason: string,
+    resetAt: number | undefined,
+    { blocking = true }: { blocking?: boolean } = {},
+  ): void => {
     if (capUnregisteredEmail) {
       // There is no registered account to record this against, and the
       // believed account must NOT take it: nothing of its is spent. The
@@ -1568,16 +1575,32 @@ export async function runInteractiveHotSwap(
       return;
     }
     refreshSettings(); // how long to skip it, as set now
-    const ledger = updateLedger(context.ctx, (current) =>
-      markCapped(current, {
-        account: accountName,
-        now: Date.now(),
-        resetAt: resetAt ?? limitedResetAt ?? null,
-        backoffMinutes: context.config.rotation.defaultBackoffMinutes,
-        reason,
-        ...(limitedModel ? { model: limitedModel } : {}),
-      }),
-    );
+    // Read now: the change can be written later, when limitedModel and the
+    // rest describe something else.
+    const cap = {
+      account: accountName,
+      now: Date.now(),
+      resetAt: resetAt ?? limitedResetAt ?? null,
+      backoffMinutes: context.config.rotation.defaultBackoffMinutes,
+      reason,
+      ...(limitedModel ? { model: limitedModel } : {}),
+    };
+    const change = (current: Ledger): Ledger => markCapped(current, cap);
+    let ledger: Ledger;
+    if (!blocking) {
+      // Not waiting for the ledger's lock on this thread, which relays
+      // Claude's terminal. Until the change is written, this process reads the
+      // ledger with it in (see updateLedgerAsync).
+      void updateLedgerAsync(context.ctx, change).catch((error: unknown) =>
+        logEvent(`could not record that "${accountName}" hit its limit on the ledger: ${thrownReason(error)}`, {
+          kind: 'ledger-write-failed',
+          data: { account: accountName },
+        }),
+      );
+      ledger = loadLedger(context.ctx);
+    } else {
+      ledger = updateLedger(context.ctx, change);
+    }
     if (!limitedModel) {
       seenOut.set(accountName, ledger.caps.find((c) => c.account === accountName && !c.model)?.capUntil ?? null);
     }
@@ -2294,7 +2317,8 @@ export async function runInteractiveHotSwap(
         // guard). limitedModel/limitedResetAt scope it to a model when model-only.
         if (relievedTo !== null || opts.switching) {
           capUnregisteredEmail = unregistered;
-          recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt);
+          // From the session's poll, which relays Claude's terminal.
+          recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt, { blocking: false });
           // Said about the login the session had; the one it has now is new.
           if (relievedTo !== null) capUnregisteredEmail = null;
         }

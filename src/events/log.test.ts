@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   mkdtempSync,
   writeFileSync,
@@ -19,6 +19,7 @@ import {
   formatEvent,
   formatEvents,
   eventsFilePath,
+  flushQueuedEvents,
   trimIfLong,
   TRIM_BYTES,
 } from './log.js';
@@ -509,6 +510,52 @@ describe('when another process holds the log', () => {
     trimIfLong(h);
     expect(readEvents(h, 500).map((r) => r.msg)).toEqual(fill);
     expect(existsSync(`${file}.1`)).toBe(true);
+  });
+
+  it('never waits for it: the line is kept, and written once the holder lets go', async () => {
+    // Held here, by a holder that lets go on a timer, which only runs while
+    // the thread is free. Whoever appends may be relaying a terminal.
+    const h = home();
+    const file = eventsFilePath(h);
+    mkdirSync(h, { recursive: true });
+    const holder = acquireOwnedLock(`${file}.compact.lock`, { waitMs: 0, staleMs: 5_000 });
+    expect(holder.held).toBe(true);
+    setTimeout(() => holder.release(), 300);
+    try {
+      const started = Date.now();
+      appendEvent(h, 'while it was held', 1000);
+      expect(Date.now() - started).toBeLessThan(200);
+      expect(readEvents(h)).toEqual([]);
+      await vi.waitUntil(() => readEvents(h).length > 0, { timeout: 5_000, interval: 20 });
+    } finally {
+      holder.release();
+    }
+    expect(readEvents(h).map((r) => r.msg)).toEqual(['while it was held']);
+    expect(existsSync(`${file}.compact.lock`)).toBe(false);
+  });
+
+  it('keeps the order: a line appended behind a kept one waits its turn, though the lock is free by then', async () => {
+    const h = home();
+    const file = eventsFilePath(h);
+    mkdirSync(h, { recursive: true });
+    const holder = acquireOwnedLock(`${file}.compact.lock`, { waitMs: 0, staleMs: 5_000 });
+    appendEvent(h, 'first', 1000);
+    holder.release();
+    appendEvent(h, 'second', 2000);
+    expect(readEvents(h)).toEqual([]);
+    await vi.waitUntil(() => readEvents(h).length === 2, { timeout: 5_000, interval: 20 });
+    expect(readEvents(h).map((r) => r.msg)).toEqual(['first', 'second']);
+  });
+
+  it('writes what is kept at once when flushed, as at exit and where a session ends', () => {
+    const h = home();
+    const file = eventsFilePath(h);
+    mkdirSync(h, { recursive: true });
+    const holder = acquireOwnedLock(`${file}.compact.lock`, { waitMs: 0, staleMs: 5_000 });
+    appendEvent(h, 'kept', 1000);
+    holder.release();
+    flushQueuedEvents();
+    expect(readEvents(h).map((r) => r.msg)).toEqual(['kept']);
   });
 
   it('takes over a lock left by a process that died holding it', () => {

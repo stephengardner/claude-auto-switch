@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,7 @@ import {
   loadLedger,
   markCapped,
   updateLedger,
+  updateLedgerAsync,
 } from './ledger.js';
 import type { Ledger } from './ledger.schema.js';
 
@@ -160,6 +161,146 @@ describe('updateLedger', () => {
     expect(accounts(loadLedger(c))).toEqual(['A']);
     expect(unlockedWrites(dir)).toEqual([]);
     expect(existsSync(`${ledgerFilePath(c)}.lock`)).toBe(false);
+  });
+});
+
+describe('updateLedgerAsync', () => {
+  /** What the file holds, not what this process reads with its waiting changes in. */
+  const onDisk = (c: { env: NodeJS.ProcessEnv }): string[] =>
+    existsSync(ledgerFilePath(c))
+      ? accounts(JSON.parse(readFileSync(ledgerFilePath(c), 'utf8')) as Ledger)
+      : [];
+
+  it('writes the change before it returns when the lock is free', async () => {
+    const { home: dir, c } = home();
+    const written = updateLedgerAsync(c, capFor('A'));
+    expect(onDisk(c)).toEqual(['A']);
+    expect(accounts(await written)).toEqual(['A']);
+    expect(existsSync(`${ledgerFilePath(c)}.lock`)).toBe(false);
+    expect(unlockedWrites(dir)).toEqual([]);
+  });
+
+  it('never waits on the thread for a running holder, and counts the change here at once', async () => {
+    // Held here, by a holder that writes its own change and lets go on a
+    // timer, which only runs while the thread is free.
+    const { home: dir, c } = home();
+    const file = ledgerFilePath(c);
+    mkdirSync(path.dirname(file), { recursive: true });
+    const holder = acquireOwnedLock(`${file}.lock`, { waitMs: 0, staleMs: 5_000 });
+    expect(holder.held).toBe(true);
+    setTimeout(() => {
+      writeFileSync(file, JSON.stringify(capFor('B')({ caps: [] })), 'utf8');
+      holder.release();
+    }, 300);
+    try {
+      const started = Date.now();
+      const written = updateLedgerAsync(c, capFor('A'), { waitMs: 5_000 });
+      expect(Date.now() - started).toBeLessThan(200);
+      // Read here as if written, while the file does not have it yet.
+      expect(accounts(loadLedger(c))).toEqual(['A']);
+      expect(onDisk(c)).toEqual([]);
+      // Written once the holder let go, on top of what it wrote.
+      expect(accounts(await written)).toEqual(['A', 'B']);
+    } finally {
+      holder.release();
+    }
+    expect(onDisk(c)).toEqual(['A', 'B']);
+    expect(accounts(loadLedger(c))).toEqual(['A', 'B']);
+    expect(unlockedWrites(dir)).toEqual([]);
+  });
+
+  it('waits out a running holder held up for seconds, and keeps its change and this one', async () => {
+    // As updateLedger does, with the thread free: a holder held up for 6.5 s,
+    // as a stalled machine holds one up, writes back what it read with its
+    // own change. A change that wrote past it would be erased by that write.
+    const { home: dir, c } = home();
+    const file = ledgerFilePath(c);
+    const holder = spawn(
+      process.execPath,
+      [
+        '-e',
+        [
+          `const fs = require('node:fs');`,
+          `const [file, holdMs] = process.argv.slice(1);`,
+          `fs.writeFileSync(file + '.lock', String(process.pid), { flag: 'wx' });`,
+          `const ledger = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { caps: [] };`,
+          `fs.writeFileSync(file + '.held', '');`,
+          `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(holdMs));`,
+          `ledger.caps.push({ account: 'B', capUntil: Date.now() + 3600000, reason: 'another session', at: Date.now() });`,
+          `fs.writeFileSync(file + '.tmp', JSON.stringify(ledger));`,
+          `fs.renameSync(file + '.tmp', file);`,
+          `fs.rmSync(file + '.lock', { force: true });`,
+        ].join('\n'),
+        file,
+        '6500',
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    let stderr = '';
+    holder.stderr.on('data', (d) => (stderr += String(d)));
+    const exited = new Promise<number | null>((resolve) => holder.on('exit', resolve));
+    await vi.waitUntil(() => existsSync(`${file}.held`) || holder.exitCode !== null, {
+      timeout: 20_000,
+      interval: 10,
+    });
+    expect(existsSync(`${file}.held`), stderr).toBe(true);
+
+    const written = updateLedgerAsync(c, capFor('A'));
+    expect(await exited, stderr).toBe(0);
+    expect(accounts(await written)).toEqual(['A', 'B']);
+    expect(onDisk(c)).toEqual(['A', 'B']);
+    expect(unlockedWrites(dir)).toEqual([]);
+  }, 30_000);
+
+  it('takes over a running holder whose lock is past the longest hold, as updateLedger does', async () => {
+    const { home: dir, c } = home();
+    const file = ledgerFilePath(c);
+    mkdirSync(path.dirname(file), { recursive: true });
+    // A process that is running: the one that started this test.
+    writeFileSync(`${file}.lock`, String(process.ppid), 'utf8');
+    const twoMinutesAgo = new Date(Date.now() - 120_000);
+    utimesSync(`${file}.lock`, twoMinutesAgo, twoMinutesAgo);
+    const written = updateLedgerAsync(c, capFor('A'));
+    expect(onDisk(c)).toEqual(['A']);
+    expect(accounts(await written)).toEqual(['A']);
+    expect(unlockedWrites(dir)).toEqual([]);
+  });
+
+  it('fails with what the change threw, leaving the ledger, the lock and what this process reads as they were', async () => {
+    const { c } = home();
+    updateLedger(c, capFor('A'));
+    const file = ledgerFilePath(c);
+    const holder = acquireOwnedLock(`${file}.lock`, { waitMs: 0, staleMs: 5_000 });
+    setTimeout(() => holder.release(), 200);
+    const failing = updateLedgerAsync(
+      c,
+      () => {
+        throw new Error('the change failed');
+      },
+      { waitMs: 5_000 },
+    );
+    try {
+      expect(accounts(loadLedger(c))).toEqual(['A']);
+      await expect(failing).rejects.toThrow('the change failed');
+    } finally {
+      holder.release();
+    }
+    expect(accounts(loadLedger(c))).toEqual(['A']);
+    expect(existsSync(`${file}.lock`)).toBe(false);
+    // And the next change is written at once.
+    await updateLedgerAsync(c, capFor('B'));
+    expect(onDisk(c)).toEqual(['A', 'B']);
+  });
+
+  it('refuses to be called from inside a change to the ledger', async () => {
+    const { c } = home();
+    let inner: Promise<Ledger> | null = null;
+    updateLedger(c, (ledger) => {
+      inner = updateLedgerAsync(c, capFor('B'));
+      return capFor('A')(ledger);
+    });
+    await expect(inner).rejects.toThrow('updateLedger was called from inside a change to the ledger');
+    expect(onDisk(c)).toEqual(['A']);
   });
 });
 

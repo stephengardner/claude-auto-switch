@@ -62,6 +62,36 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/**
+ * A lock's rules for taking it, as a series of tries: each step yields how
+ * long to pause before the next try, and the last returns the outcome. Written
+ * once, and run two ways: blocking the thread between tries, for a command
+ * with nothing else to do, or on a timer, for a session, whose thread relays
+ * Claude's terminal and the keys typed into it.
+ */
+type Tries<T> = Generator<number, T, void>;
+
+function runBlocking<T>(tries: Tries<T>): T {
+  for (let step = tries.next(); ; step = tries.next()) {
+    if (step.done) return step.value;
+    sleepSync(step.value);
+  }
+}
+
+/**
+ * `then` is given the outcome in the same step as the try that settled it, so
+ * nothing else in this process runs in between. The first try is made before
+ * this returns. The pauses are unref'd, so a wait never keeps a process alive
+ * by itself: one that ends meanwhile never hears the outcome.
+ */
+async function runOnTimers<T, R>(tries: Tries<T>, then: (outcome: T) => R): Promise<R> {
+  for (let step = tries.next(); ; step = tries.next()) {
+    if (step.done) return then(step.value);
+    const ms = step.value;
+    await new Promise<void>((resolve) => setTimeout(resolve, ms).unref());
+  }
+}
+
 function mtimeMs(dir: string): number | null {
   try {
     return statSync(dir).mtimeMs;
@@ -185,6 +215,32 @@ const heldHere = new Map<string, symbol>();
  * lock the first had just made.
  */
 export function acquireOwnedLock(lockFile: string, options: OwnedLockOptions): LockHandle {
+  return runBlocking(ownedLockTries(lockFile, options));
+}
+
+/**
+ * acquireOwnedLock without blocking, for a session, which must go on relaying
+ * while it waits: the same rules, with the thread free between tries. `work`
+ * is handed the lock as acquireOwnedLock would hand it back (held, or the wait
+ * run out), runs at once, before anything else in this process can, and the
+ * lock is let go as it returns, so it must be synchronous. As with
+ * acquireOwnedLock, nothing else in this process runs while the lock is held.
+ */
+export function withOwnedLockAsync<T>(
+  lockFile: string,
+  options: OwnedLockOptions,
+  work: (lock: LockHandle) => T,
+): Promise<T> {
+  return runOnTimers(ownedLockTries(lockFile, options), (lock) => {
+    try {
+      return work(lock);
+    } finally {
+      lock.release();
+    }
+  });
+}
+
+function* ownedLockTries(lockFile: string, options: OwnedLockOptions): Tries<LockHandle> {
   const now = options.now ?? (() => Date.now());
   const create = options.create ?? createOwnedLockFile;
   // How Windows refuses a new file while the last one is still being removed.
@@ -206,7 +262,7 @@ export function acquireOwnedLock(lockFile: string, options: OwnedLockOptions): L
     }
     if (abandoned() && takeOver(lockFile, abandoned, now(), options.staleMs)) continue;
     if (now() >= deadline) return { held: false, release: () => {} };
-    sleepSync(50);
+    yield 50;
   }
 }
 
