@@ -28,7 +28,7 @@ ccx worker --agent coder --cwd ../wt-billing --permission-mode acceptEdits \
   and resumes the same conversation with a note to carry on. The task is not
   started over, so a coder that has edited files keeps its place.
 - **Nothing global moves.** The account your sessions start on, the editor's
-  link and your terminal are left alone.
+  account and your terminal are left alone.
 - **A clean start from inside Claude.** Started by a Claude session's Bash tool,
   a worker takes none of that session's own variables: not its login token,
   which would put the worker on the orchestrator's account, and not the ones

@@ -62,7 +62,9 @@ was taken, not a subscription: poll it if you want to keep up.
 
 ### Use `status`, do not recompute it
 
-`status.state` is one of `ready`, `blocked`, `disabled`, `logged-out`.
+`status.state` is one of `ready`, `blocked`, `disabled`, `logged-out`,
+`on-hold`. `on-hold` is an account Anthropic put on hold: its login was refused
+with `account_on_hold`, and signing in again does not bring it back.
 
 It is shipped rather than left for you to derive because the rule is easy to get
 subtly wrong, and getting it wrong is invisible. ccx itself had two surfaces
