@@ -48,7 +48,12 @@ semantic versioning.
   minutes ahead, so on schedule they never meet; when they do, Claude finds the
   lock busy, sends nothing, and reads ccx's renewal at its next look. A renewal
   made elsewhere of that login is carried into the folder, waiting for its lock
-  without holding up a terminal session, and one the editor's Claude made there
+  without holding up a terminal session. One that cannot be written into the
+  folder then is queued, one per login it replaces: the process that renewed
+  tries it again once a second for 10 s, then every running ccx session (every
+  5 s) and every usage refresh looks, and the editor's next event pulls it in
+  as well, since the editor's Claude would otherwise send the retired token at
+  its own renewal and be signed out. One the editor's Claude made there
   goes home, once the API confirms whose it is, before ccx renews that account,
   including at a session start and, looking once a minute, from a terminal
   session on the same account. While whose it is cannot be asked (the lookup
@@ -95,7 +100,9 @@ semantic versioning.
   linked into a session's or the editor's folder as it starts; the link handed
   one Claude's lock to another. A terminal session's folder also stays, for
   the next clean-up, while a folder of its own could not be merged into
-  `~/.claude`, where it used to be removed with it.
+  `~/.claude`, where it used to be removed with it, and so does one when no
+  home directory can be found to find `~/.claude` by; the move of an older
+  editor install then keeps its note to merge the account folders again.
 - **One kind of folder for every Claude ccx runs in a terminal or as a worker.**
   The build a session folder had inline is now one piece
   (`session/claude-folder`), used by terminal sessions, workers and the editor.

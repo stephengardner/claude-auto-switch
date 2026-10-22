@@ -1,12 +1,17 @@
-import { lstatSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
   deleteKeychainCredential,
   readKeychainCredential,
   writeKeychainCredential,
 } from '../accounts/keychain.js';
-import { CREDENTIALS_FILE } from '../accounts/credential-storage.js';
-import { loginTextFingerprint, nudgeLoginReread, usableLoginText } from '../accounts/credential-vault.js';
+import { CREDENTIALS_FILE, readCredential } from '../accounts/credential-storage.js';
+import {
+  credentialPath,
+  loginTextFingerprint,
+  nudgeLoginReread,
+  usableLoginText,
+} from '../accounts/credential-vault.js';
 import { CREDENTIALS_LOCK_DIR, withLockDirAsync } from '../claude/locks.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
 import { writeSecretFile } from '../util/secret-file.js';
@@ -255,52 +260,101 @@ export function replaceFolderLogin(login: FolderLogin, retired: string, text: st
  * sharing that login is carried into. Without it, a terminal session that renews
  * a login the editor holds too leaves the editor on a token the server has
  * retired. It runs on the thread that relays a terminal, so it waits for the
- * lock on timers, never blocking that thread; one whose wait runs out is made
- * by retryEditorCarry, at the session's next look.
+ * lock on timers, never blocking that thread; one not made then waits in the
+ * carry queue (queueEditorCarry). `accountDir` is the profile the renewal was
+ * saved to, before this is called.
  */
-export function carryIntoEditor(c: PathCtx): (retired: string, snapshotFile: string) => void {
-  return (retired, snapshotFile) => {
-    let text: string;
-    try {
-      text = readFileSync(snapshotFile, 'utf8');
-    } catch {
-      return;
-    }
-    pendingCarries.set(configHome(c), { retired, text });
-    void retryEditorCarry(c);
+export function carryIntoEditor(c: PathCtx, accountDir: string): (retired: string, snapshotFile: string) => void {
+  return (retired) => {
+    if (editorHolding(retired, c) === null) return;
+    queueEditorCarry(c, retired, accountDir);
+    void retryEditorCarries(c);
   };
 }
 
-/** Carries into the editor's folder not made yet, by ccx home: at most one, the newest. */
-const pendingCarries = new Map<string, { retired: string; text: string }>();
-/** The ccx homes a carry is waiting for the editor's lock in, so a look does not start a second wait. */
+/**
+ * Carries into the editor's folder not made yet, one file per login each
+ * would replace, naming the profile that holds its renewal: each stays until it
+ * is made or the folder no longer holds that login, whatever ccx process wrote
+ * it and whichever looks next. No login is written here, only where to read one.
+ */
+const carriesDir = (c: PathCtx): string => path.join(configHome(c), 'editor-carries');
+
+/**
+ * Note that the editor's folder holds `retired`, a login whose renewal is now
+ * in the profile at `accountDir`, and is to have that renewal put in its place.
+ */
+export function queueEditorCarry(c: PathCtx, retired: string, accountDir: string): void {
+  try {
+    writeFileAtomic(path.join(carriesDir(c), `${retired}.json`), `${JSON.stringify({ accountDir })}\n`);
+  } catch {
+    /* the editor's next event still pulls the profile's newer login in (pullProfileIntoEditor) */
+  }
+}
+
+/** The ccx homes whose queue a look is going through now, so a second look does not start beside it. */
 const carrying = new Set<string>();
 
 /**
- * Make a carry into the editor's folder not made yet, under the lock its
- * Claude takes, waiting for it on timers. It goes once made, or once the folder
- * no longer holds the login it would replace.
+ * Make each carry in the queue, under the lock the editor's Claude takes,
+ * waiting for it on timers. True when none is left.
  */
-export async function retryEditorCarry(c: PathCtx): Promise<void> {
-  const key = configHome(c);
-  const pending = pendingCarries.get(key);
-  if (!pending || carrying.has(key)) return;
+export async function retryEditorCarries(c: PathCtx): Promise<boolean> {
+  let key: string;
+  let names: string[];
+  try {
+    key = configHome(c);
+    names = readdirSync(carriesDir(c)).filter((name) => name.endsWith('.json'));
+  } catch {
+    return true;
+  }
+  if (names.length === 0) return true;
+  if (carrying.has(key)) return false;
   carrying.add(key);
   try {
-    const holding = editorHolding(pending.retired, c);
-    if (holding === 'unreadable') return;
-    let done = true;
-    if (holding !== null) {
-      const login: FolderLogin = holding;
-      done = await withLockDirAsync(path.join(login.dir, CREDENTIALS_LOCK_DIR), {}, (lock) => {
-        if (lock.held) replaceFolderLogin(login, pending.retired, pending.text);
-        return lock.held;
-      });
+    let left = 0;
+    for (const name of names) {
+      if (!(await makeCarry(c, name.slice(0, -'.json'.length), path.join(carriesDir(c), name)))) left++;
     }
-    if (done && pendingCarries.get(key) === pending) pendingCarries.delete(key);
-  } catch {
-    /* tried again at the next look */
+    return left === 0;
   } finally {
     carrying.delete(key);
+  }
+}
+
+/** One carry from the queue: true once it is made, or not needed any more. */
+async function makeCarry(c: PathCtx, retired: string, file: string): Promise<boolean> {
+  try {
+    const holding = editorHolding(retired, c);
+    if (holding === 'unreadable') return false;
+    if (holding !== null) {
+      const { accountDir } = JSON.parse(readFileSync(file, 'utf8')) as { accountDir?: unknown };
+      const text = typeof accountDir === 'string' ? readCredential(credentialPath(accountDir)) : null;
+      if (text !== null && usableLoginText(text) && loginTextFingerprint(text) !== retired) {
+        const login: FolderLogin = holding;
+        const made = await withLockDirAsync(path.join(login.dir, CREDENTIALS_LOCK_DIR), {}, (lock) => {
+          if (!lock.held) return false;
+          replaceFolderLogin(login, retired, text);
+          return true;
+        });
+        if (!made) return false;
+      }
+    }
+    rmSync(file, { force: true });
+    return true;
+  } catch {
+    return false; // tried again at the next look
+  }
+}
+
+/** How long the process whose write into the editor's folder failed keeps trying it, once a second, before it may end. */
+export const EDITOR_CARRY_SOON_MS = 10_000;
+
+/** Try the queue again once a second for `forMs`, until it is empty. */
+export async function retryEditorCarriesSoon(c: PathCtx, forMs: number = EDITOR_CARRY_SOON_MS): Promise<void> {
+  const until = Date.now() + forMs;
+  while (Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    if (await retryEditorCarries(c)) return;
   }
 }

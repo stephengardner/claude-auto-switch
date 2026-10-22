@@ -7,7 +7,13 @@ import { renewOneAtATime } from './renew-one-at-a-time.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import { alreadyRefused, refusalReason, rememberRefused } from './dead-login-memo.js';
 import { loginIsKnownDead, deadLoginReason, rememberDeadLogin, forgetDeadLogin } from './dead-login-store.js';
-import { editorHolding, replaceFolderLogin, type FolderLogin } from '../editor/folder-login.js';
+import {
+  editorHolding,
+  queueEditorCarry,
+  replaceFolderLogin,
+  retryEditorCarriesSoon,
+  type FolderLogin,
+} from '../editor/folder-login.js';
 import type { PathCtx } from '../config/paths.js';
 
 /**
@@ -69,6 +75,12 @@ export interface RefreshOptions {
   lockWaitMs?: number;
   /** How long the token request may take (default REQUEST_TIMEOUT_MS). */
   requestTimeoutMs?: number;
+  /**
+   * How long a renewal whose write into the editor's folder failed keeps
+   * trying it before leaving it to the next look (default
+   * EDITOR_CARRY_SOON_MS); 0 in a test that waits for that look.
+   */
+  editorCarrySoonMs?: number;
   /**
    * The fingerprint of an access token the API just turned away (401). The
    * login is then renewed however long its stored expiry says it has left,
@@ -192,7 +204,13 @@ async function renewWithEditor(
       try {
         replaceFolderLogin(editor, retired, readCredential(credentialPath(accountDir)));
       } catch {
-        /* the profile has it; the editor's next move or refresh takes it */
+        // The editor is left on the token this renewal retired, which its
+        // Claude would send at its own renewal and be signed out. Tried again
+        // here for a while, then by whatever of ccx looks next.
+        if (options.ctx) {
+          queueEditorCarry(options.ctx, retired, accountDir);
+          void retryEditorCarriesSoon(options.ctx, options.editorCarrySoonMs);
+        }
       }
     }
     return outcome;

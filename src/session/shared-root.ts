@@ -197,15 +197,15 @@ const baseOf = (sessionDir: string, name: string): string => path.join(sessionDi
  * session appends to it, and replacing it would drop a line one of them wrote
  * meanwhile. What cannot go back, or must not because the user changed
  * the same file meanwhile, is kept in `rescued/` in the ccx folder instead.
- * False only when even that failed: the session folder must then stay,
- * because it holds the only copy.
+ * False when even that failed, or there is no ~/.claude to hand back to: the
+ * session folder must then stay, because it holds the only copy.
  */
 export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): boolean {
   let root: string;
   try {
     root = defaultClaudeRoot(c);
   } catch {
-    return true;
+    return false; // with no ~/.claude to link to, the session's folder holds all it made
   }
   let kept = true;
   for (const { name, merge } of SHARED_FILES) {
@@ -683,7 +683,8 @@ function takeTheirs(dir: string, name: string, merge: 'whole' | 'lines', theirs:
  * history lacks. With `rescueFiles`, its own
  * settings, memory and keybindings that are not the user's are kept in
  * `rescued/` rather than applied. False when the history or a folder could
- * not be merged, so the caller can try again.
+ * not be merged, or there is no ~/.claude to merge into, so the caller can try
+ * again.
  */
 export function adoptFolderHistory(
   folder: string,
@@ -696,7 +697,7 @@ export function adoptFolderHistory(
   try {
     root = defaultClaudeRoot(c);
   } catch {
-    return true; // no ~/.claude to merge into, now or later
+    return false; // no ~/.claude to merge into yet: tried again later
   }
   let merged = true;
   for (const name of ['projects', ...sharedDirNames(root)]) {

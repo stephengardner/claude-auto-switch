@@ -13,6 +13,7 @@ import { learnWindowCost } from './runway.js';
 import { refreshCredentialIfExpired, renewalIsDue, expiredLongerThan, type RefreshOutcome } from './oauth-refresh.js';
 import { editorPointerAccount } from '../editor/junction.js';
 import { takeUpEditorRenewal } from '../editor/folder.js';
+import { retryEditorCarries } from '../editor/folder-login.js';
 import { isOnHold, reportFinishedLogin } from '../accounts/login-check.js';
 
 /**
@@ -351,6 +352,9 @@ export async function refreshUsage(
     ((accountDir: string, rejected?: string) =>
       refreshCredentialIfExpired(accountDir, { ctx: c, ...(rejected ? { renewRejected: rejected } : {}) }));
 
+  // A renewal that could not be written into the editor's folder: every tick
+  // looks, fresh entries or not, since its Claude would send the retired token.
+  await retryEditorCarries(c);
   const snapshot = readUsageSnapshot(c);
   const aged = accounts.filter((a) => {
     const entry = snapshot.accounts[a.name];
