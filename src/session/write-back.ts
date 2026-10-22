@@ -19,7 +19,7 @@ import { keepOursOver } from '../statusline/settings-install.js';
 import { isOurs } from '../statusline/ours.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
 import { writeSecretFile } from '../util/secret-file.js';
-import { copyUserSettings, defaultClaudeRoot, rescue, rescueText } from './shared-root.js';
+import { copyUserSettings, defaultClaudeRoot, rescue, rescueText, rescueTextOnce } from './shared-root.js';
 import type { PathCtx } from '../config/paths.js';
 
 /**
@@ -708,17 +708,19 @@ export function writeUserFile(
  * Keep the choices an account's own folder holds in Claude's state aside in
  * `rescued/` when they are not the user's, before the editor stops running
  * there: an MCP server or a trusted folder added in the editor while it ran on
- * that account would otherwise be found nowhere.
+ * that account would otherwise be found nowhere. Once only, so a pass run again
+ * keeps no second copy. False when they are not kept: a folder removed later
+ * must wait for it.
  */
-export function rescueStateChoices(folder: string, label: string, c: PathCtx = {}): void {
+export function rescueStateChoices(folder: string, label: string, c: PathCtx = {}): boolean {
   try {
     const theirs = readObject(path.join(folder, '.claude.json'));
-    if (!theirs) return;
+    if (!theirs) return true;
     const user = readObject(defaultClaudeJsonPath(c)) ?? {};
     const choices = stateChoices(theirs);
-    if (isDeepStrictEqual(choices, stateChoices(user))) return;
-    rescueText(`${JSON.stringify(choices, null, 2)}\n`, `${label}-claude-choices.json`, c);
+    if (isDeepStrictEqual(choices, stateChoices(user))) return true;
+    return rescueTextOnce(`${JSON.stringify(choices, null, 2)}\n`, `${label}-claude-choices.json`, c);
   } catch {
-    /* the account folder keeps its own; nothing is lost */
+    return false;
   }
 }

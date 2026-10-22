@@ -210,16 +210,6 @@ export function removeFolderLogin(login: FolderLogin): void {
   if (errors.length > 0) throw errors[0];
 }
 
-/** The fingerprint of the folder's login (credentialFingerprint's), or null. */
-export function folderLoginFingerprint(login: FolderLogin): string | null {
-  try {
-    const text = readFolderLogin(login);
-    return text === null ? null : loginTextFingerprint(text);
-  } catch {
-    return null;
-  }
-}
-
 /** Make a Claude running on the folder read its login again at its next request (nudgeLoginReread). */
 export function nudgeFolderLogin(login: FolderLogin, now: Date = new Date()): boolean {
   return nudgeLoginReread(login.dir, now, { keychainHolds: () => folderKeychainHolds(login) });
@@ -245,10 +235,14 @@ export function editorHolding(fingerprint: string | null, c: PathCtx = {}): Fold
 /**
  * Put `text`, a renewal of the login `retired` names, in the folder, but only
  * while the folder still holds that one: a sign-in there meanwhile is never
- * replaced by an older login. The caller holds the folder's login lock.
+ * replaced by an older login. False when it holds another; throws when what it
+ * holds cannot be read, or the write fails, since then it may still hold the
+ * retired one. The caller holds the folder's login lock.
  */
 export function replaceFolderLogin(login: FolderLogin, retired: string, text: string): boolean {
-  if (!usableLoginText(text) || folderLoginFingerprint(login) !== retired) return false;
+  if (!usableLoginText(text)) return false;
+  const now = readFolderLogin(login);
+  if (now === null || loginTextFingerprint(now) !== retired) return false;
   writeFolderLogin(login, text);
   nudgeFolderLogin(login);
   return true;

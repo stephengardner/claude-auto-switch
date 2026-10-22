@@ -11,7 +11,7 @@ import { loginTextFingerprint } from '../accounts/credential-vault.js';
 import { readKeychainCredential, writeKeychainCredential } from '../accounts/keychain.js';
 import { refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { refreshUsage } from '../usage/usage-store.js';
-import { carryIntoEditor, editorFolderPath, retryEditorCarries } from './folder-login.js';
+import { carryIntoEditor, editorFolderPath, queueEditorCarry, retryEditorCarries } from './folder-login.js';
 import { refreshEditor } from './folder.js';
 import type { CliContext } from '../context.js';
 
@@ -164,6 +164,7 @@ async function renewWithAFailedWrite(s: Scene, soonMs?: number): Promise<void> {
 
 beforeEach(() => {
   keychain.clear();
+  vi.mocked(readKeychainCredential).mockImplementation((dir: string) => keychain.get(dir) ?? null);
   vi.mocked(writeKeychainCredential).mockImplementation((dir: string, text: string) => {
     keychain.set(dir, text);
   });
@@ -184,6 +185,29 @@ describe("a renewal the editor's folder could not be written with", () => {
     await renewWithAFailedWrite(s);
 
     await waitFor(() => itemToken(s) === 'a-A-2', 4_000);
+    expect(itemToken(s)).toBe('a-A-2');
+  });
+
+  it("stays queued when what the folder holds cannot be read as it is made, and is made at the next look", async () => {
+    const s = await scene();
+    keychain.set(s.folder, login('A', 1));
+    renewedHome(s, 'A');
+    queueEditorCarry(s.context.ctx, loginTextFingerprint(login('A', 1))!, profileDir(s, 'A'));
+    // The folder's Keychain item reads once, then not, as a Keychain locked between two reads.
+    let reads = 0;
+    vi.mocked(readKeychainCredential).mockImplementation((dir: string) => {
+      if (dir === s.folder && ++reads === 2) throw new Error('Could not read the profile login from macOS Keychain');
+      return keychain.get(dir) ?? null;
+    });
+    try {
+      await retryEditorCarries(s.context.ctx);
+    } finally {
+      vi.mocked(readKeychainCredential).mockImplementation((dir: string) => keychain.get(dir) ?? null);
+    }
+    expect(itemToken(s)).toBe('a-A-1');
+
+    await retryEditorCarries(s.context.ctx);
+
     expect(itemToken(s)).toBe('a-A-2');
   });
 });

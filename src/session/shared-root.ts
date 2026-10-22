@@ -728,12 +728,48 @@ export function adoptFolderHistory(
       if (!existsSync(own) || isLink(own)) continue;
       const user = path.join(root, name);
       if (existsSync(user) && readFileSync(own).equals(readFileSync(user))) continue;
-      rescue(own, `${label}-${name}`, c);
+      if (!rescueOnce(own, `${label}-${name}`, c)) merged = false;
     } catch {
-      /* the account folder keeps its own; nothing is lost */
+      merged = false; // not kept: a folder that is removed later must wait for it
     }
   }
   return merged;
+}
+
+/** Whether `rescued/` already holds these bytes under `name`. */
+function keptAlready(bytes: Buffer, name: string, c: PathCtx): boolean {
+  let dir: string;
+  let entries: string[];
+  try {
+    dir = path.join(configHome(c), 'rescued');
+    entries = readdirSync(dir);
+  } catch {
+    return false;
+  }
+  return entries.some((entry) => {
+    if (!entry.endsWith(`-${name}`)) return false;
+    try {
+      return readFileSync(path.join(dir, entry)).equals(bytes);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** rescue(), unless `rescued/` already holds the same bytes under `name`: a pass run again keeps no second copy. */
+export function rescueOnce(from: string, name: string, c: PathCtx): boolean {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(from);
+  } catch {
+    return false;
+  }
+  return keptAlready(bytes, name, c) || rescue(from, name, c);
+}
+
+/** rescueText(), unless `rescued/` already holds `text` under `name`. */
+export function rescueTextOnce(text: string, name: string, c: PathCtx): boolean {
+  return keptAlready(Buffer.from(text), name, c) || rescueText(text, name, c);
 }
 
 /** Claude's own backups of the folder's state, an install, live records and editor links: nothing to keep. */

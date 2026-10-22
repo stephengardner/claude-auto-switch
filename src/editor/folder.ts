@@ -1121,7 +1121,11 @@ function finishTakeOver(c: PathCtx): void {
     const left = folders.filter((folder) => {
       if (!existsSync(folder)) return false;
       if (editorChatsOpen(folder)) return true;
-      const merged = adoptFolderHistory(folder, 'editor', c, writer, false) && returnOwnFolders(folder, 'editor', c);
+      // Its own files kept aside again too: one whose first keeping failed would go with the folder.
+      const merged =
+        adoptFolderHistory(folder, 'editor', c, writer, true) &&
+        rescueStateChoices(folder, 'editor', c) &&
+        returnOwnFolders(folder, 'editor', c);
       return !(merged && removeSessionDir(folder));
     });
     if (left.length === 0) rmSync(takenOverFile(c), { force: true });

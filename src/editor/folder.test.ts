@@ -926,6 +926,7 @@ describe('an install on the old link, moved into the folder', () => {
     put(path.join(s.folder, 'projects', '-work', 'chat.jsonl'), 'a chat\n');
     put(path.join(s.folder, 'history.jsonl'), '{"display":"typed there"}\n');
     put(path.join(s.folder, 'settings.json'), JSON.stringify({ model: 'haiku' }));
+    put(path.join(s.folder, '.claude.json'), JSON.stringify({ theme: 'light' }));
     put(path.join(s.folder, '.credentials.json'), login('A', 3));
     expect(installEditorEnvVar('cursor', 'CLAUDE_CONFIG_DIR', s.folder, s.context.ctx).ok).toBe(true);
     // The API answers whose that login is once, for the take-over, and then no more.
@@ -938,12 +939,59 @@ describe('an install on the old link, moved into the folder', () => {
     expect(existsSync(path.join(s.folder, '.ccx-editor.json'))).toBe(true);
     expect(read(s.user(path.join('projects', '-work', 'chat.jsonl')))).toBe('a chat\n');
     expect(read(s.user('history.jsonl'))).toContain('typed there');
-    expect(list(path.join(s.ccx, 'rescued')).some((name) => name.endsWith('editor-settings.json'))).toBe(true);
     expect(tokenOf(profileLogin(s, 'A'))).toBe('a-A-3');
     expect(tokenOf(folderLogin(s))).toBe('a-A-3');
     // Merged once more and gone, as no editor chat is open in it.
     await use(s, 'A', () => !list(s.ccx).some((name) => name.startsWith('editor-active.taken-over')));
     expect(list(s.ccx).filter((name) => name.startsWith('editor-active.taken-over'))).toEqual([]);
+    // Its own files kept aside once, though each pass looks at them.
+    const rescued = list(path.join(s.ccx, 'rescued'));
+    expect(rescued.filter((name) => name.endsWith('editor-settings.json'))).toHaveLength(1);
+    expect(rescued.filter((name) => name.endsWith('editor-claude-choices.json'))).toHaveLength(1);
+  });
+
+  for (const [what, file, text, kept] of [
+    ['settings', 'settings.json', JSON.stringify({ model: 'haiku' }), 'editor-settings.json'],
+    ['Claude choices', '.claude.json', JSON.stringify({ theme: 'light' }), 'editor-claude-choices.json'],
+  ] as const) {
+    it(`keeps a folder it took over until its own ${what} are kept aside`, async () => {
+      const s = await scene();
+      put(path.join(s.folder, 'projects', '-work', 'chat.jsonl'), 'a chat\n');
+      put(path.join(s.folder, file), text);
+      expect(installEditorEnvVar('cursor', 'CLAUDE_CONFIG_DIR', s.folder, s.context.ctx).ok).toBe(true);
+      // Nothing can be kept in rescued/ yet.
+      writeFileSync(path.join(s.ccx, 'rescued'), 'in the way');
+      const takenOver = (): string[] => list(s.ccx).filter((name) => name.startsWith('editor-active.taken-over'));
+
+      await use(s, 'A', () => existsSync(path.join(s.folder, '.ccx-editor.json')));
+      expect(existsSync(path.join(s.folder, '.ccx-editor.json'))).toBe(true);
+      expect(takenOver()).toHaveLength(1);
+
+      rmSync(path.join(s.ccx, 'rescued'));
+      await use(s, 'A', () => takenOver().length === 0);
+
+      expect(takenOver()).toEqual([]);
+      expect(list(path.join(s.ccx, 'rescued')).filter((name) => name.endsWith(kept))).toHaveLength(1);
+    });
+  }
+
+  it('keeps its own files aside as it takes a folder over, when no note to look at it again can be written', async () => {
+    const s = await scene();
+    put(path.join(s.folder, 'projects', '-work', 'chat.jsonl'), 'a chat\n');
+    put(path.join(s.folder, 'settings.json'), JSON.stringify({ model: 'haiku' }));
+    put(path.join(s.folder, '.claude.json'), JSON.stringify({ theme: 'light' }));
+    expect(installEditorEnvVar('cursor', 'CLAUDE_CONFIG_DIR', s.folder, s.context.ctx).ok).toBe(true);
+    // No later pass will look at the folder taken over, as nothing notes it.
+    mkdirSync(path.join(s.ccx, 'editor-taken-over.json'));
+
+    await use(s, 'A', () => existsSync(path.join(s.folder, '.ccx-editor.json')));
+
+    expect(existsSync(path.join(s.folder, '.ccx-editor.json'))).toBe(true);
+    expect(list(s.ccx).filter((name) => name.startsWith('editor-active.taken-over'))).toHaveLength(1);
+    expect(read(s.user(path.join('projects', '-work', 'chat.jsonl')))).toBe('a chat\n');
+    const rescued = list(path.join(s.ccx, 'rescued'));
+    expect(rescued.filter((name) => name.endsWith('editor-settings.json'))).toHaveLength(1);
+    expect(rescued.filter((name) => name.endsWith('editor-claude-choices.json'))).toHaveLength(1);
   });
 
   it('keeps in rescued/ a login a folder it takes over ran on, of an account ccx does not have', async () => {
