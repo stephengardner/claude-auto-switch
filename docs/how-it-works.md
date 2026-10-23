@@ -30,10 +30,13 @@ todos and memory. Settings start as a copy of your `settings.json`. What Claude
 changes during a session (a model picked with `/model`, a permission, a hook, an
 MCP server, a trusted folder) is merged back into your own `settings.json` and
 `~/.claude.json`, and logged. If you changed the same setting elsewhere, yours
-wins. A folder the session ended up holding of its own, where a link could not
-be made, is merged into yours when it ends; a file both hold under one name
-with different contents stays as yours is, and the session's goes to
-`rescued/`.
+wins. Where a link could not be made and the session ended up with a folder of
+its own, such as `/rewind` checkpoints or todos, that folder is merged into
+yours when the session ends; transcripts in a `projects` folder of its own, and
+a folder your `~/.claude` does not have of a kind ccx does not know yet, are
+not. Where both hold a file under one name, a copy yours already holds is left,
+one the session wrote on after yours is added to the end of yours, and anything
+else stays as yours is while the session's goes to `rescued/`.
 
 **Detecting a spent account.**
 
