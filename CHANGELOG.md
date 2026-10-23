@@ -28,7 +28,10 @@ semantic versioning.
   different case included). On macOS the editor stopped following switches once
   its Claude had saved a login, and that save removed a profile's login file
   (#129); now its save goes into its own folder, and no profile loses its file.
-  A login the editor's Claude renewed goes home as the editor moves off it.
+  A login the editor's Claude renewed goes home as the editor moves off it. A
+  move, the editor's or a terminal session's, whose write of the next account's
+  identity fails is rolled back, rather than left on the new login beside the
+  last account's identity.
 - **The folder never ends, so it is kept in step with the user's files.** At
   every switch, `ccx on`, `ccx editor on`, `ccx doctor` and every terminal
   session's start, its settings, the choices in `.claude.json` (MCP servers,

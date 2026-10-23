@@ -131,17 +131,21 @@ export function restoreFolderIdentity(dir: string, before: Record<string, unknow
  *   account identity.
  * - Later swaps: only re-stamp the identity, PRESERVING everything the user has
  *   answered in this folder (so prompts do not reappear).
+ * Throws when the file cannot be written, so a move rolls back rather than
+ * leave the new login beside the last account's identity.
  */
 export function applyAccountIdentity(dir: string, accountDir: string, ctx: PathCtx): void {
   const sessionPath = path.join(dir, '.claude.json');
   const existing = readJsonSafe(sessionPath);
   const identity = identityFields(accountDir);
+  const next =
+    existing && existing.hasCompletedOnboarding
+      ? { ...existing, ...identity }
+      : firstBuild(identity, ctx);
+  writeSecretFile(sessionPath, JSON.stringify(next));
+}
 
-  if (existing && existing.hasCompletedOnboarding) {
-    writeJsonSafe(sessionPath, { ...existing, ...identity });
-    return;
-  }
-
+function firstBuild(identity: Record<string, unknown>, ctx: PathCtx): Record<string, unknown> {
   // First build: inherit the user's FULL working config (onboarding done, theme,
   // trusted folders, MCP servers, all preferences), then overlay this account's
   // identity and mark the current folder trusted. This reproduces their normal
@@ -163,15 +167,15 @@ export function applyAccountIdentity(dir: string, accountDir: string, ctx: PathC
     hasCompletedProjectOnboarding: true,
   };
 
-  writeJsonSafe(sessionPath, {
+  return {
     ...base,
     hasCompletedOnboarding: true,
     ...identity,
     projects,
-  });
+  };
 }
 
-/** Write the folder's config owner-only: it carries the account's identity. */
+/** Write the folder's config owner-only, as best it can: it carries the account's identity. */
 function writeJsonSafe(file: string, data: unknown): void {
   try {
     writeSecretFile(file, JSON.stringify(data));
