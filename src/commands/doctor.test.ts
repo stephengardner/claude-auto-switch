@@ -16,7 +16,9 @@ import {
   auditSharedHistory,
   auditSharedLogins,
   auditCaps,
+  auditCutShortLogins,
   doctorCommand,
+  restoreCutShortLogins,
   runDoctor,
   type DoctorCheck,
 } from './doctor.js';
@@ -25,6 +27,7 @@ import type { BrokenNpmInstall, ClaudeSearch } from '../launcher/real-claude.js'
 import { nodeRepairFs, stampOf, type RepairMemory } from '../launcher/claude-repair.js';
 import { settingsPath } from '../statusline/settings-install.js';
 import { addAccount } from '../accounts/registry.js';
+import { takeLease } from '../session/lease.js';
 import { installShim } from '../shell/install-shim.js';
 import type { ShellPlan } from '../shell/shells.js';
 import { loadConfig } from '../config/config.js';
@@ -918,5 +921,70 @@ describe('doctor and a Claude Code npm install that has lost its program', () =>
     expect(claude).toMatchObject({ ok: true, note: true, fix: ['ccx doctor --fix'] });
     expect(claude?.detail).toContain(platformProgram);
     expect(claude?.detail).toContain('only the placeholder');
+  });
+});
+
+describe('logins saved cut short', () => {
+  const deps = {
+    gitTracked: () => null,
+    resolveClaude: () => ({ bin: '/real/claude' }),
+    checkBrowserPort: () => Promise.resolve(true),
+    shellPlans: [],
+  };
+  /** A context whose `claude auth status` answers signed out, without running Claude. */
+  function withClaude(lines: string[] = []): CliContext {
+    return { ...context(lines), claude: { bin: process.execPath, prefixArgs: ['-e', 'console.log(JSON.stringify({ loggedIn: false }))'] } };
+  }
+  /** Register `name` with `stored` as its login and a working one kept before it. */
+  function account(c: CliContext, name: string, stored: string): string {
+    const home = c.ctx.env?.CLAUDE_AUTO_SWITCH_HOME as string;
+    const dir = path.join(home, 'profiles', name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, '.credentials.json'), stored, 'utf8');
+    writeFileSync(
+      path.join(dir, '.credentials.prev.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: `at-${name}`, refreshToken: `rt-${name}` } }),
+      'utf8',
+    );
+    addAccount({ name, dir, enabled: true }, c.ctx);
+    return dir;
+  }
+  const cut = '{"claudeAiOauth":{"accessToken":"at-cut';
+  const signedOut = JSON.stringify({ claudeAiOauth: { accessToken: '', refreshToken: '' } });
+  const stored = (dir: string): string => readFileSync(path.join(dir, '.credentials.json'), 'utf8');
+
+  it('are named in the report, with the fix', () => {
+    const c = withClaude();
+    account(c, 'one', cut);
+    account(c, 'two', signedOut);
+    const check = auditCutShortLogins(c);
+    expect(check).toMatchObject({ ok: false, fix: ['ccx doctor --fix'] });
+    expect(check?.detail).toContain('one');
+    expect(check?.detail).not.toContain('two');
+  });
+
+  it('are put back by --fix from the login kept before, and the report then has nothing to say', async () => {
+    const lines: string[] = [];
+    const c = withClaude(lines);
+    const dir = account(c, 'one', cut);
+    await doctorCommand(c, deps, { fix: true });
+    expect(JSON.parse(stored(dir))).toEqual({ claudeAiOauth: { accessToken: 'at-one', refreshToken: 'rt-one' } });
+    expect(lines.join('\n')).not.toContain('saved cut short');
+  });
+
+  it('are left to a running session that holds the account, which saves its own', () => {
+    const c = withClaude();
+    const dir = account(c, 'one', cut);
+    takeLease('one', path.join(path.dirname(dir), 'a-session'), c.ctx);
+    expect(restoreCutShortLogins(c)).toEqual([]);
+    expect(stored(dir)).toBe(cut);
+  });
+
+  it('never include a login Claude signed out, which reads whole', () => {
+    const c = withClaude();
+    const dir = account(c, 'one', signedOut);
+    expect(restoreCutShortLogins(c)).toEqual([]);
+    expect(stored(dir)).toBe(signedOut);
+    expect(auditCutShortLogins(c)).toBeNull();
   });
 });

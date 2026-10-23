@@ -13,7 +13,14 @@ import { isHeadlessSession } from '../util/headless.js';
 import { auditSessionAccount } from './doctor-session-account.js';
 import { configHome, profilesDir } from '../config/paths.js';
 import { configFilePath } from '../config/config.js';
-import { CREDENTIALS_FILE, PREVIOUS_FILE } from '../accounts/credential-vault.js';
+import {
+  CREDENTIALS_FILE,
+  PREVIOUS_FILE,
+  loginIsCutShort,
+  restoreCutShortLogin,
+} from '../accounts/credential-vault.js';
+import { logCredentialEvent } from '../accounts/credential-log.js';
+import { withCredentialLock } from '../claude/locks.js';
 import { TOKEN_FILE } from '../daemon/token-store.js';
 import { detectEditors } from '../editor/settings.js';
 import { readEditorEnvVar } from '../editor/install.js';
@@ -369,6 +376,47 @@ function repairClaudeIfBroken(context: CliContext, deps: DoctorDeps): void {
   const search = (deps.findClaude ?? (() => findRealClaude({ platform })))();
   if (search.broken.length === 0) return;
   (deps.repairClaude ?? (() => repairClaudeInstalls(claudeRepairDeps(context), { force: true })))();
+}
+
+/**
+ * `ccx doctor --fix`: put back the login kept before a cut-short save, for
+ * each account no running session holds. A running session saves its own
+ * working login home itself, and the kept one is older than that. The names
+ * put back.
+ */
+export function restoreCutShortLogins(context: CliContext): string[] {
+  const held = new Set(liveLeases(context.ctx).map((lease) => lease.account));
+  const restored: string[] = [];
+  for (const account of listAccounts(context.ctx)) {
+    if (held.has(account.name)) continue;
+    try {
+      if (!withCredentialLock(account.dir, () => restoreCutShortLogin(account.dir))) continue;
+    } catch {
+      continue; // left as it is, and the report still names it
+    }
+    restored.push(account.name);
+    logCredentialEvent(
+      {
+        account: account.name,
+        kind: 'rolled-back',
+        detail: 'the stored login had been saved cut short; put back the one kept before it',
+      },
+      context.ctx,
+    );
+  }
+  return restored;
+}
+
+/** Logins a cut-short save left unreadable; `--fix` puts back the ones kept before. */
+export function auditCutShortLogins(context: CliContext): DoctorCheck | null {
+  const cut = listAccounts(context.ctx).filter((account) => loginIsCutShort(account.dir));
+  if (cut.length === 0) return null;
+  return {
+    name: 'cut-short-logins',
+    ok: false,
+    detail: `saved cut short, so Claude cannot read them: ${cut.map((account) => account.name).join(', ')}`,
+    fix: ['ccx doctor --fix'],
+  };
 }
 
 /** Informational: is Chrome listening on the debug port (needed only for auto-login)? */
@@ -886,7 +934,12 @@ export async function runDoctor(
     auditRealClaude(context, deps),
     auditEditor(context),
     await auditBrowserPort(context, deps),
-    ...[await auditKeepalive(context, deps), auditDesktopHooks(context), auditArtifactHooks(context)].filter(
+    ...[
+      auditCutShortLogins(context),
+      await auditKeepalive(context, deps),
+      auditDesktopHooks(context),
+      auditArtifactHooks(context),
+    ].filter(
       (c): c is DoctorCheck => c !== null,
     ),
   ];
@@ -911,6 +964,7 @@ const LABELS: Record<string, string> = {
   keepalive: 'keepalive',
   'desktop-hooks': 'Claude Desktop',
   'page-routing': 'pages',
+  'cut-short-logins': 'broken logins',
 };
 
 /**
@@ -923,7 +977,10 @@ export async function doctorCommand(
   deps: DoctorDeps = {},
   options: { fix?: boolean } = {},
 ): Promise<number> {
-  if (options.fix) repairClaudeIfBroken(context, deps);
+  if (options.fix) {
+    repairClaudeIfBroken(context, deps);
+    restoreCutShortLogins(context);
+  }
   // The editor's folder never ends; a checkup is one of the times it is brought into step.
   await refreshEditor(context);
   const { checks, ok } = await runDoctor(context, deps);

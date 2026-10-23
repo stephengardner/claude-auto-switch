@@ -23,6 +23,12 @@ const SECURITY = '/usr/bin/security';
 const TIMEOUT_MS = 2000;
 /** The exit status `security` gives for an item that is not there. */
 const NOT_FOUND = 44;
+/**
+ * The longest command `security -i` takes whole. It reads a line in 4 KB
+ * pieces and runs each, so a longer add stores the login cut short and only
+ * then fails (measured: a 4066-byte line intact, a 4160-byte one cut).
+ */
+const INTERACTIVE_LINE_LIMIT = 4000;
 
 /** Claude namespaces an explicit CLAUDE_CONFIG_DIR by its NFC-normalized path. */
 export function keychainService(dir: string): string {
@@ -49,8 +55,18 @@ const findArgs = (dir: string, options: KeychainOptions): string[] => [
   '-s',
   keychainService(dir),
 ];
-const addCommand = (dir: string, text: string, options: KeychainOptions): string =>
-  `add-generic-password -U -a "${username(options)}" -s "${keychainService(dir)}" -X "${Buffer.from(text).toString('hex')}"\n`;
+/**
+ * How to save `text`: as a line on standard input, or, for a login too long
+ * for one, in the arguments, as Claude Code saves one. Arguments can be seen
+ * by programs running as this user while `security` runs; standard input
+ * cannot, so it is used whenever the login fits.
+ */
+const addCall = (dir: string, text: string, options: KeychainOptions): { args: string[]; input?: string } => {
+  const hex = Buffer.from(text).toString('hex');
+  const line = `add-generic-password -U -a "${username(options)}" -s "${keychainService(dir)}" -X "${hex}"\n`;
+  if (Buffer.byteLength(line) <= INTERACTIVE_LINE_LIMIT) return { args: ['-i'], input: line };
+  return { args: ['add-generic-password', '-U', '-a', username(options), '-s', keychainService(dir), '-X', hex] };
+};
 const deleteArgs = (dir: string, options: KeychainOptions): string[] => [
   'delete-generic-password',
   '-a',
@@ -107,21 +123,41 @@ export async function readKeychainCredentialAsync(dir: string, options: Keychain
   }
 }
 
-/** Feed the secret over stdin, never in argv or a shell command. */
+/**
+ * Save `text` as the login, never in a shell command. A write the item does
+ * not then show puts back what the item held before, so a failed write never
+ * leaves a broken login in place of a working one.
+ */
 export function writeKeychainCredential(dir: string, text: string, options: KeychainOptions = {}): void {
   if (!onMac(options)) {
     throw new Error('macOS Keychain is unavailable on this platform');
   }
-  try {
-    (options.exec ?? execFileSync)(SECURITY, ['-i'], {
-      input: addCommand(dir, text, options),
+  const add = (value: string): void => {
+    const call = addCall(dir, value, options);
+    (options.exec ?? execFileSync)(SECURITY, call.args, {
+      ...(call.input !== undefined ? { input: call.input } : {}),
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: TIMEOUT_MS,
     });
+  };
+  let before: string | null | undefined;
+  try {
+    before = readKeychainCredential(dir, options);
+  } catch {
+    before = undefined; // unknown, so nothing is put back
+  }
+  try {
+    add(text);
     // Interactive security can exit successfully even when a command failed.
     if (readKeychainCredential(dir, options) !== text.trim()) throw new Error('write failed');
   } catch {
+    try {
+      if (typeof before === 'string') add(before);
+      else if (before === null) deleteKeychainCredential(dir, options);
+    } catch {
+      /* the write's own failure is the one to report */
+    }
     throw writeFailed();
   }
 }
@@ -131,10 +167,29 @@ export async function writeKeychainCredentialAsync(dir: string, text: string, op
   if (!onMac(options)) {
     throw new Error('macOS Keychain is unavailable on this platform');
   }
+  const add = async (value: string): Promise<void> => {
+    const call = addCall(dir, value, options);
+    await (options.execAsync ?? execFileAsync)(SECURITY, call.args, {
+      ...(call.input !== undefined ? { input: call.input } : {}),
+      timeout: TIMEOUT_MS,
+    });
+  };
+  let before: string | null | undefined;
   try {
-    await (options.execAsync ?? execFileAsync)(SECURITY, ['-i'], { input: addCommand(dir, text, options), timeout: TIMEOUT_MS });
+    before = await readKeychainCredentialAsync(dir, options);
+  } catch {
+    before = undefined;
+  }
+  try {
+    await add(text);
     if ((await readKeychainCredentialAsync(dir, options)) !== text.trim()) throw new Error('write failed');
   } catch {
+    try {
+      if (typeof before === 'string') await add(before);
+      else if (before === null) await deleteKeychainCredentialAsync(dir, options);
+    } catch {
+      /* the write's own failure is the one to report */
+    }
     throw writeFailed();
   }
 }

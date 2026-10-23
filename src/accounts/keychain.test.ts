@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { execFileSync } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import {
   deleteKeychainCredentialAsync,
@@ -70,12 +71,13 @@ describe('macOS profile Keychain', () => {
       (args as string[])[0] === '-i' ? '' : secret,
     );
     writeKeychainCredential('/profile', secret, options);
-    expect(mock.mock.calls[0]?.[1]).toEqual(['-i']);
-    expect(mock.mock.calls[0]?.[2]).toMatchObject({
+    const writes = mock.mock.calls.filter((call) => (call[1] as string[])[0] !== 'find-generic-password');
+    expect(writes.map((call) => call[1])).toEqual([['-i']]);
+    expect(writes[0]?.[2]).toMatchObject({
       input: `add-generic-password -U -a "tester" -s "${keychainService('/profile')}" -X "${Buffer.from(secret).toString('hex')}"\n`,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    expect(mock).toHaveBeenCalledTimes(2);
+    expect(mock.mock.calls.at(-1)?.[1]).toEqual(['find-generic-password', '-a', 'tester', '-w', '-s', keychainService('/profile')]);
   });
 
   it('detects a failed interactive write even if security exits zero', () => {
@@ -162,8 +164,8 @@ describe('macOS profile Keychain, off the thread', () => {
       return stored;
     });
     await writeKeychainCredentialAsync('/profile', secret, options);
-    expect(mock.mock.calls.map((call) => call[1][0])).toEqual(['-i', 'find-generic-password']);
-    expect(JSON.stringify(mock.mock.calls[0]?.[1])).not.toContain('secret');
+    expect(mock.mock.calls.map((call) => call[1][0])).toEqual(['find-generic-password', '-i', 'find-generic-password']);
+    expect(JSON.stringify(mock.mock.calls.map((call) => call[1]))).not.toContain('secret');
   });
 
   it('fails a write the item does not show, though `security` said it went', async () => {
@@ -180,6 +182,149 @@ describe('macOS profile Keychain, off the thread', () => {
     expect(
       await settled(deleteKeychainCredentialAsync('/profile', waitingRunner(() => ({ code: 36, stdout: 'secret' })).options)),
     ).toEqual({ error: 'Could not remove the profile login from macOS Keychain' });
+  });
+});
+
+/**
+ * `security` as macOS runs it, for one item: `-i` reads a line 4096 bytes at
+ * a time and runs what it read, so a longer add stores the login cut short
+ * and then fails, as measured on macOS 26.
+ */
+function securityLikeMacOS() {
+  const items = new Map<string, string>();
+  const fail = (status: number): never => {
+    throw Object.assign(new Error('security failed'), { status, code: status });
+  };
+  const run = (args: string[], input?: string): string => {
+    const service = (list: string[]): string => list[list.indexOf('-s') + 1] ?? '';
+    if (args[0] === '-i') {
+      for (const line of (input ?? '').split('\n').filter(Boolean)) {
+        const read = Buffer.from(line).subarray(0, 4096).toString();
+        const hex = /-X "([0-9a-f]*)/.exec(read)?.[1] ?? '';
+        items.set(/-s "([^"]*)"/.exec(read)?.[1] ?? '', Buffer.from(hex.slice(0, hex.length - (hex.length % 2)), 'hex').toString());
+        if (read.length < line.length) fail(1);
+      }
+      return '';
+    }
+    if (args[0] === 'add-generic-password') {
+      items.set(service(args), Buffer.from(args[args.indexOf('-X') + 1] ?? '', 'hex').toString());
+      return '';
+    }
+    if (args[0] === 'find-generic-password') return items.get(service(args)) ?? fail(44);
+    if (args[0] === 'delete-generic-password') return items.delete(service(args)) ? '' : fail(44);
+    return fail(2);
+  };
+  const exec = vi.fn((_file: string, args: string[], options?: { input?: string }) => run(args, options?.input));
+  const execAsync = vi.fn(async (_file: string, args: string[], options: { input?: string; timeout: number }) =>
+    run(args, options.input),
+  );
+  return {
+    items,
+    exec,
+    options: { platform: 'darwin' as const, username: 'tester', exec: exec as unknown as typeof execFileSync, execAsync },
+  };
+}
+
+/** A login as long as one that carries sign-ins to other services: longer than one line of `security -i` takes. */
+const longLogin = JSON.stringify({
+  claudeAiOauth: { accessToken: 'a'.repeat(120), refreshToken: 'r'.repeat(120), expiresAt: 1 },
+  mcpOAuth: Object.fromEntries(['one', 'two', 'three', 'four'].map((name) => [name, { accessToken: name.repeat(200) }])),
+});
+
+describe('a login too long for one line of `security -i`', () => {
+  it('is long enough to need it', () => {
+    expect(longLogin.length).toBeGreaterThan(2100);
+  });
+
+  it('is saved whole, blocking', () => {
+    const security = securityLikeMacOS();
+    security.items.set(keychainService('/profile'), 'the login before');
+    expect(() => writeKeychainCredential('/profile', longLogin, security.options)).not.toThrow();
+    expect(security.items.get(keychainService('/profile'))).toBe(longLogin);
+    expect(readKeychainCredential('/profile', security.options)).toBe(longLogin);
+  });
+
+  it('is saved whole, off the thread', async () => {
+    const security = securityLikeMacOS();
+    security.items.set(keychainService('/profile'), 'the login before');
+    expect(await settled(writeKeychainCredentialAsync('/profile', longLogin, security.options))).toEqual({ value: undefined });
+    expect(security.items.get(keychainService('/profile'))).toBe(longLogin);
+  });
+
+  it('goes over standard input still when it fits', () => {
+    const security = securityLikeMacOS();
+    writeKeychainCredential('/profile', JSON.stringify({ accessToken: 'short' }), security.options);
+    const writes = security.exec.mock.calls.filter((call) => call[1][0] !== 'find-generic-password');
+    expect(writes.map((call) => call[1])).toEqual([['-i']]);
+  });
+});
+
+describe('a write the item does not show', () => {
+  /** `security` that takes every add as said and stores something else. */
+  function garbling() {
+    const security = securityLikeMacOS();
+    const service = keychainService('/profile');
+    const garble = (args: string[]): void => {
+      if (args[0] === '-i' || args[0] === 'add-generic-password') security.items.set(service, '{"claudeAiOauth":{"acc');
+    };
+    const exec = security.exec.getMockImplementation()!;
+    security.exec.mockImplementation((file, args, options) => {
+      const out = exec(file, args, options);
+      if (args.includes(Buffer.from('the new login').toString('hex')) || options?.input?.includes(Buffer.from('the new login').toString('hex'))) garble(args);
+      return out;
+    });
+    const execAsync = security.options.execAsync.getMockImplementation()!;
+    security.options.execAsync.mockImplementation(async (file, args, options) => {
+      const out = await execAsync(file, args, options);
+      if (options.input?.includes(Buffer.from('the new login').toString('hex'))) garble(args);
+      return out;
+    });
+    return security;
+  }
+
+  it('puts back the login that was there, blocking', () => {
+    const security = garbling();
+    security.items.set(keychainService('/profile'), 'the working login');
+    expect(() => writeKeychainCredential('/profile', 'the new login', security.options)).toThrow(
+      'Could not save the profile login in macOS Keychain',
+    );
+    expect(security.items.get(keychainService('/profile'))).toBe('the working login');
+  });
+
+  it('puts back the login that was there, off the thread', async () => {
+    const security = garbling();
+    security.items.set(keychainService('/profile'), 'the working login');
+    expect(await settled(writeKeychainCredentialAsync('/profile', 'the new login', security.options))).toEqual({
+      error: 'Could not save the profile login in macOS Keychain',
+    });
+    expect(security.items.get(keychainService('/profile'))).toBe('the working login');
+  });
+
+  it('leaves no item where there was none', () => {
+    const security = garbling();
+    expect(() => writeKeychainCredential('/profile', 'the new login', security.options)).toThrow(
+      'Could not save the profile login in macOS Keychain',
+    );
+    expect(security.items.has(keychainService('/profile'))).toBe(false);
+  });
+});
+
+// The real program, on a Mac, with a throwaway item: the limit is macOS's, so
+// only `security` itself can show it is not hit.
+describe.runIf(process.platform === 'darwin')('the real `security`, with a throwaway login', () => {
+  it('saves a long login whole and reads it back, blocking and off the thread', async () => {
+    const dir = path.join(os.tmpdir(), `ccx-keychain-test-${process.pid}-${Date.now()}`);
+    try {
+      writeKeychainCredential(dir, '{"first":"a short login"}');
+      expect(() => writeKeychainCredential(dir, longLogin)).not.toThrow();
+      expect(readKeychainCredential(dir)).toBe(longLogin);
+      const longer = longLogin.replace('"one"', '"five"');
+      expect(await settled(writeKeychainCredentialAsync(dir, longer))).toEqual({ value: undefined });
+      expect(await readKeychainCredentialAsync(dir)).toBe(longer);
+    } finally {
+      deleteKeychainCredential(dir);
+    }
+    expect(readKeychainCredential(dir)).toBeNull();
   });
 });
 

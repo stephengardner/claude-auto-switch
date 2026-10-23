@@ -284,6 +284,34 @@ export function rollbackCredential(dir: string): boolean {
 }
 
 /**
+ * Whether `dir` holds a login that no longer reads as one at all, as a save
+ * cut short by `security -i` left many before 2.6.26. A login Claude signed
+ * out still reads as JSON, so it is not counted.
+ */
+export function loginIsCutShort(dir: string): boolean {
+  let text: string;
+  try {
+    text = readCredential(credentialPath(dir));
+  } catch {
+    return false;
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed !== 'object' || parsed === null;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Put back the login kept before a cut-short save (loginIsCutShort). The kept
+ * one is only ever this folder's own, replaced while it still worked.
+ */
+export function restoreCutShortLogin(dir: string): boolean {
+  return loginIsCutShort(dir) && rollbackCredential(dir);
+}
+
+/**
  * Keep the login a profile holds right now as the one to put back, just before
  * a sign-in replaces it. `claude auth login` writes over the live credential
  * itself, so without this the backup is whatever a renewal last retired, which

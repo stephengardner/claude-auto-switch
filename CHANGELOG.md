@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.26]
+
+### Fixed
+
+- **A long login is saved whole in the macOS Keychain.** ccx saved a login by
+  one line to `security -i`, which takes about 4 KB a line and stores a longer
+  one cut short, so any login over about 2,000 characters (one carrying
+  sign-ins to other services is) was saved broken, and Claude then found no
+  login there. A running session saving its renewed login home did this again
+  on every try, so an account's stored login broke minutes after each sign-in,
+  and `ccx list` showed nearly every account signed out. A login too long for
+  one line is now saved in `security`'s arguments, as Claude Code saves one,
+  and a save the item does not then show puts back what it held before.
+  `ccx doctor` names a login saved cut short, and `ccx doctor --fix` puts back
+  the one kept before it, for each account no running session holds; a
+  running session saves its own working login home once it moves to this
+  version.
+
 ## [2.6.25]
 
 ### Fixed
