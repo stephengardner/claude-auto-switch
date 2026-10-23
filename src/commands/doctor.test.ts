@@ -978,7 +978,7 @@ describe('logins saved cut short', () => {
     const c = withClaude(lines);
     const dir = account(c, 'one', cut);
     await doctorCommand(c, deps, { fix: true });
-    expect(JSON.parse(stored(dir))).toEqual({ claudeAiOauth: { accessToken: 'at-one', refreshToken: 'rt-one' } });
+    expect(stored(dir)).toBe(JSON.stringify({ claudeAiOauth: { accessToken: 'at-one', refreshToken: 'rt-one' } }));
     expect(lines.join('\n')).not.toContain('saved cut short');
   });
 

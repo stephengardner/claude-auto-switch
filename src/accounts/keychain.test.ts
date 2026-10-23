@@ -163,7 +163,7 @@ describe('macOS profile Keychain, off the thread', () => {
       }
       return stored;
     });
-    await writeKeychainCredentialAsync('/profile', secret, options);
+    expect(await settled(writeKeychainCredentialAsync('/profile', secret, options))).toEqual({ value: undefined });
     expect(mock.mock.calls.map((call) => call[1][0])).toEqual(['find-generic-password', '-i', 'find-generic-password']);
     expect(JSON.stringify(mock.mock.calls.map((call) => call[1]))).not.toContain('secret');
   });
