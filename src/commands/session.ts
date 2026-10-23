@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { newerInstall } from '../update/newer-install.js';
 import { resyncSession, returnSessionChanges } from '../session/write-back.js';
-import { buildClaudeFolder, moveFolderLogin, sessionLoginStore } from '../session/claude-folder.js';
+import { buildClaudeFolder, claudesLocksTaken, moveFolderLogin, sessionLoginStore } from '../session/claude-folder.js';
 import { configHome } from '../config/paths.js';
 import { configStamp, fileStamp, loadConfig } from '../config/config.js';
 import { sweepAbandonedTemps } from '../util/fs-json.js';
@@ -388,7 +388,7 @@ export async function runInteractiveHotSwap(
       // the list it had until the registry happens to change again.
       accountsStamp = stamp;
       // An account added meanwhile has its login read off the thread before a decision asks for it.
-      void keychainWatch?.watch(accounts.map((a) => a.dir));
+      void keychainWatch?.watch(accounts.map((a) => a.dir), { pinned: true });
     } catch {
       /* keep the accounts it had, and try again next time */
     }
@@ -1122,6 +1122,10 @@ export async function runInteractiveHotSwap(
     account: Account,
     how: { temporary?: boolean; mustReread?: boolean; underClaude?: boolean } = {},
   ): void => {
+    // While its Claude plainly holds a lock, nothing is announced either: each
+    // look would otherwise put the session on the next account for a moment,
+    // where another session deciding whether to renew that login can see it.
+    if (how.underClaude && claudesLocksTaken(sessionDir)) throw new LoginBusy();
     // The ORDER of announce / copy / release is the safety property, so it lives
     // in activateWithLease where tests pin it: announce first, copy second,
     // release the old one last. Any gap between a login being in use and being
@@ -2516,8 +2520,8 @@ export async function runInteractiveHotSwap(
         const watch = watchKeychain();
         keychainWatch = watch;
         try {
-          await watch.watch([sessionDir], { pinned: true });
-          await watch.watch([...accounts.map((a) => a.dir), ...editorSpellings()]);
+          // Kept however long nothing asks about one, so a decision made later never reads one on this thread.
+          await watch.watch([sessionDir, ...accounts.map((a) => a.dir), ...editorSpellings()], { pinned: true });
           return await launchChild(childArgs, stdin);
         } finally {
           watch.stop();

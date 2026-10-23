@@ -21,6 +21,30 @@ import { FAKE_ENV, PTY_AVAILABLE, fakeClaude, freshUsage, launches, readLog } fr
  * the lock as Claude would.
  */
 
+/**
+ * The look at Claude's locks a move makes before announcing anything, which a
+ * test turns off so that what keeps the move from writing past a lock is the
+ * move's own try at it, as when Claude takes its lock just after that look.
+ */
+const looking = vi.hoisted(() => ({ on: true }));
+vi.mock('../../src/session/claude-folder.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/session/claude-folder.js')>();
+  return { ...real, claudesLocksTaken: (dir: string) => looking.on && real.claudesLocksTaken(dir) };
+});
+
+/** Each time the session announces it is on an account, and when. */
+const leases = vi.hoisted(() => ({ taken: [] as Array<{ account: string; at: number }> }));
+vi.mock('../../src/session/lease.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/session/lease.js')>();
+  return {
+    ...real,
+    takeLease: (...args: Parameters<typeof real.takeLease>) => {
+      leases.taken.push({ account: args[0], at: Date.now() });
+      return real.takeLease(...args);
+    },
+  };
+});
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 async function until(ok: () => boolean, ms: number): Promise<void> {
   const deadline = Date.now() + ms;
@@ -89,6 +113,7 @@ function events(s: Scene): Array<{ at: number; msg: string }> {
 
 describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a move in place while Claude holds its locks', () => {
   afterEach(() => {
+    looking.on = true;
     vi.unstubAllGlobals();
     for (const name of [...FAKE_ENV, 'FAKE_CLAUDE_CHATTER_EVERY_MS', 'FAKE_CLAUDE_CHATTER_STAMP', 'FAKE_CLAUDE_EMIT_CAP']) {
       delete process.env[name];
@@ -97,6 +122,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a move in place while Claude
 
   it("writes nothing until Claude lets go of its login's lock, and never holds up its terminal meanwhile", { timeout: 60_000 }, async () => {
     const s = await scene();
+    leases.taken.length = 0;
     const lock = path.join(s.folder, CREDENTIALS_LOCK_DIR);
     const relay = watchRelay();
     let tries: ReturnType<typeof watchLockDirTries> | null = null;
@@ -123,9 +149,10 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a move in place while Claude
       rmSync(lock, { recursive: true, force: true });
     }
     expect(whileHeld).toBe('A');
-    // Looked at again while held, but never waited for on the thread that relays Claude.
+    // Nor said to be on B meanwhile, where another session deciding whether to renew B would see it.
+    expect(leases.taken.filter((t) => t.account === 'B' && t.at < letGoAt)).toEqual([]);
+    // Never waited for on the thread that relays Claude.
     const tried = (tries as ReturnType<typeof watchLockDirTries> | null)?.tries() ?? [];
-    expect(tried.length).toBeGreaterThanOrEqual(2);
     expect(triesWhileALineWaited(relay.lines(), tried)).toBeLessThan(10);
     // Moved once it was let go, in place.
     expect(onAccount(s)).toBe('B');
@@ -137,6 +164,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a move in place while Claude
 
   it('leaves the move waiting while the lock is never let go, says so, and the session stays on its account', { timeout: 60_000 }, async () => {
     const s = await scene();
+    looking.on = false;
     s.context.moveLockWaitMs = 1_000;
     const lock = path.join(s.folder, CREDENTIALS_LOCK_DIR);
     const said = (): boolean => events(s).some((e) => e.msg.includes('is waiting: Claude in this session is using its login'));
@@ -167,6 +195,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a move in place while Claude
 
   it("writes nothing while Claude holds the lock it takes to save its state", { timeout: 60_000 }, async () => {
     const s = await scene();
+    looking.on = false;
     const lock = path.join(s.folder, '.claude.json.lock');
     let whileHeld: string | null = null;
     let exit: number;
@@ -189,7 +218,33 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a move in place while Claude
     expect(exit).toBe(0);
   });
 
+  it('says nothing of the next account while Claude holds the lock it takes to save its state', { timeout: 60_000 }, async () => {
+    const s = await scene();
+    leases.taken.length = 0;
+    const lock = path.join(s.folder, '.claude.json.lock');
+    let letGoAt = 0;
+    let exit: number;
+    try {
+      const running = runCommand(s.context, []);
+      await until(() => launches(readLog(s.runsLog)).length > 0, 30_000);
+      mkdirSync(lock);
+      writeSwitchRequest('B', Date.now(), 'seamless', s.context.ctx, process.pid);
+      await sleep(1_500);
+      rmSync(lock, { recursive: true, force: true });
+      letGoAt = Date.now();
+      await until(() => onAccount(s) === 'B', 10_000);
+      writeFileSync(s.exitClaude, '');
+      exit = await running;
+    } finally {
+      rmSync(lock, { recursive: true, force: true });
+    }
+    expect(leases.taken.filter((t) => t.account === 'B' && t.at < letGoAt)).toEqual([]);
+    expect(onAccount(s)).toBe('B');
+    expect(exit).toBe(0);
+  });
+
   it('moves a session a limit was met in once Claude lets go, in place, never past the lock', { timeout: 60_000 }, async () => {
+    looking.on = false;
     let letGoAt = 0;
     let checks = 0;
     let lock = '';
@@ -225,6 +280,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a move in place while Claude
   });
 
   it('relaunches a session a limit was met in when the lock is never let go, rather than move past it', { timeout: 60_000 }, async () => {
+    looking.on = false;
     let lock = '';
     let checks = 0;
     const s = await scene(() => {

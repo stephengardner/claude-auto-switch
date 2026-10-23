@@ -7,7 +7,7 @@ import {
   nudgeLoginReread,
   rollbackCredential,
 } from '../accounts/credential-vault.js';
-import { acquireLockDir, CREDENTIALS_LOCK_DIR, withCredentialLock } from '../claude/locks.js';
+import { acquireLockDir, CREDENTIALS_LOCK_DIR, lockDirHeld, withCredentialLock } from '../claude/locks.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { secureMkdir, writeSecretFile } from '../util/secret-file.js';
 import { retireKeptSettings } from './session-dir.js';
@@ -234,6 +234,15 @@ export interface FolderLoginMove {
 
 /** The lock Claude 2.1.302 takes to save `<folder>/.claude.json`, under which it reads the file again first. */
 const stateLockOf = (dir: string): string => `${path.join(dir, '.claude.json')}.lock`;
+
+/**
+ * Whether a Claude in `dir` looks to hold either lock a move needs, by looking
+ * only. The move tries the locks themselves all the same: this answer can be
+ * out of date by the time it is acted on.
+ */
+export function claudesLocksTaken(dir: string): boolean {
+  return lockDirHeld(path.join(dir, CREDENTIALS_LOCK_DIR)) || lockDirHeld(stateLockOf(dir));
+}
 
 /**
  * Move a folder's login to the account in `accountDir`, under Claude's own
