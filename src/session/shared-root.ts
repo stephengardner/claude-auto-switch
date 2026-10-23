@@ -74,9 +74,10 @@ export function ensureSharedDir(sessionDir: string, name: string, c: PathCtx = {
     // A real directory with prior ccx-side content: move it aside first (fails
     // EBUSY/EPERM if a live session holds files open -- then we just skip).
     const backup = `${link}.pre-share`;
-    renameSync(link, uniquePath(backup));
+    const moved = uniquePath(backup);
+    renameSync(link, moved);
     setTarget(link, target, { platform: c.platform });
-    mergeTree(latestBackup(sessionDir, name), target);
+    mergeTree(moved, target);
     return true;
   } catch {
     return isLink(link); // busy or blocked: report the current state
@@ -397,27 +398,14 @@ function uniquePath(base: string): string {
 }
 
 /**
- * The folder a copy moved aside to link it came from, and which copy it is,
- * when uniquePath named it (`<name>.pre-share`, then `-2` and on); null for
- * any other name, `notes.pre-share-drafts` among them.
+ * The folder a copy moved aside to link it came from, when uniquePath named
+ * it (`<name>.pre-share`, then `-2` and on); null for any other name,
+ * `notes.pre-share-drafts` among them.
  */
-function movedAside(entry: string): { name: string; n: number } | null {
+function movedAside(entry: string): string | null {
   const at = entry.lastIndexOf('.pre-share');
   if (at <= 0) return null;
-  const rest = entry.slice(at + '.pre-share'.length);
-  if (rest === '') return { name: entry.slice(0, at), n: 1 };
-  return /^-\d+$/.test(rest) ? { name: entry.slice(0, at), n: Number(rest.slice(1)) } : null;
-}
-
-/** The newest copy of `name` moved aside, by number: as text, `-10` sorts before `-9`. */
-function latestBackup(sessionDir: string, name = 'projects'): string {
-  const copies = readdirSync(sessionDir).flatMap((entry) => {
-    const aside = movedAside(entry);
-    return aside?.name === name ? [{ entry, n: aside.n }] : [];
-  });
-  copies.sort((a, b) => a.n - b.n);
-  const last = copies[copies.length - 1];
-  return last ? path.join(sessionDir, last.entry) : '';
+  return /^(-\d+)?$/.test(entry.slice(at + '.pre-share'.length)) ? entry.slice(0, at) : null;
 }
 
 /** Where src and dest both have a file: true once it is dealt with, false when it could not be. */
@@ -814,7 +802,7 @@ export function returnOwnFolders(dir: string, label: string, c: PathCtx): boolea
   let merged = true;
   for (const entry of entries) {
     const own = path.join(dir, entry);
-    const name = movedAside(entry)?.name ?? entry;
+    const name = movedAside(entry) ?? entry;
     if (NOT_KEPT_AT_REMOVAL.has(name) || CCX_OWN_FOLDERS.has(name) || isLockFolder(name)) continue;
     try {
       if (isLink(own) || !lstatSync(own).isDirectory()) continue;

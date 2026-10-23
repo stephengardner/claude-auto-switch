@@ -89,6 +89,21 @@ describe('ensureSharedProjects', () => {
     expect(readOrNull(path.join(home, '.claude', 'projects', '-work', 'chat.jsonl'))).toBe('the newest chat\n');
   });
 
+  it('merges the folder it has just moved aside where the copies before it have a gap', () => {
+    // `-2` is gone, so the folder goes there, below `-10`.
+    const { home, sessionDir, c } = setup();
+    for (let i = 1; i <= 10; i++) {
+      if (i !== 2) mkdirSync(path.join(sessionDir, i === 1 ? 'projects.pre-share' : `projects.pre-share-${i}`));
+    }
+    const own = path.join(sessionDir, 'projects', '-work');
+    mkdirSync(own, { recursive: true });
+    writeFileSync(path.join(own, 'chat.jsonl'), 'the newest chat\n', 'utf8');
+
+    expect(ensureSharedProjects(sessionDir, c)).toBe(true);
+    expect(readOrNull(path.join(sessionDir, 'projects.pre-share-2', '-work', 'chat.jsonl'))).toBe('the newest chat\n');
+    expect(readOrNull(path.join(home, '.claude', 'projects', '-work', 'chat.jsonl'))).toBe('the newest chat\n');
+  });
+
   it('is idempotent and safe without a resolvable home', () => {
     const { sessionDir, c } = setup();
     expect(ensureSharedProjects(sessionDir, c)).toBe(true);
@@ -464,6 +479,18 @@ describe('returnSharedUserFiles', () => {
     writeFileSync(path.join(home, '.claude', 'plans'), 'in the way', 'utf8');
 
     expect(returnSharedUserFiles(sessionDir, c)).toBe(false);
+  });
+
+  it('hands back each copy moved aside to link a folder, numbered or not, into that folder', () => {
+    const { home, sessionDir, c } = setup();
+    for (const copy of ['todos.pre-share', 'todos.pre-share-2']) {
+      mkdirSync(path.join(sessionDir, copy), { recursive: true });
+      writeFileSync(path.join(sessionDir, copy, `${copy}.json`), copy, 'utf8');
+    }
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(true);
+    expect(readOrNull(path.join(home, '.claude', 'todos', 'todos.pre-share.json'))).toBe('todos.pre-share');
+    expect(readOrNull(path.join(home, '.claude', 'todos', 'todos.pre-share-2.json'))).toBe('todos.pre-share-2');
   });
 
   it('hands back a folder whose name only has `.pre-share` in it under that name', () => {

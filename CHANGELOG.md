@@ -21,7 +21,8 @@ semantic versioning.
   folder ccx keeps in a session for the Artifact hook are left out. A session
   whose folders are all links, the usual case, hands back nothing and looks
   inside none of them. Also, linking a folder that has been moved aside ten
-  times or more now merges the newest copy rather than the ninth.
+  times or more now merges the copy it has just moved aside, rather than the
+  ninth.
 
 ## [2.6.24]
 
