@@ -23,6 +23,7 @@ import { configHome, homeDir, type PathCtx } from '../config/paths.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { setTarget, isLink } from '../daemon/junction.js';
+import { HOP_FOLDER } from '../artifacts/hop-files.js';
 
 /**
  * Claude keeps transcripts, /resume history, and per-project memories under
@@ -185,12 +186,13 @@ const SHARED_FILES: ReadonlyArray<{ name: string; merge: 'whole' | 'lines' }> = 
 const baseOf = (sessionDir: string, name: string): string => path.join(sessionDir, `.ccx-base.${name}`);
 
 /**
- * Hand back what a session changed in the user's own files, before its folder
- * is removed. A hard link shares an edit made in place, but an editor that
- * saves by writing a new file and renaming it over the old one leaves the
- * session holding the only copy, and so does a copy where links were refused,
- * and a CLAUDE.md first written inside a session (a memory saved there) was
- * never linked at all. See planWhole for what goes back.
+ * Hand back what a session changed in the user's own files, and the folders it
+ * holds of its own, before its folder is removed. A hard link shares an edit
+ * made in place, but an editor that saves by writing a new file and renaming
+ * it over the old one leaves the session holding the only copy, and so does a
+ * copy where links were refused, and a CLAUDE.md first written inside a
+ * session (a memory saved there) was never linked at all. See planWhole for
+ * what goes back.
  *
  * Written whole or not at all, so a failed write never leaves the user's own
  * file half done. Prompt history is only added to instead, because every Claude
@@ -237,25 +239,14 @@ export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): bool
       if (!rescue(from, name, c)) kept = false;
     }
   }
-  // A folder that should have been a link but is the session's own (one made
-  // before it was shared, or a link that could not be made) is merged in,
-  // never over what is there: /rewind checkpoints and todos made in it go
-  // on being found, a file the user has too is settled by adoptClash, which
-  // may keep the session's in `rescued/<session>-<folder>/`, and the session
-  // folder stays while one cannot be.
-  // Plugins are not: an install is the user's own to manage.
-  const owner = path.basename(sessionDir);
-  for (const name of sharedDirNames(root)) {
-    if (name === 'plugins' || name === 'sessions') continue;
-    const own = path.join(sessionDir, name);
-    try {
-      if (!existsSync(own) || isLink(own) || !lstatSync(own).isDirectory()) continue;
-      mkdirSync(path.join(root, name), { recursive: true });
-      if (!mergeTree(own, path.join(root, name), adoptClash(`${owner}-${name}`, c))) kept = false;
-    } catch {
-      kept = false;
-    }
-  }
+  // A folder the session holds of its own rather than by a link (one made
+  // before it was shared, one whose link could not be made, its transcripts
+  // in `projects` among them, one ~/.claude does not have yet) is merged in
+  // by the editor's rule, never over what is there: a file the user has too
+  // is settled by adoptClash, which may keep the session's in
+  // `rescued/<session>-<folder>/`, and the session folder stays while one
+  // cannot be.
+  if (!returnOwnFolders(sessionDir, path.basename(sessionDir), c)) kept = false;
   return kept;
 }
 
@@ -405,9 +396,16 @@ function uniquePath(base: string): string {
   return `${base}-${i}`;
 }
 
+/** The newest of uniquePath's `<name>.pre-share`, `-2`, `-3` and on, by number: as text, `-10` sorts before `-9`. */
 function latestBackup(sessionDir: string, name = 'projects'): string {
-  const names = readdirSync(sessionDir).filter((n) => n.startsWith(`${name}.pre-share`));
-  names.sort();
+  const base = `${name}.pre-share`;
+  const rank = (entry: string): number => {
+    if (entry === base) return 1;
+    const n = entry.startsWith(`${base}-`) ? entry.slice(base.length + 1) : '';
+    return /^\d+$/.test(n) ? Number(n) : 0;
+  };
+  const names = readdirSync(sessionDir).filter((n) => rank(n) > 0);
+  names.sort((a, b) => rank(a) - rank(b));
   const last = names[names.length - 1];
   return last ? path.join(sessionDir, last) : '';
 }
@@ -779,12 +777,16 @@ export function rescueTextOnce(text: string, name: string, c: PathCtx): boolean 
 /** Claude's own backups of the folder's state, an install, live records and editor links: nothing to keep. */
 const NOT_KEPT_AT_REMOVAL = new Set(['backups', 'plugins', 'sessions', 'ide']);
 
+/** What ccx keeps in a Claude folder for itself, and never Claude's: the Artifact hook's exchange with its session. */
+const CCX_OWN_FOLDERS = new Set([HOP_FOLDER]);
+
 /**
- * Before a long-lived Claude folder is removed, bring into ~/.claude every
- * folder it holds of its own rather than by link, by adoptFolderHistory's rule
- * for a file both have: one its Claude made that ~/.claude did not have, and
- * one moved aside when it was linked (`<name>.pre-share`). False when one
- * could not be merged, so the folder must stay.
+ * Before a Claude folder of ccx's (the editor's, a session's) is removed,
+ * bring into ~/.claude every folder it holds of its own rather than by link,
+ * by adoptFolderHistory's rule for a file both have: one its Claude made that
+ * ~/.claude did not have, and one moved aside when it was linked
+ * (`<name>.pre-share`). False when one could not be merged, so the folder
+ * must stay.
  */
 export function returnOwnFolders(dir: string, label: string, c: PathCtx): boolean {
   let root: string;
@@ -804,7 +806,7 @@ export function returnOwnFolders(dir: string, label: string, c: PathCtx): boolea
     const own = path.join(dir, entry);
     const aside = entry.indexOf('.pre-share');
     const name = aside > 0 ? entry.slice(0, aside) : entry;
-    if (NOT_KEPT_AT_REMOVAL.has(name) || isLockFolder(name)) continue;
+    if (NOT_KEPT_AT_REMOVAL.has(name) || CCX_OWN_FOLDERS.has(name) || isLockFolder(name)) continue;
     try {
       if (isLink(own) || !lstatSync(own).isDirectory()) continue;
       mkdirSync(path.join(root, name), { recursive: true });

@@ -22,6 +22,7 @@ import {
   returnSharedUserFiles,
   sharedDirNames,
 } from './shared-root.js';
+import { hopDir, openHops } from '../artifacts/hop-files.js';
 import type { PathCtx } from '../config/paths.js';
 
 function setup(): { home: string; sessionDir: string; c: PathCtx } {
@@ -30,6 +31,14 @@ function setup(): { home: string; sessionDir: string; c: PathCtx } {
   mkdirSync(sessionDir, { recursive: true });
   return { home, sessionDir, c: { env: { HOME: home, USERPROFILE: home } } };
 }
+
+const readOrNull = (file: string): string | null => {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+};
 
 describe('ensureSharedProjects', () => {
   it('links a fresh session projects dir to ~/.claude/projects', () => {
@@ -63,6 +72,21 @@ describe('ensureSharedProjects', () => {
     expect(readFileSync(path.join(link, 'repo-b', 'old-session.jsonl'), 'utf8')).toBe('old');
     // Merge never overwrites an existing file in the shared store.
     expect(readFileSync(path.join(real, 'old-session.jsonl'), 'utf8')).toBe('old');
+  });
+
+  it('merges the folder it has just moved aside, the eleventh, not one moved aside before', () => {
+    // Left by ten builds of a folder that could not be cleared: `.pre-share`, then `-2` to `-10`.
+    const { home, sessionDir, c } = setup();
+    for (let i = 1; i <= 10; i++) {
+      mkdirSync(path.join(sessionDir, i === 1 ? 'projects.pre-share' : `projects.pre-share-${i}`));
+    }
+    const own = path.join(sessionDir, 'projects', '-work');
+    mkdirSync(own, { recursive: true });
+    writeFileSync(path.join(own, 'chat.jsonl'), 'the newest chat\n', 'utf8');
+
+    expect(ensureSharedProjects(sessionDir, c)).toBe(true);
+    expect(readOrNull(path.join(sessionDir, 'projects.pre-share-11', '-work', 'chat.jsonl'))).toBe('the newest chat\n');
+    expect(readOrNull(path.join(home, '.claude', 'projects', '-work', 'chat.jsonl'))).toBe('the newest chat\n');
   });
 
   it('is idempotent and safe without a resolvable home', () => {
@@ -379,14 +403,6 @@ describe('returnSharedUserFiles', () => {
     return { home, sessionDir, c, yours, mine };
   }
 
-  const readOrNull = (file: string): string | null => {
-    try {
-      return readFileSync(file, 'utf8');
-    } catch {
-      return null;
-    }
-  };
-
   it("keeps the session's copy of a file you also have in rescued/, once, and yours as it is", () => {
     const { home, sessionDir, c, yours } = bothHaveAList();
 
@@ -448,5 +464,20 @@ describe('returnSharedUserFiles', () => {
     writeFileSync(path.join(home, '.claude', 'plans'), 'in the way', 'utf8');
 
     expect(returnSharedUserFiles(sessionDir, c)).toBe(false);
+  });
+
+  it('hands back none of what is never kept, a lock, or the folder ccx keeps in a session for itself', () => {
+    const { home, sessionDir, c } = setup();
+    // Each of the session's own, as where its link could not be made or it is never linked.
+    for (const name of ['backups', 'plugins', 'sessions', 'ide', '.oauth_refresh.lock']) {
+      mkdirSync(path.join(sessionDir, name), { recursive: true });
+      writeFileSync(path.join(sessionDir, name, 'x'), name, 'utf8');
+    }
+    openHops(sessionDir, 4242);
+    expect(readdirSync(hopDir(sessionDir))).not.toEqual([]);
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(true);
+    expect(readdirSync(path.join(home, '.claude'))).toEqual([]);
   });
 });

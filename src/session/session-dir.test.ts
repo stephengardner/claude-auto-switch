@@ -47,6 +47,14 @@ function home(): { ctx: PathCtx; root: string; claudeSettings: string } {
   return { ctx, root: path.join(dir, 'sessions'), claudeSettings: path.join(dir, '.claude', 'settings.json') };
 }
 
+const readOrNull = (file: string): string | null => {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+};
+
 /** Write the user's real Claude settings inside a sandbox. */
 function writeUserSettings(file: string, settings: Record<string, unknown>): void {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -151,6 +159,67 @@ describe('sweeping session directories left behind', () => {
     expect(readFileSync(yours, 'utf8')).toBe('your list');
     const kept = path.join(rescued, '6161-todos', 'agent.json');
     expect(existsSync(kept) ? readFileSync(kept, 'utf8') : null).toBe('the session list');
+  });
+
+  /** A dead session whose link to ~/.claude/projects could not be made, so its chat is in a `projects` of its own. */
+  function deadSessionWithAChat(
+    name: string,
+    chat: string,
+  ): { ctx: PathCtx; dir: string; claude: string; rescued: string } {
+    const { ctx, root } = home();
+    const dir = seed(root, name);
+    mkdirSync(path.join(dir, 'projects', '-work'), { recursive: true });
+    writeFileSync(path.join(dir, 'projects', '-work', 'chat.jsonl'), chat, 'utf8');
+    const claude = path.join(path.dirname(root), '.claude');
+    return { ctx, dir, claude, rescued: path.join(path.dirname(root), 'rescued') };
+  }
+
+  it("puts a dead session's own transcripts into ~/.claude/projects before its folder goes", () => {
+    const { ctx, dir, claude } = deadSessionWithAChat('7171', '{"type":"user"}\n');
+
+    expect(sweepDeadSessionDirs(ctx, { isAlive: () => false })).toEqual(['7171']);
+    expect(existsSync(dir)).toBe(false);
+    expect(readOrNull(path.join(claude, 'projects', '-work', 'chat.jsonl'))).toBe('{"type":"user"}\n');
+  });
+
+  it("keeps a dead session's transcript in rescued/ where yours of that name differs, and yours as it is", () => {
+    const { ctx, claude, rescued } = deadSessionWithAChat('7272', '{"said":"in the session"}\n');
+    const yours = path.join(claude, 'projects', '-work', 'chat.jsonl');
+    mkdirSync(path.dirname(yours), { recursive: true });
+    writeFileSync(yours, '{"said":"yours"}\n', 'utf8');
+
+    expect(sweepDeadSessionDirs(ctx, { isAlive: () => false })).toEqual(['7272']);
+    expect(readOrNull(yours)).toBe('{"said":"yours"}\n');
+    expect(readOrNull(path.join(rescued, '7272-projects', '-work', 'chat.jsonl'))).toBe('{"said":"in the session"}\n');
+  });
+
+  it("keeps a dead session's folder while its transcript cannot be kept aside, then keeps it in rescued/", () => {
+    const { ctx, dir, claude, rescued } = deadSessionWithAChat('7373', '{"said":"in the session"}\n');
+    const yours = path.join(claude, 'projects', '-work', 'chat.jsonl');
+    mkdirSync(path.dirname(yours), { recursive: true });
+    writeFileSync(yours, '{"said":"yours"}\n', 'utf8');
+    writeFileSync(rescued, 'in the way', 'utf8');
+
+    expect(sweepDeadSessionDirs(ctx, { isAlive: () => false })).toEqual([]);
+    expect(readOrNull(path.join(dir, 'projects', '-work', 'chat.jsonl'))).toBe('{"said":"in the session"}\n');
+
+    rmSync(rescued);
+    expect(sweepDeadSessionDirs(ctx, { isAlive: () => false })).toEqual(['7373']);
+    expect(readOrNull(yours)).toBe('{"said":"yours"}\n');
+    expect(readOrNull(path.join(rescued, '7373-projects', '-work', 'chat.jsonl'))).toBe('{"said":"in the session"}\n');
+  });
+
+  it('puts a folder only a dead session had into ~/.claude, which has none of that kind yet', () => {
+    const { ctx, root } = home();
+    const dir = seed(root, '7474');
+    mkdirSync(path.join(dir, 'a-new-kind'), { recursive: true });
+    writeFileSync(path.join(dir, 'a-new-kind', 'one.json'), '{"one":1}', 'utf8');
+    const claude = path.join(path.dirname(root), '.claude');
+    mkdirSync(claude, { recursive: true });
+
+    expect(sweepDeadSessionDirs(ctx, { isAlive: () => false })).toEqual(['7474']);
+    expect(readOrNull(path.join(claude, 'a-new-kind', 'one.json'))).toBe('{"one":1}');
+    expect(existsSync(path.join(path.dirname(root), 'rescued'))).toBe(false);
   });
 
   it('will not take over a leftover folder holding an edit it could not save anywhere', () => {

@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.25]
+
+### Fixed
+
+- **A session's own transcripts and folders go into `~/.claude` when it ends
+  (#175).** Where a terminal session's link to `~/.claude/projects` could not
+  be made, its chats were in a `projects` folder of its own, and were deleted
+  with the session folder, so `--resume` and `/resume` could not find them; a
+  folder Claude made in the session that `~/.claude` did not have yet went the
+  same way. Both are now merged into `~/.claude` by the rule the session's
+  other folders use since 2.6.24: a chat yours also has under that name and
+  differs from is kept in `rescued/<pid>-projects/`, and while one cannot be
+  kept, the session folder stays for the next clean-up. Claude's backups of the
+  session's state, plugins, live session records, editor links, locks and the
+  folder ccx keeps in a session for the Artifact hook are left out. A session
+  whose folders are all links, the usual case, hands back nothing and looks
+  inside none of them. Also, linking a folder that has been moved aside ten
+  times or more now merges the newest copy rather than the ninth.
+
 ## [2.6.24]
 
 ### Fixed

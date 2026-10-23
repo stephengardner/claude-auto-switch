@@ -50,8 +50,10 @@ export type HopState =
   /** The session is back on `from`. `at` is when the move was applied. */
   | { id: string; state: 'ended'; to: string; from: string; at: number; endedAt: number; by: HopEnd };
 
+export const HOP_FOLDER = 'artifact-hops';
+
 export function hopDir(sessionDir: string): string {
-  return path.join(sessionDir, 'artifact-hops');
+  return path.join(sessionDir, HOP_FOLDER);
 }
 
 /** A tool call's id as a file name: its own letters, digits, dashes and underscores. */
