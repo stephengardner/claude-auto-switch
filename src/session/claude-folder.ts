@@ -75,14 +75,21 @@ export interface FolderRefresh {
  * Bring a folder that never ends into step with the user's ~/.claude: what is
  * new there linked in, and its settings, Claude's state and the user's files
  * synced both ways. The caller keeps two refreshes of one folder apart.
+ * `lockWaitMs`, when given, is how long each lock it takes may be waited for;
+ * one not had then leaves that part to the next refresh.
  */
-export function refreshClaudeFolder(dir: string, c: PathCtx = {}, passage: SettingsPassage = {}): FolderRefresh {
+export function refreshClaudeFolder(
+  dir: string,
+  c: PathCtx = {},
+  passage: SettingsPassage = {},
+  lockWaitMs?: number,
+): FolderRefresh {
   ensureSharedProjects(dir, c);
   linkSharedDirs(dir, c);
   return {
-    settings: syncSettings(dir, c, passage),
-    state: syncState(dir, c),
-    files: syncSharedFiles(dir, c, (file, plan) => writeUserFile(file, c, plan)),
+    settings: syncSettings(dir, c, passage, lockWaitMs),
+    state: syncState(dir, c, lockWaitMs),
+    files: syncSharedFiles(dir, c, (file, plan) => writeUserFile(file, c, plan, lockWaitMs)),
   };
 }
 
@@ -217,8 +224,10 @@ export interface FolderLoginMove {
   /**
    * Only while holding both locks a Claude here takes, its login's and its
    * state's (`.claude.json.lock`), each tried once: nothing is written, and
-   * false is returned, when either is taken. Without it the move waits a little
-   * for the login's lock, then goes ahead.
+   * false is returned, when either is taken. Every move under a running Claude
+   * passes it. Without it, as at a session's start before its Claude runs, the
+   * move waits a little for the login's lock, then goes ahead: a lock there
+   * then is one a Claude that has ended left behind.
    */
   onlyUnderClaudesLocks?: boolean;
 }

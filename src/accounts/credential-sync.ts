@@ -2,14 +2,17 @@ import { existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import {
   credentialPath,
-  credentialFingerprint,
   isUsableCredential,
-  installCredential,
+  installCredentialSteps,
+  loginTextFingerprint,
   sessionIdentityEmail,
+  usableLoginText,
 } from './credential-vault.js';
-import { readExpiresAt } from '../usage/token-expiry.js';
-import { acquireLockDir, CREDENTIALS_LOCK_DIR, withCredentialLockIfFree } from '../claude/locks.js';
-import { copyCredential } from './credential-storage.js';
+import { loginExpiresAt } from '../usage/token-expiry.js';
+import { CREDENTIALS_LOCK_DIR, lockDirSteps } from '../claude/locks.js';
+import { copyCredentialSteps, readCredentialSteps } from './credential-storage.js';
+import { keychainBlocking, keychainOnTimers, type KeychainIo } from './keychain-view.js';
+import { runBlocking, runOnTimers, type Steps } from '../util/steps.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { liveLeases } from '../session/lease.js';
 import type { PathCtx } from '../config/paths.js';
@@ -125,19 +128,23 @@ type SnapshotOutcome<T> = { ok: true; value: T } | { ok: false; reason: 'busy' |
  * Try-only: a busy source lock means a refresh is mid-write, which is exactly
  * when to come back later rather than wait.
  */
-function withSourceSnapshot<T>(sourceDir: string, fn: (snapshot: string) => T): SnapshotOutcome<T> {
-  const lock = acquireLockDir(path.join(sourceDir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
+function* sourceSnapshotSteps<T>(
+  sourceDir: string,
+  use: (snapshot: string) => Steps<T>,
+  io: KeychainIo,
+): Steps<SnapshotOutcome<T>> {
+  const lock = yield* lockDirSteps(path.join(sourceDir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
   if (!lock.held) return { ok: false, reason: 'busy' };
   const snapshot = `${credentialPath(sourceDir)}.snapshot.${process.pid}`;
   try {
-    copyCredential(credentialPath(sourceDir), snapshot);
+    yield* copyCredentialSteps(credentialPath(sourceDir), snapshot, io);
   } catch {
     lock.release();
     return { ok: false, reason: 'unreadable' };
   }
   lock.release();
   try {
-    return { ok: true, value: fn(snapshot) };
+    return { ok: true, value: yield* use(snapshot) };
   } finally {
     try {
       rmSync(snapshot, { force: true });
@@ -162,23 +169,39 @@ export function pullProfileIntoSession(
   // Cheap pre-check outside the lock: same lineage is the overwhelmingly
   // common case and needs no lock to detect. Re-checked inside.
   if (readPullEvidence(account, sessionDir).sameLineage) return 'skipped';
+  return runBlocking(pullSteps(account, sessionDir, ctx, keychainBlocking));
+}
 
-  let result: PullResult = 'skipped';
-  const ran = withCredentialLockIfFree(sessionDir, () => {
-    const evidence = readPullEvidence(account, sessionDir);
+/**
+ * pullProfileIntoSession for a running session: the pre-check reads the
+ * Keychain as the session last read it, and what is done under the lock reads
+ * and writes it on timers.
+ */
+export async function pullProfileIntoSessionAsync(
+  account: SyncAccount,
+  sessionDir: string,
+  ctx: PathCtx = {},
+): Promise<PullResult> {
+  if (readPullEvidence(account, sessionDir).sameLineage) return 'skipped';
+  return runOnTimers(pullSteps(account, sessionDir, ctx, keychainOnTimers));
+}
+
+function* pullSteps(account: SyncAccount, sessionDir: string, ctx: PathCtx, io: KeychainIo): Steps<PullResult> {
+  const lock = yield* lockDirSteps(path.join(sessionDir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
+  if (!lock.held) return 'busy';
+  try {
+    const evidence = yield* readPullEvidenceSteps(account, sessionDir, io);
     const decision = decidePull(evidence);
-    if (!decision.pull) return;
+    if (!decision.pull) return 'skipped';
     // From a snapshot taken under the PROFILE's own lock, so a refresh that is
     // mid-write when we look can never be half-copied into a running session.
-    const installed = withSourceSnapshot(account.dir, (snapshot) =>
-      installCredential(sessionDir, snapshot),
+    const installed = yield* sourceSnapshotSteps(
+      account.dir,
+      (snapshot) => installCredentialSteps(sessionDir, snapshot, io),
+      io,
     );
-    if (!installed.ok) {
-      if (installed.reason === 'busy') result = 'busy';
-      return;
-    }
-    if (!installed.value) return;
-    result = 'pulled';
+    if (!installed.ok) return installed.reason === 'busy' ? 'busy' : 'skipped';
+    if (!installed.value) return 'skipped';
     logCredentialEvent(
       {
         account: account.name,
@@ -189,24 +212,39 @@ export function pullProfileIntoSession(
       },
       ctx,
     );
-  });
-  return ran ? result : 'busy';
+    return 'pulled';
+  } finally {
+    lock.release();
+  }
 }
 
 function readPullEvidence(account: SyncAccount, sessionDir: string): PullEvidence {
-  const sessionFile = credentialPath(sessionDir);
-  const profileFile = credentialPath(account.dir);
-  const sessionPrint = credentialFingerprint(sessionDir);
-  const profilePrint = credentialFingerprint(account.dir);
+  return runBlocking(readPullEvidenceSteps(account, sessionDir, keychainBlocking));
+}
+
+/** Each side's login read once, and judged as credentialFingerprint, isUsableCredential and readExpiresAt would. */
+function* readPullEvidenceSteps(account: SyncAccount, sessionDir: string, io: KeychainIo): Steps<PullEvidence> {
+  const session = yield* loginOrNull(credentialPath(sessionDir), io);
+  const profile = yield* loginOrNull(credentialPath(account.dir), io);
+  const sessionPrint = session === null ? null : loginTextFingerprint(session);
+  const profilePrint = profile === null ? null : loginTextFingerprint(profile);
   return {
-    sessionUsable: isUsableCredential(sessionFile),
-    profileUsable: isUsableCredential(profileFile),
+    sessionUsable: session !== null && usableLoginText(session),
+    profileUsable: profile !== null && usableLoginText(profile),
     sameLineage: sessionPrint !== null && sessionPrint === profilePrint,
     sessionEmail: sessionIdentityEmail(sessionDir),
     accountEmail: account.email ?? null,
-    sessionExpiresAt: readExpiresAt(sessionFile),
-    profileExpiresAt: readExpiresAt(profileFile),
+    sessionExpiresAt: session === null ? 0 : loginExpiresAt(session),
+    profileExpiresAt: profile === null ? 0 : loginExpiresAt(profile),
   };
+}
+
+function* loginOrNull(file: string, io: KeychainIo): Steps<string | null> {
+  try {
+    return yield* readCredentialSteps(file, io);
+  } catch {
+    return null;
+  }
 }
 
 export interface RecoverResult {
@@ -241,8 +279,12 @@ export function recoverLoginFromLiveSession(
     // Snapshot under the SESSION's own lock: its Claude can be mid-refresh at
     // this exact moment, and adopting half a write would destroy the profile
     // login this is trying to save.
-    const adopted = withSourceSnapshot(lease.configDir, (snapshot) =>
-      installCredential(account.dir, snapshot),
+    const adopted = runBlocking(
+      sourceSnapshotSteps(
+        lease.configDir,
+        (snapshot) => installCredentialSteps(account.dir, snapshot, keychainBlocking),
+        keychainBlocking,
+      ),
     );
     if (!adopted.ok || !adopted.value) continue;
     logCredentialEvent(

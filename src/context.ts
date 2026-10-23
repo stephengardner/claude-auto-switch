@@ -88,6 +88,13 @@ export interface CliContext {
    * event. Production looks for 10 s.
    */
   editorMoveRetryMs?: number;
+  /**
+   * Injected in tests: how long a move under a running terminal session's
+   * Claude keeps looking for its Claude's locks before it says the move is
+   * waiting, or, for the move a limit makes, relaunches instead. Production
+   * looks for 10 s.
+   */
+  moveLockWaitMs?: number;
   /** Injected in tests: overrides the API lookup of who a stored login belongs to. */
   lookupOwner?: (dir: string) => Promise<string | null>;
   /** Injected in tests: a newer ccx installed under this one (update/newer-install). */

@@ -1,4 +1,4 @@
-import { hasCredential } from '../accounts/credential-storage.js';
+import { hasCredentialSteps } from '../accounts/credential-storage.js';
 import { thrownReason } from '../util/thrown-reason.js';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -21,7 +21,7 @@ import {
 import { startProactiveRotation } from '../usage/proactive.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
 import { moveEditorToActive, takeUpEditorRenewal } from '../editor/folder.js';
-import { carryIntoEditor, retryEditorCarries } from '../editor/folder-login.js';
+import { carryIntoEditor, editorFolderLogin, isEditorFolder, retryEditorCarries } from '../editor/folder-login.js';
 import {
   loadLedger,
   updateLedger,
@@ -97,11 +97,12 @@ import { DEFAULT_RESUME_PROMPT } from '../config/config.schema.js';
 import { readConversation, readRunningModel, rememberReport } from '../session/claude-report.js';
 import { usableCapacity } from '../usage/usable-capacity.js';
 import {
-  installCredential,
-  isUsableCredential,
+  installCredentialSteps,
+  isUsableCredentialSteps,
   identityKey,
   sessionIdentityEmail,
   credentialFingerprint,
+  credentialFingerprintSteps,
   credentialFileFingerprint,
   hasUsableLogin,
   nudgeLoginReread,
@@ -111,14 +112,22 @@ import { askAboutLogin, isOnHold, reportFinishedLogin } from '../accounts/login-
 import {
   propagateRenewal,
   snapshotSharing,
-  writeAndCarry,
+  writeAndCarrySteps,
   type SharingSnapshot,
 } from '../accounts/shared-login.js';
 import { carryTargets } from '../accounts/duplicate-guard.js';
 import {
-  pullProfileIntoSession,
+  pullProfileIntoSessionAsync,
   recoverLoginFromLiveSession,
 } from '../accounts/credential-sync.js';
+import {
+  keychainBlocking,
+  keychainOnTimers,
+  watchKeychain,
+  type KeychainIo,
+  type KeychainWatch,
+} from '../accounts/keychain-view.js';
+import { call, runBlocking, runOnTimers, type Steps } from '../util/steps.js';
 import { decideSaveBack, savesOnLeaving } from '../accounts/save-back.js';
 import { readExpiresAt } from '../usage/token-expiry.js';
 import {
@@ -146,12 +155,7 @@ import { activateWithLease, finishWithLease } from '../session/handoff.js';
 import { ensureLoginUsable, readinessMessage } from '../session/preflight.js';
 import { renewalIsDue, refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { probeUsage } from '../usage/limit-probe.js';
-import {
-  withCredentialLockIfFree,
-  acquireLockDir,
-  lockDirHeld,
-  CREDENTIALS_LOCK_DIR,
-} from '../claude/locks.js';
+import { acquireLockDir, lockDirHeld, lockDirSteps, CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { appendEvent, flushQueuedEvents, type EventDetail } from '../events/log.js';
 import { claudeForSession, type CliContext } from '../context.js';
@@ -178,6 +182,26 @@ const PREFLIGHT_PROBE_MS = 3_000;
  * is soon enough for this session's next pull and the next start to take it up.
  */
 const EDITOR_TAKE_UP_MS = 60_000;
+/**
+ * How long a move under the running Claude keeps looking for the locks its
+ * Claude takes before it says the move is waiting for them, as the editor's
+ * folder does (editor/folder). It goes on looking after that.
+ */
+const MOVE_LOCK_WAIT_MS = 10_000;
+/** How soon a move a limit makes, which found the locks taken, is tried again. */
+const RELIEF_RETRY_MS = 200;
+
+/**
+ * A move under the running Claude that was not made because its Claude holds
+ * one of the locks it takes around its login and its state: nothing was
+ * written, and the session is still on the account it was on.
+ */
+class LoginBusy extends Error {
+  readonly busy = true;
+  constructor() {
+    super("Claude in this session is using its login (one of its locks is taken), so nothing was moved yet");
+  }
+}
 
 /** What became of renewing an account's login so a session could be moved onto it in place. */
 type MoveRenewal =
@@ -332,6 +356,8 @@ export async function runInteractiveHotSwap(
    */
   let accounts = listAccounts(context.ctx);
   let accountsStamp = fileStamp(registryFilePath(context.ctx));
+  /** While Claude runs, how this session reads the Keychain (accounts/keychain-view): set per launch. */
+  let keychainWatch: KeychainWatch | null = null;
   /** The accounts another running session or worker is on now, or another worker has just picked. */
   const inUseElsewhere = (): Set<string> => {
     const busy = claimedElsewhere(context.ctx);
@@ -361,6 +387,8 @@ export async function runInteractiveHotSwap(
       // tried again at the next decision, rather than leaving the session on
       // the list it had until the registry happens to change again.
       accountsStamp = stamp;
+      // An account added meanwhile has its login read off the thread before a decision asks for it.
+      void keychainWatch?.watch(accounts.map((a) => a.dir));
     } catch {
       /* keep the accounts it had, and try again next time */
     }
@@ -790,11 +818,23 @@ export async function runInteractiveHotSwap(
    * written, or it was refused, and a refusal cannot change until the file does.
    * 'retry' means the attempt failed for a reason that might not repeat, so the
    * next poll should try again rather than skip it.
+   *
+   * Written once, as steps (util/steps): the mirror runs it on timers, while
+   * Claude runs; a move and the session's end run it blocking. `lockWaitMs`:
+   * how long a profile sharing the login is waited for; a move under the
+   * running Claude passes 0, since it runs on the thread that relays it.
    */
-  const saveBack = (account: Account, confirmedOwner?: string | null): SaveOutcome => {
+  const saveBack = (account: Account, confirmedOwner?: string | null, lockWaitMs?: number): SaveOutcome =>
+    runBlocking(saveBackSteps(account, confirmedOwner, keychainBlocking, lockWaitMs));
+  const saveBackSteps = function* (
+    account: Account,
+    confirmedOwner: string | null | undefined,
+    io: KeychainIo,
+    lockWaitMs?: number,
+  ): Steps<SaveOutcome> {
     // Nothing there to copy. A later tick may find one.
     try {
-      if (!hasCredential(sessionCreds)) return 'retry';
+      if (!(yield* hasCredentialSteps(sessionCreds, io))) return 'retry';
     } catch (error) {
       logEvent(`could not read the session login to save it back: ${thrownReason(error)}`);
       return 'retry';
@@ -802,7 +842,7 @@ export async function runInteractiveHotSwap(
     // Never propagate a corrupt credential: a killed or partial OAuth refresh
     // can leave the session credential empty or malformed, and overwriting a
     // good login with that is the worst outcome (installCredential re-checks).
-    if (!isUsableCredential(sessionCreds)) {
+    if (!(yield* isUsableCredentialSteps(sessionCreds, io))) {
       // The session is signed out. Recording this is how "why was I asked to
       // sign in again?" becomes answerable later.
       logCredentialEvent(
@@ -852,14 +892,22 @@ export async function runInteractiveHotSwap(
     // what stops a duplicate profile rotting while its twin is in use.
     let carried: string[];
     try {
-      carried = writeAndCarry(
+      carried = yield* writeAndCarrySteps(
         account,
         accounts,
         carryTargets(account, accounts),
         // Keeps the account's previous credential as a rollback cushion.
-        () => void installCredential(account.dir, sessionCreds),
-        // The editor's folder too, when it held the login this session's Claude just replaced.
-        { alsoInto: carryIntoEditor(context.ctx, account.dir) },
+        function* () {
+          yield* installCredentialSteps(account.dir, sessionCreds, io);
+        },
+        io,
+        {
+          // The editor's folder too, when it held the login this session's Claude just replaced.
+          alsoInto: carryIntoEditor(context.ctx, account.dir),
+          ...(lockWaitMs !== undefined
+            ? { lock: (dir: string) => lockDirSteps(path.join(dir, CREDENTIALS_LOCK_DIR), { waitMs: lockWaitMs }) }
+            : {}),
+        },
       );
     } catch {
       // A local write failure, not a decision. It might not repeat, and giving
@@ -934,64 +982,71 @@ export async function runInteractiveHotSwap(
    * never written over a good one.
    */
   const mirrorSessionLoginToProfile = (account: Account): void => {
-    // Cheap pre-check before taking the lock; the same rule is applied again
-    // inside it, because the file can change in between.
+    // Cheap pre-check, on the login as this session last read it, which runs
+    // no `security`; the same rule is applied again under the lock, on the
+    // login as it is there.
     if (!shouldCheck(mirror, credStamp())) return;
+    void runOnTimers(mirrorSteps(account)).catch(() => undefined);
+  };
+  const sessionLock = path.join(sessionDir, CREDENTIALS_LOCK_DIR);
+  /** The mirror's work, on timers: the lock, the owner lookup and the Keychain alike never hold up the thread. */
+  const mirrorSteps = function* (account: Account): Steps<void> {
     // Under the same lock that serializes credential refreshes, so this copy
-    // cannot run against a refresh that is part-way through writing.
-    //
-    // Try-only, never waiting: the lock's wait is a synchronous sleep loop of up
-    // to two seconds, and this runs on the poll that also relays the session's
-    // output, so waiting here would visibly freeze the terminal. A busy lock just
-    // means someone else is writing, which is precisely when skipping is right;
-    // the next tick picks it up, and the final save catches anything left.
-    withCredentialLockIfFree(sessionDir, () => {
-      // Re-read inside the lock: the file may have changed again between the
-      // check above and getting the lock, and the stamp has to describe what was
-      // actually copied or a later change would be treated as already mirrored.
-      const nowStamp = credStamp();
+    // cannot run against a refresh that is part-way through writing. Try-only:
+    // a busy lock means someone else is writing, which is precisely when
+    // skipping is right; the next tick picks it up, and the final save catches
+    // anything left.
+    const first = yield* lockDirSteps(sessionLock, { waitMs: 0 });
+    if (!first.held) return;
+    let nowStamp = '';
+    try {
+      // Read again inside the lock: the login may have changed again since the
+      // check above, and the stamp has to describe what is actually copied or a
+      // later change would be treated as already mirrored.
+      nowStamp = (yield* credentialFingerprintSteps(sessionDir, keychainOnTimers)) ?? '';
       if (!shouldCheck(mirror, nowStamp)) return;
       // Claimed as IN FLIGHT rather than done, so the same credential is not
       // looked up twice while one answer is still coming back.
       mirror = beginCheck(mirror, nowStamp);
-
+    } finally {
+      first.release();
+    }
+    try {
       // Ask who this login actually belongs to before copying it anywhere. The
       // local identity file lags a mid-session /login, so it still names the OLD
       // account at this moment and would wave the new account's login straight
       // into the wrong profile. Only the API can answer without lagging.
-      //
       // Affordable because it runs on a CHANGED credential, not on every tick: a
-      // refresh every few hours, or a sign-in. Not awaited, because the poll that
-      // called this also relays the screen.
-      void fetchTokenOwner(sessionDir)
-        .then((owner) => {
-          // The answer belongs to the credential that was READ, and the file can
-          // change while the API is being asked. So the lock is taken AGAIN here
-          // and the check is repeated inside it: checking outside the lock leaves
-          // a window between "still the same" and the copy, and a login that
-          // arrived in that window would be written under someone else's
-          // confirmed identity.
-          //
-          // Try-only, as everywhere on this poll: a busy lock means someone else
-          // is writing, and the next tick picks it up because the credential is
-          // left unsettled.
-          const ran = withCredentialLockIfFree(sessionDir, () => {
-            if (credStamp() !== nowStamp) {
-              // Superseded. Not settled: whatever replaced it still needs a look.
-              mirror = abandonCheck(mirror, nowStamp);
-              return;
-            }
-            mirror = finishCheck(mirror, nowStamp, saveBack(account, owner));
-          });
-          if (!ran) mirror = abandonCheck(mirror, nowStamp);
-        })
-        .catch(() => {
-          // Could not reach the API, so nothing was decided and the credential
-          // stays eligible for another try. A network blip must not mean a
-          // refreshed token is never written back for the rest of the session.
+      // refresh every few hours, or a sign-in.
+      const owner = yield* call(() => fetchTokenOwner(sessionDir));
+      // The answer belongs to the credential that was READ, and the login can
+      // change while the API is being asked. So the lock is taken AGAIN here and
+      // the check is repeated inside it: checking outside the lock leaves a
+      // window between "still the same" and the copy, and a login that arrived
+      // in that window would be written under someone else's confirmed identity.
+      const again = yield* lockDirSteps(sessionLock, { waitMs: 0 });
+      if (!again.held) {
+        mirror = abandonCheck(mirror, nowStamp);
+        return;
+      }
+      try {
+        if (((yield* credentialFingerprintSteps(sessionDir, keychainOnTimers)) ?? '') !== nowStamp) {
+          // Superseded. Not settled: whatever replaced it still needs a look.
           mirror = abandonCheck(mirror, nowStamp);
-        });
-    });
+          return;
+        }
+        const saved = yield* saveBackSteps(account, owner, keychainOnTimers);
+        mirror = finishCheck(mirror, nowStamp, saved);
+      } finally {
+        again.release();
+      }
+    } catch {
+      // Could not reach the API, or something failed on the way, so nothing was
+      // decided and the credential stays eligible for another try. A network
+      // blip must not mean a refreshed token is never written back for the rest
+      // of the session.
+      mirror = abandonCheck(mirror, nowStamp);
+    }
   };
 
   /**
@@ -1008,6 +1063,8 @@ export async function runInteractiveHotSwap(
   /** Whether a look for a renewal the editor made is under way, so one tick does not start another, and when the last began. */
   let lookingAtEditor = false;
   let lastEditorLook = 0;
+  /** Whether a pull is under way, on timers, so one tick does not start another. */
+  let pulling = false;
   const pullRenewedLogin = (account: Account): void => {
     const now = Date.now();
     if (now - lastPullCheck < 5_000) return;
@@ -1017,8 +1074,7 @@ export async function runInteractiveHotSwap(
     // The editor's folder holds its own copy of its account's login, with no
     // ccx process beside it to bring a renewal home: this session, on the same
     // account, does, and a later pull takes it up from the profile. Less often
-    // than the pull: on macOS each look runs `security` on this thread, which
-    // also relays the terminal.
+    // than the pull, since the editor renews it once every few hours.
     if (!lookingAtEditor && now - lastEditorLook >= (context.editorTakeUpMs ?? EDITOR_TAKE_UP_MS)) {
       lastEditorLook = now;
       lookingAtEditor = true;
@@ -1029,15 +1085,24 @@ export async function runInteractiveHotSwap(
         lookingAtEditor = false;
       });
     }
-    if (pullProfileIntoSession(account, sessionDir, context.ctx) === 'pulled') {
-      // What was just installed came FROM the profile, so it is not a change
-      // to mirror back; settling it here saves an identity lookup per pull.
-      mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
-      logEvent(`the "${account.name}" login was renewed elsewhere; this session picked it up`, {
-        kind: 'credential-sync',
-        data: { account: account.name, direction: 'pull' },
+    if (pulling) return;
+    pulling = true;
+    void pullProfileIntoSessionAsync(account, sessionDir, context.ctx)
+      .then((result) => {
+        if (result !== 'pulled') return;
+        // What was just installed came FROM the profile, so it is not a change
+        // to mirror back; settling it here saves an identity lookup per pull.
+        const stamp = credStamp();
+        mirror = finishCheck(beginCheck(mirror, stamp), stamp, 'settled');
+        logEvent(`the "${account.name}" login was renewed elsewhere; this session picked it up`, {
+          kind: 'credential-sync',
+          data: { account: account.name, direction: 'pull' },
+        });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        pulling = false;
       });
-    }
   };
 
   /**
@@ -1045,8 +1110,17 @@ export async function runInteractiveHotSwap(
    * under Claude's own credential lock so it cannot collide with a background
    * token refresh, and a failure part-way rolls the session credential back
    * instead of leaving the session on a half-applied account.
+   *
+   * `underClaude`, for a move while Claude runs: made only while holding both
+   * locks its Claude takes, tried once and never waited for on this thread,
+   * which relays Claude's terminal. When either is taken nothing is written,
+   * the session stays where it was, and LoginBusy is thrown for the caller to
+   * try again on its own timer.
    */
-  const activate = (account: Account, how: { temporary?: boolean; mustReread?: boolean } = {}): void => {
+  const activate = (
+    account: Account,
+    how: { temporary?: boolean; mustReread?: boolean; underClaude?: boolean } = {},
+  ): void => {
     // The ORDER of announce / copy / release is the safety property, so it lives
     // in activateWithLease where tests pin it: announce first, copy second,
     // release the old one last. Any gap between a login being in use and being
@@ -1063,7 +1137,7 @@ export async function runInteractiveHotSwap(
         capUnregisteredEmail = null;
       },
       install: () => {
-        moveFolderLogin(sessionDir, account.dir, context.ctx, sessionLoginStore(sessionDir, context.loginInKeychain), {
+        const moved = moveFolderLogin(sessionDir, account.dir, context.ctx, sessionLoginStore(sessionDir, context.loginInKeychain), {
           leaving: () => {
             const leaving = current;
             if (
@@ -1075,7 +1149,7 @@ export async function runInteractiveHotSwap(
                 () => readExpiresAt(path.join(leaving.dir, CREDS)),
               )
             ) {
-              saveBack(leaving);
+              saveBack(leaving, undefined, how.underClaude ? 0 : undefined);
             }
           },
           // What we just put there is by definition already in the profile, so it
@@ -1084,7 +1158,9 @@ export async function runInteractiveHotSwap(
             mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
           },
           ...(how.mustReread ? { mustReread: true } : {}),
+          ...(how.underClaude ? { onlyUnderClaudesLocks: true } : {}),
         });
+        if (!moved) throw new LoginBusy();
       },
     });
     current = account;
@@ -1290,7 +1366,7 @@ export async function runInteractiveHotSwap(
     },
     // Only a move away has a call counting on Claude reading the new login at
     // once. Going back is better done unconfirmed than not done.
-    activate: (account, trip) => activate(account, { temporary: true, mustReread: trip === 'away' }),
+    activate: (account, trip) => activate(account, { temporary: true, mustReread: trip === 'away', underClaude: true }),
     // A call that counts on the login already here: Claude reads it again
     // before the call, in case it was still on the one before it.
     pin: () => {
@@ -1715,7 +1791,7 @@ export async function runInteractiveHotSwap(
         notice(`${reason}; moving to "${account}" before this account runs out`);
         if (!worker) {
           setActive(account, context.ctx);
-          void moveEditorToActive(context);
+          void moveEditorToActive(context, { session: true });
         }
         // Addressed to THIS session. A shared request is taken by whichever
         // session looks first, so this one's early move could move another.
@@ -2000,7 +2076,7 @@ export async function runInteractiveHotSwap(
       // they were. Consumed once, so the next ordinary start updates them again.
       if (!nextStartTargeted && !worker) {
         setActive(account.name, context.ctx);
-        void moveEditorToActive(context);
+        void moveEditorToActive(context, { session: true });
       }
       nextStartTargeted = false;
       const token = readToken(account.dir);
@@ -2035,11 +2111,20 @@ export async function runInteractiveHotSwap(
             data: { account: current.name },
           });
         }
-        mirrorSessionLoginToProfile(current);
-        pullRenewedLogin(current);
+        // The logins whose folders say they may have changed are read again
+        // first, off the thread, so what these two read is the login as it is.
+        void (keychainWatch?.look() ?? Promise.resolve()).then(() => {
+          if (!current) return;
+          mirrorSessionLoginToProfile(current);
+          pullRenewedLogin(current);
+        });
       };
       /** The switch this launch is waiting to make by a restart, once said. */
       let restartAwaited: string | null = null;
+      /** A move in place this launch is waiting to make while its Claude holds its locks, since when, and whether that has been said. */
+      let moveWaiting: { account: string; since: number; said: boolean } | null = null;
+      /** Since when the move a limit makes has found its Claude's locks taken. */
+      let reliefWaitingSince: number | null = null;
       const switchWatch = (restartBlocker: () => RestartBlocker | null): string | null => {
         // A visit to another account for one Artifact call comes first, and
         // while one is held or being prepared every other move waits for the
@@ -2120,9 +2205,30 @@ export async function runInteractiveHotSwap(
           if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
           return target.name;
         }
+        try {
+          activate(target, { underClaude: true });
+        } catch (error) {
+          if (!(error instanceof LoginBusy)) {
+            consume();
+            throw error;
+          }
+          // Its Claude is using its login: nothing was written, and the request
+          // stays, for the next look to try again. Said once it has waited a while.
+          const waiting = moveWaiting?.account === target.name ? moveWaiting : { account: target.name, since: Date.now(), said: false };
+          moveWaiting = waiting;
+          if (!waiting.said && Date.now() - waiting.since >= (context.moveLockWaitMs ?? MOVE_LOCK_WAIT_MS)) {
+            waiting.said = true;
+            notice(
+              `the move to "${target.name}" is waiting: Claude in this session is using its login, so this session ` +
+                `stays on "${current?.name ?? account.name}" until it lets go, and ccx moves it then`,
+              { kind: 'move-pending', data: { to: target.name, from: current?.name ?? account.name } },
+            );
+          }
+          return null;
+        }
+        moveWaiting = null;
         consume();
         switchRenewal = null;
-        activate(target);
         // A TARGETED switch (`ccx use --here/--session`) moves only this session:
         // it must not touch the global active account or the editor pointer, which
         // belong to the default session. A broadcast switch is the old behaviour
@@ -2130,7 +2236,7 @@ export async function runInteractiveHotSwap(
         // either way; only the global surfaces are gated.
         if (!targeted && !worker) {
           setActive(target.name, context.ctx);
-          void moveEditorToActive(context);
+          void moveEditorToActive(context, { session: true });
         }
         notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
         notifyAccountSwitch(target.name, 'switched in place');
@@ -2156,6 +2262,7 @@ export async function runInteractiveHotSwap(
       const onCapConfirmed = (hit: { reason?: string; resetAt?: number }, opts: CapContext): CapDecision => {
         // Whose limit it is was settled when it was confirmed (see limitMetOn).
         const capName = limitMetOn ?? capOwner ?? current?.name ?? account.name;
+        const confirmedAt = capConfirmedAt;
         capConfirmedAt = null;
 
         const carryOn = relaunchPrompt();
@@ -2196,13 +2303,26 @@ export async function runInteractiveHotSwap(
           }
           if (next) {
             try {
-              activate(next.account); // seamless swap under the live child; updates `current`
+              activate(next.account, { underClaude: true }); // seamless swap under the live child; updates `current`
               relievedTo = next.account;
               anyway = next.anyway;
-            } catch {
+              reliefWaitingSince = null;
+            } catch (error) {
               // A swap that could not be applied must not strand the child on a
               // half-changed account: fall through to the restart path.
               relievedTo = null;
+              if (error instanceof LoginBusy) {
+                // Its Claude holds a lock the move waits for, as while it renews
+                // its login: asked again shortly, still undecided meanwhile, and
+                // relaunched instead once that has gone on too long.
+                const now = Date.now();
+                reliefWaitingSince ??= now;
+                if (now - reliefWaitingSince < (context.moveLockWaitMs ?? MOVE_LOCK_WAIT_MS)) {
+                  capConfirmedAt = confirmedAt;
+                  return { kind: 'retry', afterMs: RELIEF_RETRY_MS };
+                }
+              }
+              reliefWaitingSince = null;
             }
           }
         }
@@ -2252,7 +2372,7 @@ export async function runInteractiveHotSwap(
         // and the editor pointer SHOULD follow, same as the swap loop's own moves.
         if (!worker) {
           setActive(relievedTo.name, context.ctx);
-          void moveEditorToActive(context);
+          void moveEditorToActive(context, { session: true });
         }
         notice(
           anyway !== null
@@ -2379,10 +2499,28 @@ export async function runInteractiveHotSwap(
        * ends, before anything reads which account that is: what the run ended
        * on must never be put down to an account it was only visiting.
        */
-      const runChild = async (childArgs: string[], stdin?: string): Promise<SessionOutcome> => {
+      /** Every name the editor's Claude knows its folder's Keychain item by, or none when it has no folder. */
+      const editorSpellings = (): string[] => {
         try {
+          return isEditorFolder(context.ctx) ? editorFolderLogin(context.ctx).spellings : [];
+        } catch {
+          return [];
+        }
+      };
+      const runChild = async (childArgs: string[], stdin?: string): Promise<SessionOutcome> => {
+        // While Claude runs, ccx reads the Keychain only off this thread, which
+        // relays its terminal, and only where a folder says a login may have
+        // changed (accounts/keychain-view): every login this session reads is
+        // read first, before Claude starts.
+        const watch = watchKeychain();
+        keychainWatch = watch;
+        try {
+          await watch.watch([sessionDir], { pinned: true });
+          await watch.watch([...accounts.map((a) => a.dir), ...editorSpellings()]);
           return await launchChild(childArgs, stdin);
         } finally {
+          watch.stop();
+          if (keychainWatch === watch) keychainWatch = null;
           capConfirmedAt = null;
           hop.childEnded();
         }

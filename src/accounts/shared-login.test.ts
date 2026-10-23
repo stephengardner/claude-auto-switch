@@ -1,14 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   propagateRenewal,
+  propagateRenewalSteps,
   snapshotSharing,
   writeAndCarry,
   renewAndCarry,
 } from './shared-login.js';
 import { credentialFingerprint, installCredential } from './credential-vault.js';
+import { CREDENTIALS_LOCK_DIR, type LockHandle } from '../claude/locks.js';
+import { keychainOnTimers } from './keychain-view.js';
+import { runOnTimers } from '../util/steps.js';
+
+/** A lock handed over as held, as an injected lock gives it, saying when it is let go. */
+const held = (onRelease: () => void = () => {}): LockHandle => ({ held: true, release: onRelease });
 
 function profile(home: string, name: string, oauth: Record<string, unknown>) {
   const dir = path.join(home, 'profiles', name);
@@ -174,11 +181,11 @@ describe('something changing between the check and the write', () => {
         renewed: credentialFingerprint(renewed.dir),
       },
       {
-        lock: (dir, fn) => {
+        lock: function* (dir) {
           // Another process signs the SIBLING in while its lock is taken. The
           // source lock is left alone, or the run would stop before this point.
           if (dir === sibling.dir) renew(dir, 'refresh-signed-in-just-now');
-          fn();
+          return held();
         },
         install: (destDir) => {
           written.push(destDir);
@@ -268,7 +275,12 @@ describe('the cheap checks before the lock', () => {
         retired,
         renewed: credentialFingerprint(renewed.dir),
       },
-      { lock: (dir, fn) => { locked.push(dir); fn(); } },
+      {
+        lock: function* (dir) {
+          locked.push(dir);
+          return held();
+        },
+      },
     );
 
     expect(updated).toEqual([]);
@@ -291,7 +303,12 @@ describe('the cheap checks before the lock', () => {
         retired,
         renewed: renewedFingerprint,
       },
-      { lock: (dir, fn) => { locked.push(dir); fn(); } },
+      {
+        lock: function* (dir) {
+          locked.push(dir);
+          return held();
+        },
+      },
     );
 
     expect(updated).toEqual([]);
@@ -317,11 +334,12 @@ describe('the source changing while siblings are being written', () => {
         renewed: verified,
       },
       {
-        lock: (dir, fn) => {
-          fn();
+        lock: function* (dir) {
           // The source is signed in again the moment its lock is released,
           // before any sibling is written.
-          if (dir === renewed.dir) renew(dir, 'refresh-source-changed-mid-flight');
+          return held(() => {
+            if (dir === renewed.dir) renew(dir, 'refresh-source-changed-mid-flight');
+          });
         },
         install: (destDir, sourceFile) => {
           installedFrom.push(readFileSync(sourceFile, 'utf8'));
@@ -582,5 +600,52 @@ describe('renewAndCarry when only the access token changes', () => {
     expect(readFileSync(path.join(sibling.dir, '.credentials.json'), 'utf8')).toContain(
       'sk-fresh-access',
     );
+  });
+});
+
+describe('a profile whose login lock stays taken', () => {
+  it('is left as it is: nothing is written past its lock', () => {
+    // Whoever holds it is changing that login right now; written past, its
+    // change and this one would land on each other.
+    const { renewed, sibling, retired } = sharedPair();
+    renew(renewed.dir);
+    mkdirSync(path.join(sibling.dir, CREDENTIALS_LOCK_DIR));
+
+    const updated = propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: [sibling],
+      retired,
+      renewed: credentialFingerprint(renewed.dir),
+    });
+
+    expect(updated).toEqual([]);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-shared');
+  });
+
+  it('is waited for on timers, the thread free, and carried to once it is let go', async () => {
+    // As a running session carries a renewal its Claude made: the thread that
+    // waits relays that Claude's terminal.
+    const { renewed, sibling, retired } = sharedPair();
+    renew(renewed.dir);
+    const lock = path.join(sibling.dir, CREDENTIALS_LOCK_DIR);
+    mkdirSync(lock);
+    setTimeout(() => rmSync(lock, { recursive: true, force: true }), 400);
+    let ticks = 0;
+    const tick = setInterval(() => (ticks += 1), 20);
+    let updated: string[];
+    try {
+      updated = await runOnTimers(
+        propagateRenewalSteps(
+          { renewedDir: renewed.dir, siblings: [sibling], retired, renewed: credentialFingerprint(renewed.dir) },
+          keychainOnTimers,
+        ),
+      );
+    } finally {
+      clearInterval(tick);
+    }
+
+    expect(updated).toEqual(['maxed']);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-rotated');
+    expect(ticks).toBeGreaterThan(5);
   });
 });

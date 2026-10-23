@@ -1,11 +1,8 @@
 import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { writeSecretFile } from '../util/secret-file.js';
-import {
-  readKeychainCredential,
-  writeKeychainCredential,
-  deleteKeychainCredential,
-} from './keychain.js';
+import { call, runBlocking, type Steps } from '../util/steps.js';
+import { keychainBlocking, type KeychainIo } from './keychain-view.js';
 
 export const CREDENTIALS_FILE = '.credentials.json';
 
@@ -14,19 +11,25 @@ function isLiveCredential(file: string): boolean {
   return path.basename(file) === CREDENTIALS_FILE;
 }
 
+/**
+ * Each operation here is written once, as steps (util/steps), and run either
+ * way: blocking, as the plain names do, or on timers with keychainOnTimers,
+ * for a running session, whose thread relays Claude's terminal.
+ */
+
 /** Match Claude's precedence: a profile's Keychain entry wins over its fallback file. */
-export function readCredential(file: string): string {
+export function* readCredentialSteps(file: string, io: KeychainIo): Steps<string> {
   if (isLiveCredential(file)) {
-    const stored = readKeychainCredential(path.dirname(file));
+    const stored = yield* call(() => io.read(path.dirname(file)));
     if (stored !== null) return stored;
   }
   return readFileSync(file, 'utf8');
 }
 
 /** Only a missing item/file means absent; callers must report access failures. */
-export function hasCredential(file: string): boolean {
+export function* hasCredentialSteps(file: string, io: KeychainIo): Steps<boolean> {
   try {
-    readCredential(file);
+    yield* readCredentialSteps(file, io);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return false;
@@ -35,24 +38,26 @@ export function hasCredential(file: string): boolean {
 }
 
 /** Update the store Claude actually reads; never hide a Keychain failure behind a stale file. */
-export function writeCredential(file: string, text: string): void {
-  if (isLiveCredential(file) && readKeychainCredential(path.dirname(file)) !== null) {
-    writeKeychainCredential(path.dirname(file), text);
+export function* writeCredentialSteps(file: string, text: string, io: KeychainIo): Steps<void> {
+  const dir = path.dirname(file);
+  if (isLiveCredential(file) && (yield* call(() => io.read(dir))) !== null) {
+    yield* call(() => io.write(dir, text));
   } else {
     // Linux/Windows, existing macOS file fallbacks, and new session snapshots.
     writeSecretFile(file, text);
   }
 }
 
-export function copyCredential(source: string, destination: string): void {
-  writeCredential(destination, readCredential(source));
+export function* copyCredentialSteps(source: string, destination: string, io: KeychainIo): Steps<void> {
+  const text = yield* readCredentialSteps(source, io);
+  yield* writeCredentialSteps(destination, text, io);
 }
 
 /** Remove both stores so deleting Keychain cannot resurrect a stale file login. */
-export function removeCredential(file: string): void {
+export function* removeCredentialSteps(file: string, io: KeychainIo): Steps<void> {
   const errors: unknown[] = [];
   try {
-    if (isLiveCredential(file)) deleteKeychainCredential(path.dirname(file));
+    if (isLiveCredential(file)) yield* call(() => io.remove(path.dirname(file)));
   } catch (error) {
     errors.push(error);
   }
@@ -66,4 +71,24 @@ export function removeCredential(file: string): void {
   if (errors.length > 1) {
     throw new AggregateError(errors, 'Could not remove Keychain and file credentials');
   }
+}
+
+export function readCredential(file: string): string {
+  return runBlocking(readCredentialSteps(file, keychainBlocking));
+}
+
+export function hasCredential(file: string): boolean {
+  return runBlocking(hasCredentialSteps(file, keychainBlocking));
+}
+
+export function writeCredential(file: string, text: string): void {
+  runBlocking(writeCredentialSteps(file, text, keychainBlocking));
+}
+
+export function copyCredential(source: string, destination: string): void {
+  runBlocking(copyCredentialSteps(source, destination, keychainBlocking));
+}
+
+export function removeCredential(file: string): void {
+  runBlocking(removeCredentialSteps(file, keychainBlocking));
 }

@@ -4,6 +4,49 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.23]
+
+### Fixed
+
+- **A running session no longer stalls its terminal on the macOS Keychain
+  (#167).** On macOS a running session read its logins from the Keychain by
+  running `security` on the thread that relays Claude's terminal and the keys
+  typed into it, several times a second (the login check every 400 ms, the
+  look for a renewal made elsewhere every 5 s, the checks before a move and a
+  renewal). Each read stopped the terminal for its length, so Claude's output
+  stuttered and typing lagged all the time. While Claude runs, a read on that
+  thread is now answered with the login as last read, and a login is read
+  again, by a `security` process that leaves the thread free (with the same
+  2 s limit), only when its folder says it may have changed. Claude 2.1.302
+  writes its login only inside a lock it makes and removes in its folder
+  (`.storage-write.lock`, and `.oauth_refresh.lock` around a whole renewal),
+  which changes the folder's time after the write, and every write ccx makes
+  changes it too, so a renewal Claude makes is noticed at the next look, as
+  before. A login is read again too while its folder is still settling, and
+  at least once a minute whatever its folder says.
+- **What a session does when a login changes runs off the thread too.**
+  Saving a renewal Claude made home to its profile, carrying it to profiles
+  that share the login and into the editor's folder, taking up a renewal made
+  elsewhere, and renewing a login before a move now wait for their locks on
+  timers and read and write the Keychain with the thread free.
+- **A move in place never writes past its Claude's locks (#171).** A terminal
+  session's move to another account waited up to 2 s for the lock its Claude
+  takes while renewing its login, with the terminal stopped, and then wrote the
+  new login anyway, so a renewal under way could land on top of it. The move
+  is now made only while ccx holds both locks that Claude takes, around its
+  login and around its state (`.claude.json.lock`), as the editor's move is,
+  tried once at each look and never waited for on the thread. While either is
+  taken nothing is written and the session stays on its account: a switch you
+  asked for is kept and made at a later look, and says so after 10 s; a move a
+  limit makes is tried again every 200 ms for 10 s, then the session is
+  relaunched on the next account instead; a move for an Artifact call waits
+  for the next look. A renewal ccx carries to a profile sharing the login never
+  writes past that profile's lock either.
+- **Bringing the editor's folder into step from a session waits for nothing.**
+  At a switch the session moves the editor too, and that refresh could wait up
+  to 5 s for ccx's own write-back lock with the terminal stopped; from a
+  session it now tries that lock once and leaves the refresh to the next event.
+
 ## [2.6.22]
 
 ### Fixed

@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import { runBlocking, runningBlocking, runOnTimers, sleepSync, type Steps } from '../util/steps.js';
 
 /**
  * Cooperate with Claude Code's OWN advisory lock while we swap credentials.
@@ -23,13 +24,14 @@ import path from 'node:path';
  * sees our fresh (non-expired) credential and skips its own refresh.
  *
  * The lock is a DIRECTORY (mkdir is atomic across processes), matching the
- * lockfile convention Claude uses: `<config dir>/.oauth_refresh.lock`.
+ * lockfile convention Claude uses: `<config dir>/.oauth_refresh.lock`. Claude
+ * 2.1.302 takes it with proper-lockfile, judges it stale after 60 s and
+ * touches its own every 5 s while it holds it.
  *
- * Deliberately BEST EFFORT with a bounded wait. Claude Code ships as a compiled
- * binary, so its exact staleness constants are not readable; guessing wrong and
- * blocking would turn a rare race into a guaranteed hang. If the lock cannot be
- * taken quickly we proceed anyway, which is exactly the (working) behavior we
- * had before this existed, only now the common case is properly serialized.
+ * Every wait is bounded. What a caller does when the wait runs out is its own
+ * rule: a move under a running Claude writes nothing (session/claude-folder),
+ * and so does a renewal; withCredentialLock alone goes ahead, for a folder no
+ * Claude runs in yet.
  */
 
 export const CREDENTIALS_LOCK_DIR = '.oauth_refresh.lock';
@@ -57,39 +59,24 @@ export interface LockHandle {
 
 const DEFAULTS = { waitMs: 2000, staleMs: 60_000, touchMs: 3000 };
 
-/** Block the current thread briefly without spinning the CPU. */
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
+/**
+ * A lock's rules for taking it, as a series of tries: each pause is how long
+ * to wait before the next try, and the last step returns the outcome. Written
+ * once, and run blocking or on timers (util/steps).
+ */
+type Tries<T> = Steps<T>;
 
 /**
- * A lock's rules for taking it, as a series of tries: each step yields how
- * long to pause before the next try, and the last returns the outcome. Written
- * once, and run two ways: blocking the thread between tries, for a command
- * with nothing else to do, or on a timer, for a session, whose thread relays
- * Claude's terminal and the keys typed into it.
+ * The lock folders this process holds now: each hold, and whether the work
+ * under it is done synchronously (acquireLockDir, withLockDirAsync, steps run
+ * blocking) or in steps that wait on timers. The Keychain view reads it
+ * (keychain-view).
  */
-type Tries<T> = Generator<number, T, void>;
+const dirsHeldHere = new Map<string, { hold: symbol; synchronous: boolean }>();
 
-function runBlocking<T>(tries: Tries<T>): T {
-  for (let step = tries.next(); ; step = tries.next()) {
-    if (step.done) return step.value;
-    sleepSync(step.value);
-  }
-}
-
-/**
- * `then` is given the outcome in the same step as the try that settled it, so
- * nothing else in this process runs in between. The first try is made before
- * this returns. The pauses are unref'd, so a wait never keeps a process alive
- * by itself: one that ends meanwhile never hears the outcome.
- */
-async function runOnTimers<T, R>(tries: Tries<T>, then: (outcome: T) => R): Promise<R> {
-  for (let step = tries.next(); ; step = tries.next()) {
-    if (step.done) return then(step.value);
-    const ms = step.value;
-    await new Promise<void>((resolve) => setTimeout(resolve, ms).unref());
-  }
+/** The hold this process has on the lock folder `lockDir`, and how its work runs; null when it holds none. */
+export function lockDirHeldHere(lockDir: string): { hold: symbol; synchronous: boolean } | null {
+  return dirsHeldHere.get(path.resolve(lockDir)) ?? null;
 }
 
 function mtimeMs(dir: string): number | null {
@@ -115,7 +102,7 @@ export function lockDirHeld(lockDir: string, freshMs: number = DEFAULTS.staleMs,
  * the wait elapsed; callers proceed either way and must always release().
  */
 export function acquireLockDir(lockDir: string, options: LockOptions = {}): LockHandle {
-  return runBlocking(lockDirTries(lockDir, options));
+  return runBlocking(lockDirTries(lockDir, options, true));
 }
 
 /**
@@ -126,16 +113,32 @@ export function acquireLockDir(lockDir: string, options: LockOptions = {}): Lock
  * synchronous (withOwnedLockAsync's shape).
  */
 export function withLockDirAsync<T>(lockDir: string, options: LockOptions, work: (lock: LockHandle) => T): Promise<T> {
-  return runOnTimers(lockDirTries(lockDir, options), (lock) => {
-    try {
-      return work(lock);
-    } finally {
-      lock.release();
-    }
-  });
+  return runOnTimers(
+    (function* () {
+      const lock = yield* lockDirTries(lockDir, options, true);
+      try {
+        return work(lock);
+      } finally {
+        lock.release();
+      }
+    })(),
+  );
 }
 
-function* lockDirTries(lockDir: string, options: LockOptions): Tries<LockHandle> {
+/**
+ * acquireLockDir's rules as steps, for work that itself goes on in steps
+ * while it holds the lock (reading and writing the Keychain on timers, or the
+ * same run blocking): the holder releases the handle it is given.
+ */
+export function lockDirSteps(lockDir: string, options: LockOptions = {}): Steps<LockHandle> {
+  return lockDirTries(lockDir, options, runningBlocking);
+}
+
+function* lockDirTries(
+  lockDir: string,
+  options: LockOptions,
+  synchronous: boolean | (() => boolean),
+): Tries<LockHandle> {
   const waitMs = options.waitMs ?? DEFAULTS.waitMs;
   const staleMs = options.staleMs ?? DEFAULTS.staleMs;
   const touchMs = options.touchMs ?? DEFAULTS.touchMs;
@@ -184,6 +187,9 @@ function* lockDirTries(lockDir: string, options: LockOptions): Tries<LockHandle>
   }, touchMs);
   timer.unref?.();
 
+  const key = path.resolve(lockDir);
+  const hold = Symbol(key);
+  dirsHeldHere.set(key, { hold, synchronous: typeof synchronous === 'function' ? synchronous() : synchronous });
   let released = false;
   return {
     held: true,
@@ -191,6 +197,7 @@ function* lockDirTries(lockDir: string, options: LockOptions): Tries<LockHandle>
       if (released) return;
       released = true;
       clearInterval(timer);
+      if (dirsHeldHere.get(key)?.hold === hold) dirsHeldHere.delete(key);
       try {
         rmdirSync(lockDir);
       } catch {
@@ -252,13 +259,16 @@ export function withOwnedLockAsync<T>(
   options: OwnedLockOptions,
   work: (lock: LockHandle) => T,
 ): Promise<T> {
-  return runOnTimers(ownedLockTries(lockFile, options), (lock) => {
-    try {
-      return work(lock);
-    } finally {
-      lock.release();
-    }
-  });
+  return runOnTimers(
+    (function* () {
+      const lock = yield* ownedLockTries(lockFile, options);
+      try {
+        return work(lock);
+      } finally {
+        lock.release();
+      }
+    })(),
+  );
 }
 
 function* ownedLockTries(lockFile: string, options: OwnedLockOptions): Tries<LockHandle> {

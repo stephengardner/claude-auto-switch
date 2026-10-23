@@ -13,6 +13,17 @@ it as `{}`, which holds no login, for the same reason. Only if that cannot be
 done may Claude keep using the previous login for up to about 30 seconds after
 a move.
 
+**Never in Claude's way.** ccx relays Claude's terminal, and the keys typed
+into it, on one thread, so nothing it does while Claude runs waits on that
+thread. A move in place is made only while ccx holds both locks Claude takes in
+its folder, around its login and around its state. While Claude holds either,
+as it does while it renews its login, nothing is written and the session stays
+on its account; ccx tries again at its next look, and says so once that has
+gone on for 10 seconds. On macOS, ccx reads the logins kept in the Keychain off
+that thread, and only when one may have changed: Claude changes its folder,
+taking and letting go of a lock in it, each time it writes its login, and so
+does ccx.
+
 **Everything else is your `~/.claude`.** The session folder links your projects
 and transcripts, prompt history, `/rewind` checkpoints, plugins, skills, agents,
 todos and memory. Settings start as a copy of your `settings.json`. What Claude

@@ -22,6 +22,11 @@ vi.mock('../accounts/keychain.js', () => ({
     throw new Error('no Keychain in tests');
   },
   deleteKeychainCredential: () => {},
+  readKeychainCredentialAsync: async () => null,
+  writeKeychainCredentialAsync: async () => {
+    throw new Error('no Keychain in tests');
+  },
+  deleteKeychainCredentialAsync: async () => {},
 }));
 
 const lease = (pid: number, account: string, cwd: string): SessionLease => ({

@@ -250,6 +250,29 @@ describe('a request that cannot be honoured', () => {
     expect(state?.state === 'refused' && state.reason).toContain('the login is locked');
   });
 
+  it('waits, unanswered, while Claude holds the lock the move needs, and moves once it lets go', () => {
+    let held = true;
+    const { world, hop, ask } = setup({
+      activate: (account) => {
+        if (held) throw Object.assign(new Error("Claude in this session is using its login"), { busy: true });
+        world.moves.push(account.name);
+        world.on = account;
+      },
+    });
+    ask('toolu_1', 'home');
+    // Nothing else may move the session meanwhile, and the request is not answered.
+    expect(hop.poll()).toBe(true);
+    expect(readState(world.dir, 'toolu_1')).toBeNull();
+    expect(hop.away()).toBeNull();
+    expect(hop.poll()).toBe(true);
+    expect(world.moves).toEqual([]);
+    held = false;
+    expect(hop.poll()).toBe(true);
+    expect(world.moves).toEqual(['home']);
+    expect(readState(world.dir, 'toolu_1')?.state).toBe('applied');
+    expect(hop.away()).toEqual({ from: WORK, to: HOME });
+  });
+
   it('waits, unanswered, while a usage limit is being decided, and is taken up after', () => {
     let standing: 'free' | 'busy' = 'busy';
     const { world, hop, ask } = setup({ standing: () => standing });

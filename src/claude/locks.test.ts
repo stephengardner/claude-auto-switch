@@ -16,11 +16,15 @@ import {
   acquireLockDir,
   acquireOwnedLock,
   createOwnedLockFile,
+  lockDirHeldHere,
+  lockDirSteps,
   withCredentialLock,
   withCredentialLockIfFree,
+  withLockDirAsync,
   withOwnedLockAsync,
   CREDENTIALS_LOCK_DIR,
 } from './locks.js';
+import { runBlocking, runOnTimers } from '../util/steps.js';
 
 function dir(): string {
   return mkdtempSync(path.join(tmpdir(), 'cas-lock-'));
@@ -464,5 +468,76 @@ describe('withCredentialLockIfFree', () => {
       }),
     ).toThrow('mirror failed');
     expect(existsSync(path.join(cfg, CREDENTIALS_LOCK_DIR))).toBe(false);
+  });
+});
+
+describe('the lock folders this process holds', () => {
+  it('are known while held, with how the work under them runs, and forgotten once let go', async () => {
+    const lock = path.join(dir(), 'x.lock');
+    expect(lockDirHeldHere(lock)).toBeNull();
+    const blocking = acquireLockDir(lock, { waitMs: 0 });
+    const first = lockDirHeldHere(lock);
+    expect(first?.synchronous).toBe(true);
+    blocking.release();
+    expect(lockDirHeldHere(lock)).toBeNull();
+
+    await withLockDirAsync(lock, { waitMs: 0 }, () => {
+      expect(lockDirHeldHere(lock)?.synchronous).toBe(true);
+    });
+    expect(lockDirHeldHere(lock)).toBeNull();
+
+    await runOnTimers(
+      (function* () {
+        const held = yield* lockDirSteps(lock, { waitMs: 0 });
+        try {
+          const now = lockDirHeldHere(lock);
+          expect(now?.synchronous).toBe(false);
+          // Each hold is its own.
+          expect(now?.hold).not.toBe(first?.hold);
+        } finally {
+          held.release();
+        }
+      })(),
+    );
+    expect(lockDirHeldHere(lock)).toBeNull();
+
+    // The same steps run blocking: everything done under the lock is synchronous then.
+    runBlocking(
+      (function* () {
+        const held = yield* lockDirSteps(lock, { waitMs: 0 });
+        try {
+          expect(lockDirHeldHere(lock)?.synchronous).toBe(true);
+        } finally {
+          held.release();
+        }
+      })(),
+    );
+    expect(lockDirHeldHere(lock)).toBeNull();
+  });
+
+  it('are not counted for a lock someone else holds', () => {
+    const lock = path.join(dir(), 'x.lock');
+    mkdirSync(lock);
+    const tried = acquireLockDir(lock, { waitMs: 0 });
+    expect(tried.held).toBe(false);
+    expect(lockDirHeldHere(lock)).toBeNull();
+  });
+});
+
+describe('lockDirSteps', () => {
+  it('waits for a held lock on timers, the thread free, and takes it once let go', async () => {
+    const lock = path.join(dir(), 'x.lock');
+    mkdirSync(lock);
+    setTimeout(() => rmSync(lock, { recursive: true, force: true }), 300);
+    let ticks = 0;
+    const tick = setInterval(() => (ticks += 1), 20);
+    try {
+      const got = await runOnTimers(lockDirSteps(lock, { waitMs: 5_000 }));
+      expect(got.held).toBe(true);
+      got.release();
+    } finally {
+      clearInterval(tick);
+    }
+    expect(ticks).toBeGreaterThan(5);
   });
 });

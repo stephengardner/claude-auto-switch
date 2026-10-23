@@ -1,8 +1,16 @@
 import { readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import path from 'node:path';
-import { CREDENTIALS_FILE, readCredential, copyCredential, removeCredential } from './credential-storage.js';
-import { readKeychainCredential } from './keychain.js';
+import { runBlocking, type Steps } from '../util/steps.js';
+import {
+  CREDENTIALS_FILE,
+  copyCredential,
+  copyCredentialSteps,
+  readCredential,
+  readCredentialSteps,
+  removeCredential,
+} from './credential-storage.js';
+import { keychainBlocking, readKeychainItem, type KeychainIo } from './keychain-view.js';
 export { CREDENTIALS_FILE } from './credential-storage.js';
 
 /**
@@ -27,11 +35,22 @@ export const PREVIOUS_FILE = '.credentials.prev.json';
  * Never returns the token itself.
  */
 export function credentialFingerprint(dir: string): string | null {
+  return runBlocking(credentialFingerprintSteps(dir, keychainBlocking));
+}
+
+export function credentialFingerprintSteps(dir: string, io: KeychainIo): Steps<string | null> {
+  return judgedSteps(credentialPath(dir), io, loginTextFingerprint, null);
+}
+
+/** What `judge` makes of the login in `file`, or `otherwise` when it cannot be read. */
+function* judgedSteps<T>(file: string, io: KeychainIo, judge: (text: string) => T, otherwise: T): Steps<T> {
+  let text: string;
   try {
-    return loginTextFingerprint(readCredential(credentialPath(dir)));
+    text = yield* readCredentialSteps(file, io);
   } catch {
-    return null;
+    return otherwise;
   }
+  return judge(text);
 }
 
 /** credentialFingerprint for a login already read, as text. */
@@ -86,11 +105,11 @@ export function previousCredentialPath(dir: string): string {
  * future change to Claude's credential format cannot make ccx refuse everything.
  */
 export function isUsableCredential(file: string): boolean {
-  try {
-    return usableLoginText(readCredential(file));
-  } catch {
-    return false;
-  }
+  return runBlocking(isUsableCredentialSteps(file, keychainBlocking));
+}
+
+export function isUsableCredentialSteps(file: string, io: KeychainIo): Steps<boolean> {
+  return judgedSteps(file, io, usableLoginText, false);
 }
 
 /** isUsableCredential for a login already read, as text. */
@@ -213,7 +232,7 @@ export function nudgeLoginReread(
     if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') return false;
   }
   try {
-    const keychainHolds = deps.keychainHolds ?? ((dir: string) => readKeychainCredential(dir) !== null);
+    const keychainHolds = deps.keychainHolds ?? ((dir: string) => readKeychainItem(dir) !== null);
     if (!keychainHolds(configDir)) return true;
     writeFileSync(file, REREAD_PLACEHOLDER, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     return true;
@@ -236,16 +255,20 @@ export function nudgeLoginReread(
  * Returns false when nothing was installed.
  */
 export function installCredential(dir: string, sourceFile: string): boolean {
-  if (!isUsableCredential(sourceFile)) return false;
+  return runBlocking(installCredentialSteps(dir, sourceFile, keychainBlocking));
+}
+
+export function* installCredentialSteps(dir: string, sourceFile: string, io: KeychainIo): Steps<boolean> {
+  if (!(yield* isUsableCredentialSteps(sourceFile, io))) return false;
   const target = credentialPath(dir);
-  if (isUsableCredential(target)) {
+  if (yield* isUsableCredentialSteps(target, io)) {
     try {
-      copyCredential(target, previousCredentialPath(dir));
+      yield* copyCredentialSteps(target, previousCredentialPath(dir), io);
     } catch {
       /* the backup is a cushion, not a precondition */
     }
   }
-  copyCredential(sourceFile, target);
+  yield* copyCredentialSteps(sourceFile, target, io);
   return true;
 }
 

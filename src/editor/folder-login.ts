@@ -1,18 +1,21 @@
 import { lstatSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
-  deleteKeychainCredential,
-  readKeychainCredential,
-  writeKeychainCredential,
-} from '../accounts/keychain.js';
-import { CREDENTIALS_FILE, readCredential } from '../accounts/credential-storage.js';
+  keychainBlocking,
+  keychainOnTimers,
+  readKeychainItem,
+  removeKeychainItem,
+  type KeychainIo,
+} from '../accounts/keychain-view.js';
+import { CREDENTIALS_FILE, readCredentialSteps } from '../accounts/credential-storage.js';
 import {
   credentialPath,
   loginTextFingerprint,
   nudgeLoginReread,
   usableLoginText,
 } from '../accounts/credential-vault.js';
-import { CREDENTIALS_LOCK_DIR, withLockDirAsync } from '../claude/locks.js';
+import { CREDENTIALS_LOCK_DIR, lockDirSteps } from '../claude/locks.js';
+import { call, runBlocking, runOnTimers, type Steps } from '../util/steps.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { configHome, type PathCtx } from '../config/paths.js';
@@ -161,8 +164,12 @@ const fileOf = (login: FolderLogin): string => path.join(login.dir, CREDENTIALS_
 
 /** The login as Claude reads it: a Keychain item named after a spelling, else the file. Null when there is none. */
 export function readFolderLogin(login: FolderLogin): string | null {
+  return runBlocking(readFolderLoginSteps(login, keychainBlocking));
+}
+
+export function* readFolderLoginSteps(login: FolderLogin, io: KeychainIo): Steps<string | null> {
   for (const spelling of login.spellings) {
-    const item = readKeychainCredential(spelling);
+    const item = yield* call(() => io.read(spelling));
     if (item !== null) return item;
   }
   try {
@@ -175,7 +182,7 @@ export function readFolderLogin(login: FolderLogin): string | null {
 
 /** Whether a Keychain item holds the folder's login for any spelling. */
 export function folderKeychainHolds(login: FolderLogin): boolean {
-  return login.spellings.some((spelling) => readKeychainCredential(spelling) !== null);
+  return login.spellings.some((spelling) => readKeychainItem(spelling) !== null);
 }
 
 /**
@@ -184,9 +191,13 @@ export function folderKeychainHolds(login: FolderLogin): boolean {
  * none, since a Claude given that spelling reads the file.
  */
 export function writeFolderLogin(login: FolderLogin, text: string): void {
+  runBlocking(writeFolderLoginSteps(login, text, keychainBlocking));
+}
+
+function* writeFolderLoginSteps(login: FolderLogin, text: string, io: KeychainIo): Steps<void> {
   let everyOneHasAnItem = login.spellings.length > 0;
   for (const spelling of login.spellings) {
-    if (readKeychainCredential(spelling) !== null) writeKeychainCredential(spelling, text);
+    if ((yield* call(() => io.read(spelling))) !== null) yield* call(() => io.write(spelling, text));
     else everyOneHasAnItem = false;
   }
   if (!everyOneHasAnItem) writeSecretFile(fileOf(login), text);
@@ -197,7 +208,7 @@ export function removeFolderLogin(login: FolderLogin): void {
   const errors: unknown[] = [];
   for (const spelling of login.spellings) {
     try {
-      deleteKeychainCredential(spelling);
+      removeKeychainItem(spelling);
     } catch (error) {
       errors.push(error);
     }
@@ -221,11 +232,19 @@ export function nudgeFolderLogin(login: FolderLogin, now: Date = new Date()): bo
  * Keychain read that failed is not a Keychain with nothing in it.
  */
 export function editorHolding(fingerprint: string | null, c: PathCtx = {}): FolderLogin | 'unreadable' | null {
+  return runBlocking(editorHoldingSteps(fingerprint, c, keychainBlocking));
+}
+
+function* editorHoldingSteps(
+  fingerprint: string | null,
+  c: PathCtx,
+  io: KeychainIo,
+): Steps<FolderLogin | 'unreadable' | null> {
   if (fingerprint === null || !isEditorFolder(c)) return null;
   const login = editorFolderLogin(c);
   let text: string | null;
   try {
-    text = readFolderLogin(login);
+    text = yield* readFolderLoginSteps(login, io);
   } catch {
     return 'unreadable';
   }
@@ -240,10 +259,14 @@ export function editorHolding(fingerprint: string | null, c: PathCtx = {}): Fold
  * retired one. The caller holds the folder's login lock.
  */
 export function replaceFolderLogin(login: FolderLogin, retired: string, text: string): boolean {
+  return runBlocking(replaceFolderLoginSteps(login, retired, text, keychainBlocking));
+}
+
+export function* replaceFolderLoginSteps(login: FolderLogin, retired: string, text: string, io: KeychainIo): Steps<boolean> {
   if (!usableLoginText(text)) return false;
-  const now = readFolderLogin(login);
+  const now = yield* readFolderLoginSteps(login, io);
   if (now === null || loginTextFingerprint(now) !== retired) return false;
-  writeFolderLogin(login, text);
+  yield* writeFolderLoginSteps(login, text, io);
   nudgeFolderLogin(login);
   return true;
 }
@@ -316,29 +339,37 @@ export async function retryEditorCarries(c: PathCtx): Promise<boolean> {
   }
 }
 
-/** One carry from the queue: true once it is made, or not needed any more. */
+/**
+ * One carry from the queue: true once it is made, or not needed any more. On
+ * timers throughout, the Keychain included: a session's poll makes these.
+ */
 async function makeCarry(c: PathCtx, retired: string, file: string): Promise<boolean> {
   try {
-    const holding = editorHolding(retired, c);
-    if (holding === 'unreadable') return false;
-    if (holding !== null) {
-      const { accountDir } = JSON.parse(readFileSync(file, 'utf8')) as { accountDir?: unknown };
-      const text = typeof accountDir === 'string' ? readCredential(credentialPath(accountDir)) : null;
-      if (text !== null && usableLoginText(text) && loginTextFingerprint(text) !== retired) {
-        const login: FolderLogin = holding;
-        const made = await withLockDirAsync(path.join(login.dir, CREDENTIALS_LOCK_DIR), {}, (lock) => {
-          if (!lock.held) return false;
-          replaceFolderLogin(login, retired, text);
-          return true;
-        });
-        if (!made) return false;
-      }
-    }
-    rmSync(file, { force: true });
-    return true;
+    return await runOnTimers(makeCarrySteps(c, retired, file));
   } catch {
     return false; // tried again at the next look
   }
+}
+
+function* makeCarrySteps(c: PathCtx, retired: string, file: string): Steps<boolean> {
+  const holding = yield* editorHoldingSteps(retired, c, keychainOnTimers);
+  if (holding === 'unreadable') return false;
+  if (holding !== null) {
+    const { accountDir } = JSON.parse(readFileSync(file, 'utf8')) as { accountDir?: unknown };
+    const text =
+      typeof accountDir === 'string' ? yield* readCredentialSteps(credentialPath(accountDir), keychainOnTimers) : null;
+    if (text !== null && usableLoginText(text) && loginTextFingerprint(text) !== retired) {
+      const lock = yield* lockDirSteps(path.join(holding.dir, CREDENTIALS_LOCK_DIR));
+      if (!lock.held) return false;
+      try {
+        yield* replaceFolderLoginSteps(holding, retired, text, keychainOnTimers);
+      } finally {
+        lock.release();
+      }
+    }
+  }
+  rmSync(file, { force: true });
+  return true;
 }
 
 /** How long the process whose write into the editor's folder failed keeps trying it, once a second, before it may end. */

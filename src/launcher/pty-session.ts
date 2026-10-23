@@ -50,7 +50,9 @@ export type CapDecision =
   /** Nothing was done; the child runs on as it was. */
   | { kind: 'left' }
   /** Moved to `account` under the live child, with a prompt to type into it if one is due. */
-  | { kind: 'relieved'; account: string; carryOn?: { prompt: string; canRelaunch: boolean } };
+  | { kind: 'relieved'; account: string; carryOn?: { prompt: string; canRelaunch: boolean } }
+  /** Not moved yet, since the child holds a lock the move waits for: asked again after `afterMs`, about the same limit. */
+  | { kind: 'retry'; afterMs: number };
 
 /** What became of a carry-on prompt handed to the live session, for the log. */
 export type CarryOnEvent =
@@ -647,6 +649,12 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         sidechain: pending.sidechain,
         canType: relieve && canType(),
       }) ?? { kind: 'restart' };
+      if (decision.kind === 'retry') {
+        // Held as it was, so nothing else takes this limit up meanwhile.
+        pendingCapRelief = pending;
+        setTimeout(attemptCapRelief, decision.afterMs);
+        return;
+      }
       if (decision.kind === 'relieved') {
         // Swapped under the running child. Clear the watch so the banner still on
         // screen (and any replay) does not immediately re-trigger, and drop the

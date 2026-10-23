@@ -41,16 +41,25 @@ import type { CliContext } from '../context.js';
  */
 
 const keychain = vi.hoisted(() => new Map<string, string>());
-vi.mock('../accounts/keychain.js', () => ({
-  keychainService: (dir: string) => `Claude Code-credentials-${dir}`,
-  readKeychainCredential: vi.fn((dir: string) => keychain.get(dir) ?? null),
-  writeKeychainCredential: vi.fn((dir: string, text: string) => {
+vi.mock('../accounts/keychain.js', () => {
+  const read = vi.fn((dir: string) => keychain.get(dir) ?? null);
+  const write = vi.fn((dir: string, text: string) => {
     keychain.set(dir, text);
-  }),
-  deleteKeychainCredential: vi.fn((dir: string) => {
+  });
+  const remove = vi.fn((dir: string) => {
     keychain.delete(dir);
-  }),
-}));
+  });
+  return {
+    keychainService: (dir: string) => `Claude Code-credentials-${dir}`,
+    readKeychainCredential: read,
+    writeKeychainCredential: write,
+    deleteKeychainCredential: remove,
+    // Off the thread, the same Keychain: what a test stages on the blocking form holds here too.
+    readKeychainCredentialAsync: async (dir: string) => read(dir),
+    writeKeychainCredentialAsync: async (dir: string, text: string) => write(dir, text),
+    deleteKeychainCredentialAsync: async (dir: string) => remove(dir),
+  };
+});
 
 const HOURS = 3_600_000;
 const emailOf = (name: string): string => `${name.toLowerCase()}@example.com`;

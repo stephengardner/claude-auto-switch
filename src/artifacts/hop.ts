@@ -41,7 +41,11 @@ export interface HopDeps<A extends { name: string }> {
   readiness: (account: A) => 'ready' | 'renewal-due' | 'no-login';
   /** Renew a login that is due, the way ccx renews an idle one. */
   renew: (account: A) => Promise<{ ok: true } | { ok: false; reason: string }>;
-  /** The session's in-place move, for a call (`away`) or back after it. Throws when it could not be made. */
+  /**
+   * The session's in-place move, for a call (`away`) or back after it. Throws
+   * when it could not be made: with `busy: true` on the error when it can be
+   * tried again shortly, nothing having been written.
+   */
   activate: (account: A, trip: 'away' | 'back') => void;
   /** Make the running Claude use the login already in its folder from its next call. Throws when it cannot. */
   pin: (account: A) => void;
@@ -166,7 +170,11 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
     removeAsk(deps.dir, ask.id);
   };
 
-  /** Start a hold for `ask` on `to`, moving the session there or telling Claude to use the login it has. */
+  /**
+   * Start a hold for `ask` on `to`, moving the session there or telling Claude
+   * to use the login it has. A move that can be tried again shortly leaves the
+   * request where it is, for the next poll, and keeps other moves off meanwhile.
+   */
   const startVisit = (ask: HopAsk, to: A): boolean => {
     const from = deps.current();
     if (!from) {
@@ -178,6 +186,7 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
       if (moved) deps.activate(to, 'away');
       else deps.pin(to);
     } catch (error) {
+      if (moved && (error as { busy?: unknown } | null)?.busy === true) return true;
       refuse(
         ask,
         moved

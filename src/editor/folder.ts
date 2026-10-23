@@ -17,7 +17,7 @@ import {
   sessionIdentityEmail,
   usableLoginText,
 } from '../accounts/credential-vault.js';
-import { readKeychainCredential } from '../accounts/keychain.js';
+import { readKeychainItem } from '../accounts/keychain-view.js';
 import { loginExpiresAt, readExpiresAt } from '../usage/token-expiry.js';
 import { loginIsKnownDead } from '../usage/dead-login-store.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
@@ -156,8 +156,10 @@ export function editorStanding(context: CliContext): { name: string; loggedIn: b
  * calls it, where nothing would catch an error, and the editor following is not
  * worth ending a session.
  */
-export function moveEditorToActive(context: CliContext): Promise<EditorUp> {
-  return bringEditorUp(context, { move: true, setUp: false });
+export function moveEditorToActive(context: CliContext, from: { session?: boolean } = {}): Promise<EditorUp> {
+  // From a running session's thread, which relays Claude's terminal, ccx's
+  // own locks are tried once and the refresh left to the next event.
+  return bringEditorUp(context, { move: true, setUp: false, ...(from.session ? { lockWaitMs: 0 } : {}) });
 }
 
 /** Bring the editor's folder into step with the user's ~/.claude, without moving its account. */
@@ -181,7 +183,10 @@ export type EditorUp = { state: 'ready' } | { state: 'meanwhile'; why: string } 
 const EDITOR_MOVE_LOOK_MS = 200;
 const EDITOR_MOVE_RETRY_MS = 10_000;
 
-async function bringEditorUp(context: CliContext, how: { move: boolean; setUp: boolean }): Promise<EditorUp> {
+async function bringEditorUp(
+  context: CliContext,
+  how: { move: boolean; setUp: boolean; lockWaitMs?: number },
+): Promise<EditorUp> {
   const c = context.ctx;
   const dir = editorFolderPath(c);
   try {
@@ -230,7 +235,7 @@ async function bringEditorUp(context: CliContext, how: { move: boolean; setUp: b
     await takeUpEditorRenewal(c, context.lookupOwner ? { lookupOwner: context.lookupOwner } : {});
     const refreshed = await underEditorLock(c, () => {
       finishLateMerge(c);
-      refreshClaudeFolder(dir, c);
+      refreshClaudeFolder(dir, c, {}, how.lockWaitMs);
       pullProfileIntoEditor(c);
       return true;
     });
@@ -697,7 +702,7 @@ function waitedLongEnough(c: PathCtx): boolean {
 function firstItem(login: FolderLogin): string | null {
   for (const spelling of login.spellings) {
     try {
-      const item = readKeychainCredential(spelling);
+      const item = readKeychainItem(spelling);
       if (item !== null) return item;
     } catch {
       /* the next spelling */

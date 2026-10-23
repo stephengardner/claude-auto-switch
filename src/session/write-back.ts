@@ -277,6 +277,15 @@ function sides(sessionDir: string, own: string, baseName: string): Sides {
 type Merged = { changed: boolean; theirs: Json; undo?: () => void } | null;
 
 /**
+ * How long ccx's write-back lock is waited for. A refresh made from a running
+ * session's thread, which relays Claude's terminal, passes 0 instead, so the
+ * lock is tried once and the refresh left to the next event when it is taken.
+ */
+const WRITE_BACK_WAIT_MS = 5000;
+/** The same for the lock Claude takes for a folder's state file. */
+const STATE_LOCK_WAIT_MS = 500;
+
+/**
  * Read the user's file, merge the session's changes into it, and write it back:
  * under ccx's write-back lock, so two sessions handing back at once cannot
  * overwrite each other's change, and only if nothing else (plain `claude`, an
@@ -288,6 +297,7 @@ export function mergeInto(
   userFile: string,
   c: PathCtx,
   merge: (theirs: Json) => Merged,
+  lockWaitMs: number = WRITE_BACK_WAIT_MS,
 ): 'written' | 'unchanged' | 'failed' {
   const attempt = (): 'written' | 'unchanged' | 'failed' | 'again' => {
     const before = readText(userFile);
@@ -309,13 +319,17 @@ export function mergeInto(
       return 'failed';
     }
   };
-  const locked = withWriteBackLock(c, () => {
-    for (let tries = 0; tries < 3; tries += 1) {
-      const outcome = attempt();
-      if (outcome !== 'again') return outcome;
-    }
-    return 'failed';
-  });
+  const locked = withWriteBackLock(
+    c,
+    () => {
+      for (let tries = 0; tries < 3; tries += 1) {
+        const outcome = attempt();
+        if (outcome !== 'again') return outcome;
+      }
+      return 'failed';
+    },
+    lockWaitMs,
+  );
   return locked ?? 'failed';
 }
 
@@ -324,12 +338,12 @@ export function mergeInto(
  * within a few seconds (a holder that is stuck), the hand-back waits for a
  * later try rather than race it.
  */
-function withWriteBackLock<T>(c: PathCtx, fn: () => T): T | null {
+function withWriteBackLock<T>(c: PathCtx, fn: () => T, waitMs: number = WRITE_BACK_WAIT_MS): T | null {
   let lock: LockHandle;
   try {
     const home = configHome(c);
     mkdirSync(home, { recursive: true });
-    lock = acquireLockDir(path.join(home, 'write-back.lock'), { waitMs: 5000 });
+    lock = acquireLockDir(path.join(home, 'write-back.lock'), { waitMs });
   } catch {
     return null;
   }
@@ -393,6 +407,7 @@ function handBackSettings(
   userFile: string,
   c: PathCtx,
   clashes: string[] = [],
+  lockWaitMs: number = WRITE_BACK_WAIT_MS,
 ): 'written' | 'unchanged' | 'failed' {
   let changes: string[] = [];
   const outcome = mergeInto(userFile, c, (theirs) => {
@@ -407,7 +422,7 @@ function handBackSettings(
       return kept ? { changed, theirs: kept.settings, undo: kept.undo } : null;
     }
     return { changed, theirs };
-  });
+  }, lockWaitMs);
   if (outcome === 'written') logHandBack(c, 'settings.json', changes);
   return outcome;
 }
@@ -449,15 +464,21 @@ function handBackState(
   userFile: string,
   c: PathCtx,
   clashes: string[] = [],
+  lockWaitMs: number = WRITE_BACK_WAIT_MS,
 ): 'written' | 'unchanged' | 'failed' {
   const from = stateChoices(base);
   const to = stateChoices(ours);
   let changes: string[] = [];
-  const outcome = mergeInto(userFile, c, (theirs) => {
-    changes = [];
-    clashes.length = 0;
-    return { changed: merge3(from, to, theirs, [], changes, clashes), theirs };
-  });
+  const outcome = mergeInto(
+    userFile,
+    c,
+    (theirs) => {
+      changes = [];
+      clashes.length = 0;
+      return { changed: merge3(from, to, theirs, [], changes, clashes), theirs };
+    },
+    lockWaitMs,
+  );
   if (outcome === 'written') logHandBack(c, '.claude.json', changes);
   return outcome;
 }
@@ -528,7 +549,12 @@ export type FolderSync = 'synced' | 'again' | 'failed';
  * one setting differently the user's stays, as in a hand-back, and the folder's
  * file is kept in `rescued/` first. The base moves only once both are written.
  */
-export function syncSettings(dir: string, c: PathCtx = {}, passage: SettingsPassage = {}): FolderSync {
+export function syncSettings(
+  dir: string,
+  c: PathCtx = {},
+  passage: SettingsPassage = {},
+  lockWaitMs: number = WRITE_BACK_WAIT_MS,
+): FolderSync {
   const own = path.join(dir, 'settings.json');
   const ownText = readText(own);
   if (ownText === undefined) return 'failed';
@@ -552,7 +578,7 @@ export function syncSettings(dir: string, c: PathCtx = {}, passage: SettingsPass
     // With no record of what they last agreed on, only its model goes, as from a folder an older ccx left.
     const going = base === null ? pick(out(ours), LEGACY_SETTINGS) : out(ours);
     const clashes: string[] = [];
-    if (handBackSettings(base ?? {}, going, userFile, c, clashes) === 'failed') return 'failed';
+    if (handBackSettings(base ?? {}, going, userFile, c, clashes, lockWaitMs) === 'failed') return 'failed';
     if (clashes.length > 0 && !keptAside(dir, 'settings.json', ownText ?? '', clashes, c)) return 'failed';
   }
   const userText = readText(userFile);
@@ -582,7 +608,7 @@ export function syncSettings(dir: string, c: PathCtx = {}, passage: SettingsPass
  * `<file>.lock`, under which Claude 2.1.302 reads the file again before it
  * applies its own change (saveConfigWithLock), so neither change is lost.
  */
-export function syncState(dir: string, c: PathCtx = {}): FolderSync {
+export function syncState(dir: string, c: PathCtx = {}, lockWaitMs?: number): FolderSync {
   const own = path.join(dir, '.claude.json');
   const ownText = readText(own);
   if (ownText === undefined) return 'failed';
@@ -603,7 +629,7 @@ export function syncState(dir: string, c: PathCtx = {}): FolderSync {
   // With no record of what they last agreed on nothing goes, as from a folder an older ccx left.
   if (base !== null) {
     const clashes: string[] = [];
-    if (handBackState(base, ours, userFile, c, clashes) === 'failed') return 'failed';
+    if (handBackState(base, ours, userFile, c, clashes, lockWaitMs) === 'failed') return 'failed';
     const kept = `${JSON.stringify(stateChoices(ours), null, 2)}\n`;
     if (clashes.length > 0 && !keptAside(dir, 'claude-choices.json', kept, clashes, c)) return 'failed';
   }
@@ -617,7 +643,7 @@ export function syncState(dir: string, c: PathCtx = {}): FolderSync {
       return 'failed';
     }
   }
-  const lock = acquireLockDir(`${own}.lock`, { waitMs: 500 });
+  const lock = acquireLockDir(`${own}.lock`, { waitMs: lockWaitMs ?? STATE_LOCK_WAIT_MS });
   if (!lock.held) return 'again';
   try {
     if (readText(own) !== ownText) return 'again';
@@ -685,6 +711,7 @@ export function writeUserFile(
   file: string,
   c: PathCtx,
   plan: () => { text: string; append?: boolean } | null,
+  lockWaitMs: number = WRITE_BACK_WAIT_MS,
 ): 'written' | 'unchanged' | 'failed' {
   const outcome = withWriteBackLock(c, (): 'written' | 'unchanged' | 'failed' => {
     try {
@@ -700,7 +727,7 @@ export function writeUserFile(
     } catch {
       return 'failed';
     }
-  });
+  }, lockWaitMs);
   return outcome ?? 'failed';
 }
 

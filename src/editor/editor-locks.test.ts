@@ -12,7 +12,7 @@ import { readKeychainCredential, writeKeychainCredential } from '../accounts/key
 import { refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { refreshUsage } from '../usage/usage-store.js';
 import { carryIntoEditor, editorFolderPath, queueEditorCarry, retryEditorCarries } from './folder-login.js';
-import { refreshEditor } from './folder.js';
+import { moveEditorToActive, refreshEditor } from './folder.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -24,16 +24,25 @@ import type { CliContext } from '../context.js';
  */
 
 const keychain = vi.hoisted(() => new Map<string, string>());
-vi.mock('../accounts/keychain.js', () => ({
-  keychainService: (dir: string) => `Claude Code-credentials-${dir}`,
-  readKeychainCredential: vi.fn((dir: string) => keychain.get(dir) ?? null),
-  writeKeychainCredential: vi.fn((dir: string, text: string) => {
+vi.mock('../accounts/keychain.js', () => {
+  const read = vi.fn((dir: string) => keychain.get(dir) ?? null);
+  const write = vi.fn((dir: string, text: string) => {
     keychain.set(dir, text);
-  }),
-  deleteKeychainCredential: vi.fn((dir: string) => {
+  });
+  const remove = vi.fn((dir: string) => {
     keychain.delete(dir);
-  }),
-}));
+  });
+  return {
+    keychainService: (dir: string) => `Claude Code-credentials-${dir}`,
+    readKeychainCredential: read,
+    writeKeychainCredential: write,
+    deleteKeychainCredential: remove,
+    // Off the thread, the same Keychain: what a test stages on the blocking form holds here too.
+    readKeychainCredentialAsync: async (dir: string) => read(dir),
+    writeKeychainCredentialAsync: async (dir: string, text: string) => write(dir, text),
+    deleteKeychainCredentialAsync: async (dir: string) => remove(dir),
+  };
+});
 
 const HOURS = 3_600_000;
 const emailOf = (name: string): string => `${name.toLowerCase()}@example.com`;
@@ -287,5 +296,22 @@ describe("a switch the editor's Claude held off", () => {
     await refreshEditor(s.context);
     expect(folderToken(s)).toBe('a-B-1');
     expect(existsSync(path.join(s.ccx, 'editor-move-pending.json'))).toBe(false);
+  });
+});
+
+describe("the editor's folder brought into step for a running session", () => {
+  it("never waits on the session's thread for ccx's own write-back lock", { timeout: 20_000 }, async () => {
+    const s = await scene();
+    // Another ccx is handing a session's settings back, and keeps the lock meanwhile.
+    const lock = path.join(s.ccx, 'write-back.lock');
+    mkdirSync(lock);
+    try {
+      const started = Date.now();
+      const up = await moveEditorToActive(s.context, { session: true });
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(up.state).toBe('ready');
+    } finally {
+      rmSync(lock, { recursive: true, force: true });
+    }
   });
 });

@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   decidePull,
   pullProfileIntoSession,
+  pullProfileIntoSessionAsync,
   recoverLoginFromLiveSession,
   type PullEvidence,
 } from './credential-sync.js';
@@ -131,6 +132,20 @@ describe('carrying a renewal into a running session', () => {
     ).toBe('busy');
     // And nothing was written under the busy lock.
     expect(credentialFingerprint(session)).not.toBe(credentialFingerprint(profile));
+  });
+
+  it('does the same on timers for a running session, by the same rules', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-'));
+    const profile = dirWithLogin(root, 'profile', 'new', 9_000);
+    const session = dirWithLogin(root, 'session', 'old', 1_000, 'a@example.com');
+    const account = { name: 'work', dir: profile, email: 'a@example.com' };
+    mkdirSync(path.join(session, '.oauth_refresh.lock'), { recursive: true });
+    expect(await pullProfileIntoSessionAsync(account, session, scratch(root))).toBe('busy');
+    expect(credentialFingerprint(session)).not.toBe(credentialFingerprint(profile));
+    rmSync(path.join(session, '.oauth_refresh.lock'), { recursive: true, force: true });
+    expect(await pullProfileIntoSessionAsync(account, session, scratch(root))).toBe('pulled');
+    expect(credentialFingerprint(session)).toBe(credentialFingerprint(profile));
+    expect(await pullProfileIntoSessionAsync(account, session, scratch(root))).toBe('skipped');
   });
 });
 

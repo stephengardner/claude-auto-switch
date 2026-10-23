@@ -1,8 +1,18 @@
-import { readCredential } from '../accounts/credential-storage.js';
 import path from 'node:path';
-import { acquireLockDir, CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
-import { writeCredential, copyCredential } from '../accounts/credential-storage.js';
-import { credentialPath, previousCredentialPath, isUsableCredential } from '../accounts/credential-vault.js';
+import { CREDENTIALS_LOCK_DIR, lockDirSteps } from '../claude/locks.js';
+import {
+  copyCredentialSteps,
+  readCredential,
+  readCredentialSteps,
+  writeCredentialSteps,
+} from '../accounts/credential-storage.js';
+import {
+  credentialPath,
+  isUsableCredentialSteps,
+  previousCredentialPath,
+} from '../accounts/credential-vault.js';
+import { keychainBlocking, keychainOnTimers, type KeychainIo } from '../accounts/keychain-view.js';
+import { call, runBlocking, runOnTimers, type Steps } from '../util/steps.js';
 import { renewOneAtATime } from './renew-one-at-a-time.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import { alreadyRefused, refusalReason, rememberRefused } from './dead-login-memo.js';
@@ -10,7 +20,7 @@ import { loginIsKnownDead, deadLoginReason, rememberDeadLogin, forgetDeadLogin }
 import {
   editorHolding,
   queueEditorCarry,
-  replaceFolderLogin,
+  replaceFolderLoginSteps,
   retryEditorCarriesSoon,
   type FolderLogin,
 } from '../editor/folder-login.js';
@@ -167,7 +177,11 @@ export async function refreshCredentialIfExpired(
         detail: "the editor's login could not be read, so nothing was sent",
       });
     }
-    return editor ? renewWithEditor(accountDir, options, editor, login) : renewUnderLock(accountDir, options);
+    // On timers throughout, the lock and the Keychain included: a running
+    // session renews from the thread that relays Claude's terminal.
+    return runOnTimers(
+      editor ? renewWithEditorSteps(accountDir, options, editor, login) : renewUnderLockSteps(accountDir, options),
+    );
   });
 }
 
@@ -187,22 +201,23 @@ export async function refreshCredentialIfExpired(
  * nothing and goes on with the token it has, and its next look reads ccx's
  * renewal from the folder.
  */
-async function renewWithEditor(
+function* renewWithEditorSteps(
   accountDir: string,
   options: RefreshOptions,
   editor: FolderLogin,
   retired: string,
-): Promise<RefreshOutcome> {
-  const lock = acquireLockDir(path.join(editor.dir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
+): Steps<RefreshOutcome> {
+  const lock = yield* lockDirSteps(path.join(editor.dir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
   if (lock.unusable) {
     return { status: 'unavailable', detail: `the editor folder's lock could not be created (${lock.unusable})` };
   }
   if (!lock.held) return { status: 'busy', detail: 'your editor is renewing this login' };
   try {
-    const outcome = await renewUnderLock(accountDir, options);
+    const outcome = yield* renewUnderLockSteps(accountDir, options);
     if (outcome.status === 'refreshed') {
       try {
-        replaceFolderLogin(editor, retired, readCredential(credentialPath(accountDir)));
+        const renewal = yield* readCredentialSteps(credentialPath(accountDir), keychainOnTimers);
+        yield* replaceFolderLoginSteps(editor, retired, renewal, keychainOnTimers);
       } catch {
         // The editor is left on the token this renewal retired, which its
         // Claude would send at its own renewal and be signed out. Tried again
@@ -231,10 +246,20 @@ type Assessment =
  * or nearly, or when it still holds the access token `rejected` fingerprints.
  */
 function assess(file: string, now: () => number, ctx: PathCtx | undefined, rejected?: string): Assessment {
+  return runBlocking(assessSteps(file, now, ctx, rejected, keychainBlocking));
+}
+
+function* assessSteps(
+  file: string,
+  now: () => number,
+  ctx: PathCtx | undefined,
+  rejected: string | undefined,
+  io: KeychainIo,
+): Steps<Assessment> {
   let raw: Record<string, unknown>;
   let fileText: string;
   try {
-    fileText = readCredential(file);
+    fileText = yield* readCredentialSteps(file, io);
     raw = JSON.parse(fileText) as Record<string, unknown>;
   } catch {
     return { renew: false, outcome: { status: 'unavailable', detail: 'no readable credential' } };
@@ -283,7 +308,7 @@ function assess(file: string, now: () => number, ctx: PathCtx | undefined, rejec
 }
 
 /** Renew a login found due for renewal: under its lock, having read it again there. */
-async function renewUnderLock(accountDir: string, options: RefreshOptions): Promise<RefreshOutcome> {
+function* renewUnderLockSteps(accountDir: string, options: RefreshOptions): Steps<RefreshOutcome> {
   const now = options.now ?? (() => Date.now());
   const file = credentialPath(accountDir);
   const ctx = options.ctx;
@@ -299,7 +324,7 @@ async function renewUnderLock(accountDir: string, options: RefreshOptions): Prom
   // Never without it: a renewal that cannot get the lock sends nothing. Either
   // something else is renewing this login right now, or the lock folder cannot
   // be made at all (a profile folder ccx may not write in), which no wait cures.
-  const lock = acquireLockDir(path.join(accountDir, CREDENTIALS_LOCK_DIR), {
+  const lock = yield* lockDirSteps(path.join(accountDir, CREDENTIALS_LOCK_DIR), {
     ...(options.lockWaitMs !== undefined ? { waitMs: options.lockWaitMs } : {}),
   });
   if (lock.unusable) {
@@ -309,9 +334,9 @@ async function renewUnderLock(accountDir: string, options: RefreshOptions): Prom
   try {
     // Read again now the lock is held: whoever held it before may have renewed
     // this login meanwhile, and the token read above is then spent.
-    const underLock = assess(file, now, ctx, options.renewRejected);
+    const underLock = yield* assessSteps(file, now, ctx, options.renewRejected, keychainOnTimers);
     if (!underLock.renew) return underLock.outcome;
-    return await performRenewal(accountDir, options, underLock);
+    return yield* call(() => performRenewal(accountDir, options, underLock));
   } finally {
     lock.release();
   }
@@ -400,9 +425,9 @@ async function performRenewal(
     // Keep the previous generation, then write the renewal atomically. The new
     // refresh token replaces the old one, which the server has now invalidated,
     // so losing this write would lose the account: it happens immediately.
-    if (isUsableCredential(file)) {
+    if (await runOnTimers(isUsableCredentialSteps(file, keychainOnTimers))) {
       try {
-        copyCredential(file, previousCredentialPath(accountDir));
+        await runOnTimers(copyCredentialSteps(file, previousCredentialPath(accountDir), keychainOnTimers));
       } catch {
         /* the cushion is best effort */
       }
@@ -416,7 +441,7 @@ async function performRenewal(
         ...(payload.expires_in ? { expiresAt: now() + payload.expires_in * 1000 } : {}),
       },
     };
-    writeCredential(file, JSON.stringify(updated));
+    await runOnTimers(writeCredentialSteps(file, JSON.stringify(updated), keychainOnTimers));
     // A credential that just renewed is demonstrably alive, so make sure no note
     // says otherwise. It should never be there, and that is the point: this
     // guarantees a stale note can never hold down a login that works.

@@ -1,11 +1,15 @@
+import path from 'node:path';
 import {
-  installCredential,
   credentialFingerprint,
+  credentialFingerprintSteps,
   credentialFileFingerprint,
   credentialPath,
+  installCredentialSteps,
 } from './credential-vault.js';
-import { withCredentialLock } from '../claude/locks.js';
-import { copyCredential } from './credential-storage.js';
+import { CREDENTIALS_LOCK_DIR, lockDirSteps, type LockHandle } from '../claude/locks.js';
+import { copyCredentialSteps } from './credential-storage.js';
+import { keychainBlocking, keychainOnTimers, type KeychainIo } from './keychain-view.js';
+import { call, runBlocking, runOnTimers, type Steps } from '../util/steps.js';
 import { rmSync } from 'node:fs';
 
 /**
@@ -53,9 +57,18 @@ export function snapshotSharing(
   accounts: SharedProfile[],
   sharedNames: string[],
 ): SharingSnapshot {
+  return runBlocking(snapshotSharingSteps(account, accounts, sharedNames, keychainBlocking));
+}
+
+function* snapshotSharingSteps(
+  account: SharedProfile,
+  accounts: SharedProfile[],
+  sharedNames: string[],
+  io: KeychainIo,
+): Steps<SharingSnapshot> {
   return {
     sharedWith: accounts.filter((a) => a.name !== account.name && sharedNames.includes(a.name)),
-    fingerprint: credentialFingerprint(account.dir),
+    fingerprint: yield* credentialFingerprintSteps(account.dir, io),
   };
 }
 
@@ -80,15 +93,39 @@ export function writeAndCarry(
   write: () => void,
   deps: PropagateDeps = {},
 ): string[] {
-  const sharing = snapshotSharing(target, allProfiles, sharedNames);
-  write();
-  return propagateRenewal(
+  return runBlocking(
+    writeAndCarrySteps(
+      target,
+      allProfiles,
+      sharedNames,
+      function* () {
+        write();
+      },
+      keychainBlocking,
+      deps,
+    ),
+  );
+}
+
+/** writeAndCarry as steps (util/steps), `write` among them. */
+export function* writeAndCarrySteps(
+  target: SharedProfile,
+  allProfiles: SharedProfile[],
+  sharedNames: string[],
+  write: () => Steps<void>,
+  io: KeychainIo,
+  deps: PropagateDeps = {},
+): Steps<string[]> {
+  const sharing = yield* snapshotSharingSteps(target, allProfiles, sharedNames, io);
+  yield* write();
+  return yield* propagateRenewalSteps(
     {
       renewedDir: target.dir,
       siblings: sharing.sharedWith,
       retired: sharing.fingerprint,
-      renewed: credentialFingerprint(target.dir),
+      renewed: yield* credentialFingerprintSteps(target.dir, io),
     },
+    io,
     deps,
   );
 }
@@ -128,14 +165,18 @@ export async function renewAndCarry<T>(
   const renewed = credentialFingerprint(target.dir);
   return {
     result,
-    carried: propagateRenewal(
-      {
-        renewedDir: target.dir,
-        siblings: sharing.sharedWith,
-        retired: sharing.fingerprint,
-        renewed,
-      },
-      deps,
+    // On timers: a running session's usage refresh renews idle logins.
+    carried: await runOnTimers(
+      propagateRenewalSteps(
+        {
+          renewedDir: target.dir,
+          siblings: sharing.sharedWith,
+          retired: sharing.fingerprint,
+          renewed,
+        },
+        keychainOnTimers,
+        deps,
+      ),
     ),
   };
 }
@@ -157,8 +198,12 @@ export interface PropagateInput {
 export interface PropagateDeps {
   /** Injectable so a write failure can be FORCED in a test rather than hoped for. */
   install?: (destDir: string, sourceFile: string) => boolean;
-  /** Injectable so an interleaving between the check and the write can be staged. */
-  lock?: (dir: string, fn: () => void) => void;
+  /**
+   * How a profile's login lock is taken, as steps; the handle is released by
+   * the caller. Injectable so an interleaving between the check and the write
+   * can be staged. By default it is waited for for up to two seconds.
+   */
+  lock?: (dir: string) => Steps<LockHandle>;
   /**
    * Another holder of the login that is not a profile (the editor's folder,
    * editor/folder-login carryIntoEditor), given the retired login's fingerprint
@@ -183,17 +228,24 @@ export interface PropagateDeps {
  *   sign-in in the gap be installed without ever having been checked.
  *
  * Guessing about someone's login is what scrambled these profiles once before,
- * so both conditions are exact rather than approximate.
+ * so both conditions are exact rather than approximate. Nothing is written past
+ * a profile's lock: one whose lock stays taken is left as it is.
  */
 export function propagateRenewal(input: PropagateInput, deps: PropagateDeps = {}): string[] {
+  return runBlocking(propagateRenewalSteps(input, keychainBlocking, deps));
+}
+
+/** propagateRenewal as steps (util/steps). */
+export function* propagateRenewalSteps(input: PropagateInput, io: KeychainIo, deps: PropagateDeps = {}): Steps<string[]> {
   const { renewedDir, siblings, retired, renewed } = input;
-  const install = deps.install ?? installCredential;
-  const lock = deps.lock ?? ((dir, fn) => withCredentialLock(dir, fn));
+  const lock = deps.lock ?? ((dir: string) => lockDirSteps(path.join(dir, CREDENTIALS_LOCK_DIR)));
+  const install = deps.install;
+  const fingerprint = (dir: string): Steps<string | null> => credentialFingerprintSteps(dir, io);
 
   // Nothing to match on, or the source is no longer the login this was asked to
   // carry. Either way there is no safe copy to make.
   if (!retired || !renewed) return [];
-  if (credentialFingerprint(renewedDir) !== renewed) return [];
+  if ((yield* fingerprint(renewedDir)) !== renewed) return [];
 
   // Copy the verified source ONCE, and hand siblings that copy.
   //
@@ -206,11 +258,15 @@ export function propagateRenewal(input: PropagateInput, deps: PropagateDeps = {}
   const snapshot = `${credentialPath(renewedDir)}.propagate.${process.pid}.tmp`;
   let ready = false;
   try {
-    lock(renewedDir, () => {
-      if (credentialFingerprint(renewedDir) !== renewed) return;
-      copyCredential(credentialPath(renewedDir), snapshot);
+    const source = yield* lock(renewedDir);
+    if (!source.held) return [];
+    try {
+      if ((yield* fingerprint(renewedDir)) !== renewed) return [];
+      yield* copyCredentialSteps(credentialPath(renewedDir), snapshot, io);
       ready = true;
-    });
+    } finally {
+      source.release();
+    }
   } catch {
     return [];
   }
@@ -221,15 +277,22 @@ export function propagateRenewal(input: PropagateInput, deps: PropagateDeps = {}
     for (const sibling of siblings) {
       if (sibling.dir === renewedDir) continue;
       // Cheap check first, so the ordinary "nothing to do" case takes no lock.
-      if (credentialFingerprint(sibling.dir) !== retired) continue;
+      if ((yield* fingerprint(sibling.dir)) !== retired) continue;
       try {
-        lock(sibling.dir, () => {
+        const held = yield* lock(sibling.dir);
+        if (!held.held) continue;
+        try {
           // Re-checked INSIDE the lock. The check above and the write are
           // otherwise two separate moments, and a sign-in landing between them
           // would be replaced by an older login.
-          if (credentialFingerprint(sibling.dir) !== retired) return;
-          if (install(sibling.dir, snapshot)) updated.push(sibling.name);
-        });
+          if ((yield* fingerprint(sibling.dir)) !== retired) continue;
+          const installed = install
+            ? yield* call(() => install(sibling.dir, snapshot))
+            : yield* installCredentialSteps(sibling.dir, snapshot, io);
+          if (installed) updated.push(sibling.name);
+        } finally {
+          held.release();
+        }
       } catch {
         // One profile failing must not stop the others: a login left behind is
         // exactly the problem being fixed.

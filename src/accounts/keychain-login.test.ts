@@ -45,15 +45,24 @@ vi.mock('node:fs', async (importOriginal) => {
   const fs = await importOriginal<typeof import('node:fs')>();
   return { ...fs, rmSync: vi.fn(fs.rmSync) };
 });
-vi.mock('./keychain.js', () => ({
-  readKeychainCredential: vi.fn((dir: string) => keychain.get(dir) ?? null),
-  writeKeychainCredential: vi.fn((dir: string, text: string) => {
+vi.mock('./keychain.js', () => {
+  const read = vi.fn((dir: string) => keychain.get(dir) ?? null);
+  const write = vi.fn((dir: string, text: string) => {
     keychain.set(dir, text);
-  }),
-  deleteKeychainCredential: vi.fn((dir: string) => {
+  });
+  const remove = vi.fn((dir: string) => {
     keychain.delete(dir);
-  }),
-}));
+  });
+  return {
+    readKeychainCredential: read,
+    writeKeychainCredential: write,
+    deleteKeychainCredential: remove,
+    // Off the thread, the same Keychain: what a test stages on the blocking form holds here too.
+    readKeychainCredentialAsync: async (dir: string) => read(dir),
+    writeKeychainCredentialAsync: async (dir: string, text: string) => write(dir, text),
+    deleteKeychainCredentialAsync: async (dir: string) => remove(dir),
+  };
+});
 
 const credential = (token: string, expiresAt = Date.now() + 3600000): string =>
   JSON.stringify({

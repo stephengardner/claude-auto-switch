@@ -13,9 +13,10 @@ vi.mock('../accounts/credential-storage.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../accounts/credential-storage.js')>();
   return {
     ...real,
-    readCredential: (file: string) => {
+    // Every read of a login, blocking or on timers, is these steps.
+    readCredentialSteps: function* (...args: Parameters<typeof real.readCredentialSteps>) {
       reads.count += 1;
-      return real.readCredential(file);
+      return yield* real.readCredentialSteps(...args);
     },
   };
 });

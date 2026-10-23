@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -313,6 +313,27 @@ describe('renewing a login something else may be renewing', () => {
     expect(endpoint.calls()).toBe(0);
     expect(outcome.status).toBe('busy');
     expect(JSON.parse(readFileSync(credentialPath(dir), 'utf8')).claudeAiOauth.refreshToken).toBe('r-held');
+  });
+
+  it('waits for the lock with the thread free, and renews once it is let go', async () => {
+    // A running session renews on the thread that relays Claude's terminal.
+    const dir = account({ accessToken: 'old', refreshToken: 'r-wait', expiresAt: now() - HOUR });
+    const lock = path.join(dir, CREDENTIALS_LOCK_DIR);
+    mkdirSync(lock);
+    setTimeout(() => rmSync(lock, { recursive: true, force: true }), 400);
+    let ticks = 0;
+    const tick = setInterval(() => (ticks += 1), 20);
+    const endpoint = counting();
+    let status: string;
+    try {
+      status = (await refreshCredentialIfExpired(dir, { now, fetchImpl: endpoint.fetchImpl, lockWaitMs: 5_000 })).status;
+    } finally {
+      clearInterval(tick);
+    }
+    expect(status).toBe('refreshed');
+    expect(endpoint.calls()).toBe(1);
+    expect(ticks).toBeGreaterThan(5);
+    expect(existsSync(lock)).toBe(false);
   });
 
   it('reads the login again once it holds the lock, so a renewal made meanwhile is not repeated', async () => {
