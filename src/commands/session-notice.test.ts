@@ -106,10 +106,11 @@ describe('what ccx says while Claude owns the screen', () => {
   it('records the API answer through finishCheck, not by hand', () => {
     // finishCheck is what distinguishes a settled answer (written or refused)
     // from a retryable failure. Assigning around it is how the freeze happened.
-    const start = source.indexOf('void fetchTokenOwner(sessionDir)');
+    const start = source.indexOf('const owner = yield* call(() => fetchTokenOwner(sessionDir));');
     expect(start).toBeGreaterThan(0);
-    const block = source.slice(start, start + 1200);
-    expect(block).toContain('finishCheck(mirror, nowStamp, saveBack(account, owner))');
+    const block = source.slice(start, start + 1600);
+    expect(block).toContain('const saved = yield* saveBackSteps(account, owner, keychainOnTimers);');
+    expect(block).toContain('finishCheck(mirror, nowStamp, saved)');
     expect(block).toContain('abandonCheck(mirror, nowStamp)');
   });
 });

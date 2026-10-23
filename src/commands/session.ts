@@ -1081,6 +1081,7 @@ export async function runInteractiveHotSwap(
       void takeUpEditorRenewal(context.ctx, {
         account: account.name,
         ...(context.lookupOwner ? { lookupOwner: context.lookupOwner } : {}),
+        lockWaitMs: 0,
       }).finally(() => {
         lookingAtEditor = false;
       });

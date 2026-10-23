@@ -31,6 +31,7 @@ import { renewIdleLogin } from '../usage/usage-store.js';
 import { listAccounts } from '../accounts/registry.js';
 import { readKeychainCredential } from '../accounts/keychain.js';
 import type { CliContext } from '../context.js';
+import { takeUpEditorRenewal } from './folder.js';
 
 /**
  * The editor's Claude folder, end to end through the commands that set it up
@@ -1246,5 +1247,30 @@ describe('ccx editor off', () => {
     expect(await editorCommand(s.context, 'off')).toBe(1);
 
     expect(isRealFolder(s.folder)).toBe(true);
+  });
+});
+
+describe("a renewal the editor's Claude made, saved home from a running session", () => {
+  it('neither waits for, nor writes past, the lock of a profile sharing that login', async () => {
+    const s = await scene();
+    await editorOn(s);
+    // C is a second profile on A's login, as signing in twice leaves, and
+    // another ccx is changing C's login right now.
+    await addCommand(s.context, 'C', { dir: s.dirOf('C'), login: false });
+    mkdirSync(s.dirOf('C'), { recursive: true });
+    writeFileSync(path.join(s.dirOf('C'), '.credentials.json'), login('A', 1));
+    mkdirSync(path.join(s.dirOf('C'), '.oauth_refresh.lock'));
+    writeFileSync(path.join(s.folder, '.credentials.json'), login('A', 2));
+
+    const started = Date.now();
+    const took = await takeUpEditorRenewal(s.context.ctx, {
+      ...(s.context.lookupOwner ? { lookupOwner: s.context.lookupOwner } : {}),
+      lockWaitMs: 0,
+    });
+
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(took).toBe('taken');
+    expect(tokenOf(profileLogin(s, 'A'))).toBe('a-A-2');
+    expect(tokenOf(profileLogin(s, 'C'))).toBe('a-A-1');
   });
 });
