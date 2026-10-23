@@ -31,7 +31,8 @@ semantic versioning.
   A login the editor's Claude renewed goes home as the editor moves off it. A
   move, the editor's or a terminal session's, whose write of the next account's
   identity fails is rolled back, rather than left on the new login beside the
-  last account's identity.
+  last account's identity, and a move to an account with no identity of its
+  own leaves none of the last one's behind.
 - **The folder never ends, so it is kept in step with the user's files.** At
   every switch, `ccx on`, `ccx editor on`, `ccx doctor` and every terminal
   session's start, its settings, the choices in `.claude.json` (MCP servers,

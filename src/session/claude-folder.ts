@@ -142,6 +142,11 @@ export function applyAccountIdentity(dir: string, accountDir: string, ctx: PathC
     existing && existing.hasCompletedOnboarding
       ? { ...existing, ...identity }
       : firstBuild(identity, ctx);
+  // An account with no identity of its own takes on none: not the last
+  // account's in the folder, nor the default account's in the user's config.
+  for (const key of IDENTITY_KEYS) {
+    if (!(key in identity)) delete next[key];
+  }
   writeSecretFile(sessionPath, JSON.stringify(next));
 }
 
@@ -152,10 +157,6 @@ function firstBuild(identity: Record<string, unknown>, ctx: PathCtx): Record<str
   // environment exactly, minus the account, so no first-run prompts appear.
   const reference = readReferenceConfig(ctx);
   const base = Object.keys(reference).length > 0 ? { ...reference } : onboardingFlags({});
-  // Guard identity bleed: if the target account has no identity of its own, do
-  // not let the default account's identity (inherited via `base`) survive.
-  if (!('oauthAccount' in identity)) delete base.oauthAccount;
-  if (!('userID' in identity)) delete base.userID;
   const cwd = process.cwd();
   const projects: Record<string, unknown> =
     typeof base.projects === 'object' && base.projects
