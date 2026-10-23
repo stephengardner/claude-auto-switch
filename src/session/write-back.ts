@@ -19,7 +19,7 @@ import { keepOursOver } from '../statusline/settings-install.js';
 import { isOurs } from '../statusline/ours.js';
 import { writeFileAtomic } from '../util/atomic-write.js';
 import { writeSecretFile } from '../util/secret-file.js';
-import { copyUserSettings, defaultClaudeRoot, rescue, rescueText, rescueTextOnce } from './shared-root.js';
+import { copyUserSettings, defaultClaudeRoot, rescue, rescueOnce, rescueText, rescueTextOnce } from './shared-root.js';
 import type { PathCtx } from '../config/paths.js';
 
 /**
@@ -708,14 +708,17 @@ export function writeUserFile(
  * Keep the choices an account's own folder holds in Claude's state aside in
  * `rescued/` when they are not the user's, before the editor stops running
  * there: an MCP server or a trusted folder added in the editor while it ran on
- * that account would otherwise be found nowhere. Once only, so a pass run again
- * keeps no second copy. False when they are not kept: a folder removed later
- * must wait for it.
+ * that account would otherwise be found nowhere. A file that does not parse is
+ * kept whole, as handBackOrRescue keeps a session's. Once only, so a pass run
+ * again keeps no second copy. False when they are not kept: a folder removed
+ * later must wait for it.
  */
 export function rescueStateChoices(folder: string, label: string, c: PathCtx = {}): boolean {
   try {
-    const theirs = readObject(path.join(folder, '.claude.json'));
-    if (!theirs) return true;
+    const file = path.join(folder, '.claude.json');
+    if (!existsSync(file) || !statSync(file).isFile()) return true;
+    const theirs = parseObject(readFileSync(file, 'utf8'));
+    if (!theirs) return rescueOnce(file, `${label}-.claude.json`, c);
     const user = readObject(defaultClaudeJsonPath(c)) ?? {};
     const choices = stateChoices(theirs);
     if (isDeepStrictEqual(choices, stateChoices(user))) return true;

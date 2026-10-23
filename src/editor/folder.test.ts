@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   existsSync,
   lstatSync,
@@ -993,6 +994,46 @@ describe('an install on the old link, moved into the folder', () => {
     expect(rescued.filter((name) => name.endsWith('editor-settings.json'))).toHaveLength(1);
     expect(rescued.filter((name) => name.endsWith('editor-claude-choices.json'))).toHaveLength(1);
   });
+
+  it("keeps whole, before a folder it took over goes, a Claude state file there that does not parse", async () => {
+    const s = await scene();
+    put(path.join(s.folder, 'projects', '-work', 'chat.jsonl'), 'a chat\n');
+    const half = '{"mcpServers": {"mine": {"command": "mine"';
+    put(path.join(s.folder, '.claude.json'), half);
+    expect(installEditorEnvVar('cursor', 'CLAUDE_CONFIG_DIR', s.folder, s.context.ctx).ok).toBe(true);
+    const takenOver = (): string[] => list(s.ccx).filter((name) => name.startsWith('editor-active.taken-over'));
+
+    await use(s, 'A', () => existsSync(path.join(s.folder, '.ccx-editor.json')) && takenOver().length === 0);
+
+    expect(existsSync(path.join(s.folder, '.ccx-editor.json'))).toBe(true);
+    expect(takenOver()).toEqual([]);
+    const kept = list(path.join(s.ccx, 'rescued')).filter((name) => name.endsWith('-editor-.claude.json'));
+    expect(kept).toHaveLength(1);
+    expect(read(path.join(s.ccx, 'rescued', kept[0]!))).toBe(half);
+  });
+
+  // Only where a file can be made unreadable: not on Windows, nor as root.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'keeps a folder it took over while its Claude state file cannot be read',
+    async () => {
+      const s = await scene();
+      put(path.join(s.folder, 'projects', '-work', 'chat.jsonl'), 'a chat\n');
+      put(path.join(s.folder, '.claude.json'), JSON.stringify({ theme: 'light' }));
+      chmodSync(path.join(s.folder, '.claude.json'), 0o000);
+      expect(installEditorEnvVar('cursor', 'CLAUDE_CONFIG_DIR', s.folder, s.context.ctx).ok).toBe(true);
+      const takenOver = (): string[] => list(s.ccx).filter((name) => name.startsWith('editor-active.taken-over'));
+
+      await use(s, 'A', () => existsSync(path.join(s.folder, '.ccx-editor.json')));
+      expect(existsSync(path.join(s.folder, '.ccx-editor.json'))).toBe(true);
+      expect(takenOver()).toHaveLength(1);
+
+      chmodSync(path.join(s.ccx, takenOver()[0]!, '.claude.json'), 0o600);
+      await use(s, 'A', () => takenOver().length === 0);
+
+      expect(takenOver()).toEqual([]);
+      expect(list(path.join(s.ccx, 'rescued')).filter((name) => name.endsWith('editor-claude-choices.json'))).toHaveLength(1);
+    },
+  );
 
   it('keeps in rescued/ a login a folder it takes over ran on, of an account ccx does not have', async () => {
     const s = await scene();

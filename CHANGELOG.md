@@ -94,8 +94,9 @@ semantic versioning.
   by the move's rule, its own settings and the like into `rescued/`, the login
   its Claude ran on home to its account (into `rescued/` when ccx has no such
   account), and ccx's folder is built in its place. The folder taken over is
-  kept aside until all of that has been kept, once each. `ccx editor on` and
-  `ccx on` now say when the editor could not be set up, and why.
+  kept aside until all of that has been kept, once each; a Claude state file
+  there that does not parse is kept whole. `ccx editor on` and `ccx on` now
+  say when the editor could not be set up, and why.
 - **A Claude folder never shares a lock.** A folder in `~/.claude` that is a
   lock, such as the one Claude holds while it renews its login, is no longer
   linked into a session's or the editor's folder as it starts; the link handed
