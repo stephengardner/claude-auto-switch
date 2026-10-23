@@ -300,6 +300,30 @@ describe('a write the item does not show', () => {
     expect(security.items.get(keychainService('/profile'))).toBe('the working login');
   });
 
+  it('is not made when the login there cannot be read first, blocking', () => {
+    const security = securityLikeMacOS();
+    security.exec.mockImplementationOnce(() => {
+      throw Object.assign(new Error('locked'), { status: 36 });
+    });
+    expect(() => writeKeychainCredential('/profile', 'the new login', security.options)).toThrow(
+      'Could not save the profile login in macOS Keychain',
+    );
+    expect(security.exec.mock.calls.map((call) => call[1][0])).toEqual(['find-generic-password']);
+    expect(security.items.has(keychainService('/profile'))).toBe(false);
+  });
+
+  it('is not made when the login there cannot be read first, off the thread', async () => {
+    const security = securityLikeMacOS();
+    security.options.execAsync.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('locked'), { code: 36 });
+    });
+    expect(await settled(writeKeychainCredentialAsync('/profile', 'the new login', security.options))).toEqual({
+      error: 'Could not save the profile login in macOS Keychain',
+    });
+    expect(security.options.execAsync.mock.calls.map((call) => call[1][0])).toEqual(['find-generic-password']);
+    expect(security.items.has(keychainService('/profile'))).toBe(false);
+  });
+
   it('leaves no item where there was none', () => {
     const security = garbling();
     expect(() => writeKeychainCredential('/profile', 'the new login', security.options)).toThrow(

@@ -15,8 +15,12 @@ semantic versioning.
   login there. A running session saving its renewed login home did this again
   on every try, so an account's stored login broke minutes after each sign-in,
   and `ccx list` showed nearly every account signed out. A login too long for
-  one line is now saved in `security`'s arguments, as Claude Code saves one,
-  and a save the item does not then show puts back what it held before.
+  one line is now saved in `security`'s arguments, as Claude Code saves one;
+  for the moment `security` runs, other programs running as you can see it
+  there, which a line on standard input never shows, so a login that fits
+  still goes that way. A save the item does not then show puts back what it
+  held before, and one made with no way to read what the item holds is not
+  made.
   `ccx doctor` names a login saved cut short, and `ccx doctor --fix` puts back
   the one kept before it, for each account no running session holds; a
   running session saves its own working login home once it moves to this

@@ -16,7 +16,9 @@ import { configFilePath } from '../config/config.js';
 import {
   CREDENTIALS_FILE,
   PREVIOUS_FILE,
+  isUsableCredential,
   loginIsCutShort,
+  previousCredentialPath,
   restoreCutShortLogin,
 } from '../accounts/credential-vault.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
@@ -407,15 +409,29 @@ export function restoreCutShortLogins(context: CliContext): string[] {
   return restored;
 }
 
-/** Logins a cut-short save left unreadable; `--fix` puts back the ones kept before. */
+/**
+ * Logins a cut-short save left unreadable, and what mends each: `--fix` where
+ * a working one was kept before, the running session where one holds the
+ * account, and a sign-in for the rest.
+ */
 export function auditCutShortLogins(context: CliContext): DoctorCheck | null {
   const cut = listAccounts(context.ctx).filter((account) => loginIsCutShort(account.dir));
   if (cut.length === 0) return null;
+  const held = new Set(liveLeases(context.ctx).map((lease) => lease.account));
+  const names = (list: typeof cut): string => list.map((account) => account.name).join(', ');
+  const sessions = cut.filter((account) => held.has(account.name));
+  const free = cut.filter((account) => !held.has(account.name));
+  const kept = free.filter((account) => isUsableCredential(previousCredentialPath(account.dir)));
+  const lost = free.filter((account) => !kept.includes(account));
   return {
     name: 'cut-short-logins',
     ok: false,
-    detail: `saved cut short, so Claude cannot read them: ${cut.map((account) => account.name).join(', ')}`,
-    fix: ['ccx doctor --fix'],
+    detail:
+      `saved cut short, so Claude cannot read them: ${names(cut)}` +
+      (sessions.length > 0 ? `; ${names(sessions)}: the running session saves its own once it moves to this version` : ''),
+    ...(kept.length + lost.length > 0
+      ? { fix: [...(kept.length > 0 ? ['ccx doctor --fix'] : []), ...lost.map((account) => `ccx login ${account.name}`)] }
+      : {}),
   };
 }
 

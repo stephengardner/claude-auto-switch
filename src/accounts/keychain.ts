@@ -126,7 +126,8 @@ export async function readKeychainCredentialAsync(dir: string, options: Keychain
 /**
  * Save `text` as the login, never in a shell command. A write the item does
  * not then show puts back what the item held before, so a failed write never
- * leaves a broken login in place of a working one.
+ * leaves a broken login in place of a working one; with no way to read what
+ * it holds, nothing is written.
  */
 export function writeKeychainCredential(dir: string, text: string, options: KeychainOptions = {}): void {
   if (!onMac(options)) {
@@ -141,11 +142,11 @@ export function writeKeychainCredential(dir: string, text: string, options: Keyc
       timeout: TIMEOUT_MS,
     });
   };
-  let before: string | null | undefined;
+  let before: string | null;
   try {
     before = readKeychainCredential(dir, options);
   } catch {
-    before = undefined; // unknown, so nothing is put back
+    throw writeFailed();
   }
   try {
     add(text);
@@ -153,8 +154,8 @@ export function writeKeychainCredential(dir: string, text: string, options: Keyc
     if (readKeychainCredential(dir, options) !== text.trim()) throw new Error('write failed');
   } catch {
     try {
-      if (typeof before === 'string') add(before);
-      else if (before === null) deleteKeychainCredential(dir, options);
+      if (before !== null) add(before);
+      else deleteKeychainCredential(dir, options);
     } catch {
       /* the write's own failure is the one to report */
     }
@@ -174,19 +175,19 @@ export async function writeKeychainCredentialAsync(dir: string, text: string, op
       timeout: TIMEOUT_MS,
     });
   };
-  let before: string | null | undefined;
+  let before: string | null;
   try {
     before = await readKeychainCredentialAsync(dir, options);
   } catch {
-    before = undefined;
+    throw writeFailed();
   }
   try {
     await add(text);
     if ((await readKeychainCredentialAsync(dir, options)) !== text.trim()) throw new Error('write failed');
   } catch {
     try {
-      if (typeof before === 'string') await add(before);
-      else if (before === null) await deleteKeychainCredentialAsync(dir, options);
+      if (before !== null) await add(before);
+      else await deleteKeychainCredentialAsync(dir, options);
     } catch {
       /* the write's own failure is the one to report */
     }

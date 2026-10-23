@@ -930,6 +930,7 @@ describe('logins saved cut short', () => {
     resolveClaude: () => ({ bin: '/real/claude' }),
     checkBrowserPort: () => Promise.resolve(true),
     shellPlans: [],
+    skipNetwork: true,
   };
   /** A context whose `claude auth status` answers signed out, without running Claude. */
   function withClaude(lines: string[] = []): CliContext {
@@ -961,6 +962,25 @@ describe('logins saved cut short', () => {
     expect(check).toMatchObject({ ok: false, fix: ['ccx doctor --fix'] });
     expect(check?.detail).toContain('one');
     expect(check?.detail).not.toContain('two');
+  });
+
+  it('say which --fix puts back, which a running session saves, and which need a sign-in', () => {
+    const c = withClaude();
+    account(c, 'kept', cut);
+    const held = account(c, 'held', cut);
+    takeLease('held', path.join(path.dirname(held), 'a-session'), c.ctx);
+    const lost = account(c, 'lost', cut);
+    rmSync(path.join(lost, '.credentials.prev.json'));
+    const check = auditCutShortLogins(c);
+    expect(check?.fix).toEqual(['ccx doctor --fix', 'ccx login lost']);
+    expect(check?.detail).toContain('held: the running session saves its own');
+  });
+
+  it('suggest nothing to run where only running sessions hold them', () => {
+    const c = withClaude();
+    const held = account(c, 'held', cut);
+    takeLease('held', path.join(path.dirname(held), 'a-session'), c.ctx);
+    expect(auditCutShortLogins(c)?.fix).toBeUndefined();
   });
 
   it('make the checkup fail, naming them and the fix', async () => {
