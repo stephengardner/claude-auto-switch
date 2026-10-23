@@ -17,8 +17,8 @@ semantic versioning.
   `rescued/`. Such a file is now settled by the rule the editor's folder
   uses: nothing changes when yours already holds all of the session's; when
   the session's is all of yours, byte for byte, and more, the rest is added to
-  yours; anything else stays as yours is while the session's is kept in
-  `rescued/<pid>-<folder>/`. While it cannot be kept there, the session folder
+  yours, unless yours is a link to a file elsewhere; anything else stays as
+  yours is while the session's is kept in `rescued/<pid>-<folder>/`. While it cannot be kept there, the session folder
   stays, and the next clean-up tries again.
 
 ## [2.6.23]

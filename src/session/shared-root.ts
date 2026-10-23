@@ -240,9 +240,9 @@ export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): bool
   // A folder that should have been a link but is the session's own (one made
   // before it was shared, or a link that could not be made) is merged in,
   // never over what is there: /rewind checkpoints and todos made in it go
-  // on being found, a file the user has too is settled by adoptClash (kept in
-  // `rescued/<session>-<folder>/` unless it is part of the user's, or the
-  // user's and more), and the session folder stays while one cannot be.
+  // on being found, a file the user has too is settled by adoptClash, which
+  // may keep the session's in `rescued/<session>-<folder>/`, and the session
+  // folder stays while one cannot be.
   // Plugins are not: an install is the user's own to manage.
   const owner = path.basename(sessionDir);
   for (const name of sharedDirNames(root)) {
@@ -521,8 +521,9 @@ function keepFileAside(from: string, base: string): boolean {
  * Where a folder's tree (an account's, the editor's or a session's) and the
  * user's both have a file: nothing to do when the user's holds all of the
  * folder's; where the folder's is the user's and more, as a chat that ran on
- * where the old link led leaves it, the rest is added; otherwise the user's
- * stays and the folder's is kept in `rescued/<label>/`.
+ * where the old link led leaves it, the rest is added, unless the user's is a
+ * link to a file elsewhere; otherwise the user's stays and the folder's is
+ * kept in `rescued/<label>/`.
  */
 function adoptClash(label: string, c: PathCtx): Clash {
   return (from, to, relative) => {

@@ -36,8 +36,9 @@ yours when the session ends; transcripts in a `projects` folder of its own, and
 a folder your `~/.claude` does not have of a kind ccx does not know yet, are
 not. Where both hold a file under one name, nothing changes when yours already
 holds all of the session's; when the session's is all of yours, byte for byte,
-and more, the rest is added to the end of yours; anything else stays as yours
-is while the session's goes to `rescued/`.
+and more, the rest is added to the end of yours, unless yours is a link to a
+file elsewhere; anything else stays as yours is while the session's goes to
+`rescued/`.
 
 **Detecting a spent account.**
 
