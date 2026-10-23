@@ -30,7 +30,10 @@ todos and memory. Settings start as a copy of your `settings.json`. What Claude
 changes during a session (a model picked with `/model`, a permission, a hook, an
 MCP server, a trusted folder) is merged back into your own `settings.json` and
 `~/.claude.json`, and logged. If you changed the same setting elsewhere, yours
-wins.
+wins. A folder the session ended up holding of its own, where a link could not
+be made, is merged into yours when it ends; a file both hold under one name
+with different contents stays as yours is, and the session's goes to
+`rescued/`.
 
 **Detecting a spent account.**
 

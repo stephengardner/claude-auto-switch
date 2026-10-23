@@ -367,6 +367,68 @@ describe('returnSharedUserFiles', () => {
     expect(readFileSync(path.join(real, 'v2'), 'utf8')).toBe('only in the session');
   });
 
+  /** A todo list in a folder the session had of its own, under a name yours has too. */
+  function bothHaveAList(): { home: string; sessionDir: string; c: PathCtx; yours: string; mine: string } {
+    const { home, sessionDir, c } = setup();
+    const yours = path.join(home, '.claude', 'todos', 'agent.json');
+    mkdirSync(path.dirname(yours), { recursive: true });
+    writeFileSync(yours, '[{"content":"yours"}]', 'utf8');
+    const mine = path.join(sessionDir, 'todos', 'agent.json');
+    mkdirSync(path.dirname(mine), { recursive: true });
+    writeFileSync(mine, '[{"content":"the session list"}]', 'utf8');
+    return { home, sessionDir, c, yours, mine };
+  }
+
+  const readOrNull = (file: string): string | null => {
+    try {
+      return readFileSync(file, 'utf8');
+    } catch {
+      return null;
+    }
+  };
+
+  it("keeps the session's copy of a file you also have in rescued/, once, and yours as it is", () => {
+    const { home, sessionDir, c, yours } = bothHaveAList();
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(true);
+    expect(readOrNull(yours)).toBe('[{"content":"yours"}]');
+    const kept = path.join(home, '.claude-auto-switch', 'rescued', 'session-todos');
+    expect(readOrNull(path.join(kept, 'agent.json'))).toBe('[{"content":"the session list"}]');
+    // A folder that stays for something else is handed back again at the next clean-up.
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(true);
+    expect(readdirSync(kept)).toEqual(['agent.json']);
+  });
+
+  it("says the hand-back is not done while the session's copy of a file you have cannot be kept aside", () => {
+    const { home, sessionDir, c, yours, mine } = bothHaveAList();
+    writeFileSync(path.join(home, '.claude-auto-switch', 'rescued'), 'in the way', 'utf8');
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(false);
+    expect(readOrNull(yours)).toBe('[{"content":"yours"}]');
+    expect(readOrNull(mine)).toBe('[{"content":"the session list"}]');
+  });
+
+  it('keeps nothing aside that yours already holds, and adds to yours what the session wrote on after it', () => {
+    const { home, sessionDir, c } = setup();
+    const theirs = path.join(home, '.claude', 'plans');
+    const own = path.join(sessionDir, 'plans');
+    mkdirSync(theirs, { recursive: true });
+    mkdirSync(own, { recursive: true });
+    // A copy, as where hard links are refused; one yours went on from; one the session went on from.
+    writeFileSync(path.join(theirs, 'same.md'), '# Plan\n', 'utf8');
+    writeFileSync(path.join(own, 'same.md'), '# Plan\n', 'utf8');
+    writeFileSync(path.join(theirs, 'yours-grew.md'), '# Plan\n- yours\n', 'utf8');
+    writeFileSync(path.join(own, 'yours-grew.md'), '# Plan\n', 'utf8');
+    writeFileSync(path.join(theirs, 'session-grew.md'), '# Plan\n', 'utf8');
+    writeFileSync(path.join(own, 'session-grew.md'), '# Plan\n- the session\n', 'utf8');
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(true);
+    expect(readOrNull(path.join(theirs, 'same.md'))).toBe('# Plan\n');
+    expect(readOrNull(path.join(theirs, 'yours-grew.md'))).toBe('# Plan\n- yours\n');
+    expect(readOrNull(path.join(theirs, 'session-grew.md'))).toBe('# Plan\n- the session\n');
+    expect(existsSync(path.join(home, '.claude-auto-switch', 'rescued'))).toBe(false);
+  });
+
   it('keeps the session folder when something in a folder of its own cannot go into yours', () => {
     const { home, sessionDir, c } = setup();
     mkdirSync(path.join(sessionDir, 'todos', 'agent'), { recursive: true });

@@ -240,15 +240,18 @@ export function returnSharedUserFiles(sessionDir: string, c: PathCtx = {}): bool
   // A folder that should have been a link but is the session's own (one made
   // before it was shared, or a link that could not be made) is merged in,
   // never over what is there: /rewind checkpoints and todos made in it go
-  // on being found, and the session folder stays while one cannot be.
-  // Plugins are not: an install is the user's own to manage.
+  // on being found, its copy of a file the user has too that differs from
+  // theirs is kept in `rescued/<session>-<folder>/`, and the session folder
+  // stays while one cannot be. Plugins are not: an install is the user's own
+  // to manage.
+  const owner = path.basename(sessionDir);
   for (const name of sharedDirNames(root)) {
     if (name === 'plugins' || name === 'sessions') continue;
     const own = path.join(sessionDir, name);
     try {
       if (!existsSync(own) || isLink(own) || !lstatSync(own).isDirectory()) continue;
       mkdirSync(path.join(root, name), { recursive: true });
-      if (!mergeTree(own, path.join(root, name))) kept = false;
+      if (!mergeTree(own, path.join(root, name), adoptClash(`${owner}-${name}`, c))) kept = false;
     } catch {
       kept = false;
     }
@@ -515,11 +518,11 @@ function keepFileAside(from: string, base: string): boolean {
 }
 
 /**
- * Where an account folder's tree and the user's both have a file: nothing to
- * do when the user's holds all of the account's; where the account's is the
- * user's and more, as a chat that ran on where the old link led leaves it, the
- * rest is added; otherwise the user's stays and the account's is kept in
- * `rescued/<label>/`.
+ * Where a folder's tree (an account's, the editor's or a session's) and the
+ * user's both have a file: nothing to do when the user's holds all of the
+ * folder's; where the folder's is the user's and more, as a chat that ran on
+ * where the old link led leaves it, the rest is added; otherwise the user's
+ * stays and the folder's is kept in `rescued/<label>/`.
  */
 function adoptClash(label: string, c: PathCtx): Clash {
   return (from, to, relative) => {

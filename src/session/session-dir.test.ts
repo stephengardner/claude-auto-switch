@@ -6,6 +6,7 @@ import {
   readFileSync,
   existsSync,
   readdirSync,
+  rmSync,
   symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -127,6 +128,28 @@ describe('sweeping session directories left behind', () => {
     expect(JSON.parse(readFileSync(claudeSettings, 'utf8'))).toEqual({ model: 'opus' });
     // Nothing there is a no-op.
     expect(retireLeftoverSessionDir(dir, ctx)).toBe(false);
+  });
+
+  it("keeps a dead session's folder while its copy of a file you have cannot be kept aside, then keeps it in rescued/", () => {
+    // A todo list written in a session whose link to ~/.claude/todos could not be made.
+    const { ctx, root } = home();
+    const dir = seed(root, '6161');
+    mkdirSync(path.join(dir, 'todos'), { recursive: true });
+    writeFileSync(path.join(dir, 'todos', 'agent.json'), 'the session list', 'utf8');
+    const yours = path.join(path.dirname(root), '.claude', 'todos', 'agent.json');
+    mkdirSync(path.dirname(yours), { recursive: true });
+    writeFileSync(yours, 'your list', 'utf8');
+    const rescued = path.join(path.dirname(root), 'rescued');
+    writeFileSync(rescued, 'in the way', 'utf8');
+
+    expect(sweepDeadSessionDirs(ctx, { isAlive: () => false })).toEqual([]);
+    expect(existsSync(path.join(dir, 'todos', 'agent.json'))).toBe(true);
+
+    rmSync(rescued);
+    expect(sweepDeadSessionDirs(ctx, { isAlive: () => false })).toEqual(['6161']);
+    expect(existsSync(dir)).toBe(false);
+    expect(readFileSync(yours, 'utf8')).toBe('your list');
+    expect(readFileSync(path.join(rescued, '6161-todos', 'agent.json'), 'utf8')).toBe('the session list');
   });
 
   it('will not take over a leftover folder holding an edit it could not save anywhere', () => {

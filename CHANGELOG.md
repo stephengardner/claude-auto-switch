@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.24]
+
+### Fixed
+
+- **A session's own copy of a file is kept, never dropped, when it ends
+  (#170).** A folder a terminal session held of its own rather than by a link
+  into `~/.claude` (a `/rewind` checkpoint or todo folder made where the link
+  could not be made) was merged into `~/.claude` when the session ended, and
+  where `~/.claude` already had a file of the same name with other contents,
+  yours stayed and the session's went with its folder, with nothing in
+  `rescued/`. Such a file is now settled by the rule the editor's folder
+  uses: a copy yours already holds is left, one the session went on writing
+  after yours is added to yours, and anything else stays as yours is while the
+  session's is kept in `rescued/<pid>-<folder>/`. While it cannot be kept
+  there, the session folder stays, and the next clean-up tries again.
+
 ## [2.6.23]
 
 ### Fixed
