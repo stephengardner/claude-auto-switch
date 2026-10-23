@@ -396,18 +396,28 @@ function uniquePath(base: string): string {
   return `${base}-${i}`;
 }
 
-/** The newest of uniquePath's `<name>.pre-share`, `-2`, `-3` and on, by number: as text, `-10` sorts before `-9`. */
+/**
+ * The folder a copy moved aside to link it came from, and which copy it is,
+ * when uniquePath named it (`<name>.pre-share`, then `-2` and on); null for
+ * any other name, `notes.pre-share-drafts` among them.
+ */
+function movedAside(entry: string): { name: string; n: number } | null {
+  const at = entry.lastIndexOf('.pre-share');
+  if (at <= 0) return null;
+  const rest = entry.slice(at + '.pre-share'.length);
+  if (rest === '') return { name: entry.slice(0, at), n: 1 };
+  return /^-\d+$/.test(rest) ? { name: entry.slice(0, at), n: Number(rest.slice(1)) } : null;
+}
+
+/** The newest copy of `name` moved aside, by number: as text, `-10` sorts before `-9`. */
 function latestBackup(sessionDir: string, name = 'projects'): string {
-  const base = `${name}.pre-share`;
-  const rank = (entry: string): number => {
-    if (entry === base) return 1;
-    const n = entry.startsWith(`${base}-`) ? entry.slice(base.length + 1) : '';
-    return /^\d+$/.test(n) ? Number(n) : 0;
-  };
-  const names = readdirSync(sessionDir).filter((n) => rank(n) > 0);
-  names.sort((a, b) => rank(a) - rank(b));
-  const last = names[names.length - 1];
-  return last ? path.join(sessionDir, last) : '';
+  const copies = readdirSync(sessionDir).flatMap((entry) => {
+    const aside = movedAside(entry);
+    return aside?.name === name ? [{ entry, n: aside.n }] : [];
+  });
+  copies.sort((a, b) => a.n - b.n);
+  const last = copies[copies.length - 1];
+  return last ? path.join(sessionDir, last.entry) : '';
 }
 
 /** Where src and dest both have a file: true once it is dealt with, false when it could not be. */
@@ -804,8 +814,7 @@ export function returnOwnFolders(dir: string, label: string, c: PathCtx): boolea
   let merged = true;
   for (const entry of entries) {
     const own = path.join(dir, entry);
-    const aside = entry.indexOf('.pre-share');
-    const name = aside > 0 ? entry.slice(0, aside) : entry;
+    const name = movedAside(entry)?.name ?? entry;
     if (NOT_KEPT_AT_REMOVAL.has(name) || CCX_OWN_FOLDERS.has(name) || isLockFolder(name)) continue;
     try {
       if (isLink(own) || !lstatSync(own).isDirectory()) continue;

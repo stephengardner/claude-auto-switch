@@ -466,6 +466,16 @@ describe('returnSharedUserFiles', () => {
     expect(returnSharedUserFiles(sessionDir, c)).toBe(false);
   });
 
+  it('hands back a folder whose name only has `.pre-share` in it under that name', () => {
+    const { home, sessionDir, c } = setup();
+    mkdirSync(path.join(sessionDir, 'notes.pre-share-drafts'), { recursive: true });
+    writeFileSync(path.join(sessionDir, 'notes.pre-share-drafts', 'a.md'), 'a draft', 'utf8');
+
+    expect(returnSharedUserFiles(sessionDir, c)).toBe(true);
+    expect(readOrNull(path.join(home, '.claude', 'notes.pre-share-drafts', 'a.md'))).toBe('a draft');
+    expect(existsSync(path.join(home, '.claude', 'notes'))).toBe(false);
+  });
+
   it('hands back none of what is never kept, a lock, or the folder ccx keeps in a session for itself', () => {
     const { home, sessionDir, c } = setup();
     // Each of the session's own, as where its link could not be made or it is never linked.
