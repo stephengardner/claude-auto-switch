@@ -134,3 +134,33 @@ describe('the record the REAL renewal writes, read back by hasWorkingLogin', () 
     expect(hasWorkingLogin(dir, ctx)).toBe(true);
   });
 });
+
+describe('a login lent to this machine', () => {
+  function lend(dir: string, expiresAt: number): void {
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'at-lent', expiresAt }, ccxLend: { version: 1 } }),
+      'utf8',
+    );
+    writeFileSync(path.join(dir, '.ccx-lent'), '{}', 'utf8');
+  }
+
+  it('is a working login until it is within the expiry margin, and has something to authenticate with throughout', () => {
+    const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: mkdtempSync(path.join(tmpdir(), 'cas-lent-home-')) } };
+    const dir = accountDir();
+    lend(dir, Date.now() + 3_600_000);
+    expect(hasWorkingLogin(dir, ctx)).toBe(true);
+    lend(dir, Date.now() + 9 * 60_000);
+    // Picked by nothing now: its owner sends a fresh one, nothing here can renew it.
+    expect(hasWorkingLogin(dir, ctx)).toBe(false);
+    expect(hasLogin(dir)).toBe(true);
+  });
+
+  it("follows this machine's own margin", () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-lent-home-'));
+    writeFileSync(path.join(home, 'config.json'), JSON.stringify({ lending: { expiryMarginMinutes: 60, renewAheadMinutes: 120 } }));
+    const dir = accountDir();
+    lend(dir, Date.now() + 30 * 60_000);
+    expect(hasWorkingLogin(dir, { env: { CLAUDE_AUTO_SWITCH_HOME: home } })).toBe(false);
+  });
+});

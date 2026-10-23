@@ -1,6 +1,7 @@
 import { readToken } from '../daemon/token-store.js';
 import { hasUsableLogin, credentialFileFingerprint } from './credential-vault.js';
 import { loginIsKnownDead } from '../usage/dead-login-store.js';
+import { lendUnavailable } from '../lending/lent-login.js';
 import type { PathCtx } from '../config/paths.js';
 
 /**
@@ -30,7 +31,8 @@ export function hasLogin(accountDir: string): boolean {
  * The stricter question, and the one to ask when choosing an account to use or
  * reporting which accounts are live. `hasLogin` only says there is something to
  * authenticate with; this also excludes the logins the token endpoint has
- * definitively refused, which no amount of waiting repairs.
+ * definitively refused, which no amount of waiting repairs, and a login lent to
+ * this machine that is inside its expiry margin, which only its owner can renew.
  *
  * Not used for the input to a RENEWAL, which deliberately asks the narrow
  * question: the renewal path does its own dead check and produces a better
@@ -38,6 +40,7 @@ export function hasLogin(accountDir: string): boolean {
  */
 export function hasWorkingLogin(accountDir: string, ctx: PathCtx): boolean {
   if (!hasLogin(accountDir)) return false;
+  if (lendUnavailable(accountDir, ctx)) return false;
   return !loginWasRejected(accountDir, ctx);
 }
 

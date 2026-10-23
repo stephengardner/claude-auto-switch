@@ -14,6 +14,12 @@ export interface DashboardAccount {
    * refused with "account_on_hold". Signing in again does not bring it back.
    */
   onHold?: boolean;
+  /**
+   * Lent to this machine by another (ccx lend), whose login it is and which
+   * renews it; `expiresAt` is when the lent token runs out. Signed out with it
+   * means the lend is too close to its end to use, not a sign-out.
+   */
+  lent?: { expiresAt: number };
   active: boolean;
   enabled: boolean;
   /** Epoch ms the account is capped until, if currently capped. */

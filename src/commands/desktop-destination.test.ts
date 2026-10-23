@@ -67,3 +67,21 @@ describe("a Desktop conversation's destination", () => {
     expect(destinationFor(context, 'desktop', null)).toBe('fable-spent');
   });
 });
+
+describe('a Desktop conversation and a login lent to this machine', () => {
+  it('never goes to a lend that is about to run out', () => {
+    const context = setup();
+    const home = (context.ctx.env as Record<string, string>).CLAUDE_AUTO_SWITCH_HOME as string;
+    const dir = path.join(home, 'profiles', 'fable-spent');
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'lent', expiresAt: Date.now() + 60_000 },
+        ccxLend: { version: 1 },
+      }),
+    );
+    writeFileSync(path.join(dir, '.ccx-lent'), '{}');
+    // The longest run on Opus, were its lend not ending.
+    expect(destinationFor(context, 'desktop', 'claude-opus-5-5')).toBe('fresh-ish');
+  });
+});

@@ -113,3 +113,55 @@ describe('configStamp', () => {
     expect(configStamp(ctx)).not.toBe(first);
   });
 });
+
+describe('the lending section', () => {
+  const at = (config: unknown) => loadConfig({ env: { CLAUDE_AUTO_SWITCH_HOME: seedHome(config) } });
+
+  it('is absent, so lending is off, until config.json has one', () => {
+    expect(at({}).lending).toBeUndefined();
+  });
+
+  it('takes any number of targets, each with its own transport, accounts and settings', () => {
+    const cfg = at({
+      lending: {
+        renewAheadMinutes: 90,
+        expiryMarginMinutes: 10,
+        targets: [
+          { name: 'build-server', transport: { type: 'ssh', host: 'user@build-1' }, accounts: ['work-a', 'work-b'] },
+          { name: 'shared-dir', transport: { type: 'directory', path: '/srv/ccx-lends' }, accounts: 'all' },
+          {
+            name: 'custom',
+            transport: { type: 'command', run: 'my-uploader --stdin' },
+            accounts: ['work-c'],
+            renewAheadMinutes: 120,
+          },
+        ],
+      },
+    });
+    expect(cfg.lending?.targets.map((t) => t.name)).toEqual(['build-server', 'shared-dir', 'custom']);
+    // The remote command ssh runs defaults to the import.
+    expect(cfg.lending?.targets[0]?.transport).toEqual({ type: 'ssh', host: 'user@build-1', remoteCommand: 'ccx lend import' });
+    expect(cfg.lending?.targets[2]?.renewAheadMinutes).toBe(120);
+  });
+
+  it('fills the defaults a section leaves out', () => {
+    expect(at({ lending: {} }).lending).toEqual({ renewAheadMinutes: 90, expiryMarginMinutes: 10, targets: [] });
+  });
+
+  it('refuses what would not work, saying where', () => {
+    const dir = { type: 'directory', path: '/x' };
+    const refusals: Array<[unknown, RegExp]> = [
+      [{ targets: [{ name: 'a', transport: dir, accounts: 'all' }, { name: 'a', transport: dir, accounts: 'all' }] }, /two targets are named/],
+      [{ targets: [{ name: 'a', transport: { type: 'ssh', host: '-oProxyCommand=x' }, accounts: 'all' }] }, /not a host ssh can be given safely/],
+      [{ renewAheadMinutes: 10, expiryMarginMinutes: 10 }, /renewAheadMinutes must be more than expiryMarginMinutes/],
+      [{ targets: [{ name: 'a', transport: dir, accounts: 'all', expiryMarginMinutes: 120 }] }, /renewAheadMinutes must be more than expiryMarginMinutes/],
+      [{ targets: [{ name: 'a', transport: dir, accounts: [] }] }, /name at least one account/],
+      [{ targets: [{ name: 'a', transport: dir, accounts: ['../x'] }] }, /not an account name/],
+      [{ targets: [{ name: 'a b', transport: dir, accounts: 'all' }] }, /a target name is/],
+      [{ targets: [{ name: 'a', transport: { type: 'carrier-pigeon' }, accounts: 'all' }] }, /Invalid discriminator/],
+    ];
+    for (const [lending, why] of refusals) {
+      expect(() => at({ lending }), why.source).toThrow(why);
+    }
+  });
+});

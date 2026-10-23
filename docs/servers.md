@@ -5,6 +5,8 @@ does anywhere, and you can do the server's sign-ins from your laptop.
 
 Each machine needs its own login of each account. A refresh token can be used
 once, so a login copied between machines ends whichever copy renews second.
+To skip those sign-ins, one machine can lend its logins to the others instead,
+access tokens only: see [lending logins to another machine](lending.md).
 
 ```sh
 # on the server, once

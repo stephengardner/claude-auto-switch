@@ -28,8 +28,12 @@ export type LoginCheck =
   | { state: 'works' }
   /** Its token had been turned away, and renewing it worked. */
   | { state: 'renewed' }
-  /** The token endpoint refused it. `onHold`: because Anthropic put the account on hold. */
-  | { state: 'finished'; detail: string; onHold: boolean }
+  /**
+   * The token endpoint refused it. `onHold`: because Anthropic put the account
+   * on hold. `lent`: a login lent to this machine was turned away, so it is
+   * done until its owner sends a fresh one; nothing here could renew it.
+   */
+  | { state: 'finished'; detail: string; onHold: boolean; lent?: true }
   /** Nothing could be learned (offline, asked to slow down, the login changed meanwhile). */
   | { state: 'unknown'; detail: string };
 
@@ -69,6 +73,8 @@ export async function askAboutLogin(dir: string, deps: LoginCheckDeps & { ctx?: 
       const detail = renewal.detail ?? read.rejected.message;
       return { state: 'finished', detail, onHold: isOnHold(detail) };
     }
+    case 'lent':
+      return { state: 'finished', detail: read.rejected.message, onHold: false, lent: true };
     default:
       return { state: 'unknown', detail: renewal.detail ?? `the login could not be renewed (${renewal.status})` };
   }
@@ -93,13 +99,19 @@ export function loginOnHold(dir: string, ctx: PathCtx): boolean {
  * Say, where the dashboard's recent lines and `ccx history` show it, that an
  * account's login was found finished and the account is out of rotation.
  */
-export function reportFinishedLogin(account: string, check: { detail: string; onHold: boolean }, ctx: PathCtx): void {
+export function reportFinishedLogin(
+  account: string,
+  check: { detail: string; onHold: boolean; lent?: true },
+  ctx: PathCtx,
+): void {
   appendEvent(
     configHome(ctx),
-    check.onHold
-      ? `"${account}" is on hold at Anthropic (claude.ai/restricted), so it is out of rotation`
-      : `"${account}" was signed out, so it is out of rotation until it is signed in again`,
+    check.lent
+      ? `"${account}" is lent to this machine and its token was turned away; the machine that lends it sends a fresh one (ccx lend sync there)`
+      : check.onHold
+        ? `"${account}" is on hold at Anthropic (claude.ai/restricted), so it is out of rotation`
+        : `"${account}" was signed out, so it is out of rotation until it is signed in again`,
     Date.now(),
-    { kind: 'signed-out', data: { account, onHold: check.onHold } },
+    { kind: 'signed-out', data: { account, onHold: check.onHold, ...(check.lent ? { lent: true } : {}) } },
   );
 }

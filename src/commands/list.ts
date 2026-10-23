@@ -4,6 +4,7 @@ import { probeAll } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { renderTable } from '../util/table.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
+import { lentLoginIn } from '../lending/lent-login.js';
 import { getClaude, type CliContext } from '../context.js';
 
 /**
@@ -44,9 +45,13 @@ export async function listCommand(
   // finished is the most misleading place to say it.
   const usable = signedInAndNotRejected(healths, accounts, context.ctx);
 
+  // A login another machine lent this one: said as such, with when it runs
+  // out, and "lend expired" rather than "no" once it is too close to use.
+  const lent = new Map(accounts.map((a) => [a.name, lentLoginIn(a.dir)] as const));
   const rows = accounts.map((a) => {
     const h = byName.get(a.name);
     const cap = ledger.caps.find((c) => c.account === a.name && (c.capUntil === null || c.capUntil > now));
+    const lend = lent.get(a.name);
     return {
       active: a.name === active ? '*' : '',
       name: a.name,
@@ -54,6 +59,7 @@ export async function listCommand(
       plan: h?.plan ?? a.plan ?? '',
       loggedIn: usable.has(a.name) ? 'yes' : 'no',
       cappedUntil: cap ? (cap.capUntil ? new Date(cap.capUntil).toLocaleTimeString() : 'indefinite') : '',
+      ...(lend ? { lentUntil: lend.expiresAt } : {}),
     };
   });
 
@@ -65,8 +71,17 @@ export async function listCommand(
     return 0;
   }
 
+  const shown = rows.map(({ lentUntil, ...row }) =>
+    lentUntil === undefined
+      ? row
+      : {
+          ...row,
+          loggedIn:
+            row.loggedIn === 'yes' ? `lent, until ${new Date(lentUntil).toLocaleTimeString()}` : 'lend expired',
+        },
+  );
   context.out(
-    renderTable(rows, [
+    renderTable(shown, [
       { key: 'active', header: '' },
       { key: 'name', header: 'ACCOUNT' },
       { key: 'email', header: 'EMAIL' },

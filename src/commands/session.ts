@@ -108,6 +108,7 @@ import {
   nudgeLoginReread,
 } from '../accounts/credential-vault.js';
 import { hasLogin, hasWorkingLogin } from '../accounts/account-login.js';
+import { lentLoginIn } from '../lending/lent-login.js';
 import { askAboutLogin, isOnHold, reportFinishedLogin } from '../accounts/login-check.js';
 import {
   propagateRenewal,
@@ -1933,6 +1934,9 @@ export async function runInteractiveHotSwap(
     // wait for a reset that cannot produce a login.
     accountsNeverSignedIn: () =>
       accounts.filter((a) => a.enabled && !hasLogin(a.dir)).map((a) => a.name),
+    // A lend that has run out is among the dead ones above, so it is never
+    // picked; this names it apart, since its owner renews it, not a sign-in.
+    lentAccounts: () => accounts.filter((a) => lentLoginIn(a.dir) !== null).map((a) => a.name),
     // A worker picks and says so in one step, so workers started together see
     // each other's picks and spread out, rather than each reading the leases
     // before any has written one and all picking the same account.

@@ -111,3 +111,13 @@ describe('an account on hold', () => {
     expect(loginOnHold(held, ctx)).toBe(false);
   });
 });
+
+describe('a login lent to this machine, turned away', () => {
+  it('is finished as a lend, so the session moves on without being told to sign in', async () => {
+    const check = await askAboutLogin(dir(), {
+      probe: read(turnedAway),
+      renew: async (): Promise<RefreshOutcome> => ({ status: 'lent', detail: 'a login lent to this machine' }),
+    });
+    expect(check).toEqual({ state: 'finished', detail: 'OAuth access token has been revoked.', onHold: false, lent: true });
+  });
+});

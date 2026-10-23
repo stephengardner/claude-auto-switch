@@ -29,6 +29,7 @@ const WORDING: Record<CredentialEvent['kind'], string> = {
   refused: 'login NOT written, to avoid overwriting a good one',
   'rolled-back': 'previous login restored',
   'signed-out': 'session was signed out',
+  removed: 'lent login taken back by the machine that lent it',
 };
 
 function when(at: number): string {

@@ -1,8 +1,114 @@
 import { z } from 'zod';
+import { isSafeSshHost } from '../remote/ssh.js';
 
 /** What `resume.prompt` is until somebody sets it. */
 export const DEFAULT_RESUME_PROMPT =
   'This session was restarted. If you were in the middle of something, carry on exactly where you stopped. If your work was already finished, say so in one line and wait.';
+
+const ACCOUNT_NAME = /^[A-Za-z0-9._-]{1,64}$/;
+const MINUTES = z
+  .number()
+  .int()
+  .min(0)
+  .max(24 * 60);
+
+/** `lending.renewAheadMinutes` until it is set. */
+export const DEFAULT_RENEW_AHEAD_MINUTES = 90;
+/** `lending.expiryMarginMinutes` until it is set, also on a machine with no lending section. */
+export const DEFAULT_EXPIRY_MARGIN_MINUTES = 10;
+
+/** How a lend reaches one receiving machine: each is handed the bundle on its standard input, or a file. */
+const LendTransportSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('ssh'),
+    /** As typed for ssh: `user@host`, or a Host from ~/.ssh/config. */
+    host: z.string().min(1).refine(isSafeSshHost, 'not a host ssh can be given safely'),
+    /** What the other machine runs, through its login shell, with the bundle on its standard input. */
+    remoteCommand: z.string().min(1).default('ccx lend import'),
+  }),
+  z.object({
+    type: z.literal('directory'),
+    /** A folder the receiver imports from: one `<account>.json` per account, written whole, owner-only. */
+    path: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal('command'),
+    /** Run through the shell with the bundle on its standard input (CCX_LEND_ACCOUNT and CCX_LEND_KIND set). */
+    run: z.string().min(1),
+  }),
+]);
+
+const LendTargetSchema = z.object({
+  name: z
+    .string()
+    .regex(ACCOUNT_NAME, 'a target name is 1-64 letters, digits, dots, dashes or underscores'),
+  transport: LendTransportSchema,
+  /**
+   * Which accounts it is lent: a list of names, `all` (every enabled account
+   * with a login of its own here) or `all-except-active` (the same, less the
+   * account new sessions start on here).
+   */
+  accounts: z.union([
+    z.literal('all'),
+    z.literal('all-except-active'),
+    z
+      .array(z.string().regex(ACCOUNT_NAME, 'not an account name'))
+      .nonempty('name at least one account, or use "all"'),
+  ]),
+  renewAheadMinutes: MINUTES.min(1).optional(),
+  expiryMarginMinutes: MINUTES.optional(),
+});
+
+/**
+ * Lending logins to other machines (`ccx lend`): an owner shares only access
+ * tokens, never the refresh token that renews them, so a receiver can never
+ * end the owner's login and needs no sign-in of its own. Off until this
+ * section exists; a receiver needs none of it but the margin.
+ */
+export const LendingSchema = z
+  .object({
+    /** The owner renews a login it lends once it has less than this left, before sending it. */
+    renewAheadMinutes: MINUTES.min(1).default(DEFAULT_RENEW_AHEAD_MINUTES),
+    /**
+     * A lent login with less than this left is not picked for new work. On the
+     * owner it also stops a token that close to its end from being sent.
+     */
+    expiryMarginMinutes: MINUTES.default(DEFAULT_EXPIRY_MARGIN_MINUTES),
+    targets: z.array(LendTargetSchema).max(100).default([]),
+  })
+  .superRefine((lending, ctx) => {
+    // Renewing only once a lend is inside its margin would leave it unusable
+    // for every receiver until the next sync, every time.
+    const aheadOfMargin = (path: Array<string | number>, ahead: number, margin: number): void => {
+      if (ahead > margin) return;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, 'renewAheadMinutes'],
+        message: 'renewAheadMinutes must be more than expiryMarginMinutes',
+      });
+    };
+    aheadOfMargin([], lending.renewAheadMinutes, lending.expiryMarginMinutes);
+    const names = new Set<string>();
+    lending.targets.forEach((target, i) => {
+      if (names.has(target.name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['targets', i, 'name'],
+          message: `two targets are named "${target.name}"`,
+        });
+      }
+      names.add(target.name);
+      aheadOfMargin(
+        ['targets', i],
+        target.renewAheadMinutes ?? lending.renewAheadMinutes,
+        target.expiryMarginMinutes ?? lending.expiryMarginMinutes,
+      );
+    });
+  });
+
+export type LendingConfig = z.infer<typeof LendingSchema>;
+export type LendTarget = LendingConfig['targets'][number];
+export type LendTransport = LendTarget['transport'];
 
 /**
  * User configuration (spec section 7). Every key is optional in the file; the
@@ -156,6 +262,8 @@ export const ConfigSchema = z.object({
       updates: z.enum(['off', 'owner']).default('off'),
     })
     .default({}),
+  /** Lending logins to other machines; absent means lending is off. See LendingSchema. */
+  lending: LendingSchema.optional(),
   realClaudePath: z.string().nullable().default(null),
 });
 
@@ -194,5 +302,6 @@ export interface PartialConfig {
     home?: string | null;
     updates?: 'off' | 'owner';
   };
+  lending?: z.input<typeof LendingSchema>;
   realClaudePath?: string | null;
 }

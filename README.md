@@ -113,6 +113,7 @@ the screenshots: `npm run build && node scripts/screenshots.mjs`.
 - [The dashboard](docs/dashboard.md)
 - [Claude Desktop](docs/desktop.md)
 - [Claude on a server over SSH](docs/servers.md)
+- [Lending logins to another machine, with no sign-in there](docs/lending.md)
 - [Artifact pages](docs/artifacts.md)
 
 ## Before you use it

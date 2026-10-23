@@ -242,3 +242,20 @@ describe('the state another program reads', () => {
     expect(payload.accounts[0]?.usage).toBeUndefined();
   });
 });
+
+describe('an account lent to this machine', () => {
+  it('carries when the lend runs out, and is lend-expired rather than logged-out once too close to use', () => {
+    const payload = toStatePayload(
+      snapshot([
+        account({ name: 'lent', lent: { expiresAt: NOW + HOUR } }),
+        account({ name: 'gone', loggedIn: false, lent: { expiresAt: NOW + 60_000 } }),
+        account({ name: 'out', loggedIn: false }),
+      ]),
+    );
+    expect(payload.accounts.map((a) => [a.name, a.status.state, a.lent])).toEqual([
+      ['lent', 'ready', { expiresAt: NOW + HOUR }],
+      ['gone', 'lend-expired', { expiresAt: NOW + 60_000 }],
+      ['out', 'logged-out', undefined],
+    ]);
+  });
+});

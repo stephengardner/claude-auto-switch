@@ -27,3 +27,6 @@ export class RealClaudeError extends CasError {}
 
 /** An account name or path failed validation (traversal, separators, reserved). */
 export class InvalidNameError extends CasError {}
+
+/** A login could not be lent, or a lent one could not be installed or removed. Never carries a token. */
+export class LendError extends CasError {}

@@ -106,3 +106,37 @@ describe('ccx list', () => {
     expect(byName.get('fine')).toBe('yes');
   });
 });
+
+describe('ccx list, with logins lent to this machine', () => {
+  function lend(dir: string, expiresAt: number): void {
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'lent', expiresAt }, ccxLend: { version: 1 } }),
+      'utf8',
+    );
+    writeFileSync(path.join(dir, '.ccx-lent'), '{}', 'utf8');
+  }
+
+  it('says lent, with when it runs out, and lend expired rather than no once it is too close to use', async () => {
+    const { accounts, context, lines } = setup(['fresh', 'ending', 'own']);
+    const freshUntil = Date.now() + 3 * 3_600_000;
+    lend(accounts[0]!.dir, freshUntil);
+    lend(accounts[1]!.dir, Date.now() + 60_000);
+
+    await listCommand(context, { probe: (accts) => allSignedIn(accts) });
+    const json = JSON.parse(lines.join('\n')) as { accounts: Array<Record<string, unknown>> };
+    expect(json.accounts.map((r) => [r.name, r.loggedIn, r.lentUntil])).toEqual([
+      ['fresh', 'yes', freshUntil],
+      ['ending', 'no', expect.any(Number)],
+      ['own', 'yes', undefined],
+    ]);
+
+    lines.length = 0;
+    context.json = false;
+    await listCommand(context, { probe: (accts) => allSignedIn(accts) });
+    const table = lines.join('\n');
+    expect(table).toMatch(/fresh\s+lent, until /);
+    expect(table).toMatch(/ending\s+lend expired/);
+    expect(table).toMatch(/own\s+yes/);
+  });
+});

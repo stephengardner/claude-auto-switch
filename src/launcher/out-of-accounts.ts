@@ -26,6 +26,12 @@ export interface OutOfAccounts {
   refused: string[];
   /** No stored login at all. Never worked, so "again" would be a lie. */
   neverSignedIn: string[];
+  /**
+   * Lent to this machine (ccx lend). One of these among `refused` is a lend
+   * that ran out or was turned away: the machine that lends it sends a fresh
+   * one, so neither a sign-in here nor a reset is the fix.
+   */
+  lent?: string[];
 }
 
 /** The message shown when waiting really is the only thing to do. */
@@ -55,16 +61,22 @@ export function outOfAccountsMessage(state: OutOfAccounts): string {
   // everything, and never-signed-in wins over capped. Normalised HERE rather
   // than at the call site, because the whole point of this function is that one
   // place decides what the ending says.
-  const refused = unique(state.refused);
-  const neverSignedIn = unique(state.neverSignedIn).filter((n) => !refused.includes(n));
+  // A lend that ran out is refused like a dead login, but signing it in here
+  // is not the fix, so it is told apart from the refused ones first.
+  const lent = new Set(state.lent ?? []);
+  const lendsOut = unique(state.refused).filter((n) => lent.has(n));
+  const refused = unique(state.refused).filter((n) => !lent.has(n));
+  const neverSignedIn = unique(state.neverSignedIn).filter(
+    (n) => !refused.includes(n) && !lendsOut.includes(n),
+  );
   const capped = unique(state.capped).filter(
-    (n) => !refused.includes(n) && !neverSignedIn.includes(n),
+    (n) => !refused.includes(n) && !neverSignedIn.includes(n) && !lendsOut.includes(n),
   );
   const needsSignIn = [...refused, ...neverSignedIn];
 
   // Nothing anyone can act on right now, so the only useful thing is when to
   // come back. Deliberately unchanged from what it has always said.
-  if (needsSignIn.length === 0) return WAIT;
+  if (needsSignIn.length === 0 && lendsOut.length === 0) return WAIT;
 
   const sentences: string[] = [];
   if (capped.length > 0) sentences.push(group(capped, 'hit a limit', 'hit a limit'));
@@ -74,9 +86,15 @@ export function outOfAccountsMessage(state: OutOfAccounts): string {
   if (neverSignedIn.length > 0) {
     sentences.push(group(neverSignedIn, 'is not signed in yet', 'are not signed in yet'));
   }
+  if (lendsOut.length > 0) {
+    sentences.push(
+      group(lendsOut, 'is lent here and has run out', 'are lent here and have run out'),
+    );
+  }
   // Only worth saying when waiting is on the table at all. Without a capped
   // account nobody is thinking about a reset, and the line would be noise.
-  if (capped.length > 0) sentences.push('A reset will not fix a sign-in');
+  if (capped.length > 0 && needsSignIn.length > 0) sentences.push('A reset will not fix a sign-in');
 
-  return `${sentences.join('. ')}. Run: ccx login ${needsSignIn[0]}`;
+  if (needsSignIn.length > 0) return `${sentences.join('. ')}. Run: ccx login ${needsSignIn[0]}`;
+  return `${sentences.join('. ')}. Run ccx lend sync on the machine that lends ${lendsOut.length === 1 ? 'it' : 'them'}`;
 }

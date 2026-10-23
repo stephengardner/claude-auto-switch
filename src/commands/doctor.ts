@@ -47,6 +47,7 @@ import {
 } from '../launcher/claude-repair.js';
 import type { ClaudeInvoker } from '../invoker.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
+import { lentLoginIn } from '../lending/lent-login.js';
 import { settingsPath, readSettings, isOurs } from '../statusline/settings-install.js';
 import { installedHooksProblem, readInstalledHandoff } from '../desktop/hooks.js';
 import { artifactHooksInstalled, artifactHooksProblem, withoutArtifactHooks } from '../artifacts/hooks.js';
@@ -638,11 +639,19 @@ export async function auditAccounts(context: CliContext): Promise<DoctorCheck> {
     );
   }
   const out = accounts.filter((a) => !loggedInNames.has(a.name));
+  // A lend that ran out comes back from the machine that lends it, never from a sign-in here.
+  const lendsOut = out.filter((a) => lentLoginIn(a.dir) !== null).map((a) => a.name);
+  const signIn = out.filter((a) => !lendsOut.includes(a.name));
   return {
     name,
     ok: accounts.some((a) => a.enabled && loggedInNames.has(a.name)),
-    detail: `${loggedInNames.size} of ${accounts.length} signed in`,
-    ...(out.length > 0 ? { fix: out.map((a) => `ccx login ${a.name}`), note: true } : {}),
+    detail:
+      `${loggedInNames.size} of ${accounts.length} signed in` +
+      (lendsOut.length > 0
+        ? `; lend expired: ${lendsOut.join(', ')} (ccx lend sync on the machine that lends ${lendsOut.length === 1 ? 'it' : 'them'})`
+        : ''),
+    ...(signIn.length > 0 ? { fix: signIn.map((a) => `ccx login ${a.name}`), note: true } : {}),
+    ...(signIn.length === 0 && lendsOut.length > 0 ? { note: true } : {}),
   };
 }
 
@@ -731,7 +740,7 @@ export function auditCaps(context: CliContext): DoctorCheck {
     .join(', ');
 
   if (usable.length > 0 && usable.every(isCapped)) {
-    const needSignIn = enabled.filter((a) => !usable.includes(a)).map((a) => a.name);
+    const needSignIn = enabled.filter((a) => !usable.includes(a) && lentLoginIn(a.dir) === null).map((a) => a.name);
     return {
       name,
       ok: false,

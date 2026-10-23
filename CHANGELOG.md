@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.7.0]
+
+### Added
+
+- **Lend logins to another machine, with no sign-in there (`ccx lend`).**
+  Running ccx or `ccx worker` on a second machine needed a sign-in of each
+  account there too: a refresh token works once, so a login copied between
+  machines ends whichever copy renews second. The machine that holds a login
+  can now lend it instead. `ccx lend sync` renews each login it lends once
+  less than `lending.renewAheadMinutes` is left, through the usual renewal and
+  its lock and never under a session using it, then sends only the access
+  token, in a versioned bundle, to each target in the new `lending` section of
+  config.json: over ssh to `ccx lend import` there, into a directory, or to a
+  command of your own, always on standard input or in an owner-only file. A
+  receiving machine registers the account and marks the login lent. ccx never
+  renews a lent login, and one with less than `lending.expiryMarginMinutes`
+  left is not picked for new work, workers included; a session already
+  running there takes up a fresh lend within seconds. `ccx lend export` and
+  `ccx lend revoke` lend one by hand and take one back, `ccx lend` shows both
+  sides, and `ccx renew <account> [--ahead 2h] [--force]` renews a login now.
+  A bundle that carries a refresh token, is malformed or has expired is
+  refused, no token is ever printed, and `ccx lend export` will not write one
+  to a terminal. See [docs/lending.md](docs/lending.md).
+- **A lend that has run out says so.** `ccx list`, the dashboard and
+  `ccx state` show a lent account with when its lend runs out, and
+  `lend expired` (state `lend-expired`, with `lent.expiresAt`) rather than
+  signed out. `ccx doctor`, `ccx login --all` and the closing message of a
+  session with nowhere left to go name the machine that lends it as the fix,
+  never a sign-in here.
+
 ## [2.6.24]
 
 ### Fixed

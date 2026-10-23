@@ -33,6 +33,12 @@ export type AccountState =
   | 'logged-out'
   /** Put on hold by Anthropic, so nothing can run on it and signing in does not help. */
   | 'on-hold'
+  /**
+   * Lent to this machine by another, and too close to the end of its lend to
+   * start work on: it comes back when that machine sends a fresh one (ccx lend
+   * sync there). Not signed out: signing in here is not the fix.
+   */
+  | 'lend-expired'
   /** A window is spent, or ccx was refused. `constraints` says which. */
   | 'blocked';
 
@@ -104,7 +110,10 @@ export function accountStatus(
   now: number,
 ): AccountStatus {
   if (!a.enabled) return { state: 'disabled', constraints: [], label: null, until: null };
-  if (!a.loggedIn) return { state: a.onHold ? 'on-hold' : 'logged-out', constraints: [], label: null, until: null };
+  if (!a.loggedIn) {
+    const state = a.onHold ? 'on-hold' : a.lent ? 'lend-expired' : 'logged-out';
+    return { state, constraints: [], label: null, until: null };
+  }
 
   const constraints = constraintsOn(a, model, now);
   if (constraints.length === 0) {

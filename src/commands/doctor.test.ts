@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  auditAccounts,
   auditShells,
   auditSharedHistory,
   auditSharedLogins,
@@ -918,5 +919,61 @@ describe('doctor and a Claude Code npm install that has lost its program', () =>
     expect(claude).toMatchObject({ ok: true, note: true, fix: ['ccx doctor --fix'] });
     expect(claude?.detail).toContain(platformProgram);
     expect(claude?.detail).toContain('only the placeholder');
+  });
+});
+
+describe('a login lent to this machine, as the doctor sees it', () => {
+  /** Accounts in `c`'s home: a login of their own, or a lend that runs out in `lentFor` ms, or signed out. */
+  function seed(c: CliContext, accounts: Array<{ name: string; lentFor?: number; signedOut?: boolean; capped?: boolean }>) {
+    const home = (c.ctx.env as Record<string, string>).CLAUDE_AUTO_SWITCH_HOME as string;
+    for (const a of accounts) {
+      const dir = path.join(home, 'profiles', a.name);
+      mkdirSync(dir, { recursive: true });
+      const oauth =
+        a.lentFor !== undefined
+          ? { accessToken: `lent-${a.name}`, expiresAt: Date.now() + a.lentFor }
+          : a.signedOut
+            ? { accessToken: '', refreshToken: '', expiresAt: 0 }
+            : { accessToken: `tok-${a.name}`, refreshToken: `refresh-${a.name}`, expiresAt: Date.now() + 3_600_000 };
+      writeFileSync(
+        path.join(dir, '.credentials.json'),
+        JSON.stringify({ claudeAiOauth: oauth, ...(a.lentFor !== undefined ? { ccxLend: { version: 1 } } : {}) }),
+      );
+      if (a.lentFor !== undefined) writeFileSync(path.join(dir, '.ccx-lent'), '{}');
+      addAccount({ name: a.name, dir }, c.ctx);
+    }
+    let ledger = loadLedger(c.ctx);
+    for (const a of accounts.filter((x) => x.capped)) {
+      ledger = markCapped(ledger, { account: a.name, now: Date.now(), resetAt: Date.now() + 3_600_000, reason: 'usage cap' });
+    }
+    updateLedger(c.ctx, () => ledger);
+  }
+
+  /** Stands in for `claude auth status`: signed in unless the profile's folder name says otherwise. */
+  function fakeAuthStatus(): CliContext['claude'] {
+    const script = path.join(mkdtempSync(path.join(tmpdir(), 'cas-doc-claude-')), 'claude.mjs');
+    writeFileSync(
+      script,
+      "const dir = process.env.CLAUDE_CONFIG_DIR ?? '';\nconsole.log(JSON.stringify({ loggedIn: !dir.endsWith('out') }));\n",
+    );
+    return { bin: process.execPath, prefixArgs: [script] };
+  }
+
+  it('names a lend that ran out as such, and never tells anyone to sign it in here', async () => {
+    const c = { ...context(), claude: fakeAuthStatus() };
+    seed(c, [{ name: 'mine' }, { name: 'borrowed', lentFor: 60_000 }, { name: 'out', signedOut: true }]);
+    const r = await auditAccounts(c);
+    expect(r.detail).toBe('1 of 3 signed in; lend expired: borrowed (ccx lend sync on the machine that lends it)');
+    expect(r.fix).toEqual(['ccx login out']);
+  });
+
+  it('does not count a lend that ran out among the accounts that need signing in first', () => {
+    const c = context();
+    seed(c, [{ name: 'mine', capped: true }, { name: 'borrowed', lentFor: 60_000 }]);
+    const r = auditCaps(c);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('every account you can actually use is capped');
+    expect(r.detail).not.toContain('borrowed');
+    expect(r.fix).toBeUndefined();
   });
 });

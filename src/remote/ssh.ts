@@ -22,9 +22,14 @@ export function remoteCcxCommand(args: string[], ccx = 'ccx'): string {
   return `sh -c ${shellQuote(handOver)} ccx-remote ${shellQuote(inner)}`;
 }
 
+/** Whether `host` can be handed to ssh as typed: never something it would read as an option. */
+export function isSafeSshHost(host: string): boolean {
+  return /^[A-Za-z0-9._@:%+[\]-]+$/.test(host) && !host.startsWith('-');
+}
+
 /** A host as typed for ssh: refused when it could be read as an option. */
 export function assertSshHost(host: string): void {
-  if (!/^[A-Za-z0-9._@:%+[\]-]+$/.test(host) || host.startsWith('-')) {
+  if (!isSafeSshHost(host)) {
     throw new CasError(`"${host}" is not a host ssh can be given safely`);
   }
 }

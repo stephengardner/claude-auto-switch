@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsS
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { refreshCredentialIfExpired } from './oauth-refresh.js';
+import { refreshCredentialIfExpired, renewalIsDue } from './oauth-refresh.js';
 import { CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
 import { forgetRefusals } from './dead-login-memo.js';
 import { credentialFileFingerprint, credentialPath, previousCredentialPath } from '../accounts/credential-vault.js';
@@ -463,5 +463,67 @@ describe('renewing a login the server has just turned away', () => {
     });
     expect(outcome.status).toBe('needs-login');
     expect(deadLoginReason(credentialFileFingerprint(dir), ctx)).toContain('account_on_hold');
+  });
+});
+
+describe('a login lent to this machine', () => {
+  beforeEach(() => forgetRefusals());
+
+  /** A lend as `ccx lend import` installs it: an access token, the marker, no refresh token. */
+  function lent(expiresAt: number): string {
+    return account({ accessToken: 'at-lent', expiresAt }, { ccxLend: { version: 1, issuedAt: 0 } });
+  }
+
+  it('is never renewed here, however it is asked: nothing is sent and the file is left as it was', async () => {
+    const dir = lent(now() - HOUR);
+    const before = readFileSync(credentialPath(dir), 'utf8');
+    let calls = 0;
+    const counting = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ access_token: 'x', refresh_token: 'y', expires_in: 60 }));
+    }) as unknown as typeof fetch;
+    // Expired, renew-whatever-is-left (ccx renew --force), and turned away by the API.
+    for (const asked of [{}, { renewWithinMs: Number.POSITIVE_INFINITY }, { renewRejected: sha256Fingerprint('at-lent') }]) {
+      const outcome = await refreshCredentialIfExpired(dir, { now, fetchImpl: counting, ...asked });
+      // Its own answer, never needs-login: the lend has not been signed out, it waits for its owner.
+      expect(outcome.status).toBe('lent');
+    }
+    expect(calls).toBe(0);
+    expect(readFileSync(credentialPath(dir), 'utf8')).toBe(before);
+  });
+
+  it('is never due for renewal, so nothing renews it before a move either', () => {
+    expect(renewalIsDue(lent(now() - HOUR), now)).toBe(false);
+  });
+
+  it("is this machine's own login once a sign-in here has given it a refresh token", async () => {
+    const dir = account(
+      { accessToken: 'at-own', refreshToken: 'rt-own', expiresAt: now() - HOUR },
+      { ccxLend: { version: 1, issuedAt: 0 } },
+    );
+    const outcome = await refreshCredentialIfExpired(dir, {
+      now,
+      fetchImpl: jsonFetch(200, { access_token: 'at-own-2', refresh_token: 'rt-own-2', expires_in: 3600 }),
+    });
+    expect(outcome.status).toBe('refreshed');
+  });
+});
+
+describe('renewing further ahead than usual', () => {
+  beforeEach(() => forgetRefusals());
+
+  it('renews a login with an hour left only when asked to renew that far ahead', async () => {
+    const dir = account({ accessToken: 'a', refreshToken: 'r', expiresAt: now() + HOUR });
+    const endpoint = jsonFetch(200, { access_token: 'a2', refresh_token: 'r2', expires_in: 8 * 3600 });
+    expect((await refreshCredentialIfExpired(dir, { now, fetchImpl: endpoint })).status).toBe('not-needed');
+    expect((await refreshCredentialIfExpired(dir, { now, fetchImpl: endpoint, renewWithinMs: 90 * 60_000 })).status).toBe(
+      'refreshed',
+    );
+    const renewed = JSON.parse(readFileSync(credentialPath(dir), 'utf8')) as { claudeAiOauth: Record<string, unknown> };
+    expect(renewed.claudeAiOauth).toMatchObject({ accessToken: 'a2', refreshToken: 'r2', expiresAt: now() + 8 * HOUR });
+    // Read again under the lock: what was just renewed has hours left, so asking again sends nothing.
+    expect((await refreshCredentialIfExpired(dir, { now, fetchImpl: endpoint, renewWithinMs: 90 * 60_000 })).status).toBe(
+      'not-needed',
+    );
   });
 });

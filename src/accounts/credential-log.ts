@@ -28,7 +28,9 @@ export type CredentialEventKind =
   /** A previous credential was put back after something went wrong. */
   | 'rolled-back'
   /** The session was found signed out (a credential with no login in it). */
-  | 'signed-out';
+  | 'signed-out'
+  /** A login lent to this machine was taken back by the machine that lent it. */
+  | 'removed';
 
 export interface CredentialEvent {
   /** When this happened, or when it last happened if it repeated. */

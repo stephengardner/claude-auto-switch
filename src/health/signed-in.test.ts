@@ -96,3 +96,23 @@ describe('the complement, which is what `ccx login --all` needs', () => {
     expect(accounts.filter((a) => !usable.has(a.name))).toEqual([]);
   });
 });
+
+describe('a login lent to this machine, among the signed-in ones', () => {
+  /** Turn `name`'s login into a lend that runs out `inMs` from now, as `ccx lend import` leaves one. */
+  function lendTo(accounts: Account[], name: string, inMs: number): void {
+    const dir = accounts.find((a) => a.name === name)?.dir ?? '';
+    writeFileSync(
+      path.join(dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: `lent-${name}`, expiresAt: Date.now() + inMs }, ccxLend: { version: 1 } }),
+      'utf8',
+    );
+    writeFileSync(path.join(dir, '.ccx-lent'), '{}', 'utf8');
+  }
+
+  it('counts while it has more than the margin left, and not once it is that close to its end', () => {
+    const { ctx, accounts } = setup(['fresh', 'ending', 'own']);
+    lendTo(accounts, 'fresh', 3 * 3_600_000);
+    lendTo(accounts, 'ending', 5 * 60_000);
+    expect([...signedInAndNotRejected(signedIn(['fresh', 'ending', 'own']), accounts, ctx)]).toEqual(['fresh', 'own']);
+  });
+});

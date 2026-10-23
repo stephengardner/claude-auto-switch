@@ -10,6 +10,7 @@ import { humanWait } from '../usage/report.js';
 import { checkResumePrompt, checkStartPrompt } from '../session/resume-prompt.js';
 import { defaultClaudeRoot } from '../session/shared-root.js';
 import { hasLogin } from '../accounts/account-login.js';
+import { lendUnavailable } from '../lending/lent-login.js';
 import { cappedNames, loadLedger } from '../ledger/ledger.js';
 import { preferredModel, roomOfFromSnapshot } from '../usage/account-room.js';
 import { standingOf } from '../usage/runway.js';
@@ -279,6 +280,8 @@ export function destinationFor(context: CliContext, leaving: string | null, conv
   let best: { name: string; rank: number } | null = null;
   for (const a of listAccounts(context.ctx)) {
     if (!a.enabled || a.name === leaving || capped.has(a.name) || !hasLogin(a.dir)) continue;
+    // A lend this close to its end would hand the conversation a token about to stop.
+    if (lendUnavailable(a.dir, context.ctx)) continue;
     if (roomOf(a.name) <= 0) continue;
     if (rotation.accountOrder === 'smart' && standingOf(usage.accounts[a.name], now, model).runway <= 0) continue;
     const rank = rotation.accountOrder === 'priority' ? -a.priority : rankOf(a.name);
@@ -305,6 +308,9 @@ function accountRefusal(context: CliContext, name: string): string | null {
   const account = listAccounts(context.ctx).find((a) => a.name === name);
   if (!account || !account.enabled) return `no enabled account named "${name}" (see: ccx list)`;
   if (!hasLogin(account.dir)) return `"${name}" is not signed in (ccx login ${name})`;
+  if (lendUnavailable(account.dir, context.ctx)) {
+    return `"${name}" is lent to this machine and its lend has run out; the machine that lends it sends a fresh one`;
+  }
   if (cappedNames(loadLedger(context.ctx), Date.now()).has(name)) {
     return `"${name}" is out of usage right now; ccx swap shows which accounts have room`;
   }

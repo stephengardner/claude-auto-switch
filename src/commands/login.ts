@@ -17,6 +17,7 @@ import { readOneLine } from '../util/read-line.js';
 import { getClaude, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
+import { lentLoginIn } from '../lending/lent-login.js';
 
 export interface LoginOptions {
   all?: boolean;
@@ -73,9 +74,15 @@ export async function loginCommand(
     // like one, so going by the probe alone made `--all` skip exactly the
     // accounts that need signing in and announce that they were all fine.
     const usable = signedInAndNotRejected(healths, accounts, context.ctx);
-    targets = accounts.filter((a) => !usable.has(a.name));
+    // A login another machine lends this one is kept fresh by that machine:
+    // signing it in here instead is a choice to make by name, not in bulk.
+    const lent = accounts.filter((a) => !usable.has(a.name) && lentLoginIn(a.dir) !== null);
+    for (const a of lent) {
+      context.out(`skipping "${a.name}": it is lent to this machine, and the machine that lends it sends it fresh (ccx lend sync there)`);
+    }
+    targets = accounts.filter((a) => !usable.has(a.name) && !lent.includes(a));
     if (targets.length === 0) {
-      context.out('all accounts are already logged in');
+      context.out(lent.length > 0 ? 'every other account is already logged in' : 'all accounts are already logged in');
       return 0;
     }
   } else if (name) {

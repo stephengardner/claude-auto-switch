@@ -95,6 +95,12 @@ export interface HotSwapDeps {
    */
   accountsNeverSignedIn?: () => string[];
   /**
+   * Accounts whose login another machine lent this one (ccx lend). One of them
+   * that cannot run is waiting for that machine to send a fresh one, so what is
+   * said about it is that, never "sign in again".
+   */
+  lentAccounts?: () => string[];
+  /**
    * Accounts that were ALREADY out of room when this run started, from the
    * ledger.
    *
@@ -147,6 +153,11 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
    * nothing is exhausted and the fix is a sign-in rather than a wait.
    */
   const needsLogin = new Set<string>(deps.knownDeadAccounts?.() ?? []);
+  /** Whether `name` is lent to this machine, asked when it is said, since a lend can arrive or go mid-run. */
+  const isLent = (name: string): boolean => (deps.lentAccounts?.() ?? []).includes(name);
+  /** What stops an account whose login did not work, as the end of a sentence. */
+  const unusableWords = (name: string): string =>
+    isLent(name) ? 'is lent here and has run out' : 'needs signing in again';
   /**
    * "account|model" pairs that have already run out during this session.
    *
@@ -212,7 +223,7 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
         // and the operator is told nothing about why.
         if (outcome.kind === 'needs-login') {
           needsLogin.add(fallback.account.name);
-          deps.notify(`"${fallback.account.name}" needs signing in again; trying another account...`);
+          deps.notify(`"${fallback.account.name}" ${unusableWords(fallback.account.name)}; trying another account...`);
           continue;
         }
         return outcome.exitCode;
@@ -222,6 +233,7 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
           capped: [...capped, ...(deps.knownCappedAccounts?.() ?? [])],
           refused: [...needsLogin],
           neverSignedIn: deps.accountsNeverSignedIn?.() ?? [],
+          lent: deps.lentAccounts?.() ?? [],
         }),
       );
       return 1;
@@ -240,9 +252,10 @@ export async function runHotSwapSession(deps: HotSwapDeps): Promise<number> {
       needsLogin.add(signedOutAs);
       if (outcome.midSession) {
         first = false;
-        deps.notify(`"${signedOutAs}" was signed out; moving this conversation to another account...`);
+        const why = isLent(signedOutAs) ? 'is lent here and its token was turned away' : 'was signed out';
+        deps.notify(`"${signedOutAs}" ${why}; moving this conversation to another account...`);
       } else {
-        deps.notify(`"${account.name}" needs signing in again; trying another account...`);
+        deps.notify(`"${account.name}" ${unusableWords(account.name)}; trying another account...`);
       }
       continue;
     }

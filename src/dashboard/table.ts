@@ -272,11 +272,15 @@ export interface Table {
 }
 
 /** What is said at the end of a row, besides when a window resets. */
-function notesOf(placed: Placed, next: boolean, sessions: number): Note[] {
+function notesOf(placed: Placed, next: boolean, sessions: number, now: number): Note[] {
   const notes: Note[] = [];
   if (placed.status.state === 'logged-out') notes.push({ text: 'signed out', code: codes.red });
   if (placed.status.state === 'on-hold') notes.push({ text: 'on hold', code: codes.red });
   if (placed.status.state === 'disabled') notes.push({ text: 'disabled', code: codes.dim });
+  if (placed.status.state === 'lend-expired') notes.push({ text: 'lend expired', code: codes.yellow });
+  else if (placed.account.lent) {
+    notes.push({ text: `lent, ${hhmm(placed.account.lent.expiresAt, now)} left`, short: 'lent', code: codes.dim });
+  }
   if (placed.block === 'usable') {
     if (next) notes.push({ text: 'next in line', short: 'next', code: codes.cyan });
     if (placed.account.pick?.heldBack) notes.push({ text: 'held back', code: codes.yellow });
@@ -300,7 +304,7 @@ export function drawTable(input: TableInput, options: TableOptions): Table {
       selected: i === options.selected,
       next,
       windows: windowsOf(p, model, now),
-      notes: notesOf(p, next, input.sessions.get(p.account.name) ?? 0),
+      notes: notesOf(p, next, input.sessions.get(p.account.name) ?? 0, now),
     };
   });
 

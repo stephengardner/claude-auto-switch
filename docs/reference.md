@@ -28,6 +28,12 @@
 | `ccx login <name>` / `--all`             | sign a stale account back in                                                                                                   |
 | `ccx login --host <host> [name]`         | sign in a server's accounts from here, over SSH (`--all`, `--remote-ccx <path>`)                                               |
 | `ccx keepalive on\|off\|status`          | renew idle logins every four hours with cron, for a machine nobody uses                                                        |
+| `ccx lend sync`                          | renew ahead and send each lending target fresh lends, access tokens only (`--dry-run`; see [lending](lending.md))              |
+| `ccx lend export <account>`              | the bundle that lends an account, to standard output or `--out <file>`                                                         |
+| `ccx lend import [file]`                 | on the receiving machine: install a lend from a file or standard input (`--as <name>`)                                         |
+| `ccx lend revoke <account>`              | take a lend back through its targets (`--local`: on the receiving machine)                                                     |
+| `ccx lend`                               | what this machine lends, and what is lent to it                                                                                |
+| `ccx renew <account>`                    | renew a login now when it has less than `--ahead` left (default 90m; `--force` whatever is left)                               |
 | `ccx list` / `status [name]`             | account health: email, plan, signed in, capped until                                                                           |
 | `ccx doctor`                             | check the setup, shell by shell, and who each profile really is (`--fix`: repair a broken npm install of Claude first)         |
 | `ccx history`                            | what ccx did to logins, sessions and your settings                                                                             |
@@ -68,6 +74,9 @@ usage check, as `ccx config <key>` says.
 | `desktop.prompt`                       | "Carry on where you stopped."   | what a moved Desktop conversation continues with                  |
 | `artifacts.home`                       | off                             | publish every new page as this account                            |
 | `artifacts.updates`                    | `"off"`                         | `owner`: change a page as the account that owns it                |
+| `lending.renewAheadMinutes`            | `90`                            | the owner renews a login it lends with less than this left        |
+| `lending.expiryMarginMinutes`          | `10`                            | a lent login with less than this left is not used                 |
+| `lending.targets`                      | none: lending is off            | where to lend which accounts: see [lending](lending.md)           |
 | `realClaudePath`                       | found on `PATH`                 | the real `claude` binary, when finding it fails                   |
 | `browser.debugPort`, `browser.channel` | `9222`, `"chrome"`              | the browser `ccx add` and `ccx login` use                         |
 
@@ -82,6 +91,8 @@ usage check, as `ccx config <key>` says.
 | `~/.claude-auto-switch/events.jsonl`     | what ccx did (`ccx history`)                                                                 |
 | `~/.claude-auto-switch/rescued/`         | session and editor changes that could not be merged back; account folders' own files         |
 | `~/.claude-auto-switch/artifacts.jsonl`  | each page a session published while page routing was on, and its owner                       |
+| a lent account's profile folder          | its lent login, and `.ccx-lent` beside it saying so, which holds nothing secret              |
+| a lending target's directory             | `<account>.json` for each account lent there, owner-only (`ccx lend sync`)                   |
 | `~/.claude/settings.json`                | the `statusLine` key; the Desktop hooks and the Artifact hooks when enabled; session changes |
 | `~/.claude.json`                         | session changes to your preferences, MCP servers and folder trust                            |
 | `~/.claude/skills/ccx/`                  | the `/ccx` command                                                                           |

@@ -1,4 +1,5 @@
 import { loginWasRejected } from '../accounts/account-login.js';
+import { lendUnavailable } from '../lending/lent-login.js';
 import type { PathCtx } from '../config/paths.js';
 
 /**
@@ -10,7 +11,9 @@ import type { PathCtx } from '../config/paths.js';
  * answer is never narrowed by a second opinion about the file.
  *
  * What it cannot know is that the token endpoint refused that exact credential
- * afterwards. That is the only thing taken away here.
+ * afterwards, or that a login lent to this machine is too close to its expiry
+ * to start work on (lending/lent-login). Those are the only things taken away
+ * here.
  *
  * One shared answer on purpose. This question was asked in five places from the
  * same expression, and only one of them subtracted refusals, so a login that had
@@ -28,7 +31,9 @@ export function signedInAndNotRejected(
       .map((h) => h.name)
       .filter((name) => {
         const account = accounts.find((a) => a.name === name);
-        return !!account && !loginWasRejected(account.dir, ctx);
+        return (
+          !!account && !loginWasRejected(account.dir, ctx) && !lendUnavailable(account.dir, ctx)
+        );
       }),
   );
 }

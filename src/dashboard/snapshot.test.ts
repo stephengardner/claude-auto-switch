@@ -69,3 +69,11 @@ describe('toSnapshot', () => {
     expect(s.refreshMs).toBe(2000);
   });
 });
+
+describe('an account lent to this machine', () => {
+  it('carries when its lend runs out, and only for the lent ones', () => {
+    const s = toSnapshot(input({ lent: new Map([['b', NOW + 3_600_000]]) }));
+    expect(s.accounts.find((x) => x.name === 'b')!.lent).toEqual({ expiresAt: NOW + 3_600_000 });
+    expect(s.accounts.find((x) => x.name === 'a')!).not.toHaveProperty('lent');
+  });
+});

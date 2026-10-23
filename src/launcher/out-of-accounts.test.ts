@@ -109,3 +109,26 @@ describe('an account that is honestly in two states at once', () => {
     expect(message({ neverSignedIn: ['solo', 'solo'] })).toContain('solo is not signed in yet');
   });
 });
+
+describe('when an account that is out is lent to this machine', () => {
+  it('says the lend ran out and where it is renewed, never to sign it in here', () => {
+    const out = message({ refused: ['borrowed'], lent: ['borrowed'] });
+    expect(out).toBe('borrowed is lent here and has run out. Run ccx lend sync on the machine that lends it');
+    expect(out).not.toContain('ccx login');
+  });
+
+  it('still tells a sign-in apart from a lend when both are out', () => {
+    expect(message({ refused: ['mine', 'a', 'b'], lent: ['a', 'b'] })).toBe(
+      'mine needs signing in again. a, b are lent here and have run out. Run: ccx login mine',
+    );
+  });
+
+  it('does not say a reset will not fix a sign-in when no sign-in is needed', () => {
+    const out = message({ capped: ['busy'], refused: ['borrowed'], lent: ['borrowed'] });
+    expect(out).toBe('busy hit a limit. borrowed is lent here and has run out. Run ccx lend sync on the machine that lends it');
+  });
+
+  it('says nothing about a lend that is fine', () => {
+    expect(message({ capped: ['a'], lent: ['a'] })).toBe('every account has hit its limit; try again after a reset');
+  });
+});

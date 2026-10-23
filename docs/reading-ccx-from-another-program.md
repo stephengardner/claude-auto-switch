@@ -63,8 +63,12 @@ was taken, not a subscription: poll it if you want to keep up.
 ### Use `status`, do not recompute it
 
 `status.state` is one of `ready`, `blocked`, `disabled`, `logged-out`,
-`on-hold`. `on-hold` is an account Anthropic put on hold: its login was refused
-with `account_on_hold`, and signing in again does not bring it back.
+`on-hold`, `lend-expired`. `on-hold` is an account Anthropic put on hold: its
+login was refused with `account_on_hold`, and signing in again does not bring
+it back. `lend-expired` is an account another machine lent this one
+([lending](lending.md)) whose lend is too close to its end to use; it comes
+back when that machine sends a fresh one. A lent account also carries
+`lent.expiresAt`, when its lent token runs out.
 
 It is shipped rather than left for you to derive because the rule is easy to get
 subtly wrong, and getting it wrong is invisible. ccx itself had two surfaces

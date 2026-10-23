@@ -14,6 +14,7 @@ import {
 import { keychainBlocking, keychainOnTimers, type KeychainIo } from '../accounts/keychain-view.js';
 import { call, runBlocking, runOnTimers, type Steps } from '../util/steps.js';
 import { renewOneAtATime } from './renew-one-at-a-time.js';
+import { lentLoginFromText } from '../lending/lent-login.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import { alreadyRefused, refusalReason, rememberRefused } from './dead-login-memo.js';
 import { loginIsKnownDead, deadLoginReason, rememberDeadLogin, forgetDeadLogin } from './dead-login-store.js';
@@ -49,8 +50,15 @@ const EXPIRY_BUFFER_MS = 10 * 60_000;
 /** The longest a token request may take before the renewal gives up. */
 const REQUEST_TIMEOUT_MS = 30_000;
 
-/** `busy`: something else holds the login's lock, so nothing was sent; try again shortly. */
-export type RefreshStatus = 'refreshed' | 'not-needed' | 'needs-login' | 'unavailable' | 'busy';
+/**
+ * `busy`: something else holds the login's lock, so nothing was sent; try again shortly.
+ * `lent`: another machine lent this login (ccx lend) and renews it; this one has no
+ * refresh token for it and never sends one.
+ */
+export type RefreshStatus = 'refreshed' | 'not-needed' | 'needs-login' | 'unavailable' | 'busy' | 'lent';
+
+/** Why a lent login is never renewed here. */
+const LENT_DETAIL = 'a login lent to this machine: the machine that lends it renews it';
 
 export interface RefreshOutcome {
   status: RefreshStatus;
@@ -100,6 +108,13 @@ export interface RefreshOptions {
    * as an expired one renewed meanwhile is.
    */
   renewRejected?: string;
+  /**
+   * Renew once the access token has less than this long left (default
+   * EXPIRY_BUFFER_MS). A machine that lends its logins renews further ahead
+   * (`ccx renew --ahead`), so what it sends has hours left; Infinity renews
+   * whatever is left (`--force`). Checked again under the lock, as always.
+   */
+  renewWithinMs?: number;
 }
 
 /**
@@ -111,12 +126,15 @@ export interface RefreshOptions {
  */
 export function renewalIsDue(accountDir: string, now: () => number = () => Date.now()): boolean {
   let oauth: OauthBlock | undefined;
+  let text: string;
   try {
-    oauth = (JSON.parse(readCredential(credentialPath(accountDir))) as Record<string, unknown>)
-      .claudeAiOauth as OauthBlock | undefined;
+    text = readCredential(credentialPath(accountDir));
+    oauth = (JSON.parse(text) as Record<string, unknown>).claudeAiOauth as OauthBlock | undefined;
   } catch {
     return false; // nothing readable to renew
   }
+  // Never due here: its owner renews it and sends it again.
+  if (lentLoginFromText(text)) return false;
   if (!oauth || typeof oauth !== 'object' || !oauth.accessToken) return false;
   const expiresAt = typeof oauth.expiresAt === 'number' ? oauth.expiresAt : 0;
   return expiresAt <= now() + EXPIRY_BUFFER_MS;
@@ -163,7 +181,7 @@ export async function refreshCredentialIfExpired(
 ): Promise<RefreshOutcome> {
   const now = options.now ?? (() => Date.now());
   // Looked at first without the lock, so a login with nothing to do never waits for it.
-  const before = assess(credentialPath(accountDir), now, options.ctx, options.renewRejected);
+  const before = assess(credentialPath(accountDir), now, options.ctx, options.renewRejected, options.renewWithinMs);
   if (!before.renew) return before.outcome;
   const login = sha256Fingerprint(before.refreshToken);
   return oneRenewalPerLogin(login, () => {
@@ -243,10 +261,17 @@ type Assessment =
 
 /**
  * Read `file` and decide whether its login wants renewing: when it is expired
- * or nearly, or when it still holds the access token `rejected` fingerprints.
+ * or nearly (within `renewWithinMs`), or when it still holds the access token
+ * `rejected` fingerprints.
  */
-function assess(file: string, now: () => number, ctx: PathCtx | undefined, rejected?: string): Assessment {
-  return runBlocking(assessSteps(file, now, ctx, rejected, keychainBlocking));
+function assess(
+  file: string,
+  now: () => number,
+  ctx: PathCtx | undefined,
+  rejected?: string,
+  renewWithinMs?: number,
+): Assessment {
+  return runBlocking(assessSteps(file, now, ctx, rejected, keychainBlocking, renewWithinMs));
 }
 
 function* assessSteps(
@@ -255,6 +280,7 @@ function* assessSteps(
   ctx: PathCtx | undefined,
   rejected: string | undefined,
   io: KeychainIo,
+  renewWithinMs: number = EXPIRY_BUFFER_MS,
 ): Steps<Assessment> {
   let raw: Record<string, unknown>;
   let fileText: string;
@@ -268,6 +294,9 @@ function* assessSteps(
   if (!oauth || typeof oauth !== 'object') {
     return { renew: false, outcome: { status: 'unavailable', detail: 'not an oauth login' } };
   }
+  // Before the missing refresh token is read as a finished login: a lent one
+  // never had one here, and its owner renews it.
+  if (lentLoginFromText(fileText)) return { renew: false, outcome: { status: 'lent', detail: LENT_DETAIL } };
   if (!oauth.refreshToken) return { renew: false, outcome: { status: 'needs-login', detail: 'no refresh token stored' } };
 
   // A dead grant stays dead until this file changes, and only signing in again
@@ -301,7 +330,7 @@ function* assessSteps(
 
   const expiresAt = typeof oauth.expiresAt === 'number' ? oauth.expiresAt : 0;
   const turnedAway = rejected !== undefined && !!oauth.accessToken && sha256Fingerprint(oauth.accessToken) === rejected;
-  if (expiresAt > now() + EXPIRY_BUFFER_MS && oauth.accessToken && !turnedAway) {
+  if (expiresAt > now() + renewWithinMs && oauth.accessToken && !turnedAway) {
     return { renew: false, outcome: { status: 'not-needed' } };
   }
   return { renew: true, raw, auth: oauth, refreshToken: oauth.refreshToken, identity };
@@ -334,7 +363,7 @@ function* renewUnderLockSteps(accountDir: string, options: RefreshOptions): Step
   try {
     // Read again now the lock is held: whoever held it before may have renewed
     // this login meanwhile, and the token read above is then spent.
-    const underLock = yield* assessSteps(file, now, ctx, options.renewRejected, keychainOnTimers);
+    const underLock = yield* assessSteps(file, now, ctx, options.renewRejected, keychainOnTimers, options.renewWithinMs);
     if (!underLock.renew) return underLock.outcome;
     return yield* call(() => performRenewal(accountDir, options, underLock));
   } finally {

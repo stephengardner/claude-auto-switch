@@ -1646,3 +1646,25 @@ describe('a screen too short for everything', () => {
     expect(out.split('\n')[0]).toContain('ccx 2.3.2');
   });
 });
+
+describe('an account lent to this machine', () => {
+  const opts = { color: false as const, clock: utc, width: 120 };
+
+  it('says a lend is lent and how long it has, and one too close to its end that its lend expired, out of rotation', () => {
+    const out = renderDashboard(
+      snapshot([
+        account({ name: 'ready1', pick: pick(1) }),
+        account({ name: 'lent1', pick: pick(2), lent: { expiresAt: NOW + 2 * HOUR + 5 * MIN } }),
+        account({ name: 'gone1', loggedIn: false, lent: { expiresAt: NOW + 5 * MIN } }),
+      ]),
+      opts,
+    );
+    expect(rowOf(out, 'lent1')).toMatch(/lent, 2h 5m left$/);
+    expect(rowOf(out, 'gone1')).toMatch(/lend expired$/);
+    expect(rowOf(out, 'gone1')).not.toContain('signed out');
+    const lines = out.split('\n');
+    const at = (text: string): number => lines.findIndex((l) => l.includes(text));
+    expect(at(' lent1 ')).toBeLessThan(at('── not in rotation '));
+    expect(at('── not in rotation ')).toBeLessThan(at(' gone1 '));
+  });
+});

@@ -321,3 +321,24 @@ describe('a refused sign-in puts back the login it replaced', () => {
     expect(live.claudeAiOauth.refreshToken).toBe('rt-working');
   });
 });
+
+describe('ccx login --all and a login lent to this machine', () => {
+  it('leaves a lend that ran out to the machine that lends it, saying so', async () => {
+    const { accounts, context, lines } = setup(['borrowed', 'out']);
+    writeFileSync(
+      path.join(accounts[0]!.dir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'lent', expiresAt: Date.now() + 60_000 }, ccxLend: { version: 1 } }),
+    );
+    writeFileSync(path.join(accounts[0]!.dir, '.ccx-lent'), '{}');
+    const attempted: string[] = [];
+    await loginCommand(context, undefined, { all: true }, {
+      probe: (accts) => Promise.resolve(accts.map((a) => ({ name: a.name, loggedIn: a.name !== 'out' }))) as never,
+      login: (account) => {
+        attempted.push(account.name);
+        return Promise.resolve({ ok: false, detail: 'stopped by the test' }) as never;
+      },
+    });
+    expect(attempted).toEqual(['out']);
+    expect(lines.join('\n')).toContain('skipping "borrowed": it is lent to this machine');
+  });
+});

@@ -32,9 +32,11 @@ export interface StateAccount {
   priority: number;
   /** Epoch ms ccx recorded this account as capped until, if it did. */
   cappedUntil?: number;
+  /** Present when another machine lent this one the login (ccx lend): when the lent token runs out, epoch ms. */
+  lent?: { expiresAt: number };
   usage?: DashboardSnapshot['accounts'][number]['usage'];
   status: {
-    /** ready | blocked | disabled | logged-out | on-hold */
+    /** ready | blocked | disabled | logged-out | on-hold | lend-expired */
     state: string;
     /** What is being named: a model, `5h`, `week`, `capped`. Null when ready. */
     label: string | null;
@@ -82,6 +84,7 @@ export function toStatePayload(snapshot: DashboardSnapshot): StatePayload {
         active: a.active,
         priority: a.priority,
         ...(a.cappedUntil !== undefined ? { cappedUntil: a.cappedUntil } : {}),
+        ...(a.lent !== undefined ? { lent: { expiresAt: a.lent.expiresAt } } : {}),
         ...(a.usage !== undefined ? { usage: a.usage } : {}),
         status: {
           state: status.state,

@@ -29,6 +29,14 @@ import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
 import { keepaliveCommand } from './commands/keepalive.js';
 import {
+  lendExportCommand,
+  lendImportCommand,
+  lendRevokeCommand,
+  lendStatusCommand,
+  lendSyncCommand,
+  renewCommand,
+} from './commands/lend.js';
+import {
   desktopCommand,
   desktopContinueCommand,
   desktopRunCommand,
@@ -374,6 +382,54 @@ program
   .description('renew idle logins every four hours with cron, for a machine nobody uses: on|off|status')
   .action(async (action?: string) => {
     process.exitCode = await keepaliveCommand(context(), action);
+  });
+
+program
+  .command('renew <account>')
+  .description('renew a login now when it has less than --ahead left (default 90m), or whatever is left with --force')
+  .option('--ahead <duration>', 'renew when less than this is left: 90m, 2h, 1h30m')
+  .option('--force', 'renew however long is left')
+  .action(async (name: string, opts: { ahead?: string; force?: boolean }) => {
+    process.exitCode = await renewCommand(context(), name, opts);
+  });
+
+// Lending logins to another machine without their refresh tokens: see docs/lending.md.
+const lend = program
+  .command('lend')
+  .description('lend logins to other machines, access tokens only, so they need no sign-in: export, import, sync, revoke')
+  .action(() => {
+    process.exitCode = lendStatusCommand(context());
+  });
+lend
+  .command('export <account>')
+  .description('the bundle that lends an account (its access token, never its refresh token)')
+  .option('--out <file>', 'write it to this file (owner-only) instead of standard output')
+  .option('--force', 'print it even to a terminal')
+  .action(async (name: string, opts: { out?: string; force?: boolean }) => {
+    process.exitCode = await lendExportCommand(context(), name, opts);
+  });
+lend
+  .command('import [file]')
+  .description('on a receiving machine: install the lend in a bundle (or take one back), from a file or standard input')
+  .option('--as <name>', 'install it under this account name')
+  .action(async (file: string | undefined, opts: { as?: string }) => {
+    process.exitCode = await lendImportCommand(context(), file, opts);
+  });
+lend
+  .command('sync')
+  .description('renew ahead and send fresh lends to every target in config.json; safe to run from cron or a timer')
+  .option('--target <name>', 'only this target')
+  .option('--dry-run', 'say what it would renew and send, without doing it')
+  .action(async (opts: { target?: string; dryRun?: boolean }) => {
+    process.exitCode = await lendSyncCommand(context(), opts);
+  });
+lend
+  .command('revoke <account>')
+  .description('take a lend back from the targets that have it (--local: from this machine, a receiver)')
+  .option('--target <name>', 'only from this target')
+  .option('--local', 'remove the lend this machine was given')
+  .action(async (name: string, opts: { target?: string; local?: boolean }) => {
+    process.exitCode = await lendRevokeCommand(context(), name, opts);
   });
 
 program

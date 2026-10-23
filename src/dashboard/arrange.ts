@@ -27,7 +27,14 @@ export interface Placed {
 const OWN_WINDOWS: ReadonlySet<string> = new Set(['5h', 'week']);
 
 function blockOf(account: DashboardAccount, status: AccountStatus): Block {
-  if (status.state === 'disabled' || status.state === 'logged-out' || status.state === 'on-hold') return 'off';
+  if (
+    status.state === 'disabled' ||
+    status.state === 'logged-out' ||
+    status.state === 'on-hold' ||
+    status.state === 'lend-expired'
+  ) {
+    return 'off';
+  }
   if (status.state === 'ready') return 'usable';
   // Blocked, and rotation may rank it all the same. With only its preferred
   // model spent it can run the next one in the chain, and ccx's record of a

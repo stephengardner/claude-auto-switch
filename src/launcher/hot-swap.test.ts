@@ -722,3 +722,26 @@ describe('an unproven hold, which is a nudge rather than a verdict', () => {
     }
   });
 });
+
+describe('a lent account that turns out not to work', () => {
+  it('is said to have run out, not to need a sign-in, and the ending says where it is renewed', async () => {
+    const accounts = pool(['borrowed', 'mine']);
+    const notes: string[] = [];
+    const reports: string[] = [];
+    const deps: HotSwapDeps = {
+      nextAccount: (ex) => accounts.find((a) => !ex.has(a.name)) ?? null,
+      resolveAccount: (name) => accounts.find((a) => a.name === name) ?? null,
+      runSession: () => Promise.resolve({ kind: 'needs-login', exitCode: 1 } as SessionOutcome),
+      markCapped: () => {},
+      notify: (m) => notes.push(m),
+      report: (m) => reports.push(m),
+      lentAccounts: () => ['borrowed'],
+    };
+    expect(await runHotSwapSession(deps)).toBe(1);
+    expect(notes).toEqual([
+      '"borrowed" is lent here and has run out; trying another account...',
+      '"mine" needs signing in again; trying another account...',
+    ]);
+    expect(reports).toEqual(['mine needs signing in again. borrowed is lent here and has run out. Run: ccx login mine']);
+  });
+});
