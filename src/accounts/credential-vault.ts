@@ -296,8 +296,8 @@ export function loginIsCutShort(dir: string): boolean {
     return false;
   }
   try {
-    const parsed: unknown = JSON.parse(text);
-    return typeof parsed !== 'object' || parsed === null;
+    JSON.parse(text);
+    return false;
   } catch {
     return true;
   }

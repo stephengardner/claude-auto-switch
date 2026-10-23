@@ -963,6 +963,16 @@ describe('logins saved cut short', () => {
     expect(check?.detail).not.toContain('two');
   });
 
+  it('make the checkup fail, naming them and the fix', async () => {
+    const lines: string[] = [];
+    const c = withClaude(lines);
+    const dir = account(c, 'one', cut);
+    expect(await doctorCommand(c, deps)).toBe(1);
+    expect(lines.join('\n')).toContain('saved cut short, so Claude cannot read them: one');
+    expect(lines.join('\n')).toContain('ccx doctor --fix');
+    expect(stored(dir)).toBe(cut);
+  });
+
   it('are put back by --fix from the login kept before, and the report then has nothing to say', async () => {
     const lines: string[] = [];
     const c = withClaude(lines);
