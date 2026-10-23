@@ -23,7 +23,9 @@ semantic versioning.
   which changes the folder's time after the write, and every write ccx makes
   changes it too, so a renewal Claude makes is noticed at the next look, as
   before. A login is read again too while its folder is still settling, and
-  at least once a minute whatever its folder says.
+  at least once a minute whatever its folder says. Every login a session
+  looks at is kept for as long as Claude runs, so a switch made after a quiet
+  spell never reads one on that thread.
 - **What a session does when a login changes runs off the thread too.**
   Saving a renewal Claude made home to its profile, carrying it to profiles
   that share the login and into the editor's folder, taking up a renewal made
@@ -36,7 +38,8 @@ semantic versioning.
   is now made only while ccx holds both locks that Claude takes, around its
   login and around its state (`.claude.json.lock`), as the editor's move is,
   tried once at each look and never waited for on the thread. While either is
-  taken nothing is written and the session stays on its account: a switch you
+  taken nothing is written, no other session is told this one is on the next
+  account, and the session stays on its account: a switch you
   asked for is kept and made at a later look, and says so after 10 s; a move a
   limit makes is tried again every 200 ms for 10 s, then the session is
   relaunched on the next account instead; a move for an Artifact call waits
