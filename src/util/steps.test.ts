@@ -46,7 +46,7 @@ describe('work written once as steps', () => {
           if (n === 2) throw new Error('refused');
           return `answer ${n}`;
         }, heard),
-      );
+      ).catch((error: unknown) => `the work never caught it: ${(error as Error).message}`);
     } finally {
       clearInterval(tick);
     }

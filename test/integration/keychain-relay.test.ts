@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, rmdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runCommand } from '../../src/commands/run.js';
@@ -7,6 +7,7 @@ import { addAccount } from '../../src/accounts/registry.js';
 import { setActive } from '../../src/state/active.js';
 import { loadConfig } from '../../src/config/config.js';
 import { sessionDirFor } from '../../src/session/session-dir.js';
+import { writeSwitchRequest } from '../../src/state/switch-request.js';
 import type { CliContext } from '../../src/context.js';
 import { watchRelay, type RelayedLine } from './relay-watch.js';
 import { FAKE_ENV, PTY_AVAILABLE, fakeClaude, freshUsage } from './typeable-claude.js';
@@ -220,6 +221,61 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a running session reading th
     expect(noticedAt - renewedAt).toBeLessThan(4_000);
     expect(heldUp(relay.lines()).calls).toEqual([]);
     expect(existsSync(s.exitClaude)).toBe(true);
+    expect(exit).toBe(0);
+  });
+
+  it('already knows a login renewed elsewhere when a switch asks about it', { timeout: 60_000 }, async () => {
+    // B's login is due for renewal, in the Keychain only, and nothing in the
+    // session reads it until a switch to B asks whether it can go under Claude.
+    // Another ccx renews it meanwhile; the switch must see that renewal, or it
+    // renews B again first.
+    const s = scene();
+    const profileB = path.join(s.home, 'profiles', 'B');
+    const loginB = (gen: number, expiresAt: number): string =>
+      JSON.stringify({ account: 'B', claudeAiOauth: { accessToken: `a-B-${gen}`, refreshToken: `r-B-${gen}`, expiresAt } });
+    rmSync(path.join(profileB, '.credentials.json'), { force: true });
+    fake.items.set(profileB, loginB(1, Date.now() - 60_000));
+    const before = new Date(Date.now() - 60_000);
+    utimesSync(profileB, before, before);
+    const askedSoFar = globalThis.fetch;
+    let renewals = 0;
+    vi.stubGlobal('fetch', (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith('/v1/oauth/token')) renewals += 1;
+      return askedSoFar(input, init);
+    });
+    const relay = watchRelay();
+    const onB = (): boolean => {
+      try {
+        return (JSON.parse(readFileSync(path.join(sessionDirFor(process.pid, s.context.ctx), '.credentials.json'), 'utf8')) as { account?: string }).account === 'B';
+      } catch {
+        return false;
+      }
+    };
+    let exit: number;
+    let moved = false;
+    try {
+      const running = runCommand(s.context, []);
+      await until(() => relay.lines().length > 0, 30_000);
+      await sleep(1_000);
+      // Renewed by another ccx, under B's lock, as a renewal is.
+      const lock = path.join(profileB, '.oauth_refresh.lock');
+      mkdirSync(lock);
+      fake.items.set(profileB, loginB(2, Date.now() + 8 * HOURS));
+      rmdirSync(lock);
+      await sleep(1_500);
+      writeSwitchRequest('B', Date.now(), 'seamless', s.context.ctx, process.pid);
+      await until(onB, 10_000);
+      moved = onB();
+      writeFileSync(s.exitClaude, '');
+      exit = await running;
+    } finally {
+      relay.stop();
+    }
+    const events = existsSync(path.join(s.home, 'events.jsonl')) ? readFileSync(path.join(s.home, 'events.jsonl'), 'utf8') : '';
+    expect(events).not.toContain('login first, to move this session onto it in place');
+    expect(moved).toBe(true);
+    expect(renewals).toBe(0);
     expect(exit).toBe(0);
   });
 });

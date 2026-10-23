@@ -120,16 +120,18 @@ describe('the Keychain while a session runs Claude', () => {
     expect(blocking()).toBe(0);
   });
 
-  it('reads it again while a write of Claude was under way when it was read', async () => {
+  it('reads it again while a write of Claude is under way in its folder, and once that is over', async () => {
     const dir = folder();
     mkdirSync(path.join(dir, CREDENTIALS_LOCK_DIR));
     age(dir);
     fake.items.set(dir, 'login-1');
     watch = watchKeychain();
     await watch.watch([dir]);
-    // The folder has not changed since, but the renewal was still going on.
+    // The folder has not changed since, but the renewal is still going on.
     await watch.look();
     expect(off()).toBe(2);
+    await watch.look();
+    expect(off()).toBe(3);
     fake.items.set(dir, 'login-2');
     rmdirSync(path.join(dir, CREDENTIALS_LOCK_DIR));
     await watch.look();

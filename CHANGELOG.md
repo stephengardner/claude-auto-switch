@@ -46,6 +46,9 @@ semantic versioning.
   At a switch the session moves the editor too, and that refresh could wait up
   to 5 s for ccx's own write-back lock with the terminal stopped; from a
   session it now tries that lock once and leaves the refresh to the next event.
+  A renewal the editor's Claude made, saved home from a session, tries the lock
+  of a profile sharing that login once, where it waited 2 s and then wrote past
+  it.
 
 ## [2.6.22]
 

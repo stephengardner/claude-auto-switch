@@ -99,6 +99,13 @@ describe('macOS profile Keychain', () => {
   });
 });
 
+/** How a call off the thread ended, so a test asserts it rather than throws it. */
+const settled = <T>(running: Promise<T>): Promise<{ value: T } | { error: string }> =>
+  running.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error: (error as Error).message }),
+  );
+
 /** A stand-in for `security` run off the thread: what it answers, or the exit status it fails with. */
 function waitingRunner(implementation: (args: string[], input?: string) => string | { code: number; stdout?: string }) {
   const mock = vi.fn(async (_file: string, args: string[], options: { input?: string; timeout: number }) => {
@@ -112,7 +119,7 @@ function waitingRunner(implementation: (args: string[], input?: string) => strin
 describe('macOS profile Keychain, off the thread', () => {
   it('reads the same item as the blocking read, with the same time limit, and treats item-not-found as absent', async () => {
     const { mock, options } = waitingRunner(() => ({ code: 44 }));
-    expect(await readKeychainCredentialAsync('/profile', options)).toBeNull();
+    expect(await settled(readKeychainCredentialAsync('/profile', options))).toEqual({ value: null });
     expect(mock).toHaveBeenCalledExactlyOnceWith(
       '/usr/bin/security',
       ['find-generic-password', '-a', 'tester', '-w', '-s', keychainService('/profile')],
@@ -136,9 +143,9 @@ describe('macOS profile Keychain, off the thread', () => {
 
   it('says only that a read failed, never what `security` printed', async () => {
     const { options } = waitingRunner(() => ({ code: 36, stdout: 'secret' }));
-    await expect(readKeychainCredentialAsync('/profile', options)).rejects.toThrow(
-      /^Could not read the profile login from macOS Keychain$/,
-    );
+    expect(await settled(readKeychainCredentialAsync('/profile', options))).toEqual({
+      error: 'Could not read the profile login from macOS Keychain',
+    });
   });
 
   it('writes over standard input, never in its arguments, and reads the item back to be sure', async () => {
@@ -161,18 +168,18 @@ describe('macOS profile Keychain, off the thread', () => {
 
   it('fails a write the item does not show, though `security` said it went', async () => {
     const { options } = waitingRunner((args) => (args[0] === '-i' ? '' : 'old login'));
-    await expect(writeKeychainCredentialAsync('/profile', 'new login', options)).rejects.toThrow(
-      'Could not save the profile login in macOS Keychain',
-    );
+    expect(await settled(writeKeychainCredentialAsync('/profile', 'new login', options))).toEqual({
+      error: 'Could not save the profile login in macOS Keychain',
+    });
   });
 
   it('removes an item, an absent one included, and says only that removing failed', async () => {
-    await expect(deleteKeychainCredentialAsync('/profile', waitingRunner(() => ({ code: 44 })).options)).resolves.toBe(
-      undefined,
-    );
-    await expect(
-      deleteKeychainCredentialAsync('/profile', waitingRunner(() => ({ code: 36, stdout: 'secret' })).options),
-    ).rejects.toThrow(/^Could not remove the profile login from macOS Keychain$/);
+    expect(await settled(deleteKeychainCredentialAsync('/profile', waitingRunner(() => ({ code: 44 })).options))).toEqual({
+      value: undefined,
+    });
+    expect(
+      await settled(deleteKeychainCredentialAsync('/profile', waitingRunner(() => ({ code: 36, stdout: 'secret' })).options)),
+    ).toEqual({ error: 'Could not remove the profile login from macOS Keychain' });
   });
 });
 

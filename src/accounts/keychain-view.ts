@@ -26,8 +26,10 @@ import {
  * renewal also holds `.oauth_refresh.lock` there for the whole renewal. Making
  * and removing either changes the folder's own modification time, the removal
  * coming after the write. Every write ccx makes changes it too (markFolder),
- * after the write. So an item read while no such lock of Claude's was in its
- * folder, from a folder that has not changed since, is the item as it is.
+ * after the write. So an item whose folder has not changed since it was read,
+ * with no such lock of Claude's in it now, is the item as it is: a write that
+ * was under way as it was read ends by removing its lock, which changes the
+ * folder.
  *
  * An item that does not meet that is read again at the next look, as is one
  * read within SETTLE_MS of its folder changing, for a writer that changes the
@@ -194,7 +196,6 @@ class Watch implements KeychainWatch {
 
   private current(dir: string, item: Item, now: number): boolean {
     if (item.failed) return now - item.readStartedAt < RETRY_FAILED_MS;
-    if (item.look.writing) return false;
     const settled =
       item.ownWrite || item.look.changedAt === null || item.readStartedAt - item.look.changedAt >= SETTLE_MS;
     if (!settled || now - item.readStartedAt >= BACKSTOP_MS) return false;
