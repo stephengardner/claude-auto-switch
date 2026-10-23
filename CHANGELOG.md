@@ -15,10 +15,11 @@ semantic versioning.
   where `~/.claude` already had a file of the same name with other contents,
   yours stayed and the session's went with its folder, with nothing in
   `rescued/`. Such a file is now settled by the rule the editor's folder
-  uses: a copy yours already holds is left, one the session went on writing
-  after yours is added to yours, and anything else stays as yours is while the
-  session's is kept in `rescued/<pid>-<folder>/`. While it cannot be kept
-  there, the session folder stays, and the next clean-up tries again.
+  uses: nothing changes when yours already holds all of the session's; when
+  the session's is all of yours, byte for byte, and more, the rest is added to
+  yours; anything else stays as yours is while the session's is kept in
+  `rescued/<pid>-<folder>/`. While it cannot be kept there, the session folder
+  stays, and the next clean-up tries again.
 
 ## [2.6.23]
 

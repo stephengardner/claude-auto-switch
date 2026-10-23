@@ -34,9 +34,10 @@ wins. Where a link could not be made and the session ended up with a folder of
 its own, such as `/rewind` checkpoints or todos, that folder is merged into
 yours when the session ends; transcripts in a `projects` folder of its own, and
 a folder your `~/.claude` does not have of a kind ccx does not know yet, are
-not. Where both hold a file under one name, a copy yours already holds is left,
-one the session wrote on after yours is added to the end of yours, and anything
-else stays as yours is while the session's goes to `rescued/`.
+not. Where both hold a file under one name, nothing changes when yours already
+holds all of the session's; when the session's is all of yours, byte for byte,
+and more, the rest is added to the end of yours; anything else stays as yours
+is while the session's goes to `rescued/`.
 
 **Detecting a spent account.**
 
