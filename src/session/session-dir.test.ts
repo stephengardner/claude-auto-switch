@@ -149,7 +149,8 @@ describe('sweeping session directories left behind', () => {
     expect(sweepDeadSessionDirs(ctx, { isAlive: () => false })).toEqual(['6161']);
     expect(existsSync(dir)).toBe(false);
     expect(readFileSync(yours, 'utf8')).toBe('your list');
-    expect(readFileSync(path.join(rescued, '6161-todos', 'agent.json'), 'utf8')).toBe('the session list');
+    const kept = path.join(rescued, '6161-todos', 'agent.json');
+    expect(existsSync(kept) ? readFileSync(kept, 'utf8') : null).toBe('the session list');
   });
 
   it('will not take over a leftover folder holding an edit it could not save anywhere', () => {
