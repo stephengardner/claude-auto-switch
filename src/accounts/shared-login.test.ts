@@ -11,8 +11,6 @@ import {
 } from './shared-login.js';
 import { credentialFingerprint, installCredential } from './credential-vault.js';
 import { CREDENTIALS_LOCK_DIR, type LockHandle } from '../claude/locks.js';
-import { keychainOnTimers } from './keychain-view.js';
-import { runOnTimers } from '../util/steps.js';
 
 /** A lock handed over as held, as an injected lock gives it, saying when it is let go. */
 const held = (onRelease: () => void = () => {}): LockHandle => ({ held: true, release: onRelease });
@@ -630,6 +628,8 @@ describe('a profile whose login lock stays taken', () => {
     const lock = path.join(sibling.dir, CREDENTIALS_LOCK_DIR);
     mkdirSync(lock);
     setTimeout(() => rmSync(lock, { recursive: true, force: true }), 400);
+    const { keychainOnTimers } = await import('./keychain-view.js');
+    const { runOnTimers } = await import('../util/steps.js');
     let ticks = 0;
     const tick = setInterval(() => (ticks += 1), 20);
     let updated: string[];

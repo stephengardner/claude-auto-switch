@@ -238,6 +238,7 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a move in place while Claude
     process.env.FAKE_CLAUDE_EMIT_CAP = '1';
     process.env.FAKE_CLAUDE_RESUMED_IDLE_MS = '600';
     let exit: number;
+    const started = Date.now();
     try {
       exit = await runCommand(s.context, []);
     } finally {
@@ -245,6 +246,8 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a move in place while Claude
     }
     const runs = launches(readLog(s.runsLog));
     expect(runs).toHaveLength(2);
+    // Relaunched once the wait ran out, not when Claude happened to end.
+    expect(Date.now() - started).toBeLessThan(25_000);
     expect(runs[1]?.marker).toBe('B');
     expect(events(s).some((e) => e.msg === 'seamless cap relief: A -> B')).toBe(false);
     expect(exit).toBe(0);
