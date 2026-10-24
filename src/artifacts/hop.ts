@@ -42,11 +42,13 @@ export interface HopDeps<A extends { name: string }> {
   /** Renew a login that is due, the way ccx renews an idle one. */
   renew: (account: A) => Promise<{ ok: true } | { ok: false; reason: string }>;
   /**
-   * The session's in-place move, for a call (`away`) or back after it. Throws
-   * when it could not be made: with `busy: true` on the error when it can be
-   * tried again shortly, nothing having been written.
+   * The session's in-place move, for a call (`away`) or back after it. Throws,
+   * or rejects, when it could not be made: with `busy: true` on the error when
+   * it can be tried again shortly, nothing having been written. A move that
+   * finishes later returns a promise, and the session is on `account` only
+   * once it has settled.
    */
-  activate: (account: A, trip: 'away' | 'back') => void;
+  activate: (account: A, trip: 'away' | 'back') => void | PromiseLike<void>;
   /** Make the running Claude use the login already in its folder from its next call. Throws when it cannot. */
   pin: (account: A) => void;
   /**
@@ -75,7 +77,7 @@ export interface HopController<A extends { name: string }> {
   childEnded(): void;
   /** The account the session left and the one it is on, while it is moved for a call. */
   away(): { from: A; to: A } | null;
-  /** Whether a call holds the session where it is, moved there or not: nothing else may move it meanwhile. */
+  /** Whether a call holds the session where it is, moved there or not, or a move for one is under way: nothing else may move it meanwhile. */
   holding(): boolean;
   /**
    * Whether a refused turn recorded at `at` fell inside a move. Such a turn
@@ -143,7 +145,13 @@ interface Visit<A> {
   calls: number;
   /** Going back was tried and failed; said once. */
   returnFailed: boolean;
+  /** A move back is under way. */
+  returning: boolean;
 }
+
+/** Whether the session's move finishes later, rather than having finished as it returned. */
+const finishesLater = (move: void | PromiseLike<void>): move is PromiseLike<void> =>
+  typeof (move as PromiseLike<void> | undefined)?.then === 'function';
 
 export function createHopController<A extends { name: string }>(deps: HopDeps<A>): HopController<A> {
   const now = deps.now ?? (() => Date.now());
@@ -151,6 +159,12 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
   const askTtlMs = deps.askTtlMs ?? HOP_ASK_TTL_MS;
 
   let visit: Visit<A> | null = null;
+  /**
+   * A move for a request that finishes later, under way: its call is not
+   * answered until the session is there, and `ended` once Claude has ended
+   * meanwhile, so the session goes straight back.
+   */
+  let moving: { at: number; ended: boolean } | null = null;
   /** A login being renewed for a request, and how that came out once it has. */
   let preparing: { ask: HopAsk; to: A; result: { ok: true } | { ok: false; reason: string } | null } | null = null;
   /** When each finished move began and ended. */
@@ -182,10 +196,8 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
       return false;
     }
     const moved = from.name !== to.name;
-    try {
-      if (moved) deps.activate(to, 'away');
-      else deps.pin(to);
-    } catch (error) {
+    const startedAt = now();
+    const failed = (error: unknown): boolean => {
       if (moved && (error as { busy?: unknown } | null)?.busy === true) return true;
       refuse(
         ask,
@@ -194,9 +206,39 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
           : `ccx could not make Claude use the "${to.name}" login (${(error as Error).message}), so the call was not sent`,
       );
       return false;
+    };
+    const arrived = (): Visit<A> => {
+      const v: Visit<A> = { from, to, moved, startedAt, holds: new Map(), ending: [], calls: 0, returnFailed: false, returning: false };
+      visit = v;
+      addHold(v, ask);
+      return v;
+    };
+    let move: void | PromiseLike<void> = undefined;
+    try {
+      if (moved) move = deps.activate(to, 'away');
+      else deps.pin(to);
+    } catch (error) {
+      return failed(error);
     }
-    visit = { from, to, moved, startedAt: now(), holds: new Map(), ending: [], calls: 0, returnFailed: false };
-    addHold(visit, ask);
+    if (!finishesLater(move)) {
+      arrived();
+      return true;
+    }
+    const mine = { at: startedAt, ended: false };
+    moving = mine;
+    move.then(
+      () => {
+        moving = null;
+        const v = arrived();
+        if (!mine.ended) return;
+        for (const id of [...v.holds.keys()]) release(v, id, 'child-exit');
+        finish();
+      },
+      (error: unknown) => {
+        moving = null;
+        failed(error);
+      },
+    );
     return true;
   };
 
@@ -216,23 +258,46 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
   /** With no hold left: put the session back, then tell the calls still waiting on that. */
   const finish = (): void => {
     const v = visit;
-    if (!v || v.holds.size > 0) return;
+    if (!v || v.holds.size > 0 || v.returning) return;
     // Something else moved it meanwhile, and that move stands.
     if (v.moved && deps.current()?.name === v.to.name) {
+      // Still away: every tick tries again.
+      const notBack = (error: unknown): void => {
+        if (v.returnFailed) return;
+        v.returnFailed = true;
+        deps.log(`could not put this session back on "${v.from.name}" after an Artifact call; trying again`, {
+          to: v.to.name,
+          from: v.from.name,
+          error: (error as Error).message,
+        });
+      };
+      let back: void | PromiseLike<void> = undefined;
       try {
-        deps.activate(v.from, 'back');
+        back = deps.activate(v.from, 'back');
       } catch (error) {
-        if (!v.returnFailed) {
-          v.returnFailed = true;
-          deps.log(`could not put this session back on "${v.from.name}" after an Artifact call; trying again`, {
-            to: v.to.name,
-            from: v.from.name,
-            error: (error as Error).message,
-          });
-        }
-        return; // still away: every tick tries again
+        notBack(error);
+        return;
+      }
+      if (finishesLater(back)) {
+        v.returning = true;
+        back.then(
+          () => {
+            v.returning = false;
+            ended(v);
+          },
+          (error: unknown) => {
+            v.returning = false;
+            notBack(error);
+          },
+        );
+        return;
       }
     }
+    ended(v);
+  };
+
+  /** The visit over, the session back where it was: tell the calls still waiting on that. */
+  const ended = (v: Visit<A>): void => {
     const endedAt = now();
     visit = null;
     for (const e of v.ending) {
@@ -266,6 +331,7 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
     poll() {
       if (polls++ % 150 === 0) sweepHops(deps.dir, now(), ANSWER_KEPT_MS);
       const asks = dropAbandoned(readAsks(deps.dir));
+      if (moving) return true;
 
       if (visit) {
         // A call for the account the session is held on shares the hold, while
@@ -366,6 +432,7 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
     childEnded() {
       dropAsks(deps.dir);
       preparing = null;
+      if (moving) moving.ended = true;
       const v = visit;
       if (!v) return;
       for (const id of [...v.holds.keys()]) release(v, id, 'child-exit');
@@ -377,11 +444,12 @@ export function createHopController<A extends { name: string }>(deps: HopDeps<A>
     },
 
     holding() {
-      return visit !== null;
+      return visit !== null || moving !== null;
     },
 
     duringHop(at) {
       if (at === null) return false;
+      if (moving && at >= moving.at) return true;
       if (visit && visit.moved && at >= visit.startedAt) return true;
       return windows.some((w) => at >= w.from && at <= w.to);
     },

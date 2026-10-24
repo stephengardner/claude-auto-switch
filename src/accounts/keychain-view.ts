@@ -43,7 +43,9 @@ import {
  * the first read of that folder's item under it runs `security` as before,
  * since what that work decides may count on the item as it is: the lock keeps
  * Claude's renewals out from then on, and ccx's own writes come back here. Work
- * that waits in steps under a lock (lockDirSteps) reads with the async forms.
+ * that waits in steps under a lock (lockDirSteps) reads with the async forms:
+ * keychainOnTimers reads again every time, and keychainViewOnTimers by the same
+ * rule as here, with every read it cannot answer made off the thread.
  */
 
 /** Claude's locks around a change to its login store. */
@@ -170,6 +172,21 @@ class Watch implements KeychainWatch {
     item.askedAt = now;
     if (!item.reading && !this.current(dir, item, now)) void this.readOffThread(dir);
     if (item.failed) throw new Error('Could not read the profile login from macOS Keychain');
+    return item.value;
+  }
+
+  /**
+   * The item as it is, for work a session runs on timers: from the view where
+   * it vouches for that, read under this process's hold on the folder's login
+   * lock or else current, and otherwise read again off the thread.
+   */
+  readVouched(dir: string): string | null | Promise<string | null> {
+    const now = Date.now();
+    const item = this.items.get(dir);
+    const held = holdOn(dir);
+    if (!item || !item.known || item.failed) return readKeychainItemAsync(dir);
+    if (held ? item.under !== held.hold : !this.current(dir, item, now)) return readKeychainItemAsync(dir);
+    item.askedAt = now;
     return item.value;
   }
 
@@ -344,6 +361,18 @@ export const keychainBlocking: KeychainIo = {
 
 export const keychainOnTimers: KeychainIo = {
   read: readKeychainItemAsync,
+  write: writeKeychainItemAsync,
+  remove: removeKeychainItemAsync,
+};
+
+/**
+ * keychainOnTimers, but a read is answered from the running session's view
+ * where the view vouches for the item as it is: for work a command runs with
+ * keychainBlocking and a session runs on timers while its Claude runs, a move
+ * in place, which then reads off the thread only what it must.
+ */
+export const keychainViewOnTimers: KeychainIo = {
+  read: (dir) => (active ? active.readVouched(dir) : readKeychainItemAsync(dir)),
   write: writeKeychainItemAsync,
   remove: removeKeychainItemAsync,
 };

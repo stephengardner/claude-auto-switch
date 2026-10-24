@@ -22,7 +22,9 @@ on its account; ccx tries again at its next look, and says so once that has
 gone on for 10 seconds. On macOS, ccx reads the logins kept in the Keychain off
 that thread, and only when one may have changed: Claude changes its folder,
 taking and letting go of a lock in it, each time it writes its login, and so
-does ccx.
+does ccx. A move in place reads and writes them off that thread too, holding
+both of Claude's locks until it has finished; the session counts as on the new
+account only from then, and nothing else moves it meanwhile.
 
 **Everything else is your `~/.claude`.** The session folder links your projects
 and transcripts, prompt history, `/rewind` checkpoints, plugins, skills, agents,

@@ -18,6 +18,15 @@ vi.mock('../../src/accounts/credential-vault.js', async (importOriginal) => {
       }
       return real.nudgeLoginReread(...args);
     },
+    // How a move made on timers nudges Claude, the same rule.
+    nudgeLoginRereadSteps: function* (...args: Parameters<typeof real.nudgeLoginRereadSteps>) {
+      if (nudge.fails) return false;
+      if (nudge.failures > 0) {
+        nudge.failures -= 1;
+        return false;
+      }
+      return yield* real.nudgeLoginRereadSteps(...args);
+    },
   };
 });
 import { tmpdir } from 'node:os';

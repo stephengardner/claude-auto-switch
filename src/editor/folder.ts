@@ -349,8 +349,9 @@ function editorLoginStore(login: FolderLogin): FolderLoginStore {
     before = readFolderLogin(login);
     remembered = true;
   };
+  // Blocking: the editor's moves are made under its lock, which is held only for work done synchronously.
   return {
-    install: (sourceFile) => {
+    *install(sourceFile) {
       let text: string;
       try {
         text = readCredential(sourceFile);
@@ -363,17 +364,19 @@ function editorLoginStore(login: FolderLogin): FolderLoginStore {
       changed = true;
       return true;
     },
-    scrub: () => {
+    *scrub() {
       remember();
       removeFolderLogin(login);
       changed = true;
     },
-    rollback: () => {
+    *rollback() {
       if (!changed) return;
       if (before !== null) writeFolderLogin(login, before);
       else removeFolderLogin(login);
     },
-    nudge: (now) => nudgeFolderLogin(login, now),
+    *nudge(now) {
+      return nudgeFolderLogin(login, now);
+    },
   };
 }
 
@@ -408,10 +411,12 @@ function moveEditorLogin(c: PathCtx, lockWaitMs?: number): 'moved' | 'deferred' 
   let moved: boolean;
   try {
     moved = moveFolderLogin(dir, to.dir, c, editorLoginStore(login), {
-      leaving: () => {
+      *leaving() {
         if (leaving) saveEditorLoginHome(leaving, accounts, login, c, lockWaitMs);
       },
-      installed: () => writeEditorRecord(dir, { account: to.name, loginChangedAt: Date.now() }),
+      *installed() {
+        writeEditorRecord(dir, { account: to.name, loginChangedAt: Date.now() });
+      },
       onlyUnderClaudesLocks: true,
     });
   } catch {

@@ -5,6 +5,7 @@ import { refreshUsage, type UsageEntry } from './usage-store.js';
 import type { ProactiveDeps } from './proactive.js';
 import type { UsageLike } from './headroom.js';
 import type { CliContext } from '../context.js';
+import type { Account } from '../accounts/registry.schema.js';
 
 /**
  * Turn a stored usage entry into what the policy reads.
@@ -38,8 +39,11 @@ export function buildProactiveDeps(
     onError?: (error: Error) => void;
     /** Re-read the settings before each decision (a running session passes its own). */
     refresh?: () => void;
+    /** The accounts to choose from, as the registry has them unless a running session passes its own. */
+    accounts?: () => Account[];
   },
 ): ProactiveDeps {
+  const accounts = options.accounts ?? (() => listAccounts(context.ctx));
   // Set only by a caller that overrides the setting (`ccx auto --threshold`).
   let threshold: number | undefined;
   let hysteresis: number | undefined;
@@ -62,7 +66,7 @@ export function buildProactiveDeps(
     },
     candidates: () => {
       const capped = cappedNames(loadLedger(context.ctx), Date.now());
-      return listAccounts(context.ctx).map((a) => ({
+      return accounts().map((a) => ({
         name: a.name,
         enabled: a.enabled,
         // Credential presence, not a live probe: this runs on a timer and must
@@ -74,7 +78,7 @@ export function buildProactiveDeps(
     },
     current: options.current,
     usage: async () => {
-      const snapshot = await refreshUsage(listAccounts(context.ctx), context.ctx);
+      const snapshot = await refreshUsage(accounts(), context.ctx);
       const map = new Map<string, UsageLike>();
       for (const [name, entry] of Object.entries(snapshot.accounts)) {
         map.set(name, toUsageLike(entry));

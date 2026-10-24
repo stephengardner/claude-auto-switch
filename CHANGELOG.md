@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.27]
+
+### Fixed
+
+- **A move under a running Claude no longer holds up its terminal on the
+  macOS Keychain (#173).** Once a move in place held Claude's two locks, it
+  read and wrote the logins it moved between by running `security` on the
+  thread that relays Claude's terminal and the keys typed into it: for a
+  switch with both logins in the Keychain, two reads and two writes, eight
+  calls since 2.6.26 made a write three, each allowed up to 2 s. That Keychain
+  work now runs off the thread, with both locks held until the move has
+  finished or been rolled back, and their times kept fresh, so a Claude that
+  wants one meanwhile finds it busy, not abandoned. The session counts as on
+  the new account only once the move has
+  finished: a switch, the move a limit makes and the move for an Artifact call
+  each act on it then, and meanwhile nothing else moves the session, no limit
+  is read off the screen, and the launch does not end. A move that fails
+  partway is rolled back and says nothing of the account it was going to; one
+  asked for with `ccx use` used to throw out of the session's poll, where
+  nothing caught it. Found on the way: a move put in the next account's login
+  as the session last read it, even when another ccx had renewed it a moment
+  before, and a switch asked for while a move was being made was dropped with
+  it. An account added while Claude runs has its login read off the thread
+  before anything decides on it, and a switch to it waits until then.
+
 ## [2.6.26]
 
 ### Fixed

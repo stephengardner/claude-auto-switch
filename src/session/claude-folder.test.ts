@@ -7,13 +7,19 @@ import { moveFolderLogin, type FolderLoginStore } from './claude-folder.js';
 /** A login store that only records what the move asked of it. */
 function recordingStore(calls: string[]): FolderLoginStore {
   return {
-    install: () => {
+    *install() {
       calls.push('install');
       return true;
     },
-    scrub: () => void calls.push('scrub'),
-    rollback: () => void calls.push('rollback'),
-    nudge: () => true,
+    *scrub() {
+      calls.push('scrub');
+    },
+    *rollback() {
+      calls.push('rollback');
+    },
+    *nudge() {
+      return true;
+    },
   };
 }
 
@@ -40,7 +46,9 @@ describe("a move of a folder's login", () => {
 
     expect(() =>
       moveFolderLogin(dir, next, ctx, recordingStore(calls), {
-        installed: () => void calls.push('installed'),
+        *installed() {
+          calls.push('installed');
+        },
       }),
     ).toThrow();
 

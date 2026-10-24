@@ -2,12 +2,15 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   CREDENTIALS_FILE,
-  clearCredential,
-  installCredential,
-  nudgeLoginReread,
-  rollbackCredential,
+  credentialPath,
+  installCredentialSteps,
+  nudgeLoginRereadSteps,
+  rollbackCredentialSteps,
 } from '../accounts/credential-vault.js';
-import { acquireLockDir, CREDENTIALS_LOCK_DIR, lockDirHeld, withCredentialLock } from '../claude/locks.js';
+import { removeCredentialSteps } from '../accounts/credential-storage.js';
+import type { KeychainIo } from '../accounts/keychain-view.js';
+import { CREDENTIALS_LOCK_DIR, lockDirHeld, lockDirSteps } from '../claude/locks.js';
+import { runBlocking, type Steps } from '../util/steps.js';
 import { readReferenceConfig, onboardingFlags } from '../daemon/reference-config.js';
 import { secureMkdir, writeSecretFile } from '../util/secret-file.js';
 import { retireKeptSettings } from './session-dir.js';
@@ -192,33 +195,42 @@ function writeJsonSafe(file: string, data: unknown): void {
   }
 }
 
-/** Where a folder keeps its login, and how a move changes it. */
+/** Where a folder keeps its login, and how a move changes it, each as steps (util/steps). */
 export interface FolderLoginStore {
   /** Put the login in `sourceFile` here. False, changing nothing, when it holds no usable login. */
-  install(sourceFile: string): boolean;
+  install(sourceFile: string): Steps<boolean>;
   /** Leave no login here. */
-  scrub(): void;
+  scrub(): Steps<void>;
   /** Put back the login a failed move replaced. */
-  rollback(): void;
+  rollback(): Steps<void>;
   /** Make a Claude running here read its login again at its next request (nudgeLoginReread). */
-  nudge(now: Date): boolean;
+  nudge(now: Date): Steps<boolean>;
 }
 
-/** A session folder's login: its file, or the Keychain item Claude may have moved it to. */
-export function sessionLoginStore(dir: string, keychainHolds?: (dir: string) => boolean): FolderLoginStore {
+/**
+ * A session folder's login: its file, or the Keychain item Claude may have
+ * moved it to, reached through `io`: blocking, or on timers while its Claude runs.
+ */
+export function sessionLoginStore(
+  dir: string,
+  io: KeychainIo,
+  keychainHolds?: (dir: string) => boolean,
+): FolderLoginStore {
   return {
-    install: (sourceFile) => installCredential(dir, sourceFile),
-    scrub: () => clearCredential(dir),
-    rollback: () => void rollbackCredential(dir),
-    nudge: (now) => nudgeLoginReread(dir, now, keychainHolds ? { keychainHolds } : {}),
+    install: (sourceFile) => installCredentialSteps(dir, sourceFile, io),
+    scrub: () => removeCredentialSteps(credentialPath(dir), io),
+    *rollback() {
+      yield* rollbackCredentialSteps(dir, io);
+    },
+    nudge: (now) => nudgeLoginRereadSteps(dir, now, io, keychainHolds ? { keychainHolds } : {}),
   };
 }
 
 export interface FolderLoginMove {
   /** Run under the lock before anything is replaced: the login being left goes home here. */
-  leaving?: () => void;
+  leaving?: () => Steps<void>;
   /** Run once the new login and identity are in, before Claude is told to read it. */
-  installed?: () => void;
+  installed?: () => Steps<void>;
   /** Undo the move when the running Claude cannot be made sure to read the new login. */
   mustReread?: boolean;
   /**
@@ -249,6 +261,7 @@ export function claudesLocksTaken(dir: string): boolean {
  * credential lock, so it cannot collide with a renewal by a Claude running
  * there, and roll the folder back when any step fails, rather than leave it on
  * a half-applied account. False when it did not move (onlyUnderClaudesLocks).
+ * Blocking: for a folder whose Claude's terminal is not relayed on this thread.
  */
 export function moveFolderLogin(
   dir: string,
@@ -257,17 +270,39 @@ export function moveFolderLogin(
   store: FolderLoginStore,
   move: FolderLoginMove = {},
 ): boolean {
+  return runBlocking(moveFolderLoginSteps(dir, accountDir, ctx, store, move));
+}
+
+/**
+ * moveFolderLogin as steps, for a session to run on timers while its Claude
+ * runs. Both locks are tried at once, before the first step that waits, and
+ * held until the move has finished or been rolled back; while they are held
+ * their times are kept fresh (claude/locks), so Claude never takes either
+ * for one left behind.
+ */
+export function* moveFolderLoginSteps(
+  dir: string,
+  accountDir: string,
+  ctx: PathCtx,
+  store: FolderLoginStore,
+  move: FolderLoginMove = {},
+): Steps<boolean> {
   if (!move.onlyUnderClaudesLocks) {
-    withCredentialLock(dir, () => applyFolderLoginMove(dir, accountDir, ctx, store, move));
+    const lock = yield* lockDirSteps(path.join(dir, CREDENTIALS_LOCK_DIR));
+    try {
+      yield* applyFolderLoginMove(dir, accountDir, ctx, store, move);
+    } finally {
+      lock.release();
+    }
     return true;
   }
-  const login = acquireLockDir(path.join(dir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
+  const login = yield* lockDirSteps(path.join(dir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
   if (!login.held) return false;
   try {
-    const state = acquireLockDir(stateLockOf(dir), { waitMs: 0 });
+    const state = yield* lockDirSteps(stateLockOf(dir), { waitMs: 0 });
     if (!state.held) return false;
     try {
-      applyFolderLoginMove(dir, accountDir, ctx, store, move);
+      yield* applyFolderLoginMove(dir, accountDir, ctx, store, move);
       return true;
     } finally {
       state.release();
@@ -277,14 +312,14 @@ export function moveFolderLogin(
   }
 }
 
-function applyFolderLoginMove(
+function* applyFolderLoginMove(
   dir: string,
   accountDir: string,
   ctx: PathCtx,
   store: FolderLoginStore,
   move: FolderLoginMove,
-): void {
-  move.leaving?.();
+): Steps<void> {
+  if (move.leaving) yield* move.leaving();
   const src = path.join(accountDir, CREDENTIALS_FILE);
   // Who the folder says it is signed in as, put back with the login if this fails.
   const identityBefore = identityFields(dir);
@@ -295,26 +330,26 @@ function applyFolderLoginMove(
     // CLEAR the folder, never leave the previous account's login in place:
     // Claude would keep running as that account while ccx believed it had
     // moved, and its limit would then be blamed on the wrong account.
-    if (!store.install(src)) {
-      store.scrub();
+    if (!(yield* store.install(src))) {
+      yield* store.scrub();
     }
     // Stamp the account's identity (oauthAccount/userID) so the interactive
     // app sees a logged-in account instead of prompting for login.
     applyAccountIdentity(dir, accountDir, ctx);
     // Once, as first built: later swaps only change the identity in it.
     snapshotStateBase(dir);
-    move.installed?.();
+    if (move.installed) yield* move.installed();
     // A Claude already running here keeps the login it read until the
     // file's time changes, which a Keychain write does not do. A move
     // away for one call is undone when that cannot be made sure of,
     // since the call goes out at once. Any other move stands: Claude
     // reads the new login within 30 seconds regardless.
-    if (!store.nudge(new Date()) && move.mustReread) {
+    if (!(yield* store.nudge(new Date())) && move.mustReread) {
       throw new Error('the time of its login file could not be changed');
     }
   } catch (e) {
     restoreFolderIdentity(dir, identityBefore);
-    store.rollback();
+    yield* store.rollback();
     throw e;
   }
 }

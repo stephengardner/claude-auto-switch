@@ -207,6 +207,110 @@ describe('a temporary move for one Artifact call', () => {
   });
 });
 
+describe('a move that finishes later, as one under a running Claude does', () => {
+  /** A session whose moves each finish when the test says, and how. */
+  function later() {
+    const pending: Array<{ to: string; settle: (error?: Error) => void }> = [];
+    const s = setup({
+      activate: (account) =>
+        new Promise<void>((resolve, reject) => {
+          s.world.moves.push(account.name);
+          pending.push({
+            to: account.name,
+            settle: (error) => {
+              if (error) {
+                reject(error);
+                return;
+              }
+              s.world.on = account;
+              resolve();
+            },
+          });
+        }),
+    });
+    const settle = async (error?: Error): Promise<void> => {
+      pending.shift()?.settle(error);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    return { ...s, pending, settle };
+  }
+
+  it('answers the call only once the session is there, and takes up nothing else meanwhile', async () => {
+    const { world, hop, ask, settle } = later();
+    ask('toolu_1', 'home');
+    expect(hop.poll()).toBe(true);
+    expect(world.moves).toEqual(['home']);
+    expect(readState(world.dir, 'toolu_1')).toBeNull();
+    expect(hop.away()).toBeNull();
+    expect(hop.holding()).toBe(true);
+    expect(hop.duringHop(world.now)).toBe(true);
+    // Another call, and the ticks meanwhile, start no second move.
+    ask('toolu_2', 'other');
+    expect(hop.poll()).toBe(true);
+    hop.tick();
+    expect(world.moves).toEqual(['home']);
+    await settle();
+    expect(readState(world.dir, 'toolu_1')).toMatchObject({ state: 'applied', to: 'home', from: 'work', moved: true });
+    expect(hop.away()).toEqual({ from: WORK, to: HOME });
+  });
+
+  it('refuses the call when the move fails after it began, and the session is not reported away', async () => {
+    const { world, hop, ask, settle } = later();
+    ask('toolu_1', 'home');
+    hop.poll();
+    await settle(new Error('the Keychain could not be written'));
+    expect(hop.away()).toBeNull();
+    expect(hop.holding()).toBe(false);
+    const state = readState(world.dir, 'toolu_1');
+    expect(state?.state === 'refused' && state.reason).toContain('the Keychain could not be written');
+    expect(world.on).toBe(WORK);
+  });
+
+  it("leaves the call waiting when the move finds Claude's locks taken, and moves at a later poll", async () => {
+    const { world, hop, ask, settle } = later();
+    ask('toolu_1', 'home');
+    hop.poll();
+    await settle(Object.assign(new Error('Claude in this session is using its login'), { busy: true }));
+    expect(readState(world.dir, 'toolu_1')).toBeNull();
+    expect(hop.holding()).toBe(false);
+    expect(hop.poll()).toBe(true);
+    await settle();
+    expect(world.moves).toEqual(['home', 'home']);
+    expect(readState(world.dir, 'toolu_1')).toMatchObject({ state: 'applied', to: 'home' });
+  });
+
+  it('says the call is over only once the move back has finished, and starts no second one meanwhile', async () => {
+    const { world, hop, ask, settle } = later();
+    ask('toolu_1', 'home');
+    hop.poll();
+    await settle();
+    markDone(world.dir, 'toolu_1');
+    hop.tick();
+    hop.tick();
+    expect(hop.poll()).toBe(true);
+    expect(world.moves).toEqual(['home', 'work']);
+    expect(readState(world.dir, 'toolu_1')?.state).toBe('applied');
+    expect(hop.away()).toEqual({ from: WORK, to: HOME });
+    await settle();
+    expect(readState(world.dir, 'toolu_1')).toMatchObject({ state: 'ended', by: 'done' });
+    expect(hop.away()).toBeNull();
+    expect(world.on).toBe(WORK);
+  });
+
+  it('goes straight back when Claude ended while the move was under way', async () => {
+    const { world, hop, ask, settle } = later();
+    ask('toolu_1', 'home');
+    hop.poll();
+    hop.childEnded();
+    await settle();
+    expect(world.moves).toEqual(['home', 'work']);
+    await settle();
+    expect(world.on).toBe(WORK);
+    expect(hop.away()).toBeNull();
+    expect(readState(world.dir, 'toolu_1')).toMatchObject({ state: 'ended', by: 'child-exit' });
+  });
+});
+
 describe('a request that cannot be honoured', () => {
   it('is refused for an account that does not exist, and the session stays where it is', () => {
     const { world, hop, ask } = setup();

@@ -1,7 +1,7 @@
 import { readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import path from 'node:path';
-import { runBlocking, type Steps } from '../util/steps.js';
+import { call, runBlocking, type Steps } from '../util/steps.js';
 import {
   CREDENTIALS_FILE,
   copyCredential,
@@ -10,7 +10,7 @@ import {
   readCredentialSteps,
   removeCredential,
 } from './credential-storage.js';
-import { keychainBlocking, readKeychainItem, type KeychainIo } from './keychain-view.js';
+import { keychainBlocking, type KeychainIo } from './keychain-view.js';
 export { CREDENTIALS_FILE } from './credential-storage.js';
 
 /**
@@ -224,6 +224,16 @@ export function nudgeLoginReread(
   now: Date = new Date(),
   deps: { keychainHolds?: (dir: string) => boolean } = {},
 ): boolean {
+  return runBlocking(nudgeLoginRereadSteps(configDir, now, keychainBlocking, deps));
+}
+
+/** nudgeLoginReread as steps, the Keychain reached through `io`. */
+export function* nudgeLoginRereadSteps(
+  configDir: string,
+  now: Date,
+  io: KeychainIo,
+  deps: { keychainHolds?: (dir: string) => boolean } = {},
+): Steps<boolean> {
   const file = credentialPath(configDir);
   try {
     utimesSync(file, now, now);
@@ -232,8 +242,10 @@ export function nudgeLoginReread(
     if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') return false;
   }
   try {
-    const keychainHolds = deps.keychainHolds ?? ((dir: string) => readKeychainItem(dir) !== null);
-    if (!keychainHolds(configDir)) return true;
+    const keychainHolds = deps.keychainHolds
+      ? deps.keychainHolds(configDir)
+      : (yield* call(() => io.read(configDir))) !== null;
+    if (!keychainHolds) return true;
     writeFileSync(file, REREAD_PLACEHOLDER, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     return true;
   } catch (error) {
@@ -277,9 +289,13 @@ export function* installCredentialSteps(dir: string, sourceFile: string, io: Key
  * false when there is no usable backup to restore.
  */
 export function rollbackCredential(dir: string): boolean {
+  return runBlocking(rollbackCredentialSteps(dir, keychainBlocking));
+}
+
+export function* rollbackCredentialSteps(dir: string, io: KeychainIo): Steps<boolean> {
   const prev = previousCredentialPath(dir);
-  if (!isUsableCredential(prev)) return false;
-  copyCredential(prev, credentialPath(dir));
+  if (!(yield* isUsableCredentialSteps(prev, io))) return false;
+  yield* copyCredentialSteps(prev, credentialPath(dir), io);
   return true;
 }
 

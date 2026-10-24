@@ -1,4 +1,6 @@
-import { readCredential } from '../accounts/credential-storage.js';
+import { readCredential, readCredentialSteps } from '../accounts/credential-storage.js';
+import type { KeychainIo } from '../accounts/keychain-view.js';
+import type { Steps } from '../util/steps.js';
 
 /**
  * When the access token in a credential file expires, as epoch ms, or 0 when
@@ -11,6 +13,15 @@ import { readCredential } from '../accounts/credential-storage.js';
 export function readExpiresAt(credentialsFile: string): number {
   try {
     return loginExpiresAt(readCredential(credentialsFile));
+  } catch {
+    return 0;
+  }
+}
+
+/** readExpiresAt as steps, the Keychain reached through `io`. */
+export function* readExpiresAtSteps(credentialsFile: string, io: KeychainIo): Steps<number> {
+  try {
+    return loginExpiresAt(yield* readCredentialSteps(credentialsFile, io));
   } catch {
     return 0;
   }

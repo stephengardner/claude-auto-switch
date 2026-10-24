@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { activateWithLease, finishWithLease } from './handoff.js';
+import { activateWithLease, finishWithLease, type HandoffSteps } from './handoff.js';
+import { runBlocking } from '../util/steps.js';
 
 /** Records every step in the order it happened, which is what is under test. */
 function recorder(installThrows = false) {
@@ -9,7 +10,7 @@ function recorder(installThrows = false) {
     steps: {
       takeLease: (a: string) => calls.push(`take:${a}`),
       releaseLease: (a: string) => calls.push(`release:${a}`),
-      install: () => {
+      *install() {
         calls.push('install');
         if (installThrows) throw new Error('credential copy failed');
       },
@@ -19,25 +20,28 @@ function recorder(installThrows = false) {
 }
 
 describe('activateWithLease', () => {
+  const activate = (account: string, before: string | null, steps: HandoffSteps): string =>
+    runBlocking(activateWithLease(account, before, steps));
+
   it('announces the account BEFORE copying its login in', () => {
     // The gap between copying and announcing is a window where a renewer can
     // retire the token the session is about to start on.
     const r = recorder();
-    activateWithLease('A', null, r.steps);
+    activate('A', null, r.steps);
     expect(r.calls).toEqual(['take:A', 'install']);
     expect(r.calls.indexOf('take:A')).toBeLessThan(r.calls.indexOf('install'));
   });
 
   it('releases the previous account only AFTER the switch succeeds', () => {
     const r = recorder();
-    const now = activateWithLease('B', 'A', r.steps);
+    const now = activate('B', 'A', r.steps);
     expect(r.calls).toEqual(['take:B', 'install', 'release:A']);
     expect(now).toBe('B');
   });
 
   it('gives the new announcement back if the switch fails', () => {
     const r = recorder(true);
-    expect(() => activateWithLease('B', 'A', r.steps)).toThrow(/copy failed/);
+    expect(() => activate('B', 'A', r.steps)).toThrow(/copy failed/);
     // B is not in use after all, and A is still protected because the session is
     // still on it.
     expect(r.calls).toEqual(['take:B', 'install', 'release:B']);
@@ -47,7 +51,7 @@ describe('activateWithLease', () => {
   it('does not release the account it is re-activating', () => {
     // Re-activating the same account must not drop its protection, even briefly.
     const r = recorder();
-    activateWithLease('A', 'A', r.steps);
+    activate('A', 'A', r.steps);
     expect(r.calls).toEqual(['take:A', 'install']);
   });
 
@@ -55,12 +59,12 @@ describe('activateWithLease', () => {
     // What depends on the session now running as the new account (who a
     // limit belongs to, for one) must not be reset by a switch that failed.
     const done = recorder();
-    activateWithLease('B', 'A', { ...done.steps, installed: () => done.calls.push('installed') });
+    activate('B', 'A', { ...done.steps, installed: () => done.calls.push('installed') });
     expect(done.calls).toEqual(['take:B', 'install', 'installed', 'release:A']);
 
     const failed = recorder(true);
     expect(() =>
-      activateWithLease('B', 'A', {
+      activate('B', 'A', {
         ...failed.steps,
         installed: () => failed.calls.push('installed'),
       }),
@@ -70,7 +74,7 @@ describe('activateWithLease', () => {
 
   it('keeps protecting the account when re-activating it fails', () => {
     const r = recorder(true);
-    expect(() => activateWithLease('A', 'A', r.steps)).toThrow();
+    expect(() => activate('A', 'A', r.steps)).toThrow();
     expect(r.calls).not.toContain('release:A'); // still on it, still protected
   });
 });

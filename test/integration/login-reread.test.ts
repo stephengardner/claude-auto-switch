@@ -30,6 +30,11 @@ vi.mock('../../src/accounts/credential-vault.js', async (importOriginal) => {
       nudged.push({ dir, at: Date.now() });
       real.nudgeLoginReread(dir, now);
     },
+    // How a move made on timers nudges Claude.
+    nudgeLoginRereadSteps: function* (...args: Parameters<typeof real.nudgeLoginRereadSteps>) {
+      nudged.push({ dir: args[0], at: Date.now() });
+      return yield* real.nudgeLoginRereadSteps(...args);
+    },
   };
 });
 

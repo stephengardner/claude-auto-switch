@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { newerInstall } from '../update/newer-install.js';
 import { resyncSession, returnSessionChanges } from '../session/write-back.js';
-import { buildClaudeFolder, claudesLocksTaken, moveFolderLogin, sessionLoginStore } from '../session/claude-folder.js';
+import { buildClaudeFolder, claudesLocksTaken, moveFolderLoginSteps, sessionLoginStore } from '../session/claude-folder.js';
 import { configHome } from '../config/paths.js';
 import { configStamp, fileStamp, loadConfig } from '../config/config.js';
 import { sweepAbandonedTemps } from '../util/fs-json.js';
@@ -123,13 +123,14 @@ import {
 import {
   keychainBlocking,
   keychainOnTimers,
+  keychainViewOnTimers,
   watchKeychain,
   type KeychainIo,
   type KeychainWatch,
 } from '../accounts/keychain-view.js';
 import { call, runBlocking, runOnTimers, type Steps } from '../util/steps.js';
 import { decideSaveBack, savesOnLeaving } from '../accounts/save-back.js';
-import { readExpiresAt } from '../usage/token-expiry.js';
+import { readExpiresAtSteps } from '../usage/token-expiry.js';
 import {
   freshMirrorState,
   shouldCheck,
@@ -192,15 +193,41 @@ const MOVE_LOCK_WAIT_MS = 10_000;
 const RELIEF_RETRY_MS = 200;
 
 /**
- * A move under the running Claude that was not made because its Claude holds
- * one of the locks it takes around its login and its state: nothing was
- * written, and the session is still on the account it was on.
+ * A move under the running Claude that was not made, because its Claude holds
+ * one of the locks it takes around its login and its state, or because another
+ * move of the session is under way: nothing was written, and the session is
+ * still on the account it was on.
  */
 class LoginBusy extends Error {
   readonly busy = true;
-  constructor() {
-    super("Claude in this session is using its login (one of its locks is taken), so nothing was moved yet");
+  constructor(readonly why: 'locks' | 'moving' = 'locks') {
+    super(
+      why === 'locks'
+        ? 'Claude in this session is using its login (one of its locks is taken), so nothing was moved yet'
+        : 'another move of this session is under way, so nothing was moved yet',
+    );
   }
+}
+
+/**
+ * How a session is moved: for one Artifact call (`temporary`), undone when its
+ * Claude cannot be made to read the new login at once (`mustReread`), and
+ * under a running Claude (`underClaude`).
+ */
+interface MoveHow {
+  temporary?: boolean;
+  mustReread?: boolean;
+  underClaude?: boolean;
+}
+
+/** A move in place a limit started, where to, and whether it has finished, and why not when it was not made. */
+interface ReliefMove {
+  to: Account;
+  anyway: string | null;
+  /** Who the limit belonged to when it was met, when that was no registered account (capUnregisteredEmail). */
+  unregistered: string | null;
+  settled: boolean;
+  failure: { error: unknown } | null;
 }
 
 /** What became of renewing an account's login so a session could be moved onto it in place. */
@@ -378,20 +405,44 @@ export async function runInteractiveHotSwap(
     );
     return standing.worthMoving && !standing.heldBack && standing.runway >= HEALTHY_RUN;
   };
-  const refreshAccounts = (): void => {
+  /** The folders whose logins this launch's watch has read, and a read of folders new to it under way. */
+  let watchedDirs = new Set<string>();
+  let arriving: Promise<void> | null = null;
+  /**
+   * False while an account added to the registry is left out of `accounts`
+   * because its login, new to this launch's watch, is still being read off the
+   * thread: until then no decision reads it, which would run `security` on the
+   * thread, and a switch asked for meanwhile waits for it (switchWatch).
+   */
+  const refreshAccounts = (): boolean => {
     const stamp = fileStamp(registryFilePath(context.ctx));
-    if (stamp === accountsStamp) return;
+    if (stamp === accountsStamp) return true;
+    let listed: Account[];
     try {
-      accounts = listAccounts(context.ctx);
-      // Only once read: a read that failed (the file caught mid-replace) is
-      // tried again at the next decision, rather than leaving the session on
-      // the list it had until the registry happens to change again.
-      accountsStamp = stamp;
-      // An account added meanwhile has its login read off the thread before a decision asks for it.
-      void keychainWatch?.watch(accounts.map((a) => a.dir), { pinned: true });
+      listed = listAccounts(context.ctx);
     } catch {
-      /* keep the accounts it had, and try again next time */
+      return true; // keep the accounts it had, and try again next time
     }
+    const watch = keychainWatch;
+    const unread = watch ? listed.filter((a) => !watchedDirs.has(a.dir)).map((a) => a.dir) : [];
+    if (watch && unread.length > 0) {
+      accounts = listed.filter((a) => watchedDirs.has(a.dir));
+      arriving ??= watch
+        .watch(unread, { pinned: true })
+        .then(() => {
+          if (keychainWatch === watch) for (const dir of unread) watchedDirs.add(dir);
+        })
+        .finally(() => {
+          arriving = null;
+        });
+      return false;
+    }
+    accounts = listed;
+    // Only once read: a read that failed (the file caught mid-replace) is
+    // tried again at the next decision, rather than leaving the session on
+    // the list it had until the registry happens to change again.
+    accountsStamp = stamp;
+    return true;
   };
   // An account this run was told to start on that cannot take it now (disabled,
   // signed out, removed) is not a reason to end the run: it may have been
@@ -1113,15 +1164,15 @@ export async function runInteractiveHotSwap(
    * instead of leaving the session on a half-applied account.
    *
    * `underClaude`, for a move while Claude runs: made only while holding both
-   * locks its Claude takes, tried once and never waited for on this thread,
-   * which relays Claude's terminal. When either is taken nothing is written,
-   * the session stays where it was, and LoginBusy is thrown for the caller to
-   * try again on its own timer.
+   * locks its Claude takes, tried once and never waited for. When either is
+   * taken nothing is written, the session stays where it was, and LoginBusy is
+   * thrown for the caller to try again on its own timer.
+   *
+   * Written once, as steps: run blocking while no Claude runs (activate), and
+   * on timers under a running one (moveUnderClaude), with the Keychain reached
+   * through `io` either way.
    */
-  const activate = (
-    account: Account,
-    how: { temporary?: boolean; mustReread?: boolean; underClaude?: boolean } = {},
-  ): void => {
+  const moveSteps = function* (account: Account, how: MoveHow, io: KeychainIo): Steps<void> {
     // While its Claude plainly holds a lock, nothing is announced either: each
     // look would otherwise put the session on the next account for a moment,
     // where another session deciding whether to renew that login can see it.
@@ -1130,7 +1181,7 @@ export async function runInteractiveHotSwap(
     // in activateWithLease where tests pin it: announce first, copy second,
     // release the old one last. Any gap between a login being in use and being
     // announced is a gap where a renewer can retire it.
-    announced = activateWithLease(account.name, announced, {
+    announced = yield* activateWithLease(account.name, announced, {
       takeLease: (name) => takeLease(name, sessionDir, context.ctx),
       releaseLease: (name) => releaseLease(name, context.ctx),
       // This account's own login is in now, so whatever identity drift the
@@ -1141,26 +1192,25 @@ export async function runInteractiveHotSwap(
         capOwner = null;
         capUnregisteredEmail = null;
       },
-      install: () => {
-        const moved = moveFolderLogin(sessionDir, account.dir, context.ctx, sessionLoginStore(sessionDir, context.loginInKeychain), {
-          leaving: () => {
+      install: function* () {
+        const store = sessionLoginStore(sessionDir, io, context.loginInKeychain);
+        const moved = yield* moveFolderLoginSteps(sessionDir, account.dir, context.ctx, store, {
+          leaving: function* () {
             const leaving = current;
-            if (
-              leaving &&
-              leaving.name !== account.name &&
-              savesOnLeaving(
-                { temporary: how.temporary === true },
-                () => readExpiresAt(sessionCreds),
-                () => readExpiresAt(path.join(leaving.dir, CREDS)),
-              )
-            ) {
-              saveBack(leaving, undefined, how.underClaude ? 0 : undefined);
+            if (!leaving || leaving.name === account.name) return;
+            const temporary = how.temporary === true;
+            // Both read only for a visit, the one case savesOnLeaving compares them.
+            const sessionAt = temporary ? yield* readExpiresAtSteps(sessionCreds, io) : 0;
+            const storedAt = temporary ? yield* readExpiresAtSteps(path.join(leaving.dir, CREDS), io) : 0;
+            if (savesOnLeaving({ temporary }, () => sessionAt, () => storedAt)) {
+              yield* saveBackSteps(leaving, undefined, io, how.underClaude ? 0 : undefined);
             }
           },
           // What we just put there is by definition already in the profile, so it
           // is not a change to mirror back.
-          installed: () => {
-            mirror = finishCheck(beginCheck(mirror, credStamp()), credStamp(), 'settled');
+          installed: function* () {
+            const stamp = (yield* credentialFingerprintSteps(sessionDir, io)) ?? '';
+            mirror = finishCheck(beginCheck(mirror, stamp), stamp, 'settled');
           },
           ...(how.mustReread ? { mustReread: true } : {}),
           ...(how.underClaude ? { onlyUnderClaudesLocks: true } : {}),
@@ -1175,6 +1225,51 @@ export async function runInteractiveHotSwap(
     // one it only visits for an Artifact call: no work is done there.
     if (!how.temporary) worker?.onAccount(account.name);
   };
+
+  /**
+   * The move under the running Claude that is under way, settled once it has
+   * finished or failed. While it is, no other move starts (LoginBusy), nothing
+   * decides on the session's account (accountBeingDecided, limitGate), and the
+   * launch does not end (runChild): what the session is on changes only as it
+   * finishes, and a move that fails leaves it on its account, announced as before.
+   */
+  let moving: Promise<void> | null = null;
+  const moveUnderWay = (): boolean => moving !== null;
+
+  /** A move with no Claude running in this session: blocking, since nothing is relayed. */
+  const activate = (account: Account, how: MoveHow = {}): void => {
+    if (moving) throw new LoginBusy('moving');
+    runBlocking(moveSteps(account, how, keychainBlocking));
+  };
+
+  /**
+   * A move under the running Claude, made on timers: its Keychain work holds
+   * up neither the thread that relays Claude's terminal nor the keys typed
+   * into it. It has finished when the promise returned settles, which the
+   * caller acts on: rejected with LoginBusy when nothing was written, and with
+   * what failed once it has been rolled back. While another is under way it
+   * throws LoginBusy at once. With no Claude running, made blocking.
+   */
+  const moveUnderClaude = (account: Account, how: Omit<MoveHow, 'underClaude'> = {}): Promise<void> | undefined => {
+    if (moving) throw new LoginBusy('moving');
+    if (!keychainWatch) {
+      activate(account, { ...how, underClaude: true });
+      return undefined;
+    }
+    const made = runOnTimers(moveSteps(account, { ...how, underClaude: true }, keychainViewOnTimers));
+    const settled: Promise<void> = made.then(
+      () => {
+        if (moving === settled) moving = null;
+      },
+      () => {
+        if (moving === settled) moving = null;
+      },
+    );
+    moving = settled;
+    return made;
+  };
+  /** A move under way, or a limit being acted on: the session's account is being decided, so nothing else moves it. */
+  const accountBeingDecided = (): boolean => moveUnderWay() || limitBeingDecided();
 
   /**
    * The account whose long-lived token (`ccx token`) this Claude was started
@@ -1371,7 +1466,7 @@ export async function runInteractiveHotSwap(
     },
     // Only a move away has a call counting on Claude reading the new login at
     // once. Going back is better done unconfirmed than not done.
-    activate: (account, trip) => activate(account, { temporary: true, mustReread: trip === 'away', underClaude: true }),
+    activate: (account, trip) => moveUnderClaude(account, { temporary: true, mustReread: trip === 'away' }),
     // A call that counts on the login already here: Claude reads it again
     // before the call, in case it was still on the one before it.
     pin: () => {
@@ -1396,7 +1491,7 @@ export async function runInteractiveHotSwap(
             'the one ccx started it on, so ccx cannot vouch for which account a call goes out as, and nothing was sent',
         };
       }
-      return limitBeingDecided() ? 'busy' : 'free';
+      return accountBeingDecided() ? 'busy' : 'free';
     },
     log: (message, data) =>
       logEvent(message, { kind: 'artifact-hop', data }),
@@ -1410,10 +1505,11 @@ export async function runInteractiveHotSwap(
    * the account it is visiting, and those recorded during a visit are passed
    * over afterwards: nothing about them is this session's own account running
    * out, so they cap nothing and move nothing. One recorded while a call held
-   * the session on its own account is read once the hold is over.
+   * the session on its own account is read once the hold is over. Nor while
+   * a move is under way: the login in the folder is changing.
    */
   const limitGate: RefusalGate = {
-    held: () => hop.holding(),
+    held: () => hop.holding() || moveUnderWay(),
     ignores: (refusal) => hop.duringHop(refusal.at),
   };
   /**
@@ -1765,7 +1861,11 @@ export async function runInteractiveHotSwap(
   // targets from hours-old numbers and idle profiles' logins quietly rotted.
   const usageWatch = startUsageRefresher(
     {
-      refresh: () => refreshUsage(listAccounts(context.ctx), context.ctx, { renew: renewLogin }),
+      // The session's own list, which admits an account added meanwhile once its login has been read off the thread.
+      refresh: () => {
+        refreshAccounts();
+        return refreshUsage(accounts, context.ctx, { renew: renewLogin });
+      },
       snapshotAgeMs: () => snapshotAgeMs(context.ctx),
       tryLock: () => acquireLockDir(path.join(home, 'usage-refresh.lock'), { waitMs: 0 }),
       onOutcome: (outcome, detail) => {
@@ -1792,6 +1892,10 @@ export async function runInteractiveHotSwap(
       // Turning early moves on or off in the dashboard reaches this session
       // at its next check, not only the sessions started after.
       refresh: refreshSettings,
+      accounts: () => {
+        refreshAccounts();
+        return accounts;
+      },
       requestSwitch: (account, reason) => {
         notice(`${reason}; moving to "${account}" before this account runs out`);
         if (!worker) {
@@ -2130,15 +2234,17 @@ export async function runInteractiveHotSwap(
       let moveWaiting: { account: string; since: number; said: boolean } | null = null;
       /** Since when the move a limit makes has found its Claude's locks taken. */
       let reliefWaitingSince: number | null = null;
+      /** The move a limit started under the running Claude, until the limit is acted on. */
+      let reliefMove: ReliefMove | null = null;
       const switchWatch = (restartBlocker: () => RestartBlocker | null): string | null => {
         // A visit to another account for one Artifact call comes first, and
         // while one is held or being prepared every other move waits for the
         // session to be back: the request stays where it is.
         if (hop.poll()) return null;
-        // So does a usage limit being decided: the request waits for it.
-        if (limitBeingDecided()) return null;
-        // A request can name an account added since this session started.
-        refreshAccounts();
+        // So does a usage limit being decided, or a move under way: the request waits for it.
+        if (accountBeingDecided()) return null;
+        // A request can name an account added since this session started, whose login is read first.
+        if (!refreshAccounts()) return null;
         // This session's OWN request (written by `ccx use --session <pid>` or
         // `--here`) wins over the broadcast one, so a targeted switch moves
         // exactly this session and leaves the others alone. Falls back to the
@@ -2210,13 +2316,41 @@ export async function runInteractiveHotSwap(
           if (targeted) nextStartTargeted = true; // relaunch this one without moving global state
           return target.name;
         }
-        try {
-          activate(target, { underClaude: true });
-        } catch (error) {
-          if (!(error instanceof LoginBusy)) {
-            consume();
-            throw error;
+        // Made on timers, and acted on once it has finished: the request stays
+        // until then, and is taken only if it is still the one moved for.
+        const from = current?.name ?? account.name;
+        const consumeMovedFor = (): void => {
+          const still = readSwitchRequest(context.ctx, targeted ? process.pid : undefined);
+          if (still && request && still.account === request.account && still.at === request.at) consume();
+        };
+        const moved = (): void => {
+          moveWaiting = null;
+          consumeMovedFor();
+          switchRenewal = null;
+          // A TARGETED switch (`ccx use --here/--session`) moves only this session:
+          // it must not touch the global active account or the editor pointer, which
+          // belong to the default session. A broadcast switch is the old behaviour
+          // and still sets both. The move swaps the login under THIS session
+          // either way; only the global surfaces are gated.
+          if (!targeted && !worker) {
+            setActive(target.name, context.ctx);
+            void moveEditorToActive(context, { session: true });
           }
+          notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
+          notifyAccountSwitch(target.name, 'switched in place');
+        };
+        const notMoved = (error: unknown): void => {
+          if (!(error instanceof LoginBusy)) {
+            // Rolled back: still on its account, and the request is taken, as one that cannot be honoured.
+            moveWaiting = null;
+            consumeMovedFor();
+            logEvent(`could not move this session to "${target.name}" in place, so it stays on "${from}": ${thrownReason(error)}`, {
+              kind: 'move-failed',
+              data: { to: target.name, from },
+            });
+            return;
+          }
+          if (error.why !== 'locks') return;
           // Its Claude is using its login: nothing was written, and the request
           // stays, for the next look to try again. Said once it has waited a while.
           const waiting = moveWaiting?.account === target.name ? moveWaiting : { account: target.name, since: Date.now(), said: false };
@@ -2225,26 +2359,25 @@ export async function runInteractiveHotSwap(
             waiting.said = true;
             notice(
               `the move to "${target.name}" is waiting: Claude in this session is using its login, so this session ` +
-                `stays on "${current?.name ?? account.name}" until it lets go, and ccx moves it then`,
-              { kind: 'move-pending', data: { to: target.name, from: current?.name ?? account.name } },
+                `stays on "${from}" until it lets go, and ccx moves it then`,
+              { kind: 'move-pending', data: { to: target.name, from } },
             );
           }
+        };
+        let made: Promise<void> | undefined;
+        try {
+          made = moveUnderClaude(target);
+        } catch (error) {
+          notMoved(error);
           return null;
         }
-        moveWaiting = null;
-        consume();
-        switchRenewal = null;
-        // A TARGETED switch (`ccx use --here/--session`) moves only this session:
-        // it must not touch the global active account or the editor pointer, which
-        // belong to the default session. A broadcast switch is the old behaviour
-        // and still sets both. `activate` above swaps the login under THIS session
-        // either way; only the global surfaces are gated.
-        if (!targeted && !worker) {
-          setActive(target.name, context.ctx);
-          void moveEditorToActive(context, { session: true });
+        if (made) {
+          made.then(moved, notMoved).catch((error: unknown) =>
+            logEvent(`could not finish switching this session to "${target.name}": ${thrownReason(error)}`),
+          );
+        } else {
+          moved();
         }
-        notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
-        notifyAccountSwitch(target.name, 'switched in place');
         return null;
       };
       /**
@@ -2293,43 +2426,81 @@ export async function runInteractiveHotSwap(
         /** What to say when the move is a guess, made because every account looked out of room. */
         let anyway: string | null = null;
         // Whose limit this is, as the check found. A move starts the new
-        // login's attribution afresh, but this limit was met before it.
-        const unregistered = capUnregisteredEmail;
+        // login's attribution afresh, but this limit was met before it, and
+        // before the move it started, which has reset it by the time it is acted on.
+        const unregistered = reliefMove ? reliefMove.unregistered : capUnregisteredEmail;
         if (opts.relieve && limitedModel === undefined && !relaunchForPrompt) {
+          const started = reliefMove;
+          if (started && !started.settled) {
+            // Its move is under way: the limit is acted on once that has finished.
+            capConfirmedAt = confirmedAt;
+            return { kind: 'retry', afterMs: RELIEF_RETRY_MS };
+          }
+          reliefMove = null;
+          let failure: { error: unknown } | null = started?.failure ?? null;
+          if (started && !failure) {
+            relievedTo = started.to;
+            anyway = started.anyway;
+            reliefWaitingSince = null;
+          }
           let next: ReturnType<typeof reliefPlan> = null;
-          try {
-            next = reliefPlan(capName, token !== null, false);
-          } catch (error) {
-            // Relaunched instead, as when there is nowhere to move it in place.
-            logEvent(`could not work out where to move this session in place: ${thrownReason(error)}`, {
-              kind: 'cap-relief-failed',
-              data: { from: capName },
-            });
+          if (!started) {
+            try {
+              next = reliefPlan(capName, token !== null, false);
+            } catch (error) {
+              // Relaunched instead, as when there is nowhere to move it in place.
+              logEvent(`could not work out where to move this session in place: ${thrownReason(error)}`, {
+                kind: 'cap-relief-failed',
+                data: { from: capName },
+              });
+            }
           }
           if (next) {
+            const mine: ReliefMove = { to: next.account, anyway: next.anyway, unregistered, settled: false, failure: null };
             try {
-              activate(next.account, { underClaude: true }); // seamless swap under the live child; updates `current`
+              // A seamless swap under the live child, which updates `current` once it has finished.
+              const made = moveUnderClaude(next.account);
+              if (made) {
+                reliefMove = mine;
+                made.then(
+                  () => {
+                    mine.settled = true;
+                  },
+                  (error: unknown) => {
+                    mine.failure = { error };
+                    mine.settled = true;
+                  },
+                );
+                capConfirmedAt = confirmedAt;
+                // Asked again at once: with no Keychain to wait on (Linux, Windows) it has finished by then.
+                return { kind: 'retry', afterMs: 0 };
+              }
               relievedTo = next.account;
               anyway = next.anyway;
               reliefWaitingSince = null;
             } catch (error) {
-              // A swap that could not be applied must not strand the child on a
-              // half-changed account: fall through to the restart path.
-              relievedTo = null;
-              if (error instanceof LoginBusy) {
-                // Its Claude holds a lock the move waits for, as while it renews
-                // its login: asked again shortly, still undecided meanwhile, and
-                // relaunched instead once that has gone on too long.
-                const now = Date.now();
-                reliefWaitingSince ??= now;
-                if (now - reliefWaitingSince < (context.moveLockWaitMs ?? MOVE_LOCK_WAIT_MS)) {
-                  capConfirmedAt = confirmedAt;
-                  return { kind: 'retry', afterMs: RELIEF_RETRY_MS };
-                }
-              }
-              reliefWaitingSince = null;
+              failure = { error };
             }
           }
+          if (failure) {
+            // A swap that could not be applied must not strand the child on a
+            // half-changed account: fall through to the restart path.
+            relievedTo = null;
+            if (failure.error instanceof LoginBusy) {
+              // Its Claude holds a lock the move waits for, as while it renews
+              // its login: asked again shortly, still undecided meanwhile, and
+              // relaunched instead once that has gone on too long.
+              const now = Date.now();
+              reliefWaitingSince ??= now;
+              if (now - reliefWaitingSince < (context.moveLockWaitMs ?? MOVE_LOCK_WAIT_MS)) {
+                capConfirmedAt = confirmedAt;
+                return { kind: 'retry', afterMs: RELIEF_RETRY_MS };
+              }
+            }
+            reliefWaitingSince = null;
+          }
+        } else {
+          reliefMove = null;
         }
 
         // ONE path records each cap. Record HERE only when there will be no
@@ -2518,12 +2689,16 @@ export async function runInteractiveHotSwap(
         // changed (accounts/keychain-view): every login this session reads is
         // read first, before Claude starts.
         const watch = watchKeychain();
-        keychainWatch = watch;
         try {
           // Kept however long nothing asks about one, so a decision made later never reads one on this thread.
-          await watch.watch([sessionDir, ...accounts.map((a) => a.dir), ...editorSpellings()], { pinned: true });
+          const dirs = [sessionDir, ...accounts.map((a) => a.dir), ...editorSpellings()];
+          await watch.watch(dirs, { pinned: true });
+          watchedDirs = new Set(dirs);
+          keychainWatch = watch;
           return await launchChild(childArgs, stdin);
         } finally {
+          // A move under way finishes before anything after Claude acts on the account.
+          while (moving) await moving;
           watch.stop();
           if (keychainWatch === watch) keychainWatch = null;
           capConfirmedAt = null;

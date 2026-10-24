@@ -23,11 +23,13 @@
  * an account that is announced but idle is simply not renewed for a moment.
  */
 
+import type { Steps } from '../util/steps.js';
+
 export interface HandoffSteps {
   takeLease: (account: string) => void;
   releaseLease: (account: string) => void;
-  /** Copy the account's login into the shared session folder. May throw. */
-  install: () => void;
+  /** Copy the account's login into the shared session folder, as steps (util/steps). May throw. */
+  install: () => Steps<void>;
   /**
    * Run once the login is in, and never when installing it failed: for what
    * holds only while the session runs as the new account.
@@ -36,20 +38,21 @@ export interface HandoffSteps {
 }
 
 /**
- * Switch the session onto `account`. Returns the account now announced.
+ * Switch the session onto `account`, as steps run blocking or on timers.
+ * Returns the account now announced.
  *
  * On failure the announcement is given back (unless we already held it) and the
  * previous one is kept, so a failed switch does not leave the session announcing
  * an account it is not on.
  */
-export function activateWithLease(
+export function* activateWithLease(
   account: string,
   previouslyAnnounced: string | null,
   steps: HandoffSteps,
-): string {
+): Steps<string> {
   steps.takeLease(account);
   try {
-    steps.install();
+    yield* steps.install();
   } catch (err) {
     if (previouslyAnnounced !== account) steps.releaseLease(account);
     throw err;
