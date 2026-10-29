@@ -12,6 +12,7 @@ import {
   writeKeychainCredentialAsync,
   deleteKeychainCredential,
 } from './keychain.js';
+import { mergeMcpLogins } from './mcp-logins.js';
 
 function runner(implementation: (...args: unknown[]) => string = () => '') {
   const mock = vi.fn(implementation);
@@ -256,6 +257,42 @@ describe('a login too long for one line of `security -i`', () => {
     writeKeychainCredential('/profile', JSON.stringify({ accessToken: 'short' }), security.options);
     const writes = security.exec.mock.calls.filter((call) => call[1][0] !== 'find-generic-password');
     expect(writes.map((call) => call[1])).toEqual([['-i']]);
+  });
+});
+
+describe('a login kept beside the MCP logins a store holds', () => {
+  /** What ccx writes into a folder whose Claude holds several MCP logins: the next account's login, and those. */
+  const merged = mergeMcpLogins(
+    JSON.stringify({
+      claudeAiOauth: { accessToken: 'b'.repeat(120), refreshToken: 's'.repeat(120), expiresAt: 2 },
+    }),
+    longLogin,
+  );
+
+  it('is too long for one line of `security -i`', () => {
+    expect(merged.length).toBeGreaterThan(2100);
+    expect(merged).not.toBe(longLogin);
+  });
+
+  it('is saved whole, in the arguments of `security`, blocking', () => {
+    const security = securityLikeMacOS();
+    security.items.set(keychainService('/profile'), longLogin);
+    writeKeychainCredential('/profile', merged, security.options);
+    expect(security.items.get(keychainService('/profile'))).toBe(merged);
+    expect(readKeychainCredential('/profile', security.options)).toBe(merged);
+    const writes = security.exec.mock.calls.filter(
+      (call) => call[1][0] !== 'find-generic-password',
+    );
+    expect(writes.map((call) => call[1][0])).toEqual(['add-generic-password']);
+  });
+
+  it('is saved whole, in the arguments of `security`, off the thread', async () => {
+    const security = securityLikeMacOS();
+    security.items.set(keychainService('/profile'), longLogin);
+    expect(
+      await settled(writeKeychainCredentialAsync('/profile', merged, security.options)),
+    ).toEqual({ value: undefined });
+    expect(await readKeychainCredentialAsync('/profile', security.options)).toBe(merged);
   });
 });
 

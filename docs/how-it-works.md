@@ -13,6 +13,37 @@ it as `{}`, which holds no login, for the same reason. Only if that cannot be
 done may Claude keep using the previous login for up to about 30 seconds after
 a move.
 
+**MCP sign-ins stay in the folder that holds them.** Claude keeps the sign-ins
+you made with `claude mcp login` (Notion, Datadog and so on) in the same login
+text as the account's own, under `mcpOAuth`. Their refresh tokens work once,
+like Claude's own, so two places holding one sign-in cancel each other at the
+first refresh, and ccx keeps one live holder of each. A folder Claude runs in (a
+session's, the editor's) keeps its own sign-ins through every move: changing
+account replaces its Claude login and nothing else, and so does a renewal
+carried into it. An account's saved login keeps its own too when a login is
+saved home into it from a folder that goes on running. A folder with no login
+yet, such as a new session's or a newly made editor folder, starts with whatever
+its account's saved login holds. A folder that ends parks its sign-ins in the
+account it ends on, server by server. Folders start from copies of what is
+parked, so copies of one sign-in are routine, and for a server both hold the
+sign-in that expires later stays, since it was refreshed last and the earlier
+copy's refresh token has been used. The ending folder's stands when the two
+expire together or one does not say. A sign-in parked for a server the folder
+does not hold stays, so two folders that end on one account each leave theirs,
+and signing out of a server in one folder does not remove a sign-in another
+folder parked for it. That is a terminal session at its end, even when its
+Claude is signed out or signed in as someone else, and the editor's folder when
+it is retired, even when its Claude login is no newer than the saved one or is
+not the account's. The editor's folder is read in every Keychain item its
+editors' Claudes keep a login in, and in its file when a spelling of its path
+has no item, which is where a Claude given that spelling reads it. Where two of
+them hold a server the sign-in that expires later is parked, and the one read
+first when that is not known. A login that carries several sign-ins is usually
+longer than one line of `security -i` takes, so ccx saves it in `security`'s
+arguments, as Claude Code does. For the moment `security` runs, other programs
+running as you can see those tokens in the process list, which a line on
+standard input never shows, so a login that fits still goes that way.
+
 **Never in Claude's way.** ccx relays Claude's terminal, and the keys typed
 into it, on one thread, so nothing it does while Claude runs waits on that
 thread. A move in place is made only while ccx holds both locks Claude takes in

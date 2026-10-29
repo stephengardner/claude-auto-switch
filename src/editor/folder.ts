@@ -17,10 +17,20 @@ import {
   sessionIdentityEmail,
   usableLoginText,
 } from '../accounts/credential-vault.js';
-import { readKeychainItem } from '../accounts/keychain-view.js';
+import { keychainBlocking, readKeychainItem } from '../accounts/keychain-view.js';
+import {
+  gatherMcpLogins,
+  holdsMcpLogins,
+  withMcpLogins,
+  type McpMode,
+} from '../accounts/mcp-logins.js';
+import { parkMcpLoginsSteps } from '../accounts/mcp-park.js';
 import { loginExpiresAt, readExpiresAt } from '../usage/token-expiry.js';
 import { loginIsKnownDead } from '../usage/dead-login-store.js';
+import { loginWasRejected } from '../accounts/account-login.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
+import { thrownReason } from '../util/thrown-reason.js';
+import { runBlocking } from '../util/steps.js';
 import { decideSaveBack } from '../accounts/save-back.js';
 import { decidePull } from '../accounts/credential-sync.js';
 import { writeAndCarry } from '../accounts/shared-login.js';
@@ -57,6 +67,7 @@ import {
   nudgeFolderLogin,
   readEditorRecord,
   readFolderLogin,
+  readFolderStores,
   removeFolderLogin,
   writeEditorRecord,
   writeFolderLogin,
@@ -149,10 +160,27 @@ export function editorStanding(context: CliContext): { name: string; loggedIn: b
   const name = readEditorRecord(editorFolderPath(c))?.account ?? null;
   if (name === null) return null;
   const text = readOrNull(editorFolderLogin(c));
+  const account = getAccount(name, c);
   return {
     name,
-    loggedIn: text !== null && usableLoginText(text) && !loginIsKnownDead(sha256Fingerprint(text), c),
+    loggedIn:
+      text !== null &&
+      usableLoginText(text) &&
+      !loginIsKnownDead(sha256Fingerprint(text), c) &&
+      !(account && heldLoginRefused(text, account, c)),
   };
+}
+
+/**
+ * Whether the folder holds the login `account`'s saved copy has, and that copy
+ * was refused. The refusal is filed under the copy's whole text, which the
+ * folder's differs from by the MCP logins its Claude holds.
+ */
+function heldLoginRefused(text: string, account: Account, c: PathCtx): boolean {
+  const held = loginTextFingerprint(text);
+  return (
+    held !== null && held === credentialFingerprint(account.dir) && loginWasRejected(account.dir, c)
+  );
 }
 
 /**
@@ -477,7 +505,8 @@ const userFileWriter = (c: PathCtx): UserFileWriter => (file, plan) => writeUser
  * profile from a private copy, carrying it to the profiles sharing the one it
  * replaces, as a session's save-back does (writeAndCarry). False, never a
  * throw, when it could not be written. `lockWaitMs`: how long a profile sharing
- * the login is waited for; a running session's thread passes 0.
+ * the login is waited for; a running session's thread passes 0. The profile
+ * keeps its own MCP logins, unless `mcp` is 'park'.
  */
 function installFromText(
   account: Account,
@@ -486,6 +515,7 @@ function installFromText(
   c: PathCtx,
   detail: string,
   lockWaitMs?: number,
+  mcp: McpMode = 'keep-target',
 ): boolean {
   const snapshot = path.join(configHome(c), `.editor-login.${process.pid}.tmp`);
   try {
@@ -496,7 +526,7 @@ function installFromText(
       accounts,
       carryTargets(account, accounts),
       () => {
-        installed = installCredential(account.dir, snapshot);
+        installed = installCredential(account.dir, snapshot, { mcp });
       },
       lockWaitMs !== undefined
         ? { lock: (dir: string) => lockDirSteps(path.join(dir, CREDENTIALS_LOCK_DIR), { waitMs: lockWaitMs }) }
@@ -526,7 +556,10 @@ function newerThanStored(text: string, account: Account): boolean {
 /**
  * As the editor moves off `leaving`, its login goes home when the editor's
  * Claude renewed it there, by the rule a terminal session's move uses: only to
- * the account the folder says it is signed in as (decideSaveBack).
+ * the account the folder says it is signed in as (decideSaveBack). The account
+ * keeps its own MCP logins, unless the folder is `ending`: then its MCP logins
+ * are parked in the account whether or not its Claude login is newer, since
+ * nothing else keeps them.
  */
 function saveEditorLoginHome(
   leaving: Account,
@@ -534,11 +567,19 @@ function saveEditorLoginHome(
   login: FolderLogin,
   c: PathCtx,
   lockWaitMs?: number,
+  ending = false,
 ): void {
   // Throws when it cannot be read, or not saved home: what it holds may be a
-  // renewal only it has, which a move would then write over.
-  const text = readFolderLogin(login);
-  if (text === null || !newerThanStored(text, leaving)) return;
+  // renewal only it has, which a move would then write over. A folder that is
+  // ending is read in every place its Claudes keep a login, since a sign-in held
+  // in one of them goes with the folder.
+  const stores = ending ? readFolderStores(login) : null;
+  const held = stores ? (stores[0] ?? null) : readFolderLogin(login);
+  if (held === null) return;
+  const gathered = stores ? gatherMcpLogins(stores) : null;
+  const text = gathered ? withMcpLogins(held, gathered) : held;
+  const newer = newerThanStored(text, leaving);
+  if (!newer && !(ending && holdsMcpLogins(text))) return;
   const decision = decideSaveBack({
     sessionEmail: sessionIdentityEmail(login.dir),
     ...(leaving.email ? { accountEmail: leaving.email } : {}),
@@ -548,11 +589,49 @@ function saveEditorLoginHome(
   });
   if (!decision.save) {
     appendEvent(configHome(c), `the editor: ${decision.reason}`, Date.now(), { kind: 'credential-sync' });
+    // Its sign-ins are the person's own whoever the folder is signed in as, and go with the folder.
+    if (ending && holdsMcpLogins(text)) parkEditorMcpLogins(leaving, text, c);
     return;
   }
-  if (!installFromText(leaving, accounts, text, c, 'the editor renewed this login; saved home as the editor moved off it', lockWaitMs)) {
+  if (!newer) {
+    parkEditorMcpLogins(leaving, text, c);
+    return;
+  }
+  const mcp = ending ? 'park' : 'keep-target';
+  if (
+    !installFromText(
+      leaving,
+      accounts,
+      text,
+      c,
+      'the editor renewed this login; saved home as the editor moved off it',
+      lockWaitMs,
+      mcp,
+    )
+  ) {
     throw new Error(`the editor's renewal of ${leaving.name}'s login could not be saved home`);
   }
+}
+
+/**
+ * Park the MCP logins in `text`, the login of the folder being retired, in
+ * `account`'s saved login, whose Claude login stays as it is. Throws when that
+ * cannot be done, so the folder is kept with them.
+ */
+function parkEditorMcpLogins(account: Account, text: string, c: PathCtx): void {
+  try {
+    if (!runBlocking(parkMcpLoginsSteps(account.dir, text, keychainBlocking))) return;
+  } catch (error) {
+    throw new Error(
+      `the editor's MCP logins could not be kept in ${account.name}'s saved login: ${thrownReason(error)}`,
+    );
+  }
+  appendEvent(
+    configHome(c),
+    `the editor's MCP logins were kept in ${account.name}'s saved login as its folder was retired`,
+    Date.now(),
+    { kind: 'credential-sync' },
+  );
 }
 
 /**
@@ -1004,7 +1083,7 @@ export function retireEditor(context: CliContext, spellings?: string[]): 'retire
     const login = { dir, spellings: known };
     const account = record?.account ? accounts.find((a) => a.name === record.account) : undefined;
     try {
-      if (account) saveEditorLoginHome(account, accounts, login, c);
+      if (account) saveEditorLoginHome(account, accounts, login, c, undefined, true);
     } catch {
       return false; // its login could not be read, so it may be a renewal only it has
     }

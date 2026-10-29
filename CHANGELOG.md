@@ -4,6 +4,57 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.29]
+
+### Fixed
+
+- **Switching account no longer swaps out your MCP sign-ins.** Claude keeps the
+  sign-ins you made with `claude mcp login` in the same login text as the
+  account's own, under `mcpOAuth`, and every move wrote the next account's whole
+  saved text over the folder's, so what the folder's Claude had signed in to was
+  replaced by whatever that copy had last captured, often nothing. A refresh
+  token of such a sign-in works once, so two places holding one cancel each
+  other at the first refresh, and ccx now keeps one live holder of each. A
+  folder Claude runs in (a terminal session's, the editor's) keeps its own
+  through a switch, a renewal carried into it and a login pulled in from the
+  account's saved copy, and an account's saved login keeps its own when a login
+  is saved home into it from a folder that goes on running. A folder that ends
+  parks its sign-ins in the account it ends on, server by server. For a server
+  both hold, the sign-in that expires later stays, since new folders start from
+  copies of what is parked and the later one was refreshed last, and the ending
+  folder's stands when the two expire together or one does not say. A sign-in
+  parked for a server the folder does not hold stays, so two folders that end on
+  one account each leave theirs, and signing out of a server in one folder does
+  not remove a sign-in another folder parked for it. A terminal session parks at
+  its end, even when its Claude is signed out or signed in as someone else, and
+  the editor's folder when it is retired, even when its Claude login is no newer
+  than the saved one or is not the account's. The editor's folder is read in
+  every Keychain item its editors' Claudes keep a login in, and in its file when
+  a spelling of its path has no item, where it used to be read in the first
+  only. Where two hold a server the sign-in that expires later is parked, and
+  the one read first when that is not known. A folder with no login yet starts
+  with what its account's saved login holds. Each Keychain item of the editor's
+  folder, whichever way an editor spells its path, keeps its own. A login with
+  no MCP sign-ins on either side is written exactly as before. A login long
+  enough to carry several goes in `security`'s arguments, as since 2.6.26;
+  docs/how-it-works.md says what that shows other programs.
+- **A move that fails partway puts back what the folder held.** A terminal
+  session's move was undone from the copy of the login kept at the last install,
+  and none is kept when the folder holds no working login, so the undo could put
+  back an older login than the one the folder held. It now puts back the text the
+  folder held when the move began, and keeps a sign-in its Claude refreshed
+  meanwhile.
+- **A text that holds only MCP sign-ins is no longer taken for a Claude login.**
+  A login counted as usable when it held any non-empty value, a rule that keeps
+  ccx from refusing a login format it does not know, and MCP sign-ins met it. A
+  text with only those could be saved home as an account's login or counted as a
+  working one. They no longer count toward it.
+- **`ccx doctor` and a `ccx-claude` launch count the editor's folder as signed
+  out when the login it holds was refused.** A refusal is filed under the whole
+  text of the account's saved login, which the folder's now differs from by its
+  MCP sign-ins, so it was not found. A folder that holds a login its Claude
+  renewed since is not counted as signed out.
+
 ## [2.6.28]
 
 ### Added

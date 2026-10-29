@@ -5,9 +5,13 @@ import {
   credentialPath,
   installCredentialSteps,
   nudgeLoginRereadSteps,
-  rollbackCredentialSteps,
 } from '../accounts/credential-vault.js';
-import { removeCredentialSteps } from '../accounts/credential-storage.js';
+import {
+  readCredentialSteps,
+  removeCredentialSteps,
+  writeCredentialSteps,
+} from '../accounts/credential-storage.js';
+import { holdsNoLogin, mergeMcpLogins } from '../accounts/mcp-logins.js';
 import type { KeychainIo } from '../accounts/keychain-view.js';
 import { CREDENTIALS_LOCK_DIR, lockDirHeld, lockDirSteps } from '../claude/locks.js';
 import { runBlocking, type Steps } from '../util/steps.js';
@@ -210,17 +214,57 @@ export interface FolderLoginStore {
 /**
  * A session folder's login: its file, or the Keychain item Claude may have
  * moved it to, reached through `io`: blocking, or on timers while its Claude runs.
+ * The folder keeps its own MCP logins through a move, and a rollback puts back
+ * the login the move found there, not a copy kept from an earlier one.
  */
 export function sessionLoginStore(
   dir: string,
   io: KeychainIo,
   keychainHolds?: (dir: string) => boolean,
 ): FolderLoginStore {
+  const file = credentialPath(dir);
+  let before: string | null = null;
+  let remembered = false;
+  let changed = false;
   return {
-    install: (sourceFile) => installCredentialSteps(dir, sourceFile, io),
-    scrub: () => removeCredentialSteps(credentialPath(dir), io),
+    install: (sourceFile) =>
+      installCredentialSteps(dir, sourceFile, io, {
+        mcp: 'folder',
+        replaced: (previous) => {
+          if (!remembered) before = previous;
+          remembered = true;
+          // A write the Keychain reports failed may have gone in.
+          changed = true;
+        },
+      }),
+    *scrub() {
+      if (!remembered) {
+        try {
+          before = yield* readCredentialSteps(file, io);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') throw error;
+        }
+        remembered = true;
+      }
+      try {
+        yield* removeCredentialSteps(file, io);
+      } finally {
+        changed = true;
+      }
+    },
     *rollback() {
-      yield* rollbackCredentialSteps(dir, io);
+      if (!changed) return;
+      const held = before;
+      if (held === null) {
+        yield* removeCredentialSteps(file, io);
+        return;
+      }
+      // What its Claude saved since the move, an MCP sign-in it refreshed, is kept over the one it replaced.
+      yield* writeCredentialSteps(
+        file,
+        holdsNoLogin(held) ? held : (current) => mergeMcpLogins(held, current, 'folder'),
+        io,
+      );
     },
     nudge: (now) => nudgeLoginRereadSteps(dir, now, io, keychainHolds ? { keychainHolds } : {}),
   };
