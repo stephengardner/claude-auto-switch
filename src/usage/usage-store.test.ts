@@ -893,3 +893,25 @@ describe('what a refresh puts back when another writer got there first', () => {
     expect(readUsageSnapshot(c).accounts['a']).toBeUndefined();
   });
 });
+
+describe('an account removed and added again while it was being read', () => {
+  it('does not hand the new account what was read for the old one', async () => {
+    // The order CodeRabbit asked about on #185: a refresh starts reading "a",
+    // "a" is removed and a different account registered as "a" (whose add
+    // drops anything stored under the name), then the old read finishes.
+    const { c, accounts } = setup(['a']);
+    writeUsageSnapshot(
+      { accounts: { a: { fiveHour: null, noFiveHourLimit: true, sevenDay: 0.2, fiveHourReset: null, sevenDayReset: null, at: 1 } } },
+      c,
+    );
+    await refreshUsage(accounts, c, {
+      now: () => Date.now() + 10 * 60_000,
+      probe: () => {
+        forgetUsage('a', c); // ccx remove a
+        forgetUsage('a', c); // ccx add a: drops anything left under the name
+        return Promise.resolve({ verdict: 'allowed', noFiveHourLimit: true, sevenDay: 0.3, sevenDayReset: 2_000 });
+      },
+    });
+    expect(readUsageSnapshot(c).accounts['a']).toBeUndefined();
+  });
+});
