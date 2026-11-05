@@ -37,6 +37,14 @@ semantic versioning.
   An account with a 5-hour window ranks exactly as before. The window cost an
   account learned while it still had a 5-hour window is kept.
 
+### Fixed
+
+- **A removed account's usage goes with it.** `ccx remove` (and `x` in the
+  dashboard) left the account's stored usage behind, so an account added later
+  under the same name started from the old one's numbers. Removing now drops
+  them, as a rename already moves them, and `ccx add` drops anything an older
+  version left under the new name.
+
 ### Changed
 
 - **New README pictures.** The dashboard picture is drawn at full width, with a
