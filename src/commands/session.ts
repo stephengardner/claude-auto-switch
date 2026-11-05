@@ -3,7 +3,7 @@ import { thrownReason } from '../util/thrown-reason.js';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { newerInstall } from '../update/newer-install.js';
+import { newerToFollow } from '../update/follow.js';
 import { resyncSession, returnSessionChanges } from '../session/write-back.js';
 import { buildClaudeFolder, claudesLocksTaken, moveFolderLoginSteps, sessionLoginStore } from '../session/claude-folder.js';
 import { configHome } from '../config/paths.js';
@@ -66,7 +66,13 @@ import {
 import { judgeRefusal, type RecordedRefusal, type WriterLookup } from '../session/refused-turn.js';
 import { resolveSessionIdentity, maskEmail } from '../session/session-identity.js';
 import { createTerminalWriter } from '../ui/terminal-writer.js';
-import { readUsageSnapshot, refreshUsage, renewIdleLogin, snapshotAgeMs } from '../usage/usage-store.js';
+import {
+  readUsageSnapshot,
+  refreshUsage,
+  renewIdleLogin,
+  snapshotAgeMs,
+  takeUpKeptRenewals,
+} from '../usage/usage-store.js';
 import { createHopController } from '../artifacts/hop.js';
 import { openHops } from '../artifacts/hop-files.js';
 import type { RefusalGate } from '../session/refusal-gate.js';
@@ -156,7 +162,7 @@ import { HEALTHY_RUN, standingOf } from '../usage/runway.js';
 import { holdBackOf } from '../dashboard/rotation-settings.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
 import { ensureLoginUsable, readinessMessage } from '../session/preflight.js';
-import { renewalIsDue, refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
+import { renewalIsDue, refreshCredentialIfExpired, takeUpRenewal } from '../usage/oauth-refresh.js';
 import { probeUsage } from '../usage/limit-probe.js';
 import { acquireLockDir, lockDirHeld, lockDirSteps, CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
@@ -1149,10 +1155,22 @@ export async function runInteractiveHotSwap(
   let lastEditorLook = 0;
   /** Whether a pull is under way, on timers, so one tick does not start another. */
   let pulling = false;
+  /** The last pull, settled or not: the session's end waits for it before saving its login home. */
+  let lastPull: Promise<unknown> = Promise.resolve();
   const pullRenewedLogin = (account: Account): void => {
     const now = Date.now();
     if (now - lastPullCheck < 5_000) return;
     lastPullCheck = now;
+    // A renewal of this session's login whose save failed, kept beside the
+    // login it retired: saved, and Claude told to read its login again.
+    void takeUpRenewal(sessionDir, { ctx: context.ctx, lockWaitMs: 0 }).then((kept) => {
+      if (kept.state !== 'saved') return;
+      nudgeLoginReread(sessionDir, new Date(), loginStore);
+      logEvent("saved this session's renewed login, kept when its save failed", {
+        kind: 'credential-sync',
+        data: { account: account.name, direction: 'kept-renewal' },
+      });
+    });
     // A renewal, this session's or another ccx's, still to be carried into the editor's folder.
     void retryEditorCarries(context.ctx);
     // The editor's folder holds its own copy of its account's login, with no
@@ -1172,7 +1190,10 @@ export async function runInteractiveHotSwap(
     }
     if (pulling) return;
     pulling = true;
-    void pullProfileIntoSessionAsync(account, sessionDir, context.ctx)
+    // One kept in its account's folder is saved there first, for the pull to bring in.
+    lastPull = takeUpKeptRenewals(accounts, context.ctx, { lockWaitMs: 0, only: account.name })
+      .catch(() => [])
+      .then(() => pullProfileIntoSessionAsync(account, sessionDir, context.ctx))
       .then((result) => {
         if (result !== 'pulled') return;
         // What was just installed came FROM the profile, so it is not a change
@@ -2661,7 +2682,7 @@ export async function runInteractiveHotSwap(
         // A newer ccx installed meanwhile takes over once Claude is idle.
         handoverWhenIdle: () => {
           refreshSettings();
-          return context.config.update.follow && (context.newerInstall ?? newerInstall)() !== null;
+          return newerToFollow(context) !== null;
         },
         onConversation: (id: string) => {
           liveConversationId = id;
@@ -2758,8 +2779,7 @@ export async function runInteractiveHotSwap(
       // account this relaunch chose, saying what this relaunch would have said.
       // The run ends normally and the newer ccx is started after it (below).
       refreshSettings();
-      const newer =
-        isContinue && !worker && context.config.update.follow ? (context.newerInstall ?? newerInstall)() : null;
+      const newer = isContinue && !worker ? newerToFollow(context) : null;
       if (newer) {
         handoverPlan = {
           ...newer,
@@ -2837,7 +2857,7 @@ export async function runInteractiveHotSwap(
         // Ended idle for a newer ccx: it resumes the conversation as it was,
         // with nothing to say, since nothing was interrupted.
         if (outcome.handover) {
-          const ready = (context.newerInstall ?? newerInstall)();
+          const ready = newerToFollow(context);
           if (ready) {
             handoverPlan = {
               ...ready,
@@ -2976,6 +2996,22 @@ export async function runInteractiveHotSwap(
   // Save the login back, THEN stop protecting it. The other order leaves a window
   // where a renewer rotates the profile and the save then overwrites it with the
   // session's older token, destroying the login it just renewed.
+  // The save writes this session's login over its account's, so a renewal
+  // kept when its save failed goes in first, this session's own and its
+  // account's, and a renewal its account's folder holds that this session's
+  // login lacks is pulled in, as a tick would: a usage refresh may have saved
+  // one there since the last. A signed-out session saves nothing over it.
+  await lastPull;
+  await takeUpRenewal(sessionDir, { ctx: context.ctx });
+  // Set only inside callbacks, which the compiler does not see, so it would
+  // take `current` for the null it started as.
+  const endingOn = current as Account | null;
+  if (endingOn) {
+    await takeUpKeptRenewals(accounts, context.ctx, { only: endingOn.name });
+    if (hasUsableLogin(sessionDir)) {
+      await pullProfileIntoSessionAsync(endingOn, sessionDir, context.ctx).catch(() => undefined);
+    }
+  }
   finishWithLease(announced, {
     saveBack: () => {
       if (current) saveBack(current, undefined, undefined, 'park');

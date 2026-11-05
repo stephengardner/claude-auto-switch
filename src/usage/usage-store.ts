@@ -10,7 +10,14 @@ import { renewAndCarry } from '../accounts/shared-login.js';
 import { liveLeases, type LeaseOptions, type SessionLease } from '../session/lease.js';
 import { probeUsage, type LimitProbeResult } from './limit-probe.js';
 import { learnWindowCost } from './runway.js';
-import { refreshCredentialIfExpired, renewalIsDue, expiredLongerThan, type RefreshOutcome } from './oauth-refresh.js';
+import {
+  refreshCredentialIfExpired,
+  renewalIsDue,
+  expiredLongerThan,
+  takeUpRenewal,
+  type RefreshOutcome,
+} from './oauth-refresh.js';
+import { hasKeptRenewal } from '../accounts/kept-renewal.js';
 import { editorPointerAccount } from '../editor/junction.js';
 import { takeUpEditorRenewal } from '../editor/folder.js';
 import { retryEditorCarries } from '../editor/folder-login.js';
@@ -352,6 +359,46 @@ export async function renewIdleLogin(
 }
 
 /**
+ * Save each renewal kept when its save failed (accounts/kept-renewal), and
+ * carry it to the profiles that shared the login it renewed, as the renewal
+ * would have. With `only`, that account's alone. The names saved.
+ */
+export async function takeUpKeptRenewals(
+  accounts: RefreshableAccount[],
+  c: PathCtx = {},
+  options: { lockWaitMs?: number; only?: string } = {},
+): Promise<string[]> {
+  const saved: string[] = [];
+  for (const account of accounts) {
+    if (options.only !== undefined && account.name !== options.only) continue;
+    if (!hasKeptRenewal(account.dir)) continue;
+    const { result, carried } = await renewAndCarry(account, accounts, carryTargets(account, accounts), () =>
+      takeUpRenewal(account.dir, {
+        ctx: c,
+        ...(options.lockWaitMs !== undefined ? { lockWaitMs: options.lockWaitMs } : {}),
+      }),
+    );
+    if (result.state !== 'saved') continue;
+    saved.push(account.name);
+    logCredentialEvent(
+      { account: account.name, kind: 'installed', detail: 'a renewal kept when its save failed, saved now' },
+      c,
+    );
+    for (const name of carried) {
+      logCredentialEvent(
+        {
+          account: name,
+          kind: 'installed',
+          detail: `shares a login with "${account.name}", whose kept renewal was just saved; carried across so this one keeps working`,
+        },
+        c,
+      );
+    }
+  }
+  return saved;
+}
+
+/**
  * Refresh stale entries (older than the TTL) with one minimal probe each, in
  * parallel, and persist the merged snapshot. Fresh entries are not refetched.
  * A failed probe stores nulls WITH a timestamp so a broken network is retried
@@ -372,8 +419,10 @@ export async function refreshUsage(
     ((accountDir: string, rejected?: string) =>
       refreshCredentialIfExpired(accountDir, { ctx: c, ...(rejected ? { renewRejected: rejected } : {}) }));
 
-  // A renewal that could not be written into the editor's folder: every tick
-  // looks, fresh entries or not, since its Claude would send the retired token.
+  // A renewal whose save failed, and one that could not be written into the
+  // editor's folder: every tick looks, fresh entries or not, since what is
+  // stored is the login each retired.
+  await takeUpKeptRenewals(accounts, c, { lockWaitMs: 0 });
   await retryEditorCarries(c);
   const snapshot = readUsageSnapshot(c);
   const aged = accounts.filter((a) => {

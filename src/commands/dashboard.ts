@@ -47,7 +47,9 @@ import { toStatePayload, STATE_SCHEMA_VERSION } from '../dashboard/state-payload
 import { moveEditorToActive } from '../editor/folder.js';
 import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
-import { claimRawTerminal } from '../ui/raw-terminal.js';
+import { claimRawTerminal, type RawTerminalOptions } from '../ui/raw-terminal.js';
+import { handOver, holdsNothing, newerToFollow } from '../update/follow.js';
+import type { NewerInstall } from '../update/newer-install.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { loginOnHold } from '../accounts/login-check.js';
 import { describeNextUp, describeWhenOut, type NextUpInput, type WhenOut } from '../dashboard/next-up.js';
@@ -90,7 +92,26 @@ export interface DashboardOptions {
   json?: boolean;
 }
 
+/** The terminal the live screen is drawn on. */
+export interface DashboardTerminal {
+  stdin: NodeJS.ReadStream & { setRawMode?: (v: boolean) => void };
+  stdout: { write: (s: string) => unknown; rows?: number; columns?: number };
+  proc?: RawTerminalOptions['proc'];
+}
+
+/** Injected in tests: the terminal, and how often logins and usage are read again (HEALTH_REPROBE_MS). */
+export interface DashboardDeps {
+  terminal?: DashboardTerminal;
+  reprobeMs?: number;
+}
+
 const HEALTH_REPROBE_MS = 20_000;
+/**
+ * How long nobody must have pressed a key before the screen moves to a newer
+ * ccx: a key pressed as it moves lands in the newer one, whose cursor is back
+ * on the first row, and Enter there uses whichever account is on it.
+ */
+const KEYS_IDLE_MS = 5_000;
 const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
 // Alternate screen + home-repaint = flicker-free. Repainting over the old frame
@@ -169,6 +190,7 @@ export function repaint(frame: string, rows: number | undefined): string {
 export async function dashboardCommand(
   context: CliContext,
   options: DashboardOptions = {},
+  deps: DashboardDeps = {},
 ): Promise<number> {
   const initial = listAccounts(context.ctx);
   if (initial.length === 0) {
@@ -196,6 +218,17 @@ export async function dashboardCommand(
     context.out('no accounts registered (run: ccx add <name>)');
     return 0;
   }
+
+  const live = !options.json && !options.once;
+  const args = [
+    ...(context.quiet ? ['--quiet'] : []),
+    'dashboard',
+    ...(options.interval !== undefined ? ['--interval', options.interval] : []),
+  ];
+  // Started from an older copy than the one installed: the newer one takes
+  // over before this one reads or renews anything.
+  const newerNow = live ? newerToFollow(context) : null;
+  if (newerNow && holdsNothing()) return handOver(context, newerNow, args, 'the dashboard');
 
   const claude = getClaude(context);
   const home = configHome(context.ctx);
@@ -398,8 +431,15 @@ export async function dashboardCommand(
     return { ...snapshot, accounts: inDisplayOrder(snapshot.accounts, snapshot.model ?? null, snapshot.now) };
   };
 
-  await runLiveLoop(drawn, {
+  const terminal: DashboardTerminal = deps.terminal ?? {
+    stdin: process.stdin as DashboardTerminal['stdin'],
+    stdout: process.stdout,
+  };
+  const newer = await runLiveLoop(drawn, {
     refreshMs,
+    reprobeMs: deps.reprobeMs ?? HEALTH_REPROBE_MS,
+    terminal,
+    newer: () => newerToFollow(context),
     color,
     reprobe: async () => {
       healths = await probeAll(listAccounts(context.ctx), { claude });
@@ -583,7 +623,7 @@ export async function dashboardCommand(
       }
     },
   });
-  return 0;
+  return newer ? handOver(context, newer, args, 'the dashboard') : 0;
 }
 
 /** The settings panel for `config`, every setting in words, `selected` explained. */
@@ -608,6 +648,11 @@ function stepRefused(setting: Setting): string {
 
 interface LoopDeps {
   refreshMs: number;
+  /** How often `reprobe` runs. */
+  reprobeMs: number;
+  terminal: DashboardTerminal;
+  /** A newer ccx ready to take this screen over, or null (update/follow). */
+  newer: () => NewerInstall | null;
   color: boolean;
   reprobe: () => Promise<void>;
   /** The ccx sessions running now, numbered as the screen shows them. */
@@ -659,12 +704,27 @@ interface LoopDeps {
   onLogin: (account: DashboardAccount) => Promise<string>;
 }
 
-/** Clear-screen refresh loop with a selection cursor; quits on q / Ctrl-C / Ctrl-D. */
-async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: LoopDeps): Promise<void> {
-  const out = process.stdout;
-  const stdin = process.stdin as NodeJS.ReadStream & { setRawMode?: (v: boolean) => void };
+/**
+ * Clear-screen refresh loop with a selection cursor; quits on q / Ctrl-C / Ctrl-D.
+ * Resolves to the newer ccx to hand the screen to, or null when it was quit.
+ */
+async function runLiveLoop(
+  build: () => ReturnType<typeof toSnapshot>,
+  deps: LoopDeps,
+): Promise<NewerInstall | null> {
+  const out = deps.terminal.stdout;
+  const stdin = deps.terminal.stdin;
 
   let running = true;
+  let lastKeyAt = 0;
+  /** Actions a key started that are still running: the screen does not move under one. */
+  let actionsUnderWay = 0;
+  const underWay = <T>(work: Promise<T>): Promise<T> => {
+    actionsUnderWay += 1;
+    return work.finally(() => {
+      actionsUnderWay -= 1;
+    });
+  };
   let selected = 0;
   let snap = build();
   let wake: (() => void) | null = null;
@@ -749,7 +809,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
   const changeSetting = (setting: Setting, next: unknown): void => {
     const run = (): void => {
       ui.notice = 'saving...';
-      void deps.onSetting(setting, next).then(
+      void underWay(deps.onSetting(setting, next)).then(
         (said) => {
           ui.notice = said;
           if (wake) wake();
@@ -865,7 +925,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       ui.notice = 'saving...';
       // Reopened with the reason if the save is refused, like the Desktop box,
       // so a typo can be fixed without typing it all again.
-      void deps.onSetting(setting, value).then(
+      void underWay(deps.onSetting(setting, value)).then(
         (said) => {
           ui.notice = said;
           ui.promptSetting = null;
@@ -883,7 +943,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       // Async: answered when it is done, and reopened with the reason if refused.
       const kind = next.kind;
       ui.notice = kind === 'desktop-move' ? `moving "${typed}"...` : 'saving...';
-      void deps.onDesktopText(kind, typed).then(
+      void underWay(deps.onDesktopText(kind, typed)).then(
         (said) => {
           ui.notice = said;
           if (wake) wake();
@@ -907,6 +967,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
   };
 
   const onKey = (d: Buffer): void => {
+    lastKeyAt = Date.now();
     try {
       const text = d.toString('utf8');
       // A pending question takes the next key, whatever it is, so the answer
@@ -1015,7 +1076,7 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
         ui.confirm = {
           question: deps.desktopQuestion(action),
           yes: () => {
-            void deps.onDesktop(action).then(
+            void underWay(deps.onDesktop(action)).then(
               (said) => {
                 ui.notice = said;
                 if (wake) wake();
@@ -1050,6 +1111,9 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       // cutting the program off mid-frame, so the screen is always handed back
       // the same way whether you press q or the terminal sends a signal.
       onEnd: () => stop(),
+      stdin,
+      stdout: out,
+      ...(deps.terminal.proc ? { proc: deps.terminal.proc } : {}),
     });
     stdin.on('data', onKey);
     out.write(ENTER_SCREEN + HIDE_CURSOR);
@@ -1105,9 +1169,26 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
    * not "cover the handoff", it is "while this loop runs, the process lives".
    */
   const stayAlive = setInterval(() => {}, 1 << 30);
+  let moveTo: NewerInstall | null = null;
+  let toldNewer = false;
   try {
     while (running) {
-      if (Date.now() - lastProbe > HEALTH_REPROBE_MS) {
+      const newer = deps.newer();
+      if (newer) {
+        // What the person has open is finished here first, and the screen
+        // moves only once they stop pressing keys (KEYS_IDLE_MS). Meanwhile no
+        // login is renewed or saved by this older code.
+        const open = ui.prompt !== null || ui.confirm !== null || ui.panel !== null;
+        const idle = Date.now() - lastKeyAt >= KEYS_IDLE_MS;
+        if (!open && ui.pendingLogin === null && actionsUnderWay === 0 && idle && holdsNothing()) {
+          moveTo = newer;
+          break;
+        }
+        if (open && !toldNewer) {
+          toldNewer = true;
+          ui.notice = `ccx ${newer.version} is installed: this screen moves to it once you close this, and renews no logins until then`;
+        }
+      } else if (Date.now() - lastProbe > deps.reprobeMs) {
         // Same reasoning as the sign-in below: this spawns probes, and a throw
         // here would end the dashboard rather than one refresh of one row.
         try {
@@ -1141,12 +1222,12 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
       // Read every frame, not once at start: a window resized mid-session is
       // exactly when a fixed-width table starts wrapping, and a frame that was
       // short enough stops fitting.
-      const rows = process.stdout.rows;
+      const rows = out.rows;
       const frame = renderDashboard(snap, {
         color: deps.color,
         interactive: true,
         selected,
-        ...(process.stdout.columns ? { width: process.stdout.columns } : {}),
+        ...(out.columns ? { width: out.columns } : {}),
         ...(rows ? { height: rows } : {}),
         ...(ui.panel ? { panel: deps.panel(ui.panel.selected) } : {}),
         ...(ui.confirm ? { confirm: ui.confirm.question } : {}),
@@ -1179,4 +1260,5 @@ async function runLiveLoop(build: () => ReturnType<typeof toSnapshot>, deps: Loo
     stdin.off('data', onKey);
     terminal.restore();
   }
+  return moveTo;
 }

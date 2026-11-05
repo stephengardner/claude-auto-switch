@@ -48,6 +48,7 @@ import { conversationIdIn, forksConversation, wantsExistingConversation } from '
 import { exitCodeForSignal, type SignalSource } from '../launcher/interruption.js';
 import { normalizeModel } from '../usage/model-preference.js';
 import { getClaude, type CliContext } from '../context.js';
+import { newerToFollow } from '../update/follow.js';
 import type { Account } from '../accounts/registry.schema.js';
 
 /** Pick the account to launch on: active if usable, else the healthiest eligible. */
@@ -263,6 +264,28 @@ function watchEditorLaunch(
     return all;
   };
 
+  let leftToNewer = false;
+  /**
+   * Whether a newer ccx is installed (update/follow). This chat's Claude is
+   * the editor's and cannot move to it, so from then on this older code saves
+   * no login: moving the editor's folder, and taking a renewal its Claude made
+   * home, are left to the newer ccx, from the next chat's start. Said once.
+   */
+  const leaveToNewer = (): boolean => {
+    const newer = newerToFollow(context);
+    if (!newer) return false;
+    if (!leftToNewer) {
+      leftToNewer = true;
+      appendEvent(
+        home,
+        `ccx ${newer.version} is installed: this editor chat saves no logins from now on, and the next chat, on ccx ${newer.version}, moves the editor`,
+        Date.now(),
+        { kind: 'update', data: { to: newer.version } },
+      );
+    }
+    return true;
+  };
+
   // The injected verdict when a test supplies one, as the session path does; else the account's own login, never the editor folder's.
   const decide = async (
     account: Account,
@@ -271,7 +294,7 @@ function watchEditorLaunch(
   ): Promise<CapDecision> => {
     if (context.verifyCap) return { limited: (await context.verifyCap(text)) === 'limited' };
     // A renewal the editor's Claude made of this login comes home first, so the check does not run on a retired token.
-    if (folder.onEditor) {
+    if (folder.onEditor && !leaveToNewer()) {
       await takeUpEditorRenewal(context.ctx, {
         account: account.name,
         ...(context.lookupOwner ? { lookupOwner: context.lookupOwner } : {}),
@@ -374,7 +397,7 @@ function watchEditorLaunch(
     } else if (next.name === account.name) {
       // A model's limit leaves the account working on everything else, so it can be the next account.
       appendEvent(home, `the editor stays on ${next.name}`, Date.now());
-    } else {
+    } else if (!leaveToNewer()) {
       reportMove(next.name, await moveEditorToActive(context));
     }
   };
@@ -393,6 +416,7 @@ function watchEditorLaunch(
     if (active === null || active === spent.name) return;
     // With every account spent there is nothing to move to.
     if (cappedNames(loadLedger(context.ctx), Date.now()).has(active)) return;
+    if (leaveToNewer()) return;
     moveBackoff.pause(Date.now());
     checking = moveEditorToActive(context)
       .then((up) => reportMove(active, up))

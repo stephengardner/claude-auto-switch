@@ -231,6 +231,11 @@ export interface OwnedLockOptions {
  */
 const heldHere = new Map<string, symbol>();
 
+/** How many locks of either kind this process holds now. */
+export function locksHeldHere(): number {
+  return dirsHeldHere.size + heldHere.size;
+}
+
 /**
  * A lock for work done synchronously, which therefore cannot refresh its lock
  * while it works: the lock's age says nothing about whether its holder is still

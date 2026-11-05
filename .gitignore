@@ -6,6 +6,7 @@
 /profiles/
 .claude-auto-switch/
 **/.credentials.json
+**/.credentials.*.json
 *.credentials.json
 accounts.json
 ledger.json

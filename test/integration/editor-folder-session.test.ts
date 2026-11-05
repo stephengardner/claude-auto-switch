@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ import { editorCommand } from '../../src/commands/editor.js';
 import { setActive } from '../../src/state/active.js';
 import { loadConfig } from '../../src/config/config.js';
 import { processIsAlive } from '../../src/session/lease.js';
+import { sha256Fingerprint } from '../../src/util/fingerprint.js';
 import type { CliContext } from '../../src/context.js';
 
 /**
@@ -158,7 +159,7 @@ async function editorOn(s: Sandbox): Promise<void> {
   expect(isRealFolder(s.folder)).toBe(true);
 }
 
-const TOUCHED = ['FAKE_CLAUDE_RUNS_LOG', 'FAKE_CLAUDE_IDLE_MS', 'FAKE_CLAUDE_LOG_FOLDER'];
+const TOUCHED = ['FAKE_CLAUDE_RUNS_LOG', 'FAKE_CLAUDE_IDLE_MS', 'FAKE_CLAUDE_LOG_FOLDER', 'FAKE_CLAUDE_EXIT_WHEN'];
 
 /** Every request a test does not answer itself fails, so nothing reaches Anthropic. */
 const offline = (): Promise<Response> => Promise.resolve(new Response('{}', { status: 503 }));
@@ -333,6 +334,102 @@ describe('every folder ccx runs Claude in, made by one piece of code', () => {
     // The start's own look, the editor brought up at the start, and the first tick's.
     expect(looks).toBeGreaterThan(0);
     expect(looks).toBeLessThanOrEqual(3);
+  });
+
+  /** A renewal of `name`'s first login, generation 2, kept in `dir` as a renewal whose save failed leaves it. */
+  const keepRenewal = (dir: string, name: string): string => {
+    const kept = path.join(dir, '.credentials.renewed.json');
+    writeFileSync(kept, JSON.stringify({ retired: sha256Fingerprint(`r-${name}-1`), login: login(name, `${name}2`, 2) }));
+    return kept;
+  };
+
+  /** A session on `s`'s first account whose Claude ends once `end()` is called, and whether it has ended yet. */
+  const sessionEndingOnCue = (s: Sandbox): { running: Promise<number>; ended: () => boolean; end: () => void } => {
+    const exitClaude = path.join(s.home, 'exit-claude');
+    process.env.FAKE_CLAUDE_IDLE_MS = '45000';
+    process.env.FAKE_CLAUDE_EXIT_WHEN = exitClaude;
+    let ended = false;
+    const running = runCommand(s.context, []).finally(() => {
+      ended = true;
+    });
+    return { running, ended: () => ended, end: () => writeFileSync(exitClaude, '') };
+  };
+
+  it("saves, while a session runs, a renewal kept in its account's folder when its save failed, and carries it in", { timeout: 60_000 }, async () => {
+    const s = await sandbox(['A']);
+    const session = sessionEndingOnCue(s);
+    await waitFor(() => launches(s.runsLog).length > 0, 15_000);
+    // Another ccx renewed A's login, and the save of the renewal failed.
+    const kept = keepRenewal(s.dirOf('A'), 'A');
+    const sessionLogin = path.join(s.home, 'sessions', String(process.pid), '.credentials.json');
+    await waitFor(() => !existsSync(kept) && tokenOf(read(sessionLogin)) === 'a-A-2', 12_000);
+
+    expect(session.ended()).toBe(false);
+    expect(existsSync(kept)).toBe(false);
+    expect(tokenOf(read(path.join(s.dirOf('A'), '.credentials.json')))).toBe('a-A-2');
+    expect(tokenOf(read(sessionLogin))).toBe('a-A-2');
+    session.end();
+    expect(await session.running).toBe(0);
+    // Saved home as it ended, and it was the renewal, not the login it retired.
+    expect(tokenOf(read(path.join(s.dirOf('A'), '.credentials.json')))).toBe('a-A-2');
+  });
+
+  it("saves a renewal of the session's own login kept when its save failed, and takes it home as it ends", { timeout: 60_000 }, async () => {
+    const s = await sandbox(['A']);
+    const session = sessionEndingOnCue(s);
+    await waitFor(() => launches(s.runsLog).length > 0, 15_000);
+    const sessionDir = path.join(s.home, 'sessions', String(process.pid));
+    const kept = keepRenewal(sessionDir, 'A');
+    await waitFor(() => !existsSync(kept), 12_000);
+
+    expect(session.ended()).toBe(false);
+    expect(existsSync(kept)).toBe(false);
+    expect(tokenOf(read(path.join(sessionDir, '.credentials.json')))).toBe('a-A-2');
+    session.end();
+    expect(await session.running).toBe(0);
+    expect(tokenOf(read(path.join(s.dirOf('A'), '.credentials.json')))).toBe('a-A-2');
+  });
+
+  it("saves, as a session ends, a renewal kept in its account's folder that its ticks could not reach, and takes that home", { timeout: 60_000 }, async () => {
+    const s = await sandbox(['A']);
+    const session = sessionEndingOnCue(s);
+    await waitFor(() => launches(s.runsLog).length > 0, 15_000);
+    const claude = launches(s.runsLog)[0] as Entry & { pid?: number };
+    // Something holds A's login lock while the session runs, so no tick can
+    // take the renewal up, and lets go once its Claude has ended.
+    const lock = path.join(s.dirOf('A'), '.oauth_refresh.lock');
+    mkdirSync(lock);
+    const kept = keepRenewal(s.dirOf('A'), 'A');
+    await settle(6_000);
+    expect(existsSync(kept)).toBe(true);
+    session.end();
+    await waitFor(() => claude.pid === undefined || !processIsAlive(claude.pid), 15_000);
+    rmSync(lock, { recursive: true, force: true });
+
+    expect(await session.running).toBe(0);
+    expect(existsSync(kept)).toBe(false);
+    // Not the session's login, which is the one the renewal retired.
+    expect(tokenOf(read(path.join(s.dirOf('A'), '.credentials.json')))).toBe('a-A-2');
+  });
+
+  it("saves, as a session ends, a renewal of its own login that its ticks could not reach, and takes that home", { timeout: 60_000 }, async () => {
+    const s = await sandbox(['A']);
+    const session = sessionEndingOnCue(s);
+    await waitFor(() => launches(s.runsLog).length > 0, 15_000);
+    const claude = launches(s.runsLog)[0] as Entry & { pid?: number };
+    const sessionDir = path.join(s.home, 'sessions', String(process.pid));
+    const lock = path.join(sessionDir, '.oauth_refresh.lock');
+    mkdirSync(lock);
+    const kept = keepRenewal(sessionDir, 'A');
+    await settle(6_000);
+    expect(existsSync(kept)).toBe(true);
+    session.end();
+    await waitFor(() => claude.pid === undefined || !processIsAlive(claude.pid), 15_000);
+    rmSync(lock, { recursive: true, force: true });
+
+    expect(await session.running).toBe(0);
+    expect(existsSync(kept)).toBe(false);
+    expect(tokenOf(read(path.join(s.dirOf('A'), '.credentials.json')))).toBe('a-A-2');
   });
 
   it('brings the editor folder into step with your files at a terminal session start', { timeout: 60_000 }, async () => {

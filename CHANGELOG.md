@@ -4,6 +4,48 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.31]
+
+### Fixed
+
+- **A dashboard left open moves to a newer ccx.** A `ccx dashboard` went on
+  running the code it was started with for as long as it stayed open. One
+  started two minutes before 2.6.26 was installed ran 2.6.21 for 13 days, and
+  each time it renewed an idle account's login it saved it through 2.6.21's
+  Keychain save, which cut it short (#179): eight accounts broke that way. The
+  dashboard now starts the newer ccx in its place, with the same command, at
+  its next refresh once nobody has pressed a key for 5 seconds and nothing is
+  open on it. While a box, a question or the settings panel stays open, it
+  renews and saves no logins, and says so on the screen.
+- **So do `ccx auto` and `ccx daemon run`.** `ccx auto` moves before its next
+  check, and the daemon at its next look. A daemon started with
+  `ccx daemon start` starts the newer one in the background the same way, so
+  `ccx daemon stop` stops that one. Each moves only while it holds no lock, so
+  a move of the editor's login a switch started finishes first, and the older
+  process then ends, so nothing it left waiting runs again on the old code.
+- **An editor chat stops saving logins once a newer ccx is installed.** Its
+  Claude is the editor's, so the chat cannot move; it records a limit as
+  before, but leaves moving the editor's folder, and taking a renewal its
+  Claude made home, to the newer ccx from the next chat, and says so once in
+  the log.
+- **A renewed login is kept until it is saved.** A renewal retires the old
+  login with Anthropic before the new one is saved, so a save that failed lost
+  the account, and the copy kept before it (`.credentials.prev.json`) was the
+  login Anthropic had just retired: five of the eight above could only be
+  mended by signing in again. ccx now writes each renewal first to an
+  owner-only file beside the login, `.credentials.renewed.json`, and removes
+  it once the save worked. When the save fails, the renewal reports why, no
+  renewal is sent for that account until the kept one is saved (what is stored
+  is the login it retired), and the next look saves it whole if it is newer
+  than what is stored:
+  the next renewal check, a usage refresh, a running session (every 5 seconds,
+  for its own folder and its account's, and as it ends) and
+  `ccx doctor --fix`, which does it before putting back a login cut short. A
+  renewal of a login other profiles shared is carried to them then, and into
+  the editor's folder where that still holds the login it retired. `ccx doctor`
+  names an account with a renewal waiting, and counts the kept file as a login
+  file in its git check.
+
 ## [2.6.30]
 
 ### Added
