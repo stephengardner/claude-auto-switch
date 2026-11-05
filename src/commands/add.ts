@@ -6,6 +6,7 @@ import { runInherit } from '../util/exec.js';
 import { authLoginArgs } from '../login/login.js';
 import { assertProfileName, assertInsideProfiles } from '../util/names.js';
 import { secureMkdir } from '../util/secret-file.js';
+import { forgetUsage } from '../usage/usage-store.js';
 import { getClaude, type CliContext } from '../context.js';
 
 export interface AddOptions {
@@ -29,6 +30,9 @@ export async function addCommand(
   assertInsideProfiles(profiles, dir);
   secureMkdir(dir);
   addAccount({ name, dir, ...(options.email ? { email: options.email } : {}) }, context.ctx);
+  // The name is new to the registry, so anything stored under it is an old
+  // account's, left by a version that kept usage after a removal.
+  forgetUsage(name, context.ctx);
   context.out(`registered "${name}" -> ${dir}`);
 
   if (options.login !== false) {

@@ -6,6 +6,7 @@ import { addCommand } from './add.js';
 import { addAccount, listAccounts, getAccount } from '../accounts/registry.js';
 import { loadConfig } from '../config/config.js';
 import { previousCredentialPath } from '../accounts/credential-vault.js';
+import { readUsageSnapshot, writeUsageSnapshot } from '../usage/usage-store.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -46,6 +47,21 @@ describe('addCommand', () => {
 
     expect(await addCommand(c, 'fresh')).toBe(0);
     expect(getAccount('fresh', c.ctx)?.email).toBe('fresh@example.com');
+  });
+
+  it('starts a new account clean, whatever an old one of the same name left stored', async () => {
+    const lines: string[] = [];
+    const c = fakeLoginContext(lines, 'fresh@example.com');
+    writeUsageSnapshot(
+      {
+        accounts: {
+          fresh: { fiveHour: null, noFiveHourLimit: true, sevenDay: 0.9, fiveHourReset: null, sevenDayReset: null, at: 1 },
+        },
+      },
+      c.ctx,
+    );
+    expect(await addCommand(c, 'fresh')).toBe(0);
+    expect(readUsageSnapshot(c.ctx).accounts['fresh']).toBeUndefined();
   });
 
   it('REFUSES a duplicate and does not keep the registration', async () => {

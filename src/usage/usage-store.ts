@@ -99,6 +99,20 @@ export function writeUsageSnapshot(snapshot: UsageSnapshot, c: PathCtx = {}): vo
 }
 
 /**
+ * Drop what is stored for an account name, when that name stops meaning the
+ * login the numbers were read for: the account was removed, or a new one was
+ * added under a name an old one left behind. Without it the new account starts
+ * from the old one's numbers, and a recorded "no 5-hour limit" in particular
+ * stands through every read that cannot tell.
+ */
+export function forgetUsage(name: string, c: PathCtx = {}): void {
+  const snapshot = readUsageSnapshot(c);
+  if (!snapshot.accounts[name]) return;
+  delete snapshot.accounts[name];
+  writeUsageSnapshot(snapshot, c);
+}
+
+/**
  * How old the stored snapshot is, judged by its NEWEST entry; Infinity when
  * there is nothing. The newest entry rather than the oldest, because one
  * account that could not be probed (signed out, rate-limited) must not make a

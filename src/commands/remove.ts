@@ -3,6 +3,7 @@ import { rmSync } from 'node:fs';
 import { removeAccount } from '../accounts/registry.js';
 import { purgeRefusal, removalStanding } from '../accounts/removal.js';
 import { getActive, setActive } from '../state/active.js';
+import { forgetUsage } from '../usage/usage-store.js';
 import { profilesDir } from '../config/paths.js';
 import { liveLeases, type SessionLease } from '../session/lease.js';
 import type { CliContext } from '../context.js';
@@ -32,6 +33,8 @@ export function removeCommand(
   const deregister = (): void => {
     removeAccount(name, context.ctx);
     if (getActive(context.ctx) === name) setActive(null, context.ctx);
+    // Its usage goes with it, as a rename moves it (see forgetUsage).
+    forgetUsage(name, context.ctx);
   };
 
   if (options.purge) {
