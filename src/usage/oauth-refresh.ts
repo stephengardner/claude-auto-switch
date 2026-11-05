@@ -12,7 +12,15 @@ import {
   previousCredentialPath,
 } from '../accounts/credential-vault.js';
 import { keychainBlocking, keychainOnTimers, type KeychainIo } from '../accounts/keychain-view.js';
+import {
+  KEPT_RENEWAL_FILE,
+  forgetKeptRenewal,
+  keepRenewal,
+  takeUpKeptRenewal,
+  type TakeUp,
+} from '../accounts/kept-renewal.js';
 import { call, runBlocking, runOnTimers, type Steps } from '../util/steps.js';
+import { thrownReason } from '../util/thrown-reason.js';
 import { renewOneAtATime } from './renew-one-at-a-time.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
 import { alreadyRefused, refusalReason, rememberRefused } from './dead-login-memo.js';
@@ -21,6 +29,7 @@ import {
   editorHolding,
   queueEditorCarry,
   replaceFolderLoginSteps,
+  retryEditorCarries,
   retryEditorCarriesSoon,
   type FolderLogin,
 } from '../editor/folder-login.js';
@@ -37,8 +46,10 @@ import type { PathCtx } from '../config/paths.js';
  * Treated as a delicate operation, because it is: the renewal returns a NEW
  * refresh token and invalidates the old one, so the result is written
  * immediately and atomically (with the previous generation kept) before this
- * function returns. A rejection that means "this login is finished" is reported
- * as needs-login rather than mutating anything.
+ * function returns, and kept beside the login before that, so a write that
+ * fails leaves it for the next look to save (accounts/kept-renewal). A
+ * rejection that means "this login is finished" is reported as needs-login
+ * rather than mutating anything.
  */
 
 const TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
@@ -162,9 +173,16 @@ export async function refreshCredentialIfExpired(
   options: RefreshOptions = {},
 ): Promise<RefreshOutcome> {
   const now = options.now ?? (() => Date.now());
+  // A renewal whose save failed first: renewing what is stored beside it would
+  // send the token it retired.
+  const kept = await takeUpRenewal(accountDir, options);
   // Looked at first without the lock, so a login with nothing to do never waits for it.
   const before = assess(credentialPath(accountDir), now, options.ctx, options.renewRejected);
-  if (!before.renew) return before.outcome;
+  if (!before.renew) {
+    return kept.state === 'saved' && before.outcome.status === 'not-needed'
+      ? { status: 'refreshed', detail: 'saved a renewal kept when its save failed' }
+      : before.outcome;
+  }
   const login = sha256Fingerprint(before.refreshToken);
   return oneRenewalPerLogin(login, () => {
     // Only with a ctx: without one, ccx's own folders are not to be looked in.
@@ -235,6 +253,28 @@ function* renewWithEditorSteps(
 }
 
 const oneRenewalPerLogin = renewOneAtATime();
+
+/**
+ * Save a renewal kept in `dir` when its save failed (accounts/kept-renewal),
+ * and with a ctx carry it on into the editor's folder where that still holds
+ * the login it retired, as the renewal would have. Never throws.
+ */
+export async function takeUpRenewal(
+  dir: string,
+  options: Pick<RefreshOptions, 'ctx' | 'lockWaitMs'> = {},
+): Promise<TakeUp> {
+  let outcome: TakeUp;
+  try {
+    outcome = await takeUpKeptRenewal(dir, options.lockWaitMs);
+  } catch (error) {
+    return { state: 'later', detail: thrownReason(error) };
+  }
+  if (outcome.state === 'saved' && outcome.retired !== null && options.ctx) {
+    queueEditorCarry(options.ctx, outcome.retired, dir);
+    void retryEditorCarries(options.ctx).catch(() => undefined);
+  }
+  return outcome;
+}
 
 /** What a stored login says about renewing it: stop with an answer, or renew it. */
 type Assessment =
@@ -422,16 +462,6 @@ async function performRenewal(
     }
     if (!payload.access_token) return { status: 'unavailable', detail: 'token response had no access token' };
 
-    // Keep the previous generation, then write the renewal atomically. The new
-    // refresh token replaces the old one, which the server has now invalidated,
-    // so losing this write would lose the account: it happens immediately.
-    if (await runOnTimers(isUsableCredentialSteps(file, keychainOnTimers))) {
-      try {
-        await runOnTimers(copyCredentialSteps(file, previousCredentialPath(accountDir), keychainOnTimers));
-      } catch {
-        /* the cushion is best effort */
-      }
-    }
     const updated: Record<string, unknown> = {
       ...raw,
       claudeAiOauth: {
@@ -441,11 +471,34 @@ async function performRenewal(
         ...(payload.expires_in ? { expiresAt: now() + payload.expires_in * 1000 } : {}),
       },
     };
-    await runOnTimers(writeCredentialSteps(file, JSON.stringify(updated), keychainOnTimers));
+    const renewed = JSON.stringify(updated);
+    // The server has retired the login stored here, so the renewal is all that
+    // is left of it: kept beside it before anything else, for a later look to
+    // save if the save below fails (accounts/kept-renewal).
+    const kept = keepRenewal(accountDir, renewed, sha256Fingerprint(refreshToken));
+    // Keep the previous generation, then write the renewal atomically.
+    if (await runOnTimers(isUsableCredentialSteps(file, keychainOnTimers))) {
+      try {
+        await runOnTimers(copyCredentialSteps(file, previousCredentialPath(accountDir), keychainOnTimers));
+      } catch {
+        /* the cushion is best effort */
+      }
+    }
+    try {
+      await runOnTimers(writeCredentialSteps(file, renewed, keychainOnTimers));
+    } catch (error) {
+      return {
+        status: 'unavailable',
+        detail: kept
+          ? `renewed, but the save failed (${thrownReason(error)}); kept in ${KEPT_RENEWAL_FILE} until a later look saves it`
+          : `renewed, but neither saved (${thrownReason(error)}) nor kept`,
+      };
+    }
+    forgetKeptRenewal(accountDir);
     // A credential that just renewed is demonstrably alive, so make sure no note
     // says otherwise. It should never be there, and that is the point: this
     // guarantees a stale note can never hold down a login that works.
-    if (ctx) forgetDeadLogin(sha256Fingerprint(JSON.stringify(updated)), ctx);
+    if (ctx) forgetDeadLogin(sha256Fingerprint(renewed), ctx);
     return { status: 'refreshed' };
   } finally {
     clearTimeout(timer);

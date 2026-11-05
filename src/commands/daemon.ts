@@ -15,6 +15,8 @@ import { setUserEnvVar, unsetUserEnvVar } from '../daemon/user-env.js';
 import { readUsageForDir } from '../daemon/usage.js';
 import { runDaemon, type DaemonDeps } from '../daemon/daemon.js';
 import { startBackground, stopBackground, runningPid } from '../daemon/process.js';
+import { announceHandover, endAfterHandover, handOver, holdsNothing, newerToFollow } from '../update/follow.js';
+import type { NewerInstall } from '../update/newer-install.js';
 import type { CliContext } from '../context.js';
 
 /** Dispatch `ccx daemon <install|uninstall|status|start|stop|run>`. */
@@ -52,8 +54,7 @@ export async function daemonCommand(context: CliContext, action?: string): Promi
       context.out(stopBackground(home) ? 'daemon stopped' : 'no daemon running');
       return 0;
     case 'run':
-      await runForeground(context, home, link);
-      return 0;
+      return runForeground(context, home, link);
     default:
       context.out('usage: ccx daemon <install|uninstall|status|start|stop|run>');
       return 1;
@@ -75,7 +76,7 @@ function daemonStatus(context: CliContext, home: string, link: string): number {
   return 0;
 }
 
-async function runForeground(context: CliContext, home: string, link: string): Promise<void> {
+async function runForeground(context: CliContext, home: string, link: string): Promise<number> {
   const logFile = path.join(home, 'auto-switch-daemon.log');
   const deps: DaemonDeps = {
     profiles: () => listAccounts(context.ctx).map((a) => ({ name: a.name, dir: a.dir })),
@@ -96,8 +97,37 @@ async function runForeground(context: CliContext, home: string, link: string): P
   };
 
   const controller = new AbortController();
-  process.on('SIGINT', () => controller.abort());
-  process.on('SIGTERM', () => controller.abort());
+  const abort = (): void => controller.abort();
+  process.on('SIGINT', abort);
+  process.on('SIGTERM', abort);
   context.out(`watching usage; rotating at >=${deps.threshold}% (Ctrl-C to stop)`);
-  await runDaemon(deps, { watchDir: link, intervalMs: 60_000, signal: controller.signal });
+  // Each look is synchronous, so between two of them nothing is under way.
+  const stoppedFor: { newer: NewerInstall | null } = { newer: null };
+  try {
+    await runDaemon(deps, {
+      watchDir: link,
+      intervalMs: 60_000,
+      signal: controller.signal,
+      stopWhen: () => {
+        const newer = newerToFollow(context);
+        if (newer === null || !holdsNothing()) return false;
+        stoppedFor.newer = newer;
+        return true;
+      },
+    });
+  } finally {
+    process.off('SIGINT', abort);
+    process.off('SIGTERM', abort);
+  }
+  const newer = stoppedFor.newer;
+  if (!newer) return 0;
+  deps.log(`ccx ${newer.version} is installed; the daemon carries on in it`);
+  // Started by `ccx daemon start`, with nobody waiting on it: the newer one is
+  // started the same way, and `ccx daemon stop` then stops that one.
+  if (runningPid(home) === process.pid) {
+    announceHandover(context, newer, ['daemon', 'run'], 'the daemon');
+    startBackground(home, newer.cli);
+    return endAfterHandover(context, 0);
+  }
+  return handOver(context, newer, ['daemon', 'run'], 'the daemon');
 }

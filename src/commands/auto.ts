@@ -8,6 +8,7 @@ import { appendEvent } from '../events/log.js';
 import { configHome } from '../config/paths.js';
 import { liveLeases } from '../session/lease.js';
 import { numberSessions } from '../dashboard/session-choice.js';
+import { handOver, holdsNothing, newerToFollow } from '../update/follow.js';
 import type { CliContext } from '../context.js';
 
 export interface AutoOptions {
@@ -98,12 +99,39 @@ export async function autoCommand(context: CliContext, options: AutoOptions = {}
   // Looping form: a foreground watcher (Ctrl-C to stop).
   const intervalMs = Math.max(30, Number(options.interval) || context.config.rotation.usageCheckSeconds) * 1000;
   const state: { lastSwitchAt?: number } = {};
-  if (!options.json && !context.json) {
+  const json = options.json || context.json;
+  if (!json) {
     context.out(`watching usage every ${Math.round(intervalMs / 1000)}s (Ctrl-C to stop)`);
   }
+  // Not unref'd: this watcher is meant to keep running until interrupted.
+  const sleep = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms));
   for (;;) {
+    // Between checks, nothing is under way but a move of the editor a switch
+    // started, which holds its lock while it writes: no check runs until the
+    // newer ccx has taken over.
+    const newer = newerToFollow(context);
+    if (newer) {
+      if (holdsNothing()) {
+        if (!json) context.out(`ccx ${newer.version} is installed; carrying on in it`);
+        return handOver(context, newer, autoArgs(context, options), 'ccx auto');
+      }
+      await sleep(1_000);
+      continue;
+    }
     emit(await proactiveTick(deps, state));
-    // Not unref'd: this watcher is meant to keep running until interrupted.
-    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+    await sleep(intervalMs);
   }
+}
+
+/** The command line that runs this watcher again. */
+function autoArgs(context: CliContext, options: AutoOptions): string[] {
+  return [
+    ...(context.quiet ? ['--quiet'] : []),
+    'auto',
+    ...(options.json || context.json ? ['--json'] : []),
+    ...(options.model !== undefined ? ['--model', options.model] : []),
+    ...(options.interval !== undefined ? ['--interval', options.interval] : []),
+    ...(options.dryRun ? ['--dry-run'] : []),
+    ...(options.threshold !== undefined ? ['--threshold', options.threshold] : []),
+  ];
 }

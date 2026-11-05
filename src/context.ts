@@ -100,6 +100,11 @@ export interface CliContext {
   /** Injected in tests: a newer ccx installed under this one (update/newer-install). */
   newerInstall?: () => NewerInstall | null;
   /**
+   * Injected in tests: how a ccx that handed itself over to a newer one ends
+   * (update/follow). Production ends the process with the newer one's exit status.
+   */
+  endAfterHandover?: (code: number) => void;
+  /**
    * Injected in tests: how long a session stays on another account for one
    * Artifact call when nothing reports the call over. Production uses the two
    * minutes in artifacts/hop, which no test can wait for.

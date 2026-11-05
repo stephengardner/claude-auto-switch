@@ -173,6 +173,19 @@ editor's Claude kept in a Keychain item of its own (#129) goes home to its
 account. While an editor chat started through the link is open, the move waits,
 for up to a day.
 
+**A renewal is kept until it is saved.** Renewing a login retires the old one
+with Anthropic before the new one is saved, so a save that failed used to lose
+the account. ccx now writes each renewal first to an owner-only file beside the
+login, `.credentials.renewed.json`, and removes it once the save worked. When
+the save fails, the next look at that account saves the kept renewal, if it is
+newer than what is stored: the next renewal check, a usage refresh, a running
+session (every 5 seconds for its own folder and account, and as it ends), and
+`ccx doctor --fix`, which does this before it puts back a login cut short. A
+renewal of a login other profiles shared is carried to them then, and into the
+editor's folder when that holds the login it retired. Nothing that copies or
+hands back a folder's files takes the kept file for a login, and `ccx doctor`
+names an account with one waiting.
+
 **Detecting a finished login.** A login can be revoked long before its stored
 expiry: signed out at claude.ai, or the account put on hold. ccx asks Anthropic
 rather than trusting the expiry. A token the usage endpoint turns away is
@@ -221,6 +234,16 @@ asks).
 
 **Updates.** When a newer ccx is installed, each running session moves to it
 when Claude is next relaunched or has been idle for 20 seconds, never mid-turn.
+So does everything else of ccx's that keeps running: the dashboard at its next
+refresh once nobody has pressed a key for 5 seconds and nothing is open on it
+(until then it renews and saves no logins, and says so), `ccx auto` before its
+next check, and `ccx daemon run` at its next look, a daemon started with
+`ccx daemon start` restarting in the background. Each starts the newer ccx in
+its place with the same command and ends with it. An editor chat cannot move,
+since its Claude belongs to the editor, so once a newer ccx is installed it
+saves no more logins, leaves moving the editor's folder to the newer ccx from
+the next chat, and says so in the log. `update.follow` off keeps all of these
+where they are.
 
 ## Which account is next
 

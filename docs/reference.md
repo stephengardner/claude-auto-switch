@@ -62,7 +62,7 @@ usage check, as `ccx config <key>` says.
 | `rotation.capThresholdPercent`         | `95`                            | the daemon's threshold for treating an account as out             |
 | `resume.auto`                          | `true`                          | tell a session to carry on after ccx moves or relaunches it       |
 | `resume.prompt`                        | "This session was restarted..." | the carry-on prompt; a move without a restart says so instead     |
-| `update.follow`                        | `true`                          | running sessions move to a newer installed ccx                    |
+| `update.follow`                        | `true`                          | sessions, the dashboard, `auto`, the daemon move to a newer ccx   |
 | `desktop.handoff`                      | `"off"`                         | `off`, `limit` or `credits`                                       |
 | `desktop.mode`                         | `"fork"`                        | `fork` or `same`                                                  |
 | `desktop.prompt`                       | "Carry on where you stopped."   | what a moved Desktop conversation continues with                  |

@@ -130,13 +130,15 @@ export const ConfigSchema = z.object({
       prompt: z.string().min(1).default(DEFAULT_RESUME_PROMPT),
     })
     .default({}),
-  /** What a running session does when a newer ccx is installed under it. */
+  /** What a ccx that keeps running does when a newer ccx is installed under it. */
   update: z
     .object({
       /**
-       * Move to it by itself (default): when Claude is being relaunched anyway,
-       * or once it has been idle a little while, never mid-turn. The same
-       * conversation, on the same account, in the same terminal.
+       * Move to it by itself (default). A session when Claude is being
+       * relaunched anyway, or once it has been idle a little while, never
+       * mid-turn: the same conversation, on the same account, in the same
+       * terminal. The dashboard, `ccx auto` and `ccx daemon run` between two
+       * looks (update/follow).
        */
       follow: z.boolean().default(true),
     })

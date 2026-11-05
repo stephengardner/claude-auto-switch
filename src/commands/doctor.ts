@@ -22,6 +22,8 @@ import {
   restoreCutShortLogin,
 } from '../accounts/credential-vault.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
+import { KEPT_RENEWAL_FILE, keptRenewalWaiting } from '../accounts/kept-renewal.js';
+import { takeUpKeptRenewals } from '../usage/usage-store.js';
 import { withCredentialLock } from '../claude/locks.js';
 import { TOKEN_FILE } from '../daemon/token-store.js';
 import { detectEditors } from '../editor/settings.js';
@@ -117,7 +119,7 @@ export interface DoctorDeps {
  * they are all doctor looks for outside ccx's own folders, where a folder
  * called `profiles` or a file called `accounts.json` is somebody else's.
  */
-const LOGIN_FILES = new Set([CREDENTIALS_FILE, PREVIOUS_FILE, TOKEN_FILE]);
+const LOGIN_FILES = new Set([CREDENTIALS_FILE, PREVIOUS_FILE, KEPT_RENEWAL_FILE, TOKEN_FILE]);
 
 /** How many tracked files a finding names before it only counts the rest. */
 const SHOWN_FILES = 5;
@@ -407,6 +409,22 @@ export function restoreCutShortLogins(context: CliContext): string[] {
     );
   }
   return restored;
+}
+
+/**
+ * Renewals kept when their save failed (accounts/kept-renewal) that no look
+ * has saved yet: the login stored beside each is the one it retired. Any ccx
+ * that looks at the account saves it, and `--fix` does now.
+ */
+export function auditKeptRenewals(context: CliContext): DoctorCheck | null {
+  const waiting = listAccounts(context.ctx).filter((account) => keptRenewalWaiting(account.dir));
+  if (waiting.length === 0) return null;
+  return {
+    name: 'kept-renewals',
+    ok: false,
+    detail: `renewed, but not yet saved where Claude reads them: ${waiting.map((account) => account.name).join(', ')}`,
+    fix: ['ccx doctor --fix'],
+  };
 }
 
 /**
@@ -951,6 +969,7 @@ export async function runDoctor(
     auditEditor(context),
     await auditBrowserPort(context, deps),
     ...[
+      auditKeptRenewals(context),
       auditCutShortLogins(context),
       await auditKeepalive(context, deps),
       auditDesktopHooks(context),
@@ -981,6 +1000,7 @@ const LABELS: Record<string, string> = {
   'desktop-hooks': 'Claude Desktop',
   'page-routing': 'pages',
   'cut-short-logins': 'broken logins',
+  'kept-renewals': 'renewed logins',
 };
 
 /**
@@ -995,6 +1015,9 @@ export async function doctorCommand(
 ): Promise<number> {
   if (options.fix) {
     repairClaudeIfBroken(context, deps);
+    // Before the cut-short ones are put back: what was kept before a cut is
+    // the login a renewal kept since then has retired.
+    await takeUpKeptRenewals(listAccounts(context.ctx), context.ctx);
     restoreCutShortLogins(context);
   }
   // The editor's folder never ends; a checkup is one of the times it is brought into step.

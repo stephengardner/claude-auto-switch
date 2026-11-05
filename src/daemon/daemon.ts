@@ -51,11 +51,23 @@ export interface RunDaemonOptions {
   watchDir: string;
   intervalMs: number;
   signal: AbortSignal;
+  /** Asked before each evaluation: once true, the loop ends instead. */
+  stopWhen?: () => boolean;
 }
 
-/** Run the watch-and-rotate loop until aborted. Thin wrapper over tick(). */
+/** Run the watch-and-rotate loop until aborted, or until `stopWhen`. Thin wrapper over tick(). */
 export async function runDaemon(deps: DaemonDeps, options: RunDaemonOptions): Promise<void> {
+  let stopped = false;
+  let end: () => void = () => {};
+  const ended = new Promise<void>((resolve) => {
+    end = () => {
+      stopped = true;
+      resolve();
+    };
+  });
   const evaluate = (): void => {
+    if (stopped) return;
+    if (options.stopWhen?.()) return end();
     try {
       tick(deps);
     } catch (err) {
@@ -75,12 +87,10 @@ export async function runDaemon(deps: DaemonDeps, options: RunDaemonOptions): Pr
   }
 
   const timer = setInterval(evaluate, options.intervalMs);
+  options.signal.addEventListener('abort', () => end());
+  if (options.signal.aborted) end();
 
-  await new Promise<void>((resolve) => {
-    options.signal.addEventListener('abort', () => {
-      clearInterval(timer);
-      watcher?.close();
-      resolve();
-    });
-  });
+  await ended;
+  clearInterval(timer);
+  watcher?.close();
 }

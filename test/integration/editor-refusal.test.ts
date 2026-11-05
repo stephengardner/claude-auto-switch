@@ -310,6 +310,8 @@ function launchScript(home: string, mode: Mode): string {
       `  capProbe: probe, lookupOwner, isClaudeProcess: processIsAlive, editorFollowMs: Number(process.env.EDITOR_FOLLOW_MS) || 100,`,
       `  refuteBackoffMs: Number(process.env.EDITOR_REFUTE_BACKOFF_MS) || undefined,`,
       `  editorMoveRetryMs: Number(process.env.EDITOR_MOVE_RETRY_MS) || undefined,`,
+      // A newer ccx installed while the chat runs, as update/newer-install finds one.
+      `  newerInstall: () => (process.env.NEWER_CCX_CLI ? { version: '9.9.9', cli: process.env.NEWER_CCX_CLI } : null),`,
       `  out: () => {}, err: () => {}, json: false, quiet: false };`,
       // When the launch is called, so a test can tell how long it took to start Claude apart from tsx's own start.
       `writeFileSync(path.join(home, 'called.txt'), String(Date.now()));`,
@@ -469,6 +471,39 @@ describe('an editor chat that meets a limit while the usage check is turned away
 
       expect(await chat.close()).toBe(0);
       expect(capsIn(home)).toHaveLength(1);
+    },
+  );
+
+  it(
+    'records the limit but saves no login once a newer ccx is installed, leaving the editor to it, and says so once',
+    { timeout: 60_000 },
+    async () => {
+      const resetsAt = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
+      const { home, ctx } = await twoAccounts('cas-editor-newer-', { A: [TURNED_AWAY] });
+      const chat = openChat(home, [], {
+        FAKE_CLAUDE_RESETS_AT: String(resetsAt),
+        NEWER_CCX_CLI: path.join(home, 'newer-ccx', 'dist', 'cli.js'),
+      });
+      chat.send('hello');
+      expect(await chat.answered(1)).toBe(true);
+      expect(await until(() => getActive(ctx) === 'B')).toBe(true);
+      // Without a newer ccx the editor moves straight after (the test above).
+      await until(() => said(home, 'the editor moved to B') > 0, 3_000);
+
+      expect(said(home, 'the editor moved to B')).toBe(0);
+      expect(editorRecord(home)?.account).toBe('A');
+      expect(capsIn(home)).toEqual([expect.objectContaining({ account: 'A', capUntil: resetsAt * 1000 })]);
+      const told = /^ccx 9\.9\.9 is installed: this editor chat saves no logins from now on/;
+      expect(timesSaid(home, told)).toBe(1);
+
+      // Refused again on A: the move tried again is left to the newer ccx too, unsaid.
+      chat.send('hello again');
+      expect(await chat.answered(2)).toBe(true);
+      await sleep(1_000);
+      expect(editorRecord(home)?.account).toBe('A');
+      expect(said(home, 'the editor moved to B')).toBe(0);
+      expect(timesSaid(home, told)).toBe(1);
+      expect(await chat.close()).toBe(0);
     },
   );
 

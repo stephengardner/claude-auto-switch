@@ -186,7 +186,7 @@ export const SETTINGS: readonly Setting[] = [
     label: 'Follow ccx updates',
     kind: 'toggle',
     words: onOff,
-    help: 'A running session moves to a newer ccx by itself, between turns, keeping its conversation and account.',
+    help: 'A running session moves to a newer ccx by itself, between turns, keeping its conversation and account; so do this dashboard, ccx auto and the daemon.',
     applies: 'now',
   },
   {
