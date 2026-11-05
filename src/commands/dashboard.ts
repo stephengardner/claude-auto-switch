@@ -1,7 +1,7 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import { requestMoves, type SwitchMode } from '../state/switch-request.js';
-import { refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
+import { forgetUsage, refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
 import { probeAll, type ProbeResult } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { signInFailureNotice } from '../dashboard/sign-in-failure.js';
@@ -500,6 +500,8 @@ export async function dashboardCommand(
         const dir = path.join(profilesDir(context.config, context.ctx), text);
         secureMkdir(dir);
         addAccount({ name: text, dir }, context.ctx);
+        // As `ccx add` does: anything stored under a new name is an old account's.
+        forgetUsage(text, context.ctx);
         pushEvent(`added ${text}`);
         // The browser sign-in is deliberately not run from in here: it wants the
         // screen, and this screen is already taken. One command finishes it.
