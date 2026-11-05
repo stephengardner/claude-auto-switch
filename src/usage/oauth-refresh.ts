@@ -174,8 +174,14 @@ export async function refreshCredentialIfExpired(
 ): Promise<RefreshOutcome> {
   const now = options.now ?? (() => Date.now());
   // A renewal whose save failed first: renewing what is stored beside it would
-  // send the token it retired.
+  // send the token it retired, so while one cannot be saved nothing is sent.
   const kept = await takeUpRenewal(accountDir, options);
+  if (kept.state === 'later') {
+    return {
+      status: kept.busy ? 'busy' : 'unavailable',
+      detail: `a renewal kept when its save failed is not saved yet: ${kept.detail}`,
+    };
+  }
   // Looked at first without the lock, so a login with nothing to do never waits for it.
   const before = assess(credentialPath(accountDir), now, options.ctx, options.renewRejected);
   if (!before.renew) {

@@ -92,13 +92,14 @@ function newerThanStored(kept: KeptRenewal, stored: string | null): boolean {
 }
 
 export type TakeUp =
+  /** Nothing kept, or nothing that can be read: the next renewal writes over that. */
   | { state: 'none' }
   /** Saved where Claude reads it, and the kept file removed. */
   | { state: 'saved'; retired: string | null }
   /** The folder holds a newer login; the kept one was removed. */
   | { state: 'stale' }
-  /** The login's lock is held, or the kept renewal or the stored login could not be read or written: tried again at the next look. */
-  | { state: 'later'; detail: string };
+  /** Still kept: the login's lock is held (`busy`), or the stored login could not be read or written. */
+  | { state: 'later'; detail: string; busy?: true };
 
 /**
  * Save the renewal kept in `dir` where Claude reads it, when it is newer than
@@ -113,12 +114,10 @@ export function* takeUpKeptRenewalSteps(dir: string, io: KeychainIo, lockWaitMs?
     ...(lockWaitMs !== undefined ? { waitMs: lockWaitMs } : {}),
   });
   if (lock.unusable) return { state: 'later', detail: `its lock folder could not be created (${lock.unusable})` };
-  if (!lock.held) return { state: 'later', detail: 'something else is renewing this login' };
+  if (!lock.held) return { state: 'later', detail: 'something else is renewing this login', busy: true };
   try {
     const kept = readKept(dir);
-    if (kept === null) {
-      return hasKeptRenewal(dir) ? { state: 'later', detail: 'the kept renewal could not be read' } : { state: 'none' };
-    }
+    if (kept === null) return { state: 'none' };
     const file = credentialPath(dir);
     let stored: string | null;
     try {
@@ -157,7 +156,7 @@ export function takeUpKeptRenewalBlocking(dir: string, lockWaitMs?: number): Tak
 export function keptRenewalWaiting(dir: string): boolean {
   if (!hasKeptRenewal(dir)) return false;
   const kept = readKept(dir);
-  if (kept === null) return true;
+  if (kept === null) return false;
   let stored: string | null;
   try {
     stored = runBlocking(readCredentialSteps(credentialPath(dir), keychainBlocking));

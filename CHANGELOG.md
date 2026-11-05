@@ -34,8 +34,10 @@ semantic versioning.
   login Anthropic had just retired: five of the eight above could only be
   mended by signing in again. ccx now writes each renewal first to an
   owner-only file beside the login, `.credentials.renewed.json`, and removes
-  it once the save worked. When the save fails, the renewal reports why, and
-  the next look saves the kept one whole if it is newer than what is stored:
+  it once the save worked. When the save fails, the renewal reports why, no
+  renewal is sent for that account until the kept one is saved (what is stored
+  is the login it retired), and the next look saves it whole if it is newer
+  than what is stored:
   the next renewal check, a usage refresh, a running session (every 5 seconds,
   for its own folder and its account's, and as it ends) and
   `ccx doctor --fix`, which does it before putting back a login cut short. A

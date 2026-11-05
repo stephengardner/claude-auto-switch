@@ -1,9 +1,10 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { refreshCredentialIfExpired } from './oauth-refresh.js';
 import { refreshUsage } from './usage-store.js';
+import { forgetRefusals } from './dead-login-memo.js';
 import { doctorCommand } from '../commands/doctor.js';
 import { addAccount } from '../accounts/registry.js';
 import { loadConfig } from '../config/config.js';
@@ -133,6 +134,8 @@ async function renewWithSaveFailing(dir: string, endpoint: { fetchImpl: typeof f
 beforeEach(() => {
   keychain.items.clear();
   keychain.failSaves = 0;
+  // Every test starts its logins from the same texts, so a refusal one meets must not follow into the next.
+  forgetRefusals();
 });
 
 describe('a renewal whose save fails', () => {
@@ -255,6 +258,37 @@ describe('a renewal whose save fails', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('is waited for, sending nothing, while its save goes on failing', async () => {
+    const { root } = home();
+    const before = loginText('r-1', NOW - HOUR);
+    const dir = profile(root, 'one', before);
+    const endpoint = tokenEndpoint('r-1');
+    await renewWithSaveFailing(dir, endpoint);
+    expect(existsSync(path.join(dir, KEPT))).toBe(true);
+
+    // The Keychain refuses the next save too.
+    const again = await renewWithSaveFailing(dir, endpoint);
+
+    // The stored login is the one the renewal retired: renewing it would send a spent token.
+    expect(endpoint.sent).toEqual(['r-1']);
+    expect(again).toBe('unavailable');
+    expect(existsSync(path.join(dir, KEPT))).toBe(true);
+    expect(refreshTokenOf(keychain.items.get(dir))).toBe('r-1');
+
+    // Its lock held by something renewing it now: said so, and nothing sent.
+    const lock = path.join(dir, '.oauth_refresh.lock');
+    mkdirSync(lock);
+    const held = await refreshCredentialIfExpired(dir, { now, fetchImpl: endpoint.fetchImpl, lockWaitMs: 0 });
+    rmSync(lock, { recursive: true, force: true });
+    expect(held.status).toBe('busy');
+    expect(endpoint.sent).toEqual(['r-1']);
+
+    const third = await refreshCredentialIfExpired(dir, { now, fetchImpl: endpoint.fetchImpl });
+    expect(third.status).toBe('refreshed');
+    expect(keychain.items.get(dir)).toBe(renewalOf(before, 'a-renewed-1', 'r-2'));
+    expect(endpoint.sent).toEqual(['r-1']);
   });
 
   it('is dropped, never saved, once a newer login is stored', async () => {

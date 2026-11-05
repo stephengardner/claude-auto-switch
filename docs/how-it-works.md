@@ -177,10 +177,12 @@ for up to a day.
 with Anthropic before the new one is saved, so a save that failed used to lose
 the account. ccx now writes each renewal first to an owner-only file beside the
 login, `.credentials.renewed.json`, and removes it once the save worked. When
-the save fails, the next look at that account saves the kept renewal, if it is
-newer than what is stored: the next renewal check, a usage refresh, a running
-session (every 5 seconds for its own folder and account, and as it ends), and
-`ccx doctor --fix`, which does this before it puts back a login cut short. A
+the save fails, no renewal is sent for that account until the kept one is
+saved, since what is stored is the login it retired, and the next look at that
+account saves it, if it is newer than what is stored: the next renewal check,
+a usage refresh, a running session (every 5 seconds for its own folder and
+account, and as it ends), and `ccx doctor --fix`, which does this before it
+puts back a login cut short. A
 renewal of a login other profiles shared is carried to them then, and into the
 editor's folder when that holds the login it retired. Nothing that copies or
 hands back a folder's files takes the kept file for a login, and `ccx doctor`
