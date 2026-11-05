@@ -186,8 +186,26 @@ function roomWords(standing: Standing): string {
   return standing.runway >= 0.995 ? 'a full 5-hour window' : `${Math.round(standing.runway * 100)}% of a 5-hour window`;
 }
 
+/**
+ * The week left in words, for an account with no 5-hour limit: what can stop
+ * it is its week, so that is what its room is told in, not in 5-hour windows
+ * it does not have. Empty when the week was never read.
+ */
+function weekLeftWords(standing: Standing): string {
+  return standing.weekLeft === null ? '' : `${Math.round(standing.weekLeft * 100)}% of its week left`;
+}
+
+const NO_FIVE_HOUR = 'no 5-hour limit';
+
 /** Why the smart order picks an account, in words. */
 export function pickReason(standing: Standing, now: number): string {
+  if (standing.noFiveHourLimit) {
+    const week = weekLeftWords(standing);
+    if (!week) return NO_FIVE_HOUR;
+    if (standing.heldBack) return `${NO_FIVE_HOUR}, ${week} (held back; no healthy account can run half a window)`;
+    const wait = humanWait(standing.weeklyResetAt, now);
+    return `${NO_FIVE_HOUR}, ${week}${wait ? `, its week resets in ${wait}` : ''}`;
+  }
   const room = `room for ${roomWords(standing)}`;
   // A held-back account is only ever next when nothing healthier is worth a
   // move, which is the part worth saying: it is the fallback, not the choice.
@@ -204,6 +222,15 @@ export function pickReason(standing: Standing, now: number): string {
  * `ccx state` hands it to other programs.
  */
 export function pickAside(standing: Standing, now: number): string {
+  if (standing.noFiveHourLimit) {
+    const week = weekLeftWords(standing);
+    if (!week) return NO_FIVE_HOUR;
+    if (standing.heldBack) {
+      return `${NO_FIVE_HOUR}; held back with ${week}, as no healthy account can run half a window`;
+    }
+    const wait = humanWait(standing.weeklyResetAt, now);
+    return `${NO_FIVE_HOUR}; ${week}${wait ? `, resets in ${wait}` : ''}`;
+  }
   const room = roomWords(standing);
   if (standing.heldBack && standing.weekLeft !== null) {
     return `${room}; held back with ${Math.round(standing.weekLeft * 100)}% of its week left, as no healthy account can run half a window`;

@@ -396,3 +396,25 @@ describe('renderUsageReport', () => {
     for (const line of out.split('\n')) expect(line.length).toBeLessThanOrEqual(60);
   });
 });
+
+describe('an account with no 5-hour limit', () => {
+  const verified = account({
+    name: 'verified',
+    windows: [
+      { label: '5-hour', used: null, resetsAt: null, none: true },
+      { label: 'weekly', used: 0.28, resetsAt: inMinutes(60 * 24 * 3) },
+    ],
+  });
+
+  it('says it has none, where an unread window says ?', () => {
+    const out = renderUsageReport([verified], NOW, plain);
+    expect(out).toMatch(/5-hour +no limit \(a verified account\)/);
+    expect(out).not.toContain('?');
+    expect(out).toContain('-> weekly is closest to its limit at 28%');
+  });
+
+  it('is still somewhere to go, judged by its week', () => {
+    expect(roomiest([verified], NOW).map((a) => a.name)).toEqual(['verified']);
+    expect(renderUsageReport([verified], NOW, plain)).toContain('Most room right now: verified  (weekly at 28%, its tightest)');
+  });
+});

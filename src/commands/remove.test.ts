@@ -9,6 +9,7 @@ import { getActive, setActive } from '../state/active.js';
 import { readTarget, setTarget } from '../daemon/junction.js';
 import { loadConfig } from '../config/config.js';
 import { removeCommand } from './remove.js';
+import { readUsageSnapshot, writeUsageSnapshot } from '../usage/usage-store.js';
 import type { CliContext } from '../context.js';
 import type { SessionLease } from '../session/lease.js';
 
@@ -81,6 +82,23 @@ describe('ccx remove', () => {
     expect(getActive(ctx)).toBeNull();
     expect(existsSync(credentialPath(dirOf('work')))).toBe(true);
     expect(said).toEqual([`removed "work" (profile folder kept at ${dirOf('work')})`]);
+  });
+
+  it("drops the account's stored usage, so an account added later under its name starts clean", () => {
+    // A stored "no 5-hour limit" in particular stands through any read that
+    // cannot tell, so a new account of the same name could inherit it.
+    const { context, ctx } = setup();
+    writeUsageSnapshot(
+      {
+        accounts: {
+          work: { fiveHour: null, noFiveHourLimit: true, sevenDay: 0.2, fiveHourReset: null, sevenDayReset: null, at: 1 },
+          spare: { fiveHour: 0.1, sevenDay: 0.2, fiveHourReset: null, sevenDayReset: null, at: 1 },
+        },
+      },
+      ctx,
+    );
+    expect(removeCommand(context, 'work', {}, nothingRunning)).toBe(0);
+    expect(Object.keys(readUsageSnapshot(ctx).accounts)).toEqual(['spare']);
   });
 
   it('leaves the pin alone when another account holds it', () => {

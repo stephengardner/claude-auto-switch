@@ -79,6 +79,22 @@ describe('pick rule', () => {
     );
   });
 
+  it('says an account with no 5-hour limit has none, and how much of its week is left', () => {
+    const verified = (sevenDay: number | null) =>
+      standingOf({ fiveHour: null, noFiveHourLimit: true, sevenDay, sevenDayReset: NOW + 30 * HOUR }, NOW);
+    expect(pickReason(verified(0.28), NOW)).toBe('no 5-hour limit, 72% of its week left, its week resets in 1d 6h');
+    expect(pickAside(verified(0.28), NOW)).toBe('no 5-hour limit; 72% of its week left, resets in 1d 6h');
+    expect(pickReason(verified(0.89), NOW)).toBe(
+      'no 5-hour limit, 11% of its week left (held back; no healthy account can run half a window)',
+    );
+    expect(pickAside(verified(0.89), NOW)).toBe(
+      'no 5-hour limit; held back with 11% of its week left, as no healthy account can run half a window',
+    );
+    const unread = standingOf({ fiveHour: null, noFiveHourLimit: true, sevenDay: null }, NOW);
+    expect(pickReason(unread, NOW)).toBe('no 5-hour limit');
+    expect(pickAside(unread, NOW)).toBe('no 5-hour limit');
+  });
+
   it('puts the settings line in words, the hold-back only where it applies', () => {
     expect(settingsWords({ modelPreference: ['opus', 'fable'], accountOrder: 'smart', holdBackAtPercent: 80 })).toEqual({
       model: 'Opus, then Fable',

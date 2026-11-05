@@ -4,6 +4,63 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.30]
+
+### Added
+
+- **ccx knows a verified account has no 5-hour limit.** Since 2026-10-30 a
+  verified Ultra account has only weekly limits, and Anthropic's usage answer
+  for it has no 5-hour window at all: `five_hour` is null and `limits` has no
+  `session` entry. ccx read that as a 5-hour number it could not get, so the
+  dashboard drew `?` in the 5-hour column, as for an account nobody had
+  looked at, and the line under the table offered such an account for "a full
+  5-hour window". ccx now records it as a fact about the account
+  (`noFiveHourLimit` in the stored usage and in `ccx state`), kept apart from a
+  number that was not read. It is claimed only on positive evidence: the
+  answer's `limits` list must be there and the week must have been read, so an
+  older or partial answer never hides a real 5-hour window behind it. Once
+  recorded, it stands until a reading shows a 5-hour window again; a failed
+  read, or one that cannot tell, leaves it as it was. The 5-hour reading is
+  also taken from the `session` entry when the `five_hour` block has no number.
+- **The dashboard, `ccx usage` and `/ccx swap` say `no limit`.** The 5-hour
+  cell of such an account reads `no limit` (`none` once the bars are gone, in
+  the same width, so the columns stay in line). The line about the highlighted
+  account says `no 5-hour limit (a verified account)`, and where a session
+  goes next is told by the week: `ultra (no 5-hour limit; 72% of its week
+  left, resets in 11h 40m)`.
+- **The pick order reads it by its weeks alone.** With no 5-hour window to cut
+  it, its runway is a whole window whenever its week holds one, and nothing
+  binds inside that. Having no 5-hour limit is deliberately not a bonus on its
+  own: against an account with a fresh 5-hour window both can run the whole
+  window, so the week that would expire unused first still goes first, since
+  budget left at a reset is lost and the later move costs one uncached read.
+  An account with a 5-hour window ranks exactly as before. The window cost an
+  account learned while it still had a 5-hour window is kept.
+
+### Fixed
+
+- **A removed account's usage goes with it.** `ccx remove` (and `x` in the
+  dashboard) left the account's stored usage behind, so an account added later
+  under the same name started from the old one's numbers. Removing now drops
+  them, as a rename already moves them, and `ccx add` drops anything an older
+  version left under the new name.
+- **A usage refresh no longer undoes what changed while it ran.** It read the
+  stored usage, spent seconds asking for each account's numbers, then wrote
+  back everything it had read, so a rename or removal made meanwhile, or
+  another session's refresh, was lost. It now writes back only its own
+  accounts, over the file as it is at that moment: never one removed or
+  renamed meanwhile, never a failed read over an entry someone else updated,
+  and never an older reading over a newer one. The dashboard also re-reads
+  the stored usage after it adds, renames or removes an account.
+
+### Changed
+
+- **New README pictures.** The dashboard picture is drawn at full width, with a
+  verified account in it, and every picture now draws its bars as bars and pins
+  each column to the grid, so they line up whatever font the reader has. Block
+  characters used to come out taller than a line and a little apart, and the
+  headings drifted off their columns.
+
 ## [2.6.29]
 
 ### Fixed

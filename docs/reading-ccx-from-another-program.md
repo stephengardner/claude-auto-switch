@@ -79,6 +79,13 @@ a window reading 100% while rotation refused to use that same account.
 - `blockedBy` is everything blocking it, when you want to explain the wait
   rather than just state it.
 
+### An account with no 5-hour limit
+
+A verified Ultra account has no 5-hour limit, only weekly ones (since
+2026-10-30). Its `usage` then carries `"noFiveHourLimit": true`, with
+`fiveHour` and `fiveHourReset` null. Without that field, a null `fiveHour`
+means only that no number was read. Such an account is never blocked by `5h`.
+
 All times are absolute epoch milliseconds. Compare them against `now` from the
 same payload, not against your own clock, so a slow read cannot make a live
 window look expired.

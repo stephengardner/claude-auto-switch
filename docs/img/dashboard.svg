@@ -1,29 +1,139 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1023" height="492" viewBox="0 0 1023 492" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
-  <rect width="1023" height="492" rx="10" fill="#1b1e24"/>
-  <rect width="1023" height="32" rx="10" fill="#22262e"/>
-  <rect y="22" width="1023" height="10" fill="#22262e"/>
-  <circle cx="21" cy="16" r="5.5" fill="#ec6a5f"/>
-  <circle cx="40" cy="16" r="5.5" fill="#f4bf50"/>
-  <circle cx="59" cy="16" r="5.5" fill="#61c454"/>
-  <text x="511.5" y="20.5" fill="#8b93a1" font-size="12" text-anchor="middle">ccx dashboard</text>
-  <text x="22.0" y="52" fill="#dcdfe4" font-weight="600" xml:space="preserve">ccx</text><text x="668.8" y="52" fill="#dcdfe4" opacity="0.6" xml:space="preserve">new sessions start on work · Opus first</text>
-  <text x="22.0" y="73" fill="#dcdfe4" opacity="0.6" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
-  <text x="64.0" y="94" fill="#dcdfe4" opacity="0.6" xml:space="preserve">ACCOUNT</text><text x="148.0" y="94" fill="#dcdfe4" opacity="0.6" xml:space="preserve">5-HOUR LEFT</text><text x="408.4" y="94" fill="#dcdfe4" opacity="0.6" xml:space="preserve">WEEK LEFT</text><text x="668.8" y="94" fill="#dcdfe4" opacity="0.6" xml:space="preserve">FABLE LEFT</text>
-  <text x="30.4" y="115" fill="#56b6c2" xml:space="preserve">1</text><text x="38.8" y="115" fill="#dcdfe4" xml:space="preserve">   personal  </text><text x="148.0" y="115" fill="#b6e3a1" xml:space="preserve">█████</text><text x="190.0" y="115" fill="#dcdfe4" xml:space="preserve"> 100%  </text><text x="248.8" y="115" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 1h 28m</text><text x="408.4" y="115" fill="#f5d98b" xml:space="preserve">██░░░</text><text x="450.4" y="115" fill="#dcdfe4" xml:space="preserve">  32%  </text><text x="509.2" y="115" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 3d 14h</text><text x="668.8" y="115" fill="#ff7b86" xml:space="preserve">░░░░░</text><text x="710.8" y="115" fill="#dcdfe4" xml:space="preserve">   0%  </text><text x="769.6" y="115" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 2d</text><text x="895.6" y="115" fill="#56b6c2" xml:space="preserve">next in line</text>
-  <text x="30.4" y="136" fill="#dcdfe4" opacity="0.6" xml:space="preserve">2</text><text x="38.8" y="136" fill="#dcdfe4" xml:space="preserve">   spare     </text><text x="148.0" y="136" fill="#b6e3a1" xml:space="preserve">████░</text><text x="190.0" y="136" fill="#dcdfe4" xml:space="preserve">  88%  </text><text x="248.8" y="136" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 1h 28m</text><text x="408.4" y="136" fill="#b6e3a1" xml:space="preserve">████░</text><text x="450.4" y="136" fill="#dcdfe4" xml:space="preserve">  97%  </text><text x="509.2" y="136" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 3d 14h</text><text x="668.8" y="136" fill="#b6e3a1" xml:space="preserve">█████</text><text x="710.8" y="136" fill="#dcdfe4" xml:space="preserve"> 100%  </text><text x="769.6" y="136" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 2d</text><text x="870.4" y="136" fill="#dcdfe4" xml:space="preserve">   1 session</text>
-  <text x="22.0" y="157" fill="#56b6c2" xml:space="preserve">▸</text><text x="30.4" y="157" fill="#dcdfe4" opacity="0.6" xml:space="preserve">3</text><text x="38.8" y="157" fill="#dcdfe4" xml:space="preserve">   old       </text><text x="148.0" y="157" fill="#b6e3a1" xml:space="preserve">█████</text><text x="190.0" y="157" fill="#dcdfe4" xml:space="preserve"> 100%  </text><text x="248.8" y="157" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 1h 28m</text><text x="408.4" y="157" fill="#e06c75" xml:space="preserve">█░░░░</text><text x="450.4" y="157" fill="#dcdfe4" xml:space="preserve">  11%  </text><text x="509.2" y="157" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 3d 14h</text><text x="668.8" y="157" fill="#b6e3a1" xml:space="preserve">████░</text><text x="710.8" y="157" fill="#dcdfe4" xml:space="preserve">  80%  </text><text x="769.6" y="157" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 2d</text><text x="895.6" y="157" fill="#e5c07b" xml:space="preserve">held back</text>
-  <text x="22.0" y="178" fill="#dcdfe4" opacity="0.6" xml:space="preserve">── out of room ─────────────────────────────────────────────────────────────────────────────────────────────────────</text>
-  <text x="47.2" y="199" fill="#56b6c2" xml:space="preserve">*</text><text x="64.0" y="199" fill="#56b6c2" font-weight="600" xml:space="preserve">work</text><text x="148.0" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve">░░░░░</text><text x="198.4" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  0%</text><text x="248.8" y="199" fill="#e5c07b" xml:space="preserve">back in 1h 28m</text><text x="408.4" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve">███░░</text><text x="458.8" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> 59%</text><text x="509.2" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 3d 14h</text><text x="668.8" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve">████░</text><text x="719.2" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> 95%</text><text x="769.6" y="199" fill="#dcdfe4" opacity="0.6" xml:space="preserve">resets in 2d</text><text x="870.4" y="199" fill="#dcdfe4" xml:space="preserve">   1 session</text>
-  <text x="22.0" y="220" fill="#dcdfe4" opacity="0.6" xml:space="preserve">── not in rotation ─────────────────────────────────────────────────────────────────────────────────────────────────</text>
-  <text x="64.0" y="241" fill="#dcdfe4" opacity="0.6" xml:space="preserve">laptop</text><text x="148.0" y="241" fill="#dcdfe4" opacity="0.6" xml:space="preserve">-----</text><text x="198.4" y="241" fill="#dcdfe4" opacity="0.6" xml:space="preserve">   ?</text><text x="408.4" y="241" fill="#dcdfe4" opacity="0.6" xml:space="preserve">-----</text><text x="458.8" y="241" fill="#dcdfe4" opacity="0.6" xml:space="preserve">   ?</text><text x="668.8" y="241" fill="#dcdfe4" opacity="0.6" xml:space="preserve">-----</text><text x="719.2" y="241" fill="#dcdfe4" opacity="0.6" xml:space="preserve">   ?</text><text x="895.6" y="241" fill="#e06c75" xml:space="preserve">signed out</text>
-  <text x="64.0" y="262" fill="#dcdfe4" opacity="0.6" xml:space="preserve">trial</text><text x="148.0" y="262" fill="#dcdfe4" opacity="0.6" xml:space="preserve">-----</text><text x="198.4" y="262" fill="#dcdfe4" opacity="0.6" xml:space="preserve">   ?</text><text x="408.4" y="262" fill="#dcdfe4" opacity="0.6" xml:space="preserve">-----</text><text x="458.8" y="262" fill="#dcdfe4" opacity="0.6" xml:space="preserve">   ?</text><text x="668.8" y="262" fill="#dcdfe4" opacity="0.6" xml:space="preserve">-----</text><text x="719.2" y="262" fill="#dcdfe4" opacity="0.6" xml:space="preserve">   ?</text><text x="895.6" y="262" fill="#e06c75" xml:space="preserve">on hold</text>
-  <text x="22.0" y="283" fill="#dcdfe4" opacity="0.6" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
-  <text x="22.0" y="304" fill="#56b6c2" xml:space="preserve"> when one runs out → personal (a full 5-hour window; its week resets in 3d 14h)</text>
-  <text x="30.4" y="325" fill="#dcdfe4" font-weight="600" xml:space="preserve">s</text><text x="38.8" y="325" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> settings  ·  model: Opus, then Fable  ·  pick: longest run first  ·  held back: weeks 80%+ used</text>
-  <text x="22.0" y="346" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> old (old@example.com · pro · priority 3): pick #3 (held back: 11% of its week left), room for 73% of a 5-hour wind…</text>
-  <text x="22.0" y="367" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> recent  08:41 a session started on work</text>
-  <text x="22.0" y="388" fill="#dcdfe4" opacity="0.6" xml:space="preserve">         09:12 saved to your settings.json: permissions.allow</text>
-  <text x="22.0" y="409" fill="#dcdfe4" opacity="0.6" xml:space="preserve">         09:26 sessions prefer Opus, then Fable, from their next start or move</text>
-  <text x="22.0" y="430" fill="#dcdfe4" opacity="0.6" xml:space="preserve">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
-  <text x="22.0" y="451" fill="#dcdfe4" font-weight="600" xml:space="preserve">q/esc</text><text x="64.0" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> quit</text><text x="106.0" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  ·  </text><text x="148.0" y="451" fill="#dcdfe4" font-weight="600" xml:space="preserve">j/k</text><text x="173.2" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> move</text><text x="215.2" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  ·  </text><text x="257.2" y="451" fill="#dcdfe4" font-weight="600" xml:space="preserve">enter</text><text x="299.2" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> use</text><text x="332.8" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  ·  </text><text x="374.8" y="451" fill="#dcdfe4" font-weight="600" xml:space="preserve">s</text><text x="383.2" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> settings</text><text x="458.8" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  ·  </text><text x="500.8" y="451" fill="#dcdfe4" font-weight="600" xml:space="preserve">r</text><text x="509.2" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> rotate</text><text x="568.0" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  ·  </text><text x="610.0" y="451" fill="#dcdfe4" font-weight="600" xml:space="preserve">f</text><text x="618.4" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> now</text><text x="652.0" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  ·  </text><text x="694.0" y="451" fill="#dcdfe4" font-weight="600" xml:space="preserve">a</text><text x="702.4" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> add</text><text x="736.0" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  ·  </text><text x="778.0" y="451" fill="#dcdfe4" font-weight="600" xml:space="preserve">x</text><text x="786.4" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> remove</text><text x="845.2" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve">  ·  </text><text x="887.2" y="451" fill="#dcdfe4" font-weight="600" xml:space="preserve">l</text><text x="895.6" y="451" fill="#dcdfe4" opacity="0.6" xml:space="preserve"> sign in</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1208" height="536" viewBox="0 0 1208 536" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
+  <rect width="1208" height="536" rx="12" fill="#1b1e24"/>
+  <rect x="0.5" y="0.5" width="1207" height="535" rx="12" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+  <path d="M0 12a12 12 0 0 1 12-12h1184a12 12 0 0 1 12 12v22H0z" fill="#23272f"/>
+  <rect y="33" width="1208" height="1" fill="#000000" opacity="0.35"/>
+  <circle cx="22" cy="17" r="6" fill="#ec6a5f"/>
+  <circle cx="42" cy="17" r="6" fill="#f4bf50"/>
+  <circle cx="62" cy="17" r="6" fill="#61c454"/>
+  <text x="604" y="21.5" fill="#8b93a1" font-size="12" text-anchor="middle">ccx dashboard</text>
+  <text x="24.0" y="56" fill="#dcdfe4" font-weight="700" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">ccx 2.6.30</text>
+  <text x="796.8" y="56" fill="#dcdfe4" opacity="0.55" textLength="327.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">new sessions start on work · Opus first</text>
+  <rect x="24.0" y="73.0" width="1100.4" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <text x="66.0" y="100" fill="#dcdfe4" opacity="0.55" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">ACCOUNT</text>
+  <text x="150.0" y="100" fill="#dcdfe4" opacity="0.55" textLength="92.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">5-HOUR LEFT</text>
+  <text x="452.4" y="100" fill="#dcdfe4" opacity="0.55" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">WEEK LEFT</text>
+  <text x="754.8" y="100" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">FABLE LEFT</text>
+  <text x="24.0" y="122" fill="#56b6c2" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▸1</text>
+  <text x="66.0" y="122" fill="#dcdfe4" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">ultra</text>
+  <text x="150.0" y="122" fill="#98c379" textLength="67.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">no limit</text>
+  <rect x="452.4" y="111.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="452.4" y="111.0" width="56.8" height="12" rx="2.5" fill="#b6e3a1"/>
+  <text x="553.2" y="122" fill="#dcdfe4" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">69%</text>
+  <text x="595.2" y="122" fill="#dcdfe4" opacity="0.55" textLength="126.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 1d 7h</text>
+  <rect x="754.8" y="111.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="754.8" y="111.0" width="82.0" height="12" rx="2.5" fill="#b6e3a1"/>
+  <text x="847.2" y="122" fill="#dcdfe4" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">100%</text>
+  <text x="897.6" y="122" fill="#dcdfe4" opacity="0.55" textLength="100.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 2d</text>
+  <text x="1023.6" y="122" fill="#56b6c2" textLength="100.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">next in line</text>
+  <text x="32.4" y="144" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">2</text>
+  <text x="66.0" y="144" fill="#dcdfe4" textLength="67.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">personal</text>
+  <rect x="150.0" y="133.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="150.0" y="133.0" width="82.0" height="12" rx="2.5" fill="#b6e3a1"/>
+  <text x="242.4" y="144" fill="#dcdfe4" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">100%</text>
+  <text x="292.8" y="144" fill="#dcdfe4" opacity="0.55" textLength="134.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 1h 28m</text>
+  <rect x="452.4" y="133.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="452.4" y="133.0" width="23.2" height="12" rx="2.5" fill="#f5d98b"/>
+  <text x="553.2" y="144" fill="#dcdfe4" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">32%</text>
+  <text x="595.2" y="144" fill="#dcdfe4" opacity="0.55" textLength="134.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 3d 14h</text>
+  <rect x="754.8" y="133.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <text x="864.0" y="144" fill="#dcdfe4" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">0%</text>
+  <text x="897.6" y="144" fill="#dcdfe4" opacity="0.55" textLength="100.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 2d</text>
+  <text x="32.4" y="166" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">3</text>
+  <text x="66.0" y="166" fill="#dcdfe4" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">spare</text>
+  <rect x="150.0" y="155.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="150.0" y="155.0" width="73.6" height="12" rx="2.5" fill="#b6e3a1"/>
+  <text x="250.8" y="166" fill="#dcdfe4" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">88%</text>
+  <text x="292.8" y="166" fill="#dcdfe4" opacity="0.55" textLength="134.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 1h 28m</text>
+  <rect x="452.4" y="155.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="452.4" y="155.0" width="73.6" height="12" rx="2.5" fill="#b6e3a1"/>
+  <text x="553.2" y="166" fill="#dcdfe4" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">97%</text>
+  <text x="595.2" y="166" fill="#dcdfe4" opacity="0.55" textLength="134.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 3d 14h</text>
+  <rect x="754.8" y="155.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="754.8" y="155.0" width="82.0" height="12" rx="2.5" fill="#b6e3a1"/>
+  <text x="847.2" y="166" fill="#dcdfe4" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">100%</text>
+  <text x="897.6" y="166" fill="#dcdfe4" opacity="0.55" textLength="100.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 2d</text>
+  <text x="1023.6" y="166" fill="#dcdfe4" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">1 session</text>
+  <text x="32.4" y="188" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">4</text>
+  <text x="66.0" y="188" fill="#dcdfe4" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">old</text>
+  <rect x="150.0" y="177.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="150.0" y="177.0" width="82.0" height="12" rx="2.5" fill="#b6e3a1"/>
+  <text x="242.4" y="188" fill="#dcdfe4" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">100%</text>
+  <text x="292.8" y="188" fill="#dcdfe4" opacity="0.55" textLength="134.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 1h 28m</text>
+  <rect x="452.4" y="177.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="452.4" y="177.0" width="6.4" height="12" rx="2.5" fill="#e06c75"/>
+  <text x="553.2" y="188" fill="#dcdfe4" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">11%</text>
+  <text x="595.2" y="188" fill="#dcdfe4" opacity="0.55" textLength="134.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 3d 14h</text>
+  <rect x="754.8" y="177.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="754.8" y="177.0" width="65.2" height="12" rx="2.5" fill="#b6e3a1"/>
+  <text x="855.6" y="188" fill="#dcdfe4" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">80%</text>
+  <text x="897.6" y="188" fill="#dcdfe4" opacity="0.55" textLength="100.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 2d</text>
+  <text x="1023.6" y="188" fill="#e5c07b" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">held back</text>
+  <rect x="24.0" y="205.0" width="16.8" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <text x="49.2" y="210" fill="#dcdfe4" opacity="0.55" textLength="92.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">out of room</text>
+  <rect x="150.0" y="205.0" width="974.4" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <text x="49.2" y="232" fill="#56b6c2" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">*</text>
+  <text x="66.0" y="232" fill="#56b6c2" font-weight="700" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">work</text>
+  <rect x="150.0" y="221.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <text x="259.2" y="232" fill="#dcdfe4" opacity="0.55" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">0%</text>
+  <text x="292.8" y="232" fill="#e5c07b" textLength="117.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">back in 1h 28m</text>
+  <rect x="452.4" y="221.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="452.4" y="221.0" width="48.4" height="12" rx="2.5" fill="#dcdfe4" opacity="0.55"/>
+  <text x="553.2" y="232" fill="#dcdfe4" opacity="0.55" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">59%</text>
+  <text x="595.2" y="232" fill="#dcdfe4" opacity="0.55" textLength="134.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 3d 14h</text>
+  <rect x="754.8" y="221.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
+  <rect x="754.8" y="221.0" width="73.6" height="12" rx="2.5" fill="#dcdfe4" opacity="0.55"/>
+  <text x="855.6" y="232" fill="#dcdfe4" opacity="0.55" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">95%</text>
+  <text x="897.6" y="232" fill="#dcdfe4" opacity="0.55" textLength="100.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 2d</text>
+  <text x="1023.6" y="232" fill="#dcdfe4" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">2 sessions</text>
+  <rect x="24.0" y="249.0" width="16.8" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <text x="49.2" y="254" fill="#dcdfe4" opacity="0.55" textLength="126.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">not in rotation</text>
+  <rect x="183.6" y="249.0" width="940.8" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <text x="66.0" y="276" fill="#dcdfe4" opacity="0.55" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">laptop</text>
+  <text x="150.0" y="276" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">----------</text>
+  <text x="267.6" y="276" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
+  <text x="452.4" y="276" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">----------</text>
+  <text x="570.0" y="276" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
+  <text x="754.8" y="276" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">----------</text>
+  <text x="872.4" y="276" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
+  <text x="1023.6" y="276" fill="#e06c75" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">signed out</text>
+  <text x="66.0" y="298" fill="#dcdfe4" opacity="0.55" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">trial</text>
+  <text x="150.0" y="298" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">----------</text>
+  <text x="267.6" y="298" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
+  <text x="452.4" y="298" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">----------</text>
+  <text x="570.0" y="298" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
+  <text x="754.8" y="298" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">----------</text>
+  <text x="872.4" y="298" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
+  <text x="1023.6" y="298" fill="#e06c75" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">on hold</text>
+  <rect x="24.0" y="315.0" width="1100.4" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <text x="32.4" y="342" fill="#56b6c2" textLength="688.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">when one runs out → ultra (no 5-hour limit; 69% of its week left, resets in 1d 7h)</text>
+  <text x="32.4" y="364" fill="#dcdfe4" font-weight="700" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">s</text>
+  <text x="49.2" y="364" fill="#dcdfe4" opacity="0.55" textLength="798.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">settings  ·  model: Opus, then Fable  ·  pick: longest run first  ·  held back: weeks 80%+ used</text>
+  <text x="32.4" y="386" fill="#dcdfe4" opacity="0.55" textLength="1033.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">ultra (ultra@example.com · max · priority 1): pick #1, no 5-hour limit (a verified account)   Fable 100% left, resets in 2d</text>
+  <text x="32.4" y="408" fill="#dcdfe4" opacity="0.55" textLength="327.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">recent  08:41 a session started on work</text>
+  <text x="99.6" y="430" fill="#dcdfe4" opacity="0.55" textLength="436.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">09:12 saved to your settings.json: permissions.allow</text>
+  <text x="99.6" y="452" fill="#dcdfe4" opacity="0.55" textLength="579.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">09:26 sessions prefer Opus, then Fable, from their next start or move</text>
+  <rect x="24.0" y="469.0" width="1100.4" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <text x="24.0" y="496" fill="#dcdfe4" font-weight="700" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">q/esc</text>
+  <text x="74.4" y="496" fill="#dcdfe4" opacity="0.55" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">quit  ·</text>
+  <text x="150.0" y="496" fill="#dcdfe4" font-weight="700" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">j/k</text>
+  <text x="183.6" y="496" fill="#dcdfe4" opacity="0.55" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">move  ·</text>
+  <text x="259.2" y="496" fill="#dcdfe4" font-weight="700" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">enter</text>
+  <text x="309.6" y="496" fill="#dcdfe4" opacity="0.55" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">use  ·</text>
+  <text x="376.8" y="496" fill="#dcdfe4" font-weight="700" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">s</text>
+  <text x="393.6" y="496" fill="#dcdfe4" opacity="0.55" textLength="92.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">settings  ·</text>
+  <text x="502.8" y="496" fill="#dcdfe4" font-weight="700" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">r</text>
+  <text x="519.6" y="496" fill="#dcdfe4" opacity="0.55" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">rotate  ·</text>
+  <text x="612.0" y="496" fill="#dcdfe4" font-weight="700" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">f</text>
+  <text x="628.8" y="496" fill="#dcdfe4" opacity="0.55" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">now  ·</text>
+  <text x="696.0" y="496" fill="#dcdfe4" font-weight="700" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">a</text>
+  <text x="712.8" y="496" fill="#dcdfe4" opacity="0.55" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">add  ·</text>
+  <text x="780.0" y="496" fill="#dcdfe4" font-weight="700" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">x</text>
+  <text x="796.8" y="496" fill="#dcdfe4" opacity="0.55" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">remove  ·</text>
+  <text x="889.2" y="496" fill="#dcdfe4" font-weight="700" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">l</text>
+  <text x="906.0" y="496" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">sign in  ·</text>
+  <text x="1006.8" y="496" fill="#dcdfe4" font-weight="700" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">n</text>
+  <text x="1023.6" y="496" fill="#dcdfe4" opacity="0.55" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">rename  ·</text>
+  <text x="1116.0" y="496" fill="#dcdfe4" font-weight="700" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">e</text>
+  <text x="1132.8" y="496" fill="#dcdfe4" opacity="0.55" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">enable</text>
 </svg>

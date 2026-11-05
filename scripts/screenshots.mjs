@@ -35,9 +35,17 @@ import { ConfigSchema } from '../dist/config/config.schema.js';
 import { standingOf } from '../dist/usage/runway.js';
 
 const OUT_DIR = path.join('docs', 'img');
-const COLS = 116;
+/**
+ * A wide terminal, so every bar is drawn at full width. A narrower picture
+ * shows the shape the dashboard takes when it is squeezed, which is not what
+ * anyone sees first.
+ */
+const COLS = 140;
 const NOW = Date.UTC(2026, 0, 15, 9, 30);
 const mins = (n) => NOW + n * 60_000;
+const FIVE_HOUR_RESET = mins(88);
+const WEEK_RESET = mins(60 * 86);
+const FABLE_RESET = mins(60 * 48);
 
 /** Invented accounts, chosen to show the states worth understanding. */
 const ACCOUNTS = [
@@ -46,10 +54,22 @@ const ACCOUNTS = [
     email: 'work@example.com',
     plan: 'max',
     active: true,
-    // In use, and its 5-hour window is spent: the next line shows the move.
+    // In use, and its 5-hour window is spent: the line under the table shows the move.
     five: 1,
     week: 0.41,
     fable: 0.05,
+  },
+  {
+    // A verified account: no 5-hour limit at all, only its week. Its week
+    // resets sooner than the others', so its budget is the one to use first.
+    name: 'ultra',
+    email: 'ultra@example.com',
+    plan: 'max',
+    active: false,
+    noFive: true,
+    week: 0.31,
+    weekReset: mins(60 * 31),
+    fable: 0,
   },
   {
     // Fine overall, but one model is spent: the distinction ccx exists to make.
@@ -83,10 +103,14 @@ const ACCOUNTS = [
   },
 ];
 
+const weekResetOf = (a) => a.weekReset ?? WEEK_RESET;
+
 const windowsFor = (a) => [
-  { label: '5-hour', used: a.five, resetsAt: mins(88) },
-  { label: 'weekly', used: a.week, resetsAt: mins(60 * 86) },
-  { label: 'Fable', used: a.fable, resetsAt: mins(60 * 48), modelOnly: true },
+  a.noFive
+    ? { label: '5-hour', used: null, resetsAt: null, none: true }
+    : { label: '5-hour', used: a.five, resetsAt: FIVE_HOUR_RESET },
+  { label: 'weekly', used: a.week, resetsAt: weekResetOf(a) },
+  { label: 'Fable', used: a.fable, resetsAt: FABLE_RESET, modelOnly: true },
 ];
 
 const usageAnsi = renderUsageReport(
@@ -98,7 +122,7 @@ const usageAnsi = renderUsageReport(
     windows: windowsFor(a),
   })),
   NOW,
-  { color: true, width: COLS },
+  { color: true, width: 100 },
 );
 
 // Ranked, numbered and explained by the same functions the dashboard uses, over
@@ -107,11 +131,12 @@ const PREFERENCE = ['opus', 'fable'];
 const usageOf = (name) => {
   const a = ACCOUNTS.find((x) => x.name === name);
   return {
-    fiveHour: a.five,
+    fiveHour: a.noFive ? null : a.five,
     sevenDay: a.week,
-    fiveHourReset: mins(88),
-    sevenDayReset: mins(60 * 86),
-    models: [{ name: 'Fable', utilization: a.fable, resetsAt: mins(60 * 48) }],
+    fiveHourReset: a.noFive ? null : FIVE_HOUR_RESET,
+    sevenDayReset: weekResetOf(a),
+    models: [{ name: 'Fable', utilization: a.fable, resetsAt: FABLE_RESET }],
+    ...(a.noFive ? { noFiveHourLimit: true } : {}),
   };
 };
 const POLICY = { accountOrder: 'smart', holdBackAtPercent: 80 };
@@ -168,10 +193,12 @@ const utcClock = (epochMs) => {
   const hour = at.getUTCHours();
   return `${hour % 12 === 0 ? 12 : hour % 12}:${String(at.getUTCMinutes()).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`;
 };
-// The cursor sits on the held-back account, so the line that explains a row
-// is shown explaining the one that most needs it. Rows are counted in the
-// order the dashboard draws them.
-const HIGHLIGHTED = inDisplayOrder(dashboardAccounts, 'opus', NOW).findIndex((a) => a.name === 'old');
+// The cursor sits on the verified account, so the line that explains a row
+// says what having no 5-hour limit means. Rows are counted in the order the
+// dashboard draws them.
+const HIGHLIGHTED = inDisplayOrder(dashboardAccounts, 'opus', NOW).findIndex(
+  (a) => a.name === 'ultra',
+);
 
 const dashboardAnsi = renderDashboard(
   {
@@ -184,6 +211,7 @@ const dashboardAnsi = renderDashboard(
     now: NOW,
     refreshMs: 3000,
     model: 'opus',
+    version: '2.6.30',
     whenOut: describeWhenOut({
       candidates,
       current: ACCOUNTS.find((a) => a.active)?.name ?? null,
@@ -195,7 +223,8 @@ const dashboardAnsi = renderDashboard(
     settings: settingsWords({ modelPreference: PREFERENCE, ...POLICY }),
     sessions: [
       { number: 1, where: 'api', account: 'work' },
-      { number: 2, where: 'web', account: 'spare' },
+      { number: 2, where: 'web', account: 'work' },
+      { number: 3, where: 'docs', account: 'spare' },
     ],
   },
   { color: true, interactive: true, selected: HIGHLIGHTED, width: COLS, clock: utcClock },
@@ -209,9 +238,13 @@ const settingsAnsi = renderDashboard(
   {
     color: true,
     interactive: true,
-    width: COLS,
+    width: 116,
     panel: {
-      rows: SETTINGS.map((s) => ({ group: s.group, label: s.label, value: s.words(valueOf(DEFAULTS, s.key)) })),
+      rows: SETTINGS.map((s) => ({
+        group: s.group,
+        label: s.label,
+        value: s.words(valueOf(DEFAULTS, s.key)),
+      })),
       selected: HIGHLIGHT,
       help: SETTINGS[HIGHLIGHT].help,
       applies: appliesWords(SETTINGS[HIGHLIGHT].applies),
@@ -240,44 +273,37 @@ const PALETTE = {
 };
 const FG = '#dcdfe4';
 const BG = '#1b1e24';
+const DIM = 0.55;
 
-/** Split ANSI text into styled runs, one list of runs per line. */
+/** Split ANSI text into lines of cells: one character each, with its style. */
 function parseAnsi(text) {
   const lines = [];
   let style = { color: FG, bold: false, dim: false };
-  let runs = [];
-  let buf = '';
-  const flush = () => {
-    if (buf) runs.push({ text: buf, ...style });
-    buf = '';
-  };
+  let cells = [];
   const clean = text.split('\r').join('');
   for (let i = 0; i < clean.length; i += 1) {
     const ch = clean[i];
     if (ch === '\x1b' && clean[i + 1] === '[') {
       const end = clean.indexOf('m', i);
       if (end === -1) break;
-      flush();
       for (const part of clean.slice(i + 2, end).split(';')) {
         const code = Number(part || '0');
         if (code === 0) style = { color: FG, bold: false, dim: false };
-        else if (code === 1) style.bold = true;
-        else if (code === 2) style.dim = true;
-        else if (PALETTE[code]) style.color = PALETTE[code];
+        else if (code === 1) style = { ...style, bold: true };
+        else if (code === 2) style = { ...style, dim: true };
+        else if (PALETTE[code]) style = { ...style, color: PALETTE[code] };
       }
       i = end;
       continue;
     }
     if (ch === '\n') {
-      flush();
-      lines.push(runs);
-      runs = [];
+      lines.push(cells);
+      cells = [];
       continue;
     }
-    buf += ch;
+    cells.push({ ch, ...style });
   }
-  flush();
-  if (runs.length) lines.push(runs);
+  if (cells.length) lines.push(cells);
   return lines;
 }
 
@@ -292,54 +318,107 @@ const escapeXml = (s) =>
     .split('"')
     .join('&quot;');
 
-/** A terminal window, drawn as SVG. */
+const isBar = (ch) => ch === '█' || ch === '░';
+const sameStyle = (a, b) => a.color === b.color && a.bold === b.bold && a.dim === b.dim;
+
+/**
+ * A terminal window, drawn as SVG.
+ *
+ * Every cell sits on a fixed grid. Text is drawn in runs pinned to the width
+ * its cells take (`textLength`), so a column starts where it does on a
+ * terminal whatever font the reader's machine falls back to; a bar is drawn
+ * as a track with its filled part over it rather than as block characters,
+ * which most fonts draw taller than a line and a little apart; and a rule is
+ * a line.
+ */
 function toSvg(ansi, title) {
   const lines = parseAnsi(ansi);
   const CHAR_W = 8.4;
-  const LINE_H = 21;
-  const PAD_X = 22;
-  const PAD_TOP = 52; // room for the title bar
-  const PAD_BOTTOM = 20;
+  const LINE_H = 22;
+  const PAD_X = 24;
+  const PAD_TOP = 56; // room for the title bar
+  const PAD_BOTTOM = 18;
   // Sized to the widest line actually drawn, not to the width the renderer was
   // given: the dashboard's key hints are longer than its table, and a fixed
   // width left them hanging outside the window frame.
-  const widest = lines.reduce(
-    (max, runs) =>
-      Math.max(
-        max,
-        runs.reduce((n, r) => n + [...r.text].length, 0),
-      ),
-    0,
-  );
-  const width = Math.ceil(PAD_X * 2 + widest * CHAR_W) + 4; // a few px so nothing clips
+  const widest = lines.reduce((max, cells) => Math.max(max, cells.length), 0);
+  const width = Math.ceil(PAD_X * 2 + widest * CHAR_W);
   const height = PAD_TOP + lines.length * LINE_H + PAD_BOTTOM;
+  const x = (col) => (PAD_X + col * CHAR_W).toFixed(1);
 
-  const body = lines
-    .map((runs, row) => {
-      const y = PAD_TOP + row * LINE_H;
-      let col = 0;
-      return runs
-        .map((run) => {
-          const x = PAD_X + col * CHAR_W;
-          col += [...run.text].length;
-          if (!run.text.trim()) return '';
-          const weight = run.bold ? ' font-weight="600"' : '';
-          const opacity = run.dim ? ' opacity="0.6"' : '';
-          return `<text x="${x.toFixed(1)}" y="${y}" fill="${run.color}"${weight}${opacity} xml:space="preserve">${escapeXml(run.text)}</text>`;
-        })
+  const shapes = [];
+  lines.forEach((cells, row) => {
+    const y = PAD_TOP + row * LINE_H;
+    let col = 0;
+    while (col < cells.length) {
+      const cell = cells[col];
+      // A bar: the whole run of block characters, a track under a filled part.
+      if (isBar(cell.ch)) {
+        let end = col;
+        while (end < cells.length && isBar(cells[end].ch)) end += 1;
+        const barY = (y - 11).toFixed(1);
+        shapes.push(
+          `<rect x="${x(col)}" y="${barY}" width="${((end - col) * CHAR_W - 2).toFixed(1)}" height="12" rx="2.5" fill="${FG}" opacity="0.12"/>`,
+        );
+        let fill = col;
+        while (fill < end && cells[fill].ch === '█') fill += 1;
+        if (fill > col) {
+          const on = cells[col];
+          shapes.push(
+            `<rect x="${x(col)}" y="${barY}" width="${((fill - col) * CHAR_W - 2).toFixed(1)}" height="12" rx="2.5" fill="${on.color}"${on.dim ? ` opacity="${DIM}"` : ''}/>`,
+          );
+        }
+        col = end;
+        continue;
+      }
+      // A rule: a line through the middle of its cells.
+      if (cell.ch === '─') {
+        let end = col;
+        while (end < cells.length && cells[end].ch === '─') end += 1;
+        shapes.push(
+          `<rect x="${x(col)}" y="${(y - 5).toFixed(1)}" width="${((end - col) * CHAR_W).toFixed(1)}" height="1" fill="${FG}" opacity="0.22"/>`,
+        );
+        col = end;
+        continue;
+      }
+      // Text: as long a run as shares one style, pinned to its cells.
+      let end = col;
+      while (
+        end < cells.length &&
+        !isBar(cells[end].ch) &&
+        cells[end].ch !== '─' &&
+        sameStyle(cells[end], cell)
+      ) {
+        end += 1;
+      }
+      const text = cells
+        .slice(col, end)
+        .map((c) => c.ch)
         .join('');
-    })
-    .join('\n  ');
+      const lead = text.length - text.trimStart().length;
+      const body = text.trim();
+      if (body) {
+        const at = col + lead;
+        const weight = cell.bold ? ' font-weight="700"' : '';
+        const opacity = cell.dim ? ` opacity="${DIM}"` : '';
+        shapes.push(
+          `<text x="${x(at)}" y="${y}" fill="${cell.color}"${weight}${opacity} textLength="${(body.length * CHAR_W).toFixed(1)}" lengthAdjust="spacingAndGlyphs" xml:space="preserve">${escapeXml(body)}</text>`,
+        );
+      }
+      col = end;
+    }
+  });
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
-  <rect width="${width}" height="${height}" rx="10" fill="${BG}"/>
-  <rect width="${width}" height="32" rx="10" fill="#22262e"/>
-  <rect y="22" width="${width}" height="10" fill="#22262e"/>
-  <circle cx="21" cy="16" r="5.5" fill="#ec6a5f"/>
-  <circle cx="40" cy="16" r="5.5" fill="#f4bf50"/>
-  <circle cx="59" cy="16" r="5.5" fill="#61c454"/>
-  <text x="${width / 2}" y="20.5" fill="#8b93a1" font-size="12" text-anchor="middle">${escapeXml(title)}</text>
-  ${body}
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="14">
+  <rect width="${width}" height="${height}" rx="12" fill="${BG}"/>
+  <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="12" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+  <path d="M0 12a12 12 0 0 1 12-12h${width - 24}a12 12 0 0 1 12 12v22H0z" fill="#23272f"/>
+  <rect y="33" width="${width}" height="1" fill="#000000" opacity="0.35"/>
+  <circle cx="22" cy="17" r="6" fill="#ec6a5f"/>
+  <circle cx="42" cy="17" r="6" fill="#f4bf50"/>
+  <circle cx="62" cy="17" r="6" fill="#61c454"/>
+  <text x="${width / 2}" y="21.5" fill="#8b93a1" font-size="12" text-anchor="middle">${escapeXml(title)}</text>
+  ${shapes.join('\n  ')}
 </svg>
 `;
 }

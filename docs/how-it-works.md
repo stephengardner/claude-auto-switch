@@ -246,6 +246,15 @@ when Claude is next relaunched or has been idle for 20 seconds, never mid-turn.
     priority order.
   - An account with under a quarter window left is used only when nothing
     better exists: a move rereads the whole conversation without a cache.
+  - A **verified** account (Ultra, since 2026-10-30) has no 5-hour limit, so
+    only its weeks can stop it, and its runway is a whole window whenever its
+    week holds one. That is not a bonus on its own: against an account with a
+    fresh 5-hour window, both can run the whole window, so the week that would
+    expire unused first still goes first. Budget left at a reset is lost, and
+    the later move costs only one uncached read. It does count wherever a
+    5-hour window is partly spent, since that window no longer cuts the
+    verified account's runway. ccx tells such an account by the usage it reads:
+    no 5-hour window, and no "Current session" bar on Claude's usage page.
 - **most-room**: the least-used account, by its tighter percentage.
 - **priority**: your own order, set with `ccx priority <name> <n>` or `[` and `]`
   in the dashboard.

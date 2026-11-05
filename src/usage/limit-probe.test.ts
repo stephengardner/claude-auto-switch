@@ -213,3 +213,114 @@ describe('credits when the endpoint omits the spend cap', () => {
     expect(r.creditsCarryPastLimit).toBe(true);
   });
 });
+
+/**
+ * Since 2026-10-30 a verified Ultra account has no 5-hour limit, only its
+ * weekly ones. The endpoint then sends `five_hour: null` and no `session`
+ * entry in `limits`. Both shapes below were read from real accounts on
+ * 2026-11-05, trimmed to the fields ccx reads.
+ */
+describe('an account with no 5-hour limit', () => {
+  const VERIFIED = {
+    five_hour: null,
+    seven_day: { utilization: 28.0, resets_at: '2026-11-05T17:00:00.430253+00:00' },
+    limits: [
+      {
+        kind: 'weekly_all',
+        group: 'weekly',
+        percent: 28,
+        severity: 'normal',
+        resets_at: '2026-11-05T17:00:00.430253+00:00',
+        scope: null,
+        is_active: true,
+      },
+      {
+        kind: 'weekly_scoped',
+        group: 'weekly',
+        percent: 0,
+        severity: 'normal',
+        resets_at: '2026-11-05T17:00:00+00:00',
+        scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+        is_active: false,
+      },
+    ],
+  };
+  const UNVERIFIED = {
+    five_hour: { utilization: 5, resets_at: '2026-11-05T07:39:59.945513+00:00' },
+    seven_day: { utilization: 2, resets_at: '2026-11-09T08:59:59.945537+00:00' },
+    limits: [
+      {
+        kind: 'session',
+        group: 'session',
+        percent: 5,
+        severity: 'normal',
+        resets_at: '2026-11-05T07:39:59.945513+00:00',
+        scope: null,
+        is_active: true,
+      },
+      { kind: 'weekly_all', group: 'weekly', percent: 2, severity: 'normal', is_active: false },
+    ],
+  };
+
+  it('says the account has no 5-hour limit, and reads its week as usual', async () => {
+    const r = await probeUsage(credsFile(), usageFetch(VERIFIED));
+    expect(r.verdict).toBe('allowed');
+    expect(r.noFiveHourLimit).toBe(true);
+    expect(r.fiveHour).toBeUndefined();
+    expect(r.fiveHourReset).toBeUndefined();
+    expect(r.sevenDay).toBeCloseTo(0.28);
+    expect(r.models).toEqual([expect.objectContaining({ name: 'Fable', utilization: 0 })]);
+  });
+
+  it('does not say so for an account that has one', async () => {
+    const r = await probeUsage(credsFile(), usageFetch(UNVERIFIED));
+    expect(r.noFiveHourLimit).toBeUndefined();
+    expect(r.fiveHour).toBeCloseTo(0.05);
+  });
+
+  it('a window not started yet is a 5-hour limit at 0%, not no limit', async () => {
+    const body = { ...UNVERIFIED, five_hour: { utilization: 0, resets_at: null } };
+    const r = await probeUsage(credsFile(), usageFetch(body));
+    expect(r.noFiveHourLimit).toBeUndefined();
+    expect(r.fiveHour).toBe(0);
+  });
+
+  it('reads the 5-hour window from its `limits` entry when `five_hour` is missing', async () => {
+    const body = { ...UNVERIFIED, five_hour: null };
+    const r = await probeUsage(credsFile(), usageFetch(body));
+    expect(r.noFiveHourLimit).toBeUndefined();
+    expect(r.fiveHour).toBeCloseTo(0.05);
+    expect(r.fiveHourReset).toBe(Date.parse('2026-11-05T07:39:59.945513+00:00'));
+  });
+
+  it('takes a 5-hour window with no number, and a session entry with none, as no limit', async () => {
+    const empty = { ...VERIFIED, five_hour: { utilization: null, resets_at: null } };
+    expect((await probeUsage(credsFile(), usageFetch(empty))).noFiveHourLimit).toBe(true);
+    const nullSession = {
+      ...VERIFIED,
+      limits: [...VERIFIED.limits, { kind: 'session', percent: null, resets_at: null, is_active: false }],
+    };
+    expect((await probeUsage(credsFile(), usageFetch(nullSession))).noFiveHourLimit).toBe(true);
+  });
+
+  it('says nothing either way when the answer does not show it', async () => {
+    // No `limits` at all: an older or partial answer, which cannot tell a
+    // removed 5-hour limit from one it left out.
+    const noLimits = { five_hour: VERIFIED.five_hour, seven_day: VERIFIED.seven_day };
+    expect((await probeUsage(credsFile(), usageFetch(noLimits))).noFiveHourLimit).toBeUndefined();
+    // Nothing measured at all.
+    const nothing = { five_hour: null, seven_day: null, limits: [] };
+    expect((await probeUsage(credsFile(), usageFetch(nothing))).noFiveHourLimit).toBeUndefined();
+  });
+
+  it('is still limited when its week is spent', async () => {
+    const body = {
+      ...VERIFIED,
+      seven_day: { utilization: 100, resets_at: '2026-11-05T17:00:00Z' },
+      limits: [{ kind: 'weekly_all', percent: 100, severity: 'critical', is_active: true }],
+    };
+    const r = await probeLimit(credsFile(), '', usageFetch(body));
+    expect(r.verdict).toBe('limited');
+    expect(r.noFiveHourLimit).toBe(true);
+  });
+});

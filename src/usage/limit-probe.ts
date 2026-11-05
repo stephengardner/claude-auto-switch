@@ -41,6 +41,12 @@ export interface LimitProbeResult {
   retryAfterMs?: number;
   /** 0..1 utilization for the 5-hour session window. */
   fiveHour?: number;
+  /**
+   * True when the account has no 5-hour limit at all, only weekly ones: since
+   * 2026-10-30 a verified Ultra account. Set only on positive evidence (see
+   * hasNoFiveHourLimit), so an absent 5-hour number alone never claims it.
+   */
+  noFiveHourLimit?: boolean;
   /** 0..1 utilization for the weekly "all models" window. */
   sevenDay?: number;
   /** Reset times (epoch ms). */
@@ -125,6 +131,38 @@ async function serverMessage(res: Response): Promise<string | null> {
   }
 }
 
+/** Claude's name for the 5-hour window in `limits`. */
+const SESSION_KIND = 'session';
+
+/**
+ * The 5-hour window's reading: the `five_hour` block, or the `session` entry
+ * of `limits` when that block carries no number. The two say the same thing
+ * today; reading both keeps a reading when one of them is left out.
+ */
+function fiveHourReading(data: UsageResponse): { used?: number; resetsAt?: number } {
+  const block = frac(data.five_hour?.utilization);
+  if (block !== undefined) return { used: block, resetsAt: epochMs(data.five_hour?.resets_at) };
+  const session = (data.limits ?? []).find((l) => l.kind === SESSION_KIND && frac(l.percent) !== undefined);
+  if (session) return { used: frac(session.percent), resetsAt: epochMs(session.resets_at) };
+  return {};
+}
+
+/**
+ * Whether the answer shows an account with no 5-hour limit: a verified Ultra
+ * account since 2026-10-30, which Claude's usage page shows with no "Current
+ * session" bar. The endpoint then sends `five_hour: null` and no `session`
+ * entry in `limits`; a block or an entry with no number reads the same.
+ *
+ * Positive evidence only. The `limits` list must be there, so an older or
+ * partial answer that left the 5-hour window out is not taken for one that
+ * has none, and the week must have been read, so an answer with nothing in it
+ * claims nothing. Saying "no limit" wrongly would hide a real 5-hour window
+ * behind a word; not saying it costs only a "?" where "no limit" belongs.
+ */
+function hasNoFiveHourLimit(data: UsageResponse, reading: { used?: number }, sevenDay: number | undefined): boolean {
+  return reading.used === undefined && Array.isArray(data.limits) && sevenDay !== undefined;
+}
+
 /** A limit is "hit" at/over 100%, or when its severity says so. */
 function isHit(percent: number | null | undefined, severity: string | null | undefined): boolean {
   if (typeof percent === 'number' && percent >= 100) return true;
@@ -177,8 +215,10 @@ export async function probeLimit(
     }
     const data = (await res.json()) as UsageResponse;
 
-    const fiveHour = frac(data.five_hour?.utilization);
+    const fiveHourRead = fiveHourReading(data);
+    const fiveHour = fiveHourRead.used;
     const sevenDay = frac(data.seven_day?.utilization);
+    const noFiveHourLimit = hasNoFiveHourLimit(data, fiveHourRead, sevenDay);
     const models: ModelWindow[] = (data.limits ?? [])
       .filter((l) => l.kind === 'weekly_scoped' && l.scope?.model?.display_name)
       .map((l) => ({
@@ -198,10 +238,9 @@ export async function probeLimit(
       verdict: 'allowed',
       ...(creditsCarry ? { creditsCarryPastLimit: true } : {}),
       ...(fiveHour !== undefined ? { fiveHour } : {}),
+      ...(noFiveHourLimit ? { noFiveHourLimit: true } : {}),
       ...(sevenDay !== undefined ? { sevenDay } : {}),
-      ...(epochMs(data.five_hour?.resets_at) !== undefined
-        ? { fiveHourReset: epochMs(data.five_hour?.resets_at) }
-        : {}),
+      ...(fiveHourRead.resetsAt !== undefined ? { fiveHourReset: fiveHourRead.resetsAt } : {}),
       ...(epochMs(data.seven_day?.resets_at) !== undefined
         ? { sevenDayReset: epochMs(data.seven_day?.resets_at) }
         : {}),

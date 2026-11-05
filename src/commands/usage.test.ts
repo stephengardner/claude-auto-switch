@@ -85,3 +85,30 @@ describe('ccx usage and a login that has been rejected', () => {
     expect(out).not.toContain('NEEDS SIGN-IN');
   });
 });
+
+describe('ccx usage and an account with no 5-hour limit', () => {
+  it('passes the stored fact through to the report, so the row says so instead of ?', async () => {
+    const { context, lines } = setup();
+    const home = context.ctx.env!.CLAUDE_AUTO_SWITCH_HOME!;
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({
+        accounts: {
+          work: {
+            fiveHour: null,
+            noFiveHourLimit: true,
+            sevenDay: 0.28,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            at: Date.now(),
+          },
+        },
+      }),
+      'utf8',
+    );
+    expect(await usageCommand(context)).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('5-hour   no limit (a verified account)');
+    expect(out).not.toContain('?');
+  });
+});
