@@ -47,9 +47,11 @@ semantic versioning.
 - **A usage refresh no longer undoes what changed while it ran.** It read the
   stored usage, spent seconds asking for each account's numbers, then wrote
   back everything it had read, so a rename or removal made meanwhile, or
-  another session's refresh, was lost. It now writes back only the accounts
-  it measured, over the file as it is at that moment. The dashboard also
-  re-reads the stored usage after it adds, renames or removes an account.
+  another session's refresh, was lost. It now writes back only its own
+  accounts, over the file as it is at that moment: never one removed or
+  renamed meanwhile, never a failed read over an entry someone else updated,
+  and never an older reading over a newer one. The dashboard also re-reads
+  the stored usage after it adds, renames or removes an account.
 
 ### Changed
 

@@ -411,6 +411,13 @@ export async function refreshUsage(
   // would go stale for good.
   const editorAccount = editorPointerAccount(accounts, c);
 
+  // What each entry was when this refresh read it, to tell at the end whether
+  // anyone else wrote it meanwhile; which accounts were actually measured; and
+  // which of those readings could not tell about the 5-hour window.
+  const started = new Map(stale.map((a) => [a.name, snapshot.accounts[a.name]] as const));
+  const measured = new Set<string>();
+  const undecided = new Set<string>();
+
   // Sequential, with a small gap: the usage endpoint has a small budget and
   // asking for several accounts at once gets most of them turned away.
   for (const account of stale) {
@@ -452,14 +459,15 @@ export async function refreshUsage(
     const known = result.fiveHour !== undefined || result.sevenDay !== undefined;
     if (known) {
       const previous = snapshot.accounts[account.name];
+      measured.add(account.name);
       // No 5-hour limit is claimed only on positive evidence, so an answer
       // without it either says the account has a 5-hour window (a reading,
-      // which ends the fact) or cannot tell, which leaves it standing.
-      const noFiveHourLimit =
-        result.noFiveHourLimit === true || (result.fiveHour === undefined && previous?.noFiveHourLimit === true);
+      // which ends the fact) or cannot tell, which leaves it as the newest
+      // entry has it: decided when writing back, below.
+      if (result.noFiveHourLimit !== true && result.fiveHour === undefined) undecided.add(account.name);
       const fresh = {
         fiveHour: result.fiveHour ?? null,
-        ...(noFiveHourLimit ? { noFiveHourLimit: true } : {}),
+        ...(result.noFiveHourLimit === true ? { noFiveHourLimit: true } : {}),
         sevenDay: result.sevenDay ?? null,
         fiveHourReset: result.fiveHourReset ?? null,
         sevenDayReset: result.sevenDayReset ?? null,
@@ -486,17 +494,34 @@ export async function refreshUsage(
     }
     if (stale.length > 1) await pause(gapMs);
   }
-  // Only what this refresh measured goes back, over the file as it is NOW.
-  // The loop above takes seconds, and in that time a rename can move an entry,
-  // a removal drop one, and another session's refresh write its own; writing
-  // the snapshot read at the start undid all of them. This narrows the window
-  // to the read and the write below, which is what the rest of this file
-  // settles for too. An entry put back for an account removed meanwhile names
-  // no account, and is dropped when one is added under that name (forgetUsage).
+  // Only this refresh's own entries go back, over the file as it is NOW. The
+  // loop above takes seconds, and in that time a rename can move an entry, a
+  // removal drop one, and another session's refresh write its own; writing the
+  // snapshot read at the start undid all of them. This narrows the window to
+  // the read and the write below, which is what the rest of this file settles
+  // for too. Per account, against what it was when this refresh read it:
+  // - gone since (removed, or renamed away): not put back;
+  // - not measured here (the read failed): written only if nobody else wrote
+  //   it, since it is the old numbers with a new time on them;
+  // - measured: written unless a newer reading landed meanwhile, with "no
+  //   5-hour limit" kept, for a reading that could not tell, from the newest
+  //   entry rather than the one this refresh started from.
   const current = readUsageSnapshot(c);
   for (const account of stale) {
-    const entry = snapshot.accounts[account.name];
-    if (entry) current.accounts[account.name] = entry;
+    const ours = snapshot.accounts[account.name];
+    if (!ours) continue;
+    const start = started.get(account.name);
+    const disk = current.accounts[account.name];
+    if (start && !disk) continue;
+    const touched = (disk?.at ?? null) !== (start?.at ?? null);
+    if (!measured.has(account.name)) {
+      if (!touched) current.accounts[account.name] = ours;
+      continue;
+    }
+    if (touched && disk && disk.at > ours.at) continue;
+    const newest = touched ? disk : start;
+    const keep = undecided.has(account.name) && newest?.noFiveHourLimit === true;
+    current.accounts[account.name] = keep ? { ...ours, noFiveHourLimit: true } : ours;
   }
   try {
     writeJsonFile(snapshotPath(c), current);

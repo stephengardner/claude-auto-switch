@@ -824,3 +824,72 @@ describe('a refresh and another writer at once', () => {
     expect(Object.keys(snap.accounts).sort()).toEqual(['a', 'renamed']);
   });
 });
+
+describe('what a refresh puts back when another writer got there first', () => {
+  const entry = (over: Record<string, unknown> = {}) => ({
+    fiveHour: 0.1,
+    sevenDay: 0.2,
+    fiveHourReset: null,
+    sevenDayReset: null,
+    at: 1,
+    ...over,
+  });
+  const stale = { now: () => Date.now() + 10 * 60_000 };
+
+  it('a failed read leaves a newer entry alone', async () => {
+    const { c, accounts } = setup(['a']);
+    writeUsageSnapshot({ accounts: { a: entry({ noFiveHourLimit: true, fiveHour: null }) } }, c);
+    await refreshUsage(accounts, c, {
+      ...stale,
+      probe: () => {
+        writeUsageSnapshot({ accounts: { a: entry({ fiveHour: 0.3, at: Date.now() }) } }, c);
+        return Promise.resolve({ verdict: 'unknown' });
+      },
+    });
+    expect(readUsageSnapshot(c).accounts['a']).toMatchObject({ fiveHour: 0.3 });
+    expect(readUsageSnapshot(c).accounts['a']?.noFiveHourLimit).toBeUndefined();
+  });
+
+  it('an older reading leaves a newer one alone', async () => {
+    const { c, accounts } = setup(['a']);
+    writeUsageSnapshot({ accounts: { a: entry() } }, c);
+    await refreshUsage(accounts, c, {
+      probe: () => {
+        writeUsageSnapshot({ accounts: { a: entry({ fiveHour: 0.7, at: Date.now() + 60 * 60_000 }) } }, c);
+        return Promise.resolve(result(0.25, 0.6));
+      },
+      ...stale,
+      now: () => Date.now() + 10 * 60_000,
+    });
+    expect(readUsageSnapshot(c).accounts['a']?.fiveHour).toBe(0.7);
+  });
+
+  it('a reading that cannot tell takes "no 5-hour limit" from the newest entry, not the one it started from', async () => {
+    const { c, accounts } = setup(['a']);
+    writeUsageSnapshot({ accounts: { a: entry({ noFiveHourLimit: true, fiveHour: null }) } }, c);
+    await refreshUsage(accounts, c, {
+      ...stale,
+      probe: () => {
+        // Meanwhile another session read a 5-hour window on it.
+        writeUsageSnapshot({ accounts: { a: entry({ fiveHour: 0.3, at: Date.now() }) } }, c);
+        return Promise.resolve({ verdict: 'allowed', sevenDay: 0.4, sevenDayReset: 2_000 });
+      },
+    });
+    const a = readUsageSnapshot(c).accounts['a'];
+    expect(a?.sevenDay).toBe(0.4);
+    expect(a?.noFiveHourLimit).toBeUndefined();
+  });
+
+  it('does not put back an account removed or renamed while it was being read', async () => {
+    const { c, accounts } = setup(['a']);
+    writeUsageSnapshot({ accounts: { a: entry({ noFiveHourLimit: true, fiveHour: null }) } }, c);
+    await refreshUsage(accounts, c, {
+      ...stale,
+      probe: () => {
+        forgetUsage('a', c);
+        return Promise.resolve(result(0.25, 0.6));
+      },
+    });
+    expect(readUsageSnapshot(c).accounts['a']).toBeUndefined();
+  });
+});
