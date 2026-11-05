@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { refreshUsage, readUsageSnapshot, renewIdleLogin } from './usage-store.js';
+import { forgetUsage, refreshUsage, readUsageSnapshot, renewIdleLogin, writeUsageSnapshot } from './usage-store.js';
 import { renewOneAtATime } from './renew-one-at-a-time.js';
 import type { LimitProbeResult } from './limit-probe.js';
 import { readCredentialEvents } from '../accounts/credential-log.js';
@@ -790,5 +790,37 @@ describe('an account with no 5-hour limit, in the stored usage', () => {
     answer = { ...verified, sevenDayReset: t0 + 4 * 86_400_000 };
     await refreshUsage(accounts, c, { probe, now: () => t0 + 20 * 60_000 });
     expect(readUsageSnapshot(c).accounts['v']).toMatchObject({ noFiveHourLimit: true, windowCost: learned });
+  });
+});
+
+describe('a refresh and another writer at once', () => {
+  it('puts back only what it measured, over what is on disk when it writes', async () => {
+    // The refresh spends seconds on the network between reading the snapshot
+    // and writing it. A rename, a removal or another session's refresh in that
+    // time used to be undone by the whole stale snapshot going back on disk:
+    // a removed account's entry came back, a renamed one's was lost.
+    const { c, accounts } = setup(['a']);
+    writeUsageSnapshot(
+      {
+        accounts: {
+          removed: { fiveHour: null, noFiveHourLimit: true, sevenDay: 0.2, fiveHourReset: null, sevenDayReset: null, at: Date.now() },
+        },
+      },
+      c,
+    );
+    const snap = await refreshUsage(accounts, c, {
+      probe: () => {
+        // Meanwhile: one account removed, another moved to a new name.
+        forgetUsage('removed', c);
+        const now = readUsageSnapshot(c);
+        now.accounts['renamed'] = { fiveHour: 0.4, sevenDay: 0.5, fiveHourReset: null, sevenDayReset: null, at: Date.now() };
+        writeUsageSnapshot(now, c);
+        return Promise.resolve(result(0.25, 0.6));
+      },
+    });
+    const disk = readUsageSnapshot(c).accounts;
+    expect(Object.keys(disk).sort()).toEqual(['a', 'renamed']);
+    expect(disk['a']?.fiveHour).toBe(0.25);
+    expect(Object.keys(snap.accounts).sort()).toEqual(['a', 'renamed']);
   });
 });

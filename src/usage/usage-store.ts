@@ -486,12 +486,24 @@ export async function refreshUsage(
     }
     if (stale.length > 1) await pause(gapMs);
   }
+  // Only what this refresh measured goes back, over the file as it is NOW.
+  // The loop above takes seconds, and in that time a rename can move an entry,
+  // a removal drop one, and another session's refresh write its own; writing
+  // the snapshot read at the start undid all of them. This narrows the window
+  // to the read and the write below, which is what the rest of this file
+  // settles for too. An entry put back for an account removed meanwhile names
+  // no account, and is dropped when one is added under that name (forgetUsage).
+  const current = readUsageSnapshot(c);
+  for (const account of stale) {
+    const entry = snapshot.accounts[account.name];
+    if (entry) current.accounts[account.name] = entry;
+  }
   try {
-    writeJsonFile(snapshotPath(c), snapshot);
+    writeJsonFile(snapshotPath(c), current);
   } catch {
     /* cache write is best effort */
   }
-  return snapshot;
+  return current;
 }
 
 /**

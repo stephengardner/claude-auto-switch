@@ -44,6 +44,12 @@ semantic versioning.
   under the same name started from the old one's numbers. Removing now drops
   them, as a rename already moves them, and `ccx add` drops anything an older
   version left under the new name.
+- **A usage refresh no longer undoes what changed while it ran.** It read the
+  stored usage, spent seconds asking for each account's numbers, then wrote
+  back everything it had read, so a rename or removal made meanwhile, or
+  another session's refresh, was lost. It now writes back only the accounts
+  it measured, over the file as it is at that moment. The dashboard also
+  re-reads the stored usage after it adds, renames or removes an account.
 
 ### Changed
 
