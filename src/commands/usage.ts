@@ -51,7 +51,12 @@ export async function usageCommand(context: CliContext): Promise<number> {
       needsSignIn: loginIsKnownDead(credentialFileFingerprint(a.dir), context.ctx),
       windows: known
         ? [
-            { label: '5-hour', used: u.fiveHour, resetsAt: u.fiveHourReset },
+            {
+              label: '5-hour',
+              used: u.fiveHour,
+              resetsAt: u.fiveHourReset,
+              ...(u.noFiveHourLimit ? { none: true } : {}),
+            },
             { label: 'weekly', used: u.sevenDay, resetsAt: u.sevenDayReset },
             ...(u.models ?? []).map((m) => ({
               label: m.name,

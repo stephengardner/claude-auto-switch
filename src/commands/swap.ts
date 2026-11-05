@@ -102,6 +102,8 @@ export function whereAmI(context: CliContext, conversations: () => DesktopConver
 interface Window {
   used: number | null;
   resetsAt: number | null;
+  /** The account has no such window at all (a verified account's 5-hour one). */
+  none?: boolean;
 }
 
 interface Row {
@@ -159,7 +161,9 @@ function statusWords(a: StateAccount, here: boolean, now: number): string {
 export function rankAccounts(state: StatePayload, here: Here): Row[] {
   const now = state.now;
   const rows: Row[] = state.accounts.map((a) => {
-    const fiveHour = windowOf(a.usage?.fiveHour, a.usage?.fiveHourReset, now);
+    const fiveHour: Window = a.usage?.noFiveHourLimit
+      ? { used: null, resetsAt: null, none: true }
+      : windowOf(a.usage?.fiveHour, a.usage?.fiveHourReset, now);
     const week = windowOf(a.usage?.sevenDay, a.usage?.sevenDayReset, now);
     const model = modelWindowOf(a, state.preferredModel, now);
     const left = [fiveHour, week, ...(model ? [model] : [])]
@@ -198,6 +202,8 @@ export function rankAccounts(state: StatePayload, here: Here): Row[] {
 }
 
 function gauge(w: Window, color: boolean, size = 10): string {
+  // As wide as a bar and its number, so the columns after it stay put.
+  if (w.none) return paint('no limit'.padEnd(size + 5), codes.green, color);
   const pct = w.used === null ? '?' : `${Math.round(w.used * 100)}%`;
   return `${paint(bar(w.used, size), shadeForUsed(w.used), color)} ${pct.padStart(4)}`;
 }
@@ -258,6 +264,7 @@ export function renderBoard(rows: Row[], state: StatePayload, here: Here, color:
 export function card(r: Row, state: StatePayload): string {
   const now = state.now;
   const line = (label: string, w: Window): string => {
+    if (w.none) return `${label.padEnd(7)}no limit (a verified account)`;
     const reset = w.resetsAt && w.resetsAt > now ? `  resets in ${humanWait(w.resetsAt, now)}` : '';
     return `${label.padEnd(7)}${gauge(w, false, 16)}${reset}`;
   };

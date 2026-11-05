@@ -245,3 +245,76 @@ describe('learning what a 5-hour window costs the week', () => {
     expect(weekReset.windowCost).toBe(0.12);
   });
 });
+
+/**
+ * A verified Ultra account has no 5-hour limit (since 2026-10-30): its only
+ * stops are its week and its models' weeks.
+ */
+describe('an account with no 5-hour limit', () => {
+  const verified = (over: Record<string, unknown> = {}) => ({
+    fiveHour: null,
+    fiveHourReset: null,
+    noFiveHourLimit: true,
+    sevenDay: 0.28,
+    sevenDayReset: NOW + 100 * HOUR,
+    windowCost: 0.2,
+    ...over,
+  });
+
+  it('can run a whole window while its week holds one, and nothing stops it inside that', () => {
+    const s = standingOf(verified(), NOW);
+    expect(s.noFiveHourLimit).toBe(true);
+    expect(s.runway).toBe(1);
+    expect(s.binding).toBe('none');
+    expect(s.weeklyWindowsLeft).toBeCloseTo(0.72 / 0.2);
+    expect(s.worthMoving).toBe(true);
+  });
+
+  it('is stopped by its week once the week holds less than a window', () => {
+    const s = standingOf(verified({ sevenDay: 0.9 }), NOW);
+    expect(s.runway).toBeCloseTo(0.1 / 0.2);
+    expect(s.binding).toBe('weekly');
+    expect(s.heldBack).toBe(true);
+  });
+
+  it("is stopped by its model's week for that model", () => {
+    const s = standingOf(verified({ models: [{ name: 'Fable', utilization: 0.96, resetsAt: NOW + 50 * HOUR }] }), NOW, 'fable');
+    expect(s.runway).toBeCloseTo(0.04 / 0.2);
+    expect(s.binding).toBe('model');
+  });
+
+  it('never reads a 5-hour number left beside it', () => {
+    const s = standingOf(verified({ fiveHour: 1, fiveHourReset: NOW + HOUR }), NOW);
+    expect(s.runway).toBe(1);
+    expect(s.binding).toBe('none');
+  });
+
+  it('is open when nothing else was read about it either', () => {
+    const s = standingOf({ fiveHour: null, sevenDay: null, noFiveHourLimit: true }, NOW);
+    expect(s.runway).toBe(1);
+    expect(s.binding).toBe('none');
+  });
+
+  it('an account with a 5-hour limit says so', () => {
+    expect(standingOf(account(), NOW).noFiveHourLimit).toBe(false);
+    expect(standingOf(undefined, NOW).noFiveHourLimit).toBe(false);
+  });
+
+  it('goes ahead of an account whose 5-hour window is partly spent', () => {
+    const limited = standingOf(account({ fiveHour: 0.6, sevenDay: 0.28 }), NOW);
+    expect(pickScore(standingOf(verified(), NOW))).toBeGreaterThan(pickScore(limited));
+  });
+
+  // Deliberate: no 5-hour limit is not a bonus of its own. Within one window
+  // both can run the whole of it, so the week that expires first goes first,
+  // as between any two such accounts: budget left at a reset is lost, while
+  // the cost of the later move is one uncached read of the conversation.
+  it('against a fresh 5-hour window, is told apart by whose week expires first', () => {
+    const soonVerified = standingOf(verified({ sevenDayReset: NOW + 12 * HOUR }), NOW);
+    const lateLimited = standingOf(account({ sevenDay: 0.28, sevenDayReset: NOW + 150 * HOUR, windowCost: 0.2 }), NOW);
+    expect(pickScore(soonVerified)).toBeGreaterThan(pickScore(lateLimited));
+    const lateVerified = standingOf(verified({ sevenDayReset: NOW + 150 * HOUR }), NOW);
+    const soonLimited = standingOf(account({ sevenDay: 0.28, sevenDayReset: NOW + 12 * HOUR, windowCost: 0.2 }), NOW);
+    expect(pickScore(soonLimited)).toBeGreaterThan(pickScore(lateVerified));
+  });
+});

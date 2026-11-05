@@ -122,6 +122,34 @@ describe('the swap board', () => {
   });
 });
 
+describe('an account with no 5-hour limit, on the swap board', () => {
+  const here: Here = { kind: 'ccx', account: 'mid', pid: 4242 };
+  const verified = account('verified', {
+    fiveHour: null,
+    noFiveHourLimit: true,
+    sevenDay: 0.05,
+    sevenDayReset: NOW + 30 * HOUR,
+    models: [{ name: 'Fable', utilization: 0, resetsAt: NOW + 30 * HOUR }],
+  });
+  const withVerified: StatePayload = { ...state, accounts: [verified, ...state.accounts] };
+
+  it('is ranked by its week, and can be the one recommended', () => {
+    const rows = rankAccounts(withVerified, here);
+    expect(rows[0]?.account.name).toBe('verified');
+    expect(rows[0]?.room).toBeCloseTo(0.95);
+    expect(rows[0]?.recommended).toBe(true);
+  });
+
+  it('says it has no 5-hour limit, in the board and in its card, never ?', () => {
+    const rows = rankAccounts(withVerified, here);
+    const board = renderBoard(rows, withVerified, here, false);
+    expect(board).toMatch(/★ +verified +no limit +█░░░░░░░░░ +5%/);
+    const row = rows.find((r) => r.account.name === 'verified')!;
+    expect(card(row, withVerified).split('\n')[2]).toBe('5-hour no limit (a verified account)');
+    expect(board.split('\n').find((l) => l.includes('verified'))).not.toContain('?');
+  });
+});
+
 describe('ccx swap <name>', () => {
   function setup(env: Record<string, string> = {}): {
     context: CliContext;

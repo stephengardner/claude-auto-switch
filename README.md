@@ -7,7 +7,7 @@ room, and the conversation continues where it stopped.
 ccx runs on your machine. It talks to Anthropic only about your own accounts,
 and sends nothing anywhere else.
 
-![The ccx dashboard: each account with how much of its 5-hour and weekly limits is left](docs/img/dashboard.svg)
+![The ccx dashboard: each account with how much of its 5-hour and weekly limits is left, in the order ccx would move to them](docs/img/dashboard.svg)
 
 ## Install
 
@@ -61,6 +61,10 @@ ones. To change that:
 ccx order priority          # use your own order (set it with: ccx priority <name> <n>)
 ccx models opus fable       # stay on Opus across accounts, then fall back to Fable
 ```
+
+A verified account (Ultra) has no 5-hour limit, so only its weekly limits can
+stop it. The dashboard shows `no limit` in its 5-hour column, and ccx ranks it
+on its weekly limits alone.
 
 How the choice is made: [docs/how-it-works.md](docs/how-it-works.md#which-account-is-next).
 

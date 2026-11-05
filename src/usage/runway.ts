@@ -47,6 +47,17 @@ import { windowIsOpen } from './window-open.js';
  * the one whose leftover weekly budget is most at risk of expiring unused goes
  * first (URGENCY): budget left at the weekly reset is gone, budget elsewhere
  * keeps.
+ *
+ * An account with NO 5-hour limit (a verified Ultra account, since
+ * 2026-10-30) has only its weeks to stop it. The unit stays the same, a full
+ * 5-hour window of work, so such an account can run a whole window whenever
+ * its week holds one, and nothing stops it inside that: the binding is none.
+ * Having no 5-hour limit is not a bonus of its own. Against an account with a
+ * fresh 5-hour window both can run the whole window, and the week that
+ * expires first goes first, as between any two such accounts: budget left at
+ * a reset is lost for good, while what the later move costs is one uncached
+ * read of the conversation. Where it does count is everywhere a 5-hour window
+ * is partly spent, since that window no longer cuts this account's runway.
  */
 
 /**
@@ -73,13 +84,21 @@ export interface RunwayWindows {
   models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
   /** Learned: what one full 5-hour window costs the week on this account. */
   windowCost?: number | null;
+  /** The account has no 5-hour limit, only weekly ones (see the top of this file). */
+  noFiveHourLimit?: boolean | null;
 }
 
 export interface Standing {
   /** Work left before a window stops it, in full 5-hour windows (0..1). */
   runway: number;
-  /** Which window binds: the one with the least room. */
+  /**
+   * Which window binds: the one with the least room. None when nothing stops
+   * it within a window: nothing was read, or it has no 5-hour limit and its
+   * weeks hold more than a window.
+   */
   binding: '5-hour' | 'weekly' | 'model' | 'none';
+  /** The account has no 5-hour limit, so only its weeks can stop it. */
+  noFiveHourLimit: boolean;
   /** Weekly budget left, in 5-hour windows of work; null when not measured. */
   weeklyWindowsLeft: number | null;
   /** When the weekly window resets; null when not measured. */
@@ -125,8 +144,12 @@ export function standingOf(
   const cost = windowCostOf(entry);
   const candidates: Array<{ binding: Standing['binding']; windows: number }> = [];
 
-  const fiveHour = used(entry?.fiveHour, entry?.fiveHourReset, now);
-  candidates.push({ binding: '5-hour', windows: fiveHour === null ? 1 : 1 - fiveHour });
+  // No 5-hour limit: no 5-hour window to stop it, whatever number sits beside it.
+  const noFiveHourLimit = entry?.noFiveHourLimit === true;
+  if (!noFiveHourLimit) {
+    const fiveHour = used(entry?.fiveHour, entry?.fiveHourReset, now);
+    candidates.push({ binding: '5-hour', windows: fiveHour === null ? 1 : 1 - fiveHour });
+  }
 
   const weekly = used(entry?.sevenDay, entry?.sevenDayReset, now);
   const weeklyWindowsLeft = weekly === null ? null : (1 - weekly) / cost;
@@ -153,8 +176,16 @@ export function standingOf(
     weekLeft !== null &&
     Math.round((1 - weekLeft) * 100) >= holdBackAtPercent;
 
-  const tightest = candidates.reduce((a, b) => (b.windows < a.windows ? b : a));
+  // Nothing at all to stop it (no 5-hour limit, and no week read): as open as
+  // an account with no readings.
+  const tightest = candidates.reduce((a, b) => (b.windows < a.windows ? b : a), {
+    binding: 'none' as Standing['binding'],
+    windows: Number.POSITIVE_INFINITY,
+  });
   const runway = Math.max(0, Math.min(1, tightest.windows));
+  // A week holding more than a window does not stop it within one; only the
+  // 5-hour window, which every other account has, always binds inside it.
+  const binding = !entry ? 'none' : noFiveHourLimit && tightest.windows >= 1 ? 'none' : tightest.binding;
 
   const weeklyResetAt =
     weekly !== null && typeof entry?.sevenDayReset === 'number' && windowIsOpen(entry.sevenDayReset, now)
@@ -170,7 +201,8 @@ export function standingOf(
 
   return {
     runway,
-    binding: entry ? tightest.binding : 'none',
+    binding,
+    noFiveHourLimit,
     weeklyWindowsLeft,
     weeklyResetAt,
     urgency,

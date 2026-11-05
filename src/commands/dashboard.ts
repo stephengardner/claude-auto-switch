@@ -256,6 +256,7 @@ export async function dashboardCommand(
           fiveHourReset: u.fiveHourReset,
           sevenDayReset: u.sevenDayReset,
           ...(u.models ? { models: u.models } : {}),
+          ...(u.noFiveHourLimit ? { noFiveHourLimit: true } : {}),
           // The learned cost of a 5-hour window, so the pick column agrees with
           // rotation, which reads the whole entry.
           ...(typeof u.windowCost === 'number' ? { windowCost: u.windowCost } : {}),

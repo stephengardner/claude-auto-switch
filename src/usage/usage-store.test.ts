@@ -721,3 +721,63 @@ describe('a login the usage endpoint turns away', () => {
     expect(asked).toEqual([]);
   });
 });
+
+describe('an account with no 5-hour limit, in the stored usage', () => {
+  const verified: LimitProbeResult = {
+    verdict: 'allowed',
+    noFiveHourLimit: true,
+    sevenDay: 0.28,
+    sevenDayReset: 2_000,
+  };
+
+  it('keeps that it has none, apart from a 5-hour number nobody read', async () => {
+    const { c, accounts } = setup(['v']);
+    await refreshUsage(accounts, c, { probe: () => Promise.resolve(verified) });
+    const entry = readUsageSnapshot(c).accounts['v'];
+    expect(entry).toMatchObject({ fiveHour: null, fiveHourReset: null, noFiveHourLimit: true, sevenDay: 0.28 });
+  });
+
+  it('drops it as soon as the account reads with a 5-hour window again', async () => {
+    const { c, accounts } = setup(['v']);
+    let answer: LimitProbeResult = verified;
+    const probe = (): Promise<LimitProbeResult> => Promise.resolve(answer);
+    await refreshUsage(accounts, c, { probe });
+    answer = result(0.3, 0.4);
+    await refreshUsage(accounts, c, { probe, now: () => Date.now() + 10 * 60_000 });
+    const entry = readUsageSnapshot(c).accounts['v'];
+    expect(entry?.fiveHour).toBe(0.3);
+    expect(entry?.noFiveHourLimit).toBeUndefined();
+  });
+
+  it('keeps it through a read that fails, like the rest of the last numbers', async () => {
+    const { c, accounts } = setup(['v']);
+    await refreshUsage(accounts, c, { probe: () => Promise.resolve(verified) });
+    await refreshUsage(accounts, c, {
+      probe: () => Promise.resolve({ verdict: 'unknown' }),
+      now: () => Date.now() + 10 * 60_000,
+    });
+    expect(readUsageSnapshot(c).accounts['v']?.noFiveHourLimit).toBe(true);
+  });
+
+  it('keeps the window cost it learned while it still had a 5-hour window', async () => {
+    const { c, accounts } = setup(['v']);
+    const t0 = Date.now();
+    const reading = (fiveHour: number, sevenDay: number): LimitProbeResult => ({
+      verdict: 'allowed',
+      fiveHour,
+      sevenDay,
+      fiveHourReset: t0 + 3 * 3_600_000,
+      sevenDayReset: t0 + 4 * 86_400_000,
+    });
+    let answer = reading(0.1, 0.3);
+    const probe = (): Promise<LimitProbeResult> => Promise.resolve(answer);
+    await refreshUsage(accounts, c, { probe, now: () => t0 });
+    answer = reading(0.5, 0.38);
+    await refreshUsage(accounts, c, { probe, now: () => t0 + 10 * 60_000 });
+    const learned = readUsageSnapshot(c).accounts['v']?.windowCost;
+    expect(typeof learned).toBe('number');
+    answer = { ...verified, sevenDayReset: t0 + 4 * 86_400_000 };
+    await refreshUsage(accounts, c, { probe, now: () => t0 + 20 * 60_000 });
+    expect(readUsageSnapshot(c).accounts['v']).toMatchObject({ noFiveHourLimit: true, windowCost: learned });
+  });
+});

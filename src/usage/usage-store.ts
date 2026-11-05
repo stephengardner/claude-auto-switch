@@ -30,6 +30,12 @@ const ModelSchema = z.object({
 });
 const EntrySchema = z.object({
   fiveHour: z.number().nullable(),
+  /**
+   * The account has no 5-hour limit, only weekly ones (a verified Ultra
+   * account). Kept apart from `fiveHour: null`, which only says no number was
+   * read: the one is a fact about the account, the other a gap in what ccx knows.
+   */
+  noFiveHourLimit: z.boolean().optional(),
   sevenDay: z.number().nullable(),
   fiveHourReset: z.number().nullable(),
   sevenDayReset: z.number().nullable(),
@@ -434,6 +440,7 @@ export async function refreshUsage(
       const previous = snapshot.accounts[account.name];
       const fresh = {
         fiveHour: result.fiveHour ?? null,
+        ...(result.noFiveHourLimit ? { noFiveHourLimit: true } : {}),
         sevenDay: result.sevenDay ?? null,
         fiveHourReset: result.fiveHourReset ?? null,
         sevenDayReset: result.sevenDayReset ?? null,

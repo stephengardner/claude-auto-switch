@@ -22,6 +22,11 @@ export interface UsageWindow {
    * still work on by switching model.
    */
   modelOnly?: boolean;
+  /**
+   * The account has no such window at all: a verified account has no 5-hour
+   * limit. Its `used` is null, which elsewhere means "not read".
+   */
+  none?: boolean;
 }
 
 export interface UsageAccount {
@@ -204,6 +209,12 @@ export function renderUsageReport(
     }
 
     for (const w of account.windows) {
+      if (w.none) {
+        lines.push(
+          `    ${paint(w.label.padEnd(labelW), codes.cyan, color)}  ${paint('no limit (a verified account)', codes.green, color)}`,
+        );
+        continue;
+      }
       const wait = humanWait(w.resetsAt, now);
       // What the bar and percentage show is usage as it stands now, so a window
       // that has reset reads as empty rather than staying at the number it hit

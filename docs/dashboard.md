@@ -10,6 +10,9 @@
     disabled ones last.
   - Every bar and number is what is LEFT of that window, as on the status
     line: a full bar is an untouched window.
+  - A verified account (Ultra) has no 5-hour limit, so its 5-hour cell says
+    `no limit` (`none` once the bars are gone), where `?` means a window that
+    could not be read.
   - When a window resets is beside its own bar: `resets in 4h 16m (3:15 AM)`,
     with the clock time for a wait under a day. The cell is blank while no
     5-hour window is running (one starts at first use). An account that is

@@ -194,6 +194,12 @@ function ragged(): DashboardSnapshot {
       }),
       account({ name: 'unread' }),
       account({
+        name: 'verified',
+        pick: pick(3),
+        // No 5-hour limit at all: the cell says so, as wide as any other.
+        usage: { fiveHour: null, noFiveHourLimit: true, sevenDay: 0.3, sevenDayReset: NOW + 4 * DAY },
+      }),
+      account({
         name: 'hour-out',
         usage: { fiveHour: 1, sevenDay: 0.3, fiveHourReset: NOW + 23 * HOUR + 59 * MIN, sevenDayReset: NOW + 3 * DAY },
       }),
@@ -210,11 +216,11 @@ function ragged(): DashboardSnapshot {
 
 /** Where each gauge (a bar and its number) starts in a row drawn with bars. */
 const gaugeStarts = (row: string): number[] =>
-  [...row.matchAll(/(?:[█░]+|-{4,}) +(?:\d+%|\?)/g)].map((m) => m.index);
+  [...row.matchAll(/(?:[█░]+|-{4,}) +(?:\d+%|\?)|no limit/g)].map((m) => m.index);
 
 /** Where each number ends, which is what lines up when there are no bars. */
 const numberEnds = (row: string): number[] =>
-  [...row.matchAll(/\d+%|\?(?= |$)/g)].map((m) => m.index + m[0].length);
+  [...row.matchAll(/\d+%|\?(?= |$)|\bnone\b/g)].map((m) => m.index + m[0].length);
 
 describe('columns that stay in line', () => {
   // Every width here leaves room for bars; the test after these covers the rest.
@@ -227,7 +233,7 @@ describe('columns that stay in line', () => {
     for (const width of widths) {
       const out = renderDashboard(ragged(), { color: false, clock: utc, ...(width ? { width } : {}) });
       const rows = tableRows(out);
-      expect(rows.length, `rows at ${width}`).toBe(8);
+      expect(rows.length, `rows at ${width}`).toBe(9);
       const week = rows.map((row) => gaugeStarts(row)[1]);
       expect(week[0], `at ${width}`).toBeGreaterThan(0);
       expect(new Set(week).size, `week bars at ${width}:\n${out}`).toBe(1);
@@ -273,7 +279,7 @@ describe('columns that stay in line', () => {
       const at = row.slice(week).search(/resets in|back in/);
       return at < 0 ? [] : [week + at];
     });
-    expect(starts.length).toBe(5);
+    expect(starts.length).toBe(6);
     expect(new Set(starts).size).toBe(1);
   });
 
@@ -338,6 +344,31 @@ describe('what is left', () => {
     expect(row).toContain('?');
     expect(row).not.toContain('%');
     expect(row).not.toMatch(/[█░]/);
+  });
+
+  it('says an account with no 5-hour limit has none, where an unread window says ?', () => {
+    // A verified account has only weekly limits. Drawn as `?` it read as an
+    // account nobody had looked at, the one thing it is not.
+    const verified = account({
+      name: 'verified',
+      usage: { fiveHour: null, noFiveHourLimit: true, sevenDay: 0.28, sevenDayReset: NOW + 3 * DAY },
+    });
+    const row = rowOf(renderDashboard(snapshot([verified]), opts), 'verified');
+    expect(row).toMatch(/verified +no limit +███████░░░  72%  resets in 3d/);
+    expect(row).not.toContain('?');
+    const narrow = rowOf(renderDashboard(snapshot([verified]), { ...opts, width: 30 }), 'verified');
+    expect(narrow).toMatch(/verified +none +72%/);
+  });
+
+  it('says so in the line about the highlighted account', () => {
+    const verified = account({
+      name: 'verified',
+      usage: { fiveHour: null, noFiveHourLimit: true, sevenDay: 0.28, sevenDayReset: NOW + 3 * DAY },
+    });
+    const ranked = renderDashboard(snapshot([{ ...verified, pick: pick(1) }]), { ...opts, interactive: true, selected: 0 });
+    expect(ranked).toContain('verified (w@x.com · max · priority 0): pick #1, no 5-hour limit (a verified account)');
+    const out = renderDashboard(snapshot([{ ...verified, enabled: false }]), { ...opts, interactive: true, selected: 0 });
+    expect(out).toContain('verified (w@x.com · max · priority 0): no 5-hour limit (a verified account)');
   });
 
   it('reads a window that has reset as full again', () => {

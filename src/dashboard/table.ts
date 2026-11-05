@@ -72,6 +72,13 @@ export function clockTime(epochMs: number): string {
   return `${hour % 12 === 0 ? 12 : hour % 12}:${String(at.getMinutes()).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`;
 }
 
+/**
+ * What a window the account does not have says in its cell, in full and in
+ * the four columns a number takes once the bars are gone.
+ */
+const NO_LIMIT = 'no limit';
+const NO_LIMIT_SHORT = 'none';
+
 /** How wide a bar is drawn when there is room, and below what it is not worth drawing. */
 const BAR = 10;
 const BAR_MIN = 4;
@@ -124,6 +131,8 @@ interface WindowView {
   resetsAt: number | null;
   /** This is the cell that says when the account is back. */
   back: boolean;
+  /** The account has no such window at all (a verified account's 5-hour one). */
+  none?: boolean;
 }
 
 /** Something said at the end of a row. */
@@ -218,11 +227,13 @@ function windowsOf(placed: Placed, model: string | null, now: number): WindowVie
   const usage = placed.account.usage;
   const back = placed.block === 'out' ? backColumn(placed, model, now) : null;
   const windows: WindowView[] = [
-    {
-      used: effectiveUtilization(usage?.fiveHour, usage?.fiveHourReset, now),
-      resetsAt: ahead(usage?.fiveHourReset, now),
-      back: back === 0,
-    },
+    usage?.noFiveHourLimit
+      ? { used: null, resetsAt: null, back: false, none: true }
+      : {
+          used: effectiveUtilization(usage?.fiveHour, usage?.fiveHourReset, now),
+          resetsAt: ahead(usage?.fiveHourReset, now),
+          back: back === 0,
+        },
     {
       used: effectiveUtilization(usage?.sevenDay, usage?.sevenDayReset, now),
       resetsAt: ahead(usage?.sevenDayReset, now),
@@ -377,6 +388,14 @@ export function drawTable(input: TableInput, options: TableOptions): Table {
         gap(nameW - name.length),
       ];
       row.windows.forEach((window, i) => {
+        const resetRoom = resetW[i] ?? 0;
+        if (window.none) {
+          // Said in the gauge's own width, so the columns after it stay put.
+          const said = gaugeW >= NO_LIMIT.length ? NO_LIMIT : NO_LIMIT_SHORT;
+          runs.push(gap(i === 0 ? 2 : 3), { text: said, code: quiet ? codes.dim : codes.green }, gap(gaugeW - said.length));
+          if (resetRoom > 0) runs.push(gap(2 + resetRoom));
+          return;
+        }
         const left = window.used === null ? null : Math.max(0, 1 - window.used);
         const number = (left === null ? '?' : `${Math.round(left * 100)}%`).padStart(4);
         const reset = resets[r]?.[i] ?? null;
@@ -387,7 +406,6 @@ export function drawTable(input: TableInput, options: TableOptions): Table {
           runs.push({ text: bar(left, shape.bar), code: quiet ? codes.dim : shadeForUsed(window.used) }, gap(1));
         }
         runs.push({ text: number, ...(quiet ? { code: codes.dim } : {}) });
-        const resetRoom = resetW[i] ?? 0;
         // A blank cell is still as wide as its column, so the next bar starts where the others do.
         if (resetRoom > 0) runs.push(gap(2), ...(reset ? [reset] : []), gap(resetRoom - (reset?.text.length ?? 0)));
       });

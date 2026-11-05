@@ -31,6 +31,8 @@ export interface SnapshotInput {
       fiveHourReset?: number | null;
       sevenDayReset?: number | null;
       models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
+      /** No 5-hour limit on this account (see DashboardAccount). */
+      noFiveHourLimit?: boolean;
     }
   >;
   active: string | null;

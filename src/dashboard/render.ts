@@ -29,6 +29,11 @@ export interface DashboardAccount {
     fiveHourReset?: number | null;
     sevenDayReset?: number | null;
     models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
+    /**
+     * It has no 5-hour limit, only weekly ones (a verified account). Then a
+     * null `fiveHour` is that fact, not a number that could not be read.
+     */
+    noFiveHourLimit?: boolean;
   };
   /**
    * Where this account stands in the order rotation picks from: 1 is the
@@ -160,8 +165,13 @@ import { arrange, type Block } from './arrange.js';
 import { plainRecent } from './recent.js';
 import { clockTime, drawTable, fit, hhmm } from './table.js';
 
+/** What is said of an account with no 5-hour limit, in the line about it. */
+const NO_FIVE_HOUR = 'no 5-hour limit (a verified account)';
+
 /** Runway in words: how much of a 5-hour window, and which window binds. */
-function runwayWords(pick: NonNullable<DashboardAccount['pick']>): string {
+function runwayWords(pick: NonNullable<DashboardAccount['pick']>, noFiveHourLimit: boolean): string {
+  // Its week is in its row, and a held-back one says what is left of it.
+  if (noFiveHourLimit) return NO_FIVE_HOUR;
   const share = pick.runway >= 0.995 ? 'a full 5-hour window' : `${Math.round(pick.runway * 100)}% of a 5-hour window`;
   const binds = pick.binding === 'weekly' ? ' (the week binds)' : pick.binding === 'model' ? ' (the model binds)' : '';
   return `room for ${share}${binds}`;
@@ -172,9 +182,9 @@ function runwayWords(pick: NonNullable<DashboardAccount['pick']>): string {
  * Said beside the number rather than after the room, where a long line cut it
  * off: it is the answer to "why is this one so far down".
  */
-function pickWords(pick: NonNullable<DashboardAccount['pick']>): string {
+function pickWords(pick: NonNullable<DashboardAccount['pick']>, noFiveHourLimit: boolean): string {
   const held = pick.heldBack ? ` (held back: ${Math.round(pick.heldBack.weekLeft * 100)}% of its week left)` : '';
-  return `pick #${pick.rank}${held}, ${runwayWords(pick)}`;
+  return `pick #${pick.rank}${held}, ${runwayWords(pick, noFiveHourLimit)}`;
 }
 
 /** Text broken into lines of at most `width`, at spaces; a word too long for one is cut. */
@@ -226,7 +236,8 @@ function detailLine(a: DashboardAccount, now: number): string {
   const heading = `${a.name} (${who})`;
   const u = a.usage;
   if (!u) return `${heading}: no usage read yet`;
-  const parts = a.pick ? [pickWords(a.pick)] : [];
+  const noFiveHourLimit = u.noFiveHourLimit === true;
+  const parts = a.pick ? [pickWords(a.pick, noFiveHourLimit)] : noFiveHourLimit ? [NO_FIVE_HOUR] : [];
   for (const m of u.models ?? []) {
     const used = effectiveUtilization(m.utilization, m.resetsAt, now);
     const left = used === null ? '?' : `${Math.round(Math.max(0, 1 - used) * 100)}%`;
