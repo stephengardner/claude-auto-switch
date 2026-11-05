@@ -18,9 +18,10 @@ semantic versioning.
   (`noFiveHourLimit` in the stored usage and in `ccx state`), kept apart from a
   number that was not read. It is claimed only on positive evidence: the
   answer's `limits` list must be there and the week must have been read, so an
-  older or partial answer never hides a real 5-hour window behind it. The
-  5-hour reading is also taken from the `session` entry when the `five_hour`
-  block has no number.
+  older or partial answer never hides a real 5-hour window behind it. Once
+  recorded, it stands until a reading shows a 5-hour window again; a failed
+  read, or one that cannot tell, leaves it as it was. The 5-hour reading is
+  also taken from the `session` entry when the `five_hour` block has no number.
 - **The dashboard, `ccx usage` and `/ccx swap` say `no limit`.** The 5-hour
   cell of such an account reads `no limit` (`none` once the bars are gone, in
   the same width, so the columns stay in line). The line about the highlighted

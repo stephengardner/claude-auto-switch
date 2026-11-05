@@ -759,6 +759,17 @@ describe('an account with no 5-hour limit, in the stored usage', () => {
     expect(readUsageSnapshot(c).accounts['v']?.noFiveHourLimit).toBe(true);
   });
 
+  it('keeps it through an answer that reads the week but cannot tell about the 5-hour window', async () => {
+    // No `limits` list: the probe claims neither way, so the fact stands.
+    const { c, accounts } = setup(['v']);
+    await refreshUsage(accounts, c, { probe: () => Promise.resolve(verified) });
+    await refreshUsage(accounts, c, {
+      probe: () => Promise.resolve({ verdict: 'allowed', sevenDay: 0.3, sevenDayReset: 2_000 }),
+      now: () => Date.now() + 10 * 60_000,
+    });
+    expect(readUsageSnapshot(c).accounts['v']).toMatchObject({ noFiveHourLimit: true, sevenDay: 0.3 });
+  });
+
   it('keeps the window cost it learned while it still had a 5-hour window', async () => {
     const { c, accounts } = setup(['v']);
     const t0 = Date.now();

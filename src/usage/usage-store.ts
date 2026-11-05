@@ -438,9 +438,14 @@ export async function refreshUsage(
     const known = result.fiveHour !== undefined || result.sevenDay !== undefined;
     if (known) {
       const previous = snapshot.accounts[account.name];
+      // No 5-hour limit is claimed only on positive evidence, so an answer
+      // without it either says the account has a 5-hour window (a reading,
+      // which ends the fact) or cannot tell, which leaves it standing.
+      const noFiveHourLimit =
+        result.noFiveHourLimit === true || (result.fiveHour === undefined && previous?.noFiveHourLimit === true);
       const fresh = {
         fiveHour: result.fiveHour ?? null,
-        ...(result.noFiveHourLimit ? { noFiveHourLimit: true } : {}),
+        ...(noFiveHourLimit ? { noFiveHourLimit: true } : {}),
         sevenDay: result.sevenDay ?? null,
         fiveHourReset: result.fiveHourReset ?? null,
         sevenDayReset: result.sevenDayReset ?? null,
