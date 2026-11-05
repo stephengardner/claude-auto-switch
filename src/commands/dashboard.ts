@@ -210,6 +210,15 @@ export async function dashboardCommand(
   } catch {
     /* cached (possibly empty) usage is fine */
   }
+  /**
+   * The stored usage again, after this screen added, renamed or removed an
+   * account: those move or drop entries on disk, and the copy held here would
+   * otherwise show a name with the numbers it had before until the next
+   * refresh, such as an old account's "no limit" on a new one.
+   */
+  const rereadUsage = (): void => {
+    usageSnap = readUsageSnapshot(context.ctx);
+  };
   // Dashboard actions go to the same shared log that `ccx run` writes to.
   const pushEvent = (m: string): void => appendEvent(home, m, Date.now());
   // A rotation setting changed here is saved to the FILE (never baking in a
@@ -502,6 +511,7 @@ export async function dashboardCommand(
         addAccount({ name: text, dir }, context.ctx);
         // As `ccx add` does: anything stored under a new name is an old account's.
         forgetUsage(text, context.ctx);
+        rereadUsage();
         pushEvent(`added ${text}`);
         // The browser sign-in is deliberately not run from in here: it wants the
         // screen, and this screen is already taken. One command finishes it.
@@ -509,6 +519,7 @@ export async function dashboardCommand(
       }
       if (!target) return 'nothing selected to rename';
       const result = renameAccount(target.name, text, context.config, context.ctx);
+      rereadUsage();
       pushEvent(`renamed ${result.from} to ${result.to}`);
       return result.folderNote
         ? `renamed to "${result.to}" (${result.folderNote})`
@@ -520,6 +531,7 @@ export async function dashboardCommand(
       // here and removing from a shell are one rule and one outcome.
       const said: string[] = [];
       const code = removeCommand({ ...context, out: (m: string) => said.push(m) }, target.name, { purge });
+      rereadUsage();
       if (code === 0) pushEvent(purge ? `removed ${target.name} and its login` : `removed ${target.name}`);
       return { ok: code === 0, text: said.join(' ') };
     },
