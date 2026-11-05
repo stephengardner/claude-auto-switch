@@ -39,15 +39,15 @@ with `--resume`, so the conversation survives either way.
 
 ## Everyday commands
 
-| Command              | What it does                                                        |
-| -------------------- | ------------------------------------------------------------------- |
-| `ccx`                | Every account, with how much of its 5-hour and weekly limit is left |
-| `ccx dashboard`      | The same, live. Press `s` for settings                              |
-| `ccx use <name>`     | Start new sessions on `<name>` and move a running session there     |
-| `/ccx`               | Inside Claude: see each account's room and switch this session      |
-| `ccx login <name>`   | Sign an account in again                                            |
-| `ccx disable <name>` | Keep an account out of rotation (`ccx enable` brings it back)       |
-| `ccx doctor`         | Check the setup                                                     |
+| Command              | What it does                                                    |
+| -------------------- | --------------------------------------------------------------- |
+| `ccx`                | Every account, with how much of each of its limits is left      |
+| `ccx dashboard`      | The same, live. Press `s` for settings                          |
+| `ccx use <name>`     | Start new sessions on `<name>` and move a running session there |
+| `/ccx`               | Inside Claude: see each account's room and switch this session  |
+| `ccx login <name>`   | Sign an account in again                                        |
+| `ccx disable <name>` | Keep an account out of rotation (`ccx enable` brings it back)   |
+| `ccx doctor`         | Check the setup                                                 |
 
 Every command and setting: [docs/reference.md](docs/reference.md).
 
