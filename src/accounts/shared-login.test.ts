@@ -48,6 +48,72 @@ function renew(dir: string, refreshToken = 'refresh-rotated'): void {
   );
 }
 
+describe('the MCP logins of profiles that share one login', () => {
+  const mcp = (n: number) => ({
+    'notion|1': { accessToken: `mcp-access-fake-${n}`, refreshToken: `mcp-refresh-fake-${n}` },
+  });
+  const withMcp = (dir: string, mcpOAuth: unknown): void => {
+    const file = path.join(dir, '.credentials.json');
+    writeFileSync(
+      file,
+      JSON.stringify({ ...(JSON.parse(readFileSync(file, 'utf8')) as object), mcpOAuth }),
+      'utf8',
+    );
+  };
+  const mcpOf = (dir: string): unknown =>
+    (
+      JSON.parse(readFileSync(path.join(dir, '.credentials.json'), 'utf8')) as {
+        mcpOAuth?: unknown;
+      }
+    ).mcpOAuth;
+
+  it("leaves the sibling its own when a renewal is carried across, and gives it none of the renewed profile's", () => {
+    const { renewed, sibling, retired } = sharedPair();
+    withMcp(renewed.dir, mcp(1));
+    withMcp(sibling.dir, mcp(2));
+    // The renewal keeps what the profile held beside the login, as ccx's own does.
+    const text = JSON.parse(
+      readFileSync(path.join(renewed.dir, '.credentials.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    writeFileSync(
+      path.join(renewed.dir, '.credentials.json'),
+      JSON.stringify({
+        ...text,
+        claudeAiOauth: { accessToken: 'sk-new', refreshToken: 'refresh-rotated', expiresAt: 999 },
+      }),
+      'utf8',
+    );
+
+    const updated = propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: [sibling],
+      retired,
+      renewed: credentialFingerprint(renewed.dir),
+    });
+
+    expect(updated).toEqual(['maxed']);
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-rotated');
+    expect(mcpOf(sibling.dir)).toEqual(mcp(2));
+    expect(mcpOf(renewed.dir)).toEqual(mcp(1));
+  });
+
+  it('gives a sibling with none none, though the renewed profile holds some', () => {
+    const { renewed, sibling, retired } = sharedPair();
+    renew(renewed.dir);
+    withMcp(renewed.dir, mcp(1));
+
+    propagateRenewal({
+      renewedDir: renewed.dir,
+      siblings: [sibling],
+      retired,
+      renewed: credentialFingerprint(renewed.dir),
+    });
+
+    expect(refreshTokenOf(sibling.dir)).toBe('refresh-rotated');
+    expect(mcpOf(sibling.dir)).toBeUndefined();
+  });
+});
+
 describe('a login shared by two profiles, when one of them renews', () => {
   it('carries the new login across, so the other one keeps working', () => {
     // The death this prevents: renewing rotates the token and retires the old

@@ -37,14 +37,30 @@ export function* hasCredentialSteps(file: string, io: KeychainIo): Steps<boolean
   }
 }
 
-/** Update the store Claude actually reads; never hide a Keychain failure behind a stale file. */
-export function* writeCredentialSteps(file: string, text: string, io: KeychainIo): Steps<void> {
+/**
+ * Update the store Claude actually reads; never hide a Keychain failure behind a stale file.
+ * `text` may be a function of what that store holds, read just before the write (null when it holds nothing).
+ */
+export function* writeCredentialSteps(
+  file: string,
+  text: string | ((current: string | null) => string),
+  io: KeychainIo,
+): Steps<void> {
   const dir = path.dirname(file);
-  if (isLiveCredential(file) && (yield* call(() => io.read(dir))) !== null) {
-    yield* call(() => io.write(dir, text));
+  const item = isLiveCredential(file) ? yield* call(() => io.read(dir)) : null;
+  if (item !== null) {
+    yield* call(() => io.write(dir, typeof text === 'string' ? text : text(item)));
   } else {
     // Linux/Windows, existing macOS file fallbacks, and new session snapshots.
-    writeSecretFile(file, text);
+    writeSecretFile(file, typeof text === 'string' ? text : text(readFileOrNull(file)));
+  }
+}
+
+function readFileOrNull(file: string): string | null {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    return null;
   }
 }
 

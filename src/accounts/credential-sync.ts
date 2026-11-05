@@ -197,7 +197,7 @@ function* pullSteps(account: SyncAccount, sessionDir: string, ctx: PathCtx, io: 
     // mid-write when we look can never be half-copied into a running session.
     const installed = yield* sourceSnapshotSteps(
       account.dir,
-      (snapshot) => installCredentialSteps(sessionDir, snapshot, io),
+      (snapshot) => installCredentialSteps(sessionDir, snapshot, io, { mcp: 'folder' }),
       io,
     );
     if (!installed.ok) return installed.reason === 'busy' ? 'busy' : 'skipped';

@@ -185,6 +185,27 @@ describe('Keychain-only profiles', () => {
     expect(readOauthToken(credentialPath(dir))).toBe('work-token');
   });
 
+  it("keeps the MCP logins of a login held in the Keychain when another store's login is saved into it", () => {
+    const mcp = (n: number) => ({
+      'notion|1': { accessToken: `mcp-access-fake-${n}`, refreshToken: `mcp-refresh-fake-${n}` },
+    });
+    const withMcp = (text: string, mcpOAuth: unknown): string =>
+      JSON.stringify({ ...(JSON.parse(text) as object), mcpOAuth });
+    const session = path.join(home, 'session');
+    keychain.set(dir, withMcp(credential('work-token'), mcp(1)));
+    keychain.set(session, withMcp(credential('session-renewed'), mcp(2)));
+
+    expect(installCredential(dir, credentialPath(session))).toBe(true);
+
+    const saved = JSON.parse(keychain.get(dir) ?? '{}') as {
+      claudeAiOauth?: { accessToken?: string };
+      mcpOAuth?: unknown;
+    };
+    expect(saved.claudeAiOauth?.accessToken).toBe('session-renewed');
+    expect(saved.mcpOAuth).toEqual(mcp(1));
+    expect(existsSync(credentialPath(dir))).toBe(false);
+  });
+
   it('uses Keychain ahead of a stale fallback file and persists renewals to Keychain', async () => {
     writeFileSync(credentialPath(home), credential('stale-file'));
     keychain.set(home, credential('expiring-token', 1));

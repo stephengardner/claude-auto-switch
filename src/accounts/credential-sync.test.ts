@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -220,5 +220,113 @@ describe('recovering a dead profile login from a live session', () => {
       recoverLoginFromLiveSession({ name: 'work', dir: profile, email: 'a@example.com' }, own, c)
         .recovered,
     ).toBe(false);
+  });
+});
+
+describe('the MCP logins in the stores a login is carried between', () => {
+  const mcp = (n: number) => ({
+    'notion|1': { accessToken: `mcp-access-fake-${n}`, refreshToken: `mcp-refresh-fake-${n}` },
+  });
+  const login = (token: string, expiresAt: number, mcpOAuth?: unknown): string =>
+    JSON.stringify({
+      claudeAiOauth: { accessToken: `at-${token}`, refreshToken: `rt-${token}`, expiresAt },
+      ...(mcpOAuth === undefined ? {} : { mcpOAuth }),
+    });
+  const put = (root: string, name: string, text: string | null, email?: string): string => {
+    const dir = path.join(root, name);
+    mkdirSync(dir, { recursive: true });
+    if (text !== null) writeFileSync(credentialPath(dir), text);
+    if (email)
+      writeFileSync(
+        path.join(dir, '.claude.json'),
+        JSON.stringify({ oauthAccount: { emailAddress: email } }),
+      );
+    return dir;
+  };
+  const textOf = (dir: string): string => readFileSync(credentialPath(dir), 'utf8');
+  const scratch = (root: string) => ({ env: { CLAUDE_AUTO_SWITCH_HOME: root } });
+
+  it('keeps the running session its own when a renewal made elsewhere is carried into it', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-mcp-'));
+    const profile = put(root, 'profile', login('new', 9_000, mcp(2)));
+    const session = put(root, 'session', login('old', 1_000, mcp(1)), 'a@example.com');
+
+    const result = pullProfileIntoSession(
+      { name: 'work', dir: profile, email: 'a@example.com' },
+      session,
+      scratch(root),
+    );
+
+    expect(result).toBe('pulled');
+    expect(textOf(session)).toBe(login('new', 9_000, mcp(1)));
+    expect(textOf(profile)).toBe(login('new', 9_000, mcp(2)));
+  });
+
+  it('does the same on timers for a running session', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-mcp-'));
+    const profile = put(root, 'profile', login('new', 9_000, mcp(2)));
+    const session = put(root, 'session', login('old', 1_000, mcp(1)), 'a@example.com');
+
+    const result = await pullProfileIntoSessionAsync(
+      { name: 'work', dir: profile, email: 'a@example.com' },
+      session,
+      scratch(root),
+    );
+
+    expect(result).toBe('pulled');
+    expect(textOf(session)).toBe(login('new', 9_000, mcp(1)));
+  });
+
+  it('keeps a session whose Claude signed out its own, too', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-mcp-'));
+    const profile = put(root, 'profile', login('new', 9_000, mcp(2)));
+    const signedOut = JSON.stringify({
+      claudeAiOauth: { accessToken: '', refreshToken: '' },
+      mcpOAuth: mcp(1),
+    });
+    const session = put(root, 'session', signedOut, 'a@example.com');
+
+    expect(
+      pullProfileIntoSession(
+        { name: 'work', dir: profile, email: 'a@example.com' },
+        session,
+        scratch(root),
+      ),
+    ).toBe('pulled');
+
+    expect(textOf(session)).toBe(login('new', 9_000, mcp(1)));
+  });
+
+  it('starts a session that holds no login at all from the profile whole', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-mcp-'));
+    const profile = put(root, 'profile', login('new', 9_000, mcp(2)));
+    const session = put(root, 'session', null, 'a@example.com');
+
+    expect(
+      pullProfileIntoSession(
+        { name: 'work', dir: profile, email: 'a@example.com' },
+        session,
+        scratch(root),
+      ),
+    ).toBe('pulled');
+
+    expect(textOf(session)).toBe(login('new', 9_000, mcp(2)));
+  });
+
+  it("keeps the profile its own when a live session's login is adopted in place of its dead one", () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-mcp-'));
+    const profile = put(root, 'profile', login('dead', 1, mcp(1)));
+    const live = put(root, 'live-session', login('fresh', 9_000, mcp(2)), 'a@example.com');
+    takeLease('work', live, scratch(root));
+
+    const result = recoverLoginFromLiveSession(
+      { name: 'work', dir: profile, email: 'a@example.com' },
+      null,
+      scratch(root),
+    );
+
+    expect(result.recovered).toBe(true);
+    expect(textOf(profile)).toBe(login('fresh', 9_000, mcp(1)));
+    expect(textOf(live)).toBe(login('fresh', 9_000, mcp(2)));
   });
 });

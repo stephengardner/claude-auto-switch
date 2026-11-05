@@ -1,4 +1,4 @@
-import { hasCredentialSteps } from '../accounts/credential-storage.js';
+import { hasCredentialSteps, readCredentialSteps } from '../accounts/credential-storage.js';
 import { thrownReason } from '../util/thrown-reason.js';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -116,6 +116,8 @@ import {
   type SharingSnapshot,
 } from '../accounts/shared-login.js';
 import { carryTargets } from '../accounts/duplicate-guard.js';
+import type { McpMode } from '../accounts/mcp-logins.js';
+import { parkMcpLoginsSteps } from '../accounts/mcp-park.js';
 import {
   pullProfileIntoSessionAsync,
   recoverLoginFromLiveSession,
@@ -874,14 +876,43 @@ export async function runInteractiveHotSwap(
    * Claude runs; a move and the session's end run it blocking. `lockWaitMs`:
    * how long a profile sharing the login is waited for; a move under the
    * running Claude passes 0, since it runs on the thread that relays it.
+   * `mcp`: the account keeps its own MCP logins, unless the session is ending
+   * and parks its own in the account.
    */
-  const saveBack = (account: Account, confirmedOwner?: string | null, lockWaitMs?: number): SaveOutcome =>
-    runBlocking(saveBackSteps(account, confirmedOwner, keychainBlocking, lockWaitMs));
+  const saveBack = (
+    account: Account,
+    confirmedOwner?: string | null,
+    lockWaitMs?: number,
+    mcp?: McpMode,
+  ): SaveOutcome =>
+    runBlocking(saveBackSteps(account, confirmedOwner, keychainBlocking, lockWaitMs, mcp));
+  /**
+   * A session that is ending parks its MCP sign-ins in `account`'s saved login
+   * even when its Claude login is not one to save home (signed out, or not the
+   * account's): they are the person's own, and a refresh of one lives only in
+   * this folder. Never throws, so the session still ends.
+   */
+  const parkSessionMcpLogins = function* (account: Account, io: KeychainIo): Steps<void> {
+    try {
+      const ending = yield* readCredentialSteps(sessionCreds, io);
+      if (yield* parkMcpLoginsSteps(account.dir, ending, io)) {
+        logEvent(`kept this session's MCP sign-ins in "${account.name}"'s saved login`, {
+          kind: 'credential-sync',
+        });
+      }
+    } catch (error) {
+      logEvent(
+        `could not keep this session's MCP sign-ins in "${account.name}"'s saved login: ${thrownReason(error)}`,
+        { kind: 'credential-sync' },
+      );
+    }
+  };
   const saveBackSteps = function* (
     account: Account,
     confirmedOwner: string | null | undefined,
     io: KeychainIo,
     lockWaitMs?: number,
+    mcp: McpMode = 'keep-target',
   ): Steps<SaveOutcome> {
     // Nothing there to copy. A later tick may find one.
     try {
@@ -904,6 +935,7 @@ export async function runInteractiveHotSwap(
         },
         context.ctx,
       );
+      if (mcp === 'park') yield* parkSessionMcpLogins(account, io);
       // The session is signed out. Nothing to write, and nothing that a later
       // poll would write either, until the file changes.
       return 'settled';
@@ -932,6 +964,7 @@ export async function runInteractiveHotSwap(
       // every credential change, and it was landing in Claude's interface. If it
       // matters, `ccx doctor` reports the same mismatch properly.
       logEvent(decision.reason);
+      if (mcp === 'park') yield* parkSessionMcpLogins(account, io);
       // A refusal is a settled answer about this credential: asking again can
       // only produce the same refusal, and re-asking is what froze the machine.
       return 'settled';
@@ -949,7 +982,7 @@ export async function runInteractiveHotSwap(
         carryTargets(account, accounts),
         // Keeps the account's previous credential as a rollback cushion.
         function* () {
-          yield* installCredentialSteps(account.dir, sessionCreds, io);
+          yield* installCredentialSteps(account.dir, sessionCreds, io, { mcp });
         },
         io,
         {
@@ -2945,7 +2978,7 @@ export async function runInteractiveHotSwap(
   // session's older token, destroying the login it just renewed.
   finishWithLease(announced, {
     saveBack: () => {
-      if (current) saveBack(current);
+      if (current) saveBack(current, undefined, undefined, 'park');
     },
     releaseLease: (name) => releaseLease(name, context.ctx),
   });
