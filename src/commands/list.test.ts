@@ -127,7 +127,15 @@ describe('ccx list and tags', () => {
     expect(rows(lines).map((r) => r.name)).toEqual(['lent']);
     lines.length = 0;
     expect(await listCommand(context, { probe: (accts) => allSignedIn(accts) }, { tagged: ['bob'] })).toBe(1);
-    expect(lines.join('\n')).toContain('no account carries #bob');
+    // Asked for JSON, the refusal is JSON too: prose is a parse error for the reader.
+    expect(JSON.parse(lines.join('\n'))).toEqual({
+      schemaVersion: 1,
+      accounts: [],
+      error: 'no account carries #bob (tags in use: #pat)',
+    });
+    lines.length = 0;
+    await listCommand({ ...context, json: false }, { probe: (accts) => allSignedIn(accts) }, { tagged: ['bob'] });
+    expect(lines).toEqual(['no account carries #bob (tags in use: #pat)']);
   });
 
   it('has a TAGS column in the table', async () => {

@@ -86,9 +86,24 @@ describe('tags on an account', () => {
     addAccount({ name: 'a', dir: '/a' }, ctx);
     const file = path.join(ctx.env.CLAUDE_AUTO_SWITCH_HOME, 'accounts.json');
     const raw = JSON.parse(readFileSync(file, 'utf8')) as { accounts: Array<Record<string, unknown>> };
-    raw.accounts[0]!['tags'] = 'pat';
+    raw.accounts[0]!['tags'] = { pat: true };
     writeFileSync(file, JSON.stringify(raw), 'utf8');
     expect(listAccounts(ctx).map((x) => [x.name, x.tags])).toEqual([['a', undefined]]);
+  });
+
+  it('are read as they are compared, and a hand edit is kept through a write, over the limits or not', () => {
+    const ctx = home();
+    addAccount({ name: 'a', dir: '/a' }, ctx);
+    const file = path.join(ctx.env.CLAUDE_AUTO_SWITCH_HOME, 'accounts.json');
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as { accounts: Array<Record<string, unknown>> };
+    const many = Array.from({ length: 20 }, (_, i) => `T${String(i).padStart(2, '0')}`);
+    raw.accounts[0]!['tags'] = [' Pat', 'b@d', ...many];
+    writeFileSync(file, JSON.stringify(raw), 'utf8');
+    const read = getAccount('a', ctx)?.tags;
+    expect(read?.slice(0, 2)).toEqual(['b@d', 'pat']);
+    expect(read).toHaveLength(22);
+    updateAccount('a', { enabled: false }, ctx);
+    expect(getAccount('a', ctx)?.tags).toEqual(read);
   });
 });
 

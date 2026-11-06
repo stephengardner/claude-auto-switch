@@ -27,7 +27,13 @@ export async function listCommand(
   if ((options.tagged ?? []).length > 0) {
     const selected = selectAccounts(context, { tagged: options.tagged });
     if ('refusal' in selected) {
-      context.out(selected.refusal);
+      // Asked for JSON, the refusal comes in the same envelope: prose would be
+      // a parse error for whoever reads it.
+      context.out(
+        context.json
+          ? JSON.stringify({ schemaVersion: 1, accounts: [], error: selected.refusal }, null, 2)
+          : selected.refusal,
+      );
       return 1;
     }
     accounts = selected.accounts;

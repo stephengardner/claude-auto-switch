@@ -388,6 +388,11 @@ describe('what is left', () => {
     expect(out).toContain('lent (w@x.com · max · priority 0): tags: pat');
   });
 
+  it('names the tags of a highlighted account whose usage was never read', () => {
+    const out = renderDashboard(snapshot([account({ name: 'lent', tags: ['pat'] })]), { ...opts, interactive: true, selected: 0 });
+    expect(out).toContain('lent (w@x.com · max · priority 0): no usage read yet   tags: pat');
+  });
+
   it('offers g for tags among the keys', () => {
     const out = renderDashboard(snapshot([account()]), { ...opts, interactive: true, width: 200 });
     expect(out).toMatch(/g tags/);

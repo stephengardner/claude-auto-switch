@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   MAX_TAGS,
   normalizeTag,
+  storedTags,
   parseTags,
   tagIndex,
   tagNote,
@@ -91,5 +92,49 @@ describe('tags in a line of text', () => {
     expect(tagNote(['bot', 'pat'])).toBe('#bot #pat');
     expect(tagNote(undefined)).toBe('');
     expect(tagNote([])).toBe('');
+  });
+});
+
+describe('tags as a file may hold them', () => {
+  // A hand-edited accounts.json can hold `Pat`, or something that is not a
+  // tag at all. What is stored is matched and removed in any case, kept
+  // rather than lost, and never stops a good tag being added beside it.
+  it('match, index and remove in any case', () => {
+    const stored = [{ name: 'a', tags: ['BOT', 'Pat'] }];
+    expect(taggedAll(stored, ['bot']).map((a) => a.name)).toEqual(['a']);
+    expect(tagIndex(stored)).toEqual([
+      { tag: 'bot', accounts: ['a'] },
+      { tag: 'pat', accounts: ['a'] },
+    ]);
+    expect(withoutTags(['BOT', 'Pat'], ['pat'])).toEqual(['bot']);
+  });
+
+  it('do not stop a good tag being added beside one that is not a tag', () => {
+    expect(withTags(['b@d'], ['pat'])).toEqual(['b@d', 'pat']);
+    expect(() => withTags(['b@d'], ['also b@d'])).toThrow(TagError);
+  });
+
+  it('may already be over the limit: kept, and nothing new added until some go', () => {
+    const many = Array.from({ length: MAX_TAGS + 2 }, (_, i) => `t${String(i).padStart(2, '0')}`);
+    expect(withTags(many, [many[0]!])).toHaveLength(MAX_TAGS + 2);
+    expect(() => withTags(many, ['new'])).toThrow(TagError);
+  });
+});
+
+describe('the tags field as read from the file', () => {
+  it('is lowercased, trimmed, once each and sorted, and nothing is dropped for not being a tag', () => {
+    expect(storedTags([' Pat', 'BOT', 'pat', 'b@d'])).toEqual(['b@d', 'bot', 'pat']);
+  });
+
+  it('takes a lone string as one tag, and other values as text', () => {
+    expect(storedTags('Pat')).toEqual(['pat']);
+    expect(storedTags([7, true])).toEqual(['7', 'true']);
+  });
+
+  it('is no tags for nothing, an empty list, or something that cannot be one', () => {
+    expect(storedTags(undefined)).toBeUndefined();
+    expect(storedTags([])).toBeUndefined();
+    expect(storedTags(['', '  '])).toBeUndefined();
+    expect(storedTags({ pat: true })).toBeUndefined();
   });
 });

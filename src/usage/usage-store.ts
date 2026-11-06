@@ -30,11 +30,14 @@ import { isOnHold, reportFinishedLogin } from '../accounts/login-check.js';
  * network is touched at most once per account per TTL window.
  */
 
-const ModelSchema = z.object({
-  name: z.string(),
-  utilization: z.number(),
-  resetsAt: z.number().nullable().optional(),
-});
+// Every object here keeps fields this version does not know (see EntrySchema).
+const ModelSchema = z
+  .object({
+    name: z.string(),
+    utilization: z.number(),
+    resetsAt: z.number().nullable().optional(),
+  })
+  .passthrough();
 const EntrySchema = z.object({
   fiveHour: z.number().nullable(),
   /**
@@ -63,6 +66,7 @@ const EntrySchema = z.object({
       fiveHourReset: z.number().nullable(),
       sevenDayReset: z.number().nullable(),
     })
+    .passthrough()
     .nullable()
     .optional(),
 })
@@ -73,6 +77,18 @@ const EntrySchema = z.object({
 const SnapshotSchema = z.object({ accounts: z.record(z.string(), EntrySchema) }).passthrough();
 
 export type UsageEntry = z.infer<typeof EntrySchema>;
+
+/** The fields of an entry this version writes itself. */
+const KNOWN_FIELDS: ReadonlySet<string> = new Set(Object.keys(EntrySchema.shape));
+
+/**
+ * What a newer ccx put on an entry that this one does not know, to keep beside
+ * a reading this one makes. Only unknown fields: a known one the new reading
+ * leaves out (a cleared `noFiveHourLimit`) is meant to go.
+ */
+function unknownFields(entry: UsageEntry | undefined): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(entry ?? {}).filter(([key]) => !KNOWN_FIELDS.has(key)));
+}
 export type UsageSnapshot = z.infer<typeof SnapshotSchema>;
 
 const FILENAME = 'usage-snapshot.json';
@@ -533,7 +549,8 @@ export async function refreshUsage(
       snapshot.accounts[account.name] = {
         ...fresh,
         ...(learned.windowCost !== null ? { windowCost: learned.windowCost } : {}),
-        ...(learned.costAnchor ? { costAnchor: learned.costAnchor } : {}),
+        // A plain CostAnchor is a stored anchor with nothing extra on it.
+        ...(learned.costAnchor ? { costAnchor: { ...learned.costAnchor } as NonNullable<UsageEntry['costAnchor']> } : {}),
       };
     } else {
       // Could not read it (offline, or the endpoint asked us to slow down).
@@ -574,7 +591,13 @@ export async function refreshUsage(
     if (touched && disk && disk.at > ours.at) continue;
     const newest = touched ? disk : start;
     const keep = undecided.has(account.name) && newest?.noFiveHourLimit === true;
-    current.accounts[account.name] = keep ? { ...ours, noFiveHourLimit: true } : ours;
+    // The models and the cost anchor in `ours` are rebuilt from this reading,
+    // so what is kept from the entry before is only the fields it cannot know.
+    current.accounts[account.name] = {
+      ...unknownFields(newest),
+      ...ours,
+      ...(keep ? { noFiveHourLimit: true } : {}),
+    } as UsageEntry;
   }
   try {
     writeJsonFile(snapshotPath(c), current);

@@ -236,11 +236,12 @@ const BLOCK_HEADING: Record<Block, string | null> = {
 function detailLine(a: DashboardAccount, now: number): string {
   const who = [a.email, a.plan, `priority ${a.priority}`].filter(Boolean).join(' · ');
   const heading = `${a.name} (${who})`;
+  const tags = a.tags && a.tags.length > 0 ? `tags: ${a.tags.join(', ')}` : null;
   const u = a.usage;
-  if (!u) return `${heading}: no usage read yet`;
+  if (!u) return `${heading}: no usage read yet${tags ? `   ${tags}` : ''}`;
   const noFiveHourLimit = u.noFiveHourLimit === true;
   const parts = [
-    ...(a.tags && a.tags.length > 0 ? [`tags: ${a.tags.join(', ')}`] : []),
+    ...(tags ? [tags] : []),
     ...(a.pick ? [pickWords(a.pick, noFiveHourLimit)] : noFiveHourLimit ? [NO_FIVE_HOUR] : []),
   ];
   for (const m of u.models ?? []) {
