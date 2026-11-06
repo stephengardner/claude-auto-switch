@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.32]
+
+### Added
+
+- **Tags on accounts.** An account out of rotation can now say why: it is lent
+  to someone, kept for a bot, or used for other work. `ccx tag <account> pat
+  bot` labels it, `ccx untag` removes labels (`--all` for every one), and `ccx
+  tags` lists every tag with its accounts and which are disabled. Tags are
+  lowercase, 1 to 32 characters of letters, digits, `.`, `_` and `-`, at most
+  16 per account; anything else is refused with the tag named, never changed
+  quietly. They live on the account's own record, so a rename keeps them and a
+  removal drops them, and they never change rotation.
+- **Acting on a tag.** `ccx disable --tagged pat` and `ccx enable --tagged pat`
+  change every account carrying it (repeat `--tagged` to need several), and
+  `ccx list --tagged pat` shows only those. `ccx disable lent --tag pat` disables
+  and tags in one step, and `ccx add work2 --tag bot` tags at creation. Nothing
+  is changed when a tag is bad, or when no account carries the one asked for;
+  the refusal names the tags in use.
+- **Tags on screen.** A dashboard row ends with its tags (`#pat #bot`), the line
+  about the highlighted account names them, and `g` edits them in a box that
+  holds the current ones (empty clears them). `ccx list` has a TAGS column,
+  `/ccx swap` shows them, and `ccx state` gives every account `tags`.
+
+### Changed
+
+- **A field from a newer ccx survives this one.** The account and usage files
+  keep fields this version does not know when it rewrites them, rather than
+  dropping them, which is how 2.6.30's "no 5-hour limit" was lost while sessions
+  started before it still ran.
+
 ## [2.6.31]
 
 ### Fixed

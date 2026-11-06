@@ -19,6 +19,8 @@ export interface DashboardAccount {
   /** Epoch ms the account is capped until, if currently capped. */
   cappedUntil?: number;
   priority: number;
+  /** Its tags (accounts/tags): who or what it is kept for. */
+  tags?: string[];
   /**
    * Subscription usage (0..1 USED per window), including per-model weekly
    * windows and when each window resets. The screen shows what is left.
@@ -234,10 +236,14 @@ const BLOCK_HEADING: Record<Block, string | null> = {
 function detailLine(a: DashboardAccount, now: number): string {
   const who = [a.email, a.plan, `priority ${a.priority}`].filter(Boolean).join(' · ');
   const heading = `${a.name} (${who})`;
+  const tags = a.tags && a.tags.length > 0 ? `tags: ${a.tags.join(', ')}` : null;
   const u = a.usage;
-  if (!u) return `${heading}: no usage read yet`;
+  if (!u) return `${heading}: no usage read yet${tags ? `   ${tags}` : ''}`;
   const noFiveHourLimit = u.noFiveHourLimit === true;
-  const parts = a.pick ? [pickWords(a.pick, noFiveHourLimit)] : noFiveHourLimit ? [NO_FIVE_HOUR] : [];
+  const parts = [
+    ...(tags ? [tags] : []),
+    ...(a.pick ? [pickWords(a.pick, noFiveHourLimit)] : noFiveHourLimit ? [NO_FIVE_HOUR] : []),
+  ];
   for (const m of u.models ?? []) {
     const used = effectiveUtilization(m.utilization, m.resetsAt, now);
     const left = used === null ? '?' : `${Math.round(Math.max(0, 1 - used) * 100)}%`;
@@ -499,6 +505,7 @@ const MAIN_HINTS: ReadonlyArray<readonly [string, string]> = [
   ['l', 'sign in'],
   ['n', 'rename'],
   ['e', 'enable'],
+  ['g', 'tags'],
   ['[ ]', 'order'],
 ];
 

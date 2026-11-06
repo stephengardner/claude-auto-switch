@@ -157,3 +157,9 @@ describe('dispatchSettingsKey', () => {
     expect(dispatchSettingsKey('z', 122, 1, 5)).toEqual({ selected: 1, action: 'none' });
   });
 });
+
+describe('the tags key', () => {
+  it('maps g to editing the highlighted account tags, without moving', () => {
+    expect(dispatchKey('g', 103, 2, 5)).toEqual({ selected: 2, action: 'tags' });
+  });
+});

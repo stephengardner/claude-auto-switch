@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -61,5 +61,64 @@ describe('registry', () => {
     removeAccount('a', ctx);
     expect(getAccount('a', ctx)).toBeUndefined();
     expect(() => removeAccount('a', ctx)).toThrow(RegistryError);
+  });
+});
+
+describe('tags on an account', () => {
+  it('are stored on its record, and taken at creation', () => {
+    const ctx = home();
+    addAccount({ name: 'a', dir: '/a', tags: ['bot'] }, ctx);
+    updateAccount('a', { tags: ['bot', 'pat'] }, ctx);
+    expect(getAccount('a', ctx)?.tags).toEqual(['bot', 'pat']);
+  });
+
+  it('are left out of the record when there are none', () => {
+    const ctx = home();
+    addAccount({ name: 'a', dir: '/a', tags: [] }, ctx);
+    expect('tags' in (getAccount('a', ctx) ?? {})).toBe(false);
+  });
+
+  it('never make the registry unreadable when the file holds something that is not a list of tags', () => {
+    // Tags are checked where they are typed (accounts/tags). A hand-edited
+    // file is read as no tags rather than failing every command that loads
+    // the accounts.
+    const ctx = home();
+    addAccount({ name: 'a', dir: '/a' }, ctx);
+    const file = path.join(ctx.env.CLAUDE_AUTO_SWITCH_HOME, 'accounts.json');
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as { accounts: Array<Record<string, unknown>> };
+    raw.accounts[0]!['tags'] = { pat: true };
+    writeFileSync(file, JSON.stringify(raw), 'utf8');
+    expect(listAccounts(ctx).map((x) => [x.name, x.tags])).toEqual([['a', undefined]]);
+  });
+
+  it('are read as they are compared, and a hand edit is kept through a write, over the limits or not', () => {
+    const ctx = home();
+    addAccount({ name: 'a', dir: '/a' }, ctx);
+    const file = path.join(ctx.env.CLAUDE_AUTO_SWITCH_HOME, 'accounts.json');
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as { accounts: Array<Record<string, unknown>> };
+    const many = Array.from({ length: 20 }, (_, i) => `T${String(i).padStart(2, '0')}`);
+    raw.accounts[0]!['tags'] = [' Pat', 'b@d', ...many];
+    writeFileSync(file, JSON.stringify(raw), 'utf8');
+    const read = getAccount('a', ctx)?.tags;
+    expect(read?.slice(0, 2)).toEqual(['b@d', 'pat']);
+    expect(read).toHaveLength(22);
+    updateAccount('a', { enabled: false }, ctx);
+    expect(getAccount('a', ctx)?.tags).toEqual(read);
+  });
+});
+
+describe('a field this version does not know', () => {
+  it('survives a write, so a newer ccx does not lose it to this one', () => {
+    const ctx = home();
+    addAccount({ name: 'a', dir: '/a' }, ctx);
+    const file = path.join(ctx.env.CLAUDE_AUTO_SWITCH_HOME, 'accounts.json');
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as { accounts: Array<Record<string, unknown>>; [k: string]: unknown };
+    raw.accounts[0]!['fromTheFuture'] = { kept: true };
+    raw['alsoNew'] = 1;
+    writeFileSync(file, JSON.stringify(raw), 'utf8');
+    updateAccount('a', { enabled: false }, ctx);
+    const after = JSON.parse(readFileSync(file, 'utf8')) as { accounts: Array<Record<string, unknown>>; [k: string]: unknown };
+    expect(after.accounts[0]?.['fromTheFuture']).toEqual({ kept: true });
+    expect(after['alsoNew']).toBe(1);
   });
 });

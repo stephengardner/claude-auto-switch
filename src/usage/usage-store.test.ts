@@ -915,3 +915,62 @@ describe('an account removed and added again while it was being read', () => {
     expect(readUsageSnapshot(c).accounts['a']).toBeUndefined();
   });
 });
+
+describe('a usage field this version does not know', () => {
+  it('survives a refresh that cannot read the account, and any other write', async () => {
+    const { c, accounts } = setup(['a']);
+    writeUsageSnapshot(
+      {
+        accounts: {
+          a: { fiveHour: 0.1, sevenDay: 0.2, fiveHourReset: null, sevenDayReset: null, at: 1, fromTheFuture: true } as never,
+          other: { fiveHour: 0.1, sevenDay: 0.2, fiveHourReset: null, sevenDayReset: null, at: Date.now(), fromTheFuture: 2 } as never,
+        },
+      },
+      c,
+    );
+    await refreshUsage(accounts, c, { probe: () => Promise.resolve({ verdict: 'unknown' }) });
+    const raw = JSON.parse(readFileSync(path.join(configHome(c), 'usage-snapshot.json'), 'utf8')) as {
+      accounts: Record<string, Record<string, unknown>>;
+    };
+    expect(raw.accounts['a']?.['fromTheFuture']).toBe(true);
+    expect(raw.accounts['other']?.['fromTheFuture']).toBe(2);
+  });
+});
+
+describe('usage fields this version does not know, through a refresh that measures', () => {
+  it('are kept beside the new reading, and never bring back a known field it replaced', async () => {
+    const { c, accounts } = setup(['a']);
+    writeUsageSnapshot(
+      {
+        accounts: {
+          a: {
+            fiveHour: null,
+            noFiveHourLimit: true,
+            sevenDay: 0.2,
+            fiveHourReset: null,
+            sevenDayReset: null,
+            at: 1,
+            fromTheFuture: 'kept',
+            models: [{ name: 'Fable', utilization: 0.1, resetsAt: null, nested: 1 }],
+          } as never,
+        },
+      },
+      c,
+    );
+    // A failed read keeps the entry, nested fields included.
+    await refreshUsage(accounts, c, { probe: () => Promise.resolve({ verdict: 'unknown' }) });
+    const raw = () =>
+      (JSON.parse(readFileSync(path.join(configHome(c), 'usage-snapshot.json'), 'utf8')) as {
+        accounts: Record<string, Record<string, unknown>>;
+      }).accounts['a'];
+    expect((raw()?.['models'] as Array<Record<string, unknown>>)[0]?.['nested']).toBe(1);
+    // A reading with a 5-hour window keeps the unknown field and ends the fact.
+    await refreshUsage(accounts, c, {
+      now: () => Date.now() + 10 * 60_000,
+      probe: () => Promise.resolve(result(0.25, 0.6)),
+    });
+    expect(raw()?.['fromTheFuture']).toBe('kept');
+    expect(raw()?.['noFiveHourLimit']).toBeUndefined();
+    expect(raw()?.['fiveHour']).toBe(0.25);
+  });
+});

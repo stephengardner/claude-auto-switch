@@ -5,6 +5,8 @@ import { loadLedger } from '../ledger/ledger.js';
 import { renderTable } from '../util/table.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
 import { getClaude, type CliContext } from '../context.js';
+import { tagNote } from '../accounts/tags.js';
+import { selectAccounts } from './tags.js';
 
 /**
  * Injected in tests so the table can be checked without spawning a probe per
@@ -19,8 +21,23 @@ export interface ListCommandDeps {
 export async function listCommand(
   context: CliContext,
   deps: ListCommandDeps = {},
+  options: { tagged?: readonly string[] } = {},
 ): Promise<number> {
-  const accounts = listAccounts(context.ctx);
+  let accounts = listAccounts(context.ctx);
+  if ((options.tagged ?? []).length > 0) {
+    const selected = selectAccounts(context, { tagged: options.tagged });
+    if ('refusal' in selected) {
+      // Asked for JSON, the refusal comes in the same envelope: prose would be
+      // a parse error for whoever reads it.
+      context.out(
+        context.json
+          ? JSON.stringify({ schemaVersion: 1, accounts: [], error: selected.refusal }, null, 2)
+          : selected.refusal,
+      );
+      return 1;
+    }
+    accounts = selected.accounts;
+  }
   if (accounts.length === 0) {
     // A reader asking for JSON gets JSON, even when the answer is "nothing".
     // Prose here is a parse error at the worst possible moment: first run,
@@ -54,6 +71,7 @@ export async function listCommand(
       plan: h?.plan ?? a.plan ?? '',
       loggedIn: usable.has(a.name) ? 'yes' : 'no',
       cappedUntil: cap ? (cap.capUntil ? new Date(cap.capUntil).toLocaleTimeString() : 'indefinite') : '',
+      tags: a.tags ?? [],
     };
   });
 
@@ -66,13 +84,14 @@ export async function listCommand(
   }
 
   context.out(
-    renderTable(rows, [
+    renderTable(rows.map((r) => ({ ...r, tags: tagNote(r.tags) })), [
       { key: 'active', header: '' },
       { key: 'name', header: 'ACCOUNT' },
       { key: 'email', header: 'EMAIL' },
       { key: 'plan', header: 'PLAN' },
       { key: 'loggedIn', header: 'LOGGED IN' },
       { key: 'cappedUntil', header: 'CAPPED UNTIL' },
+      { key: 'tags', header: 'TAGS' },
     ]),
   );
   return 0;

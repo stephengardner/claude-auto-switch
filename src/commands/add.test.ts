@@ -64,6 +64,16 @@ describe('addCommand', () => {
     expect(readUsageSnapshot(c.ctx).accounts['fresh']).toBeUndefined();
   });
 
+  it('tags the account as it registers it, and registers nothing for a bad tag', async () => {
+    const lines: string[] = [];
+    const c = fakeLoginContext(lines, 'fresh@example.com');
+    expect(await addCommand(c, 'fresh', { tag: ['Bot', 'pat'] })).toBe(0);
+    expect(getAccount('fresh', c.ctx)?.tags).toEqual(['bot', 'pat']);
+    expect(await addCommand(c, 'other', { tag: ['b@d'], login: false })).toBe(1);
+    expect(getAccount('other', c.ctx)).toBeUndefined();
+    expect(lines.join('\n')).toContain('"b@d" is not a tag');
+  });
+
   it('REFUSES a duplicate and does not keep the registration', async () => {
     const lines: string[] = [];
     const c = fakeLoginContext(lines, 'taken@example.com');

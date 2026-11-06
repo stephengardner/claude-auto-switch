@@ -27,6 +27,7 @@ import {
 } from '../desktop/handoff.js';
 import { appendEvent } from '../events/log.js';
 import { configHome } from '../config/paths.js';
+import { tagNote } from '../accounts/tags.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -141,7 +142,15 @@ function modelWindowOf(a: StateAccount, model: string | null, now: number): Wind
   return found ? windowOf(found.utilization, found.resetsAt, now) : { used: null, resetsAt: null };
 }
 
+/** What a row or card says about an account, with its tags after it. */
 function statusWords(a: StateAccount, here: boolean, now: number): string {
+  // `?? []`: a state from a ccx before tags has none to give.
+  const tags = tagNote(a.tags ?? []);
+  const said = statusOnly(a, here, now);
+  return tags ? `${said} · ${tags}` : said;
+}
+
+function statusOnly(a: StateAccount, here: boolean, now: number): string {
   if (!a.enabled) return 'turned off';
   if (a.status.state === 'on-hold') return 'on hold at Anthropic (claude.ai/restricted)';
   if (!a.loggedIn || a.status.state === 'logged-out') return `signed out (ccx login ${a.name})`;

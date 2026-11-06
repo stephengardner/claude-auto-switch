@@ -226,6 +226,7 @@ describe('the state another program reads', () => {
       'enabled',
       'active',
       'priority',
+      'tags',
       'cappedUntil',
       'usage',
       'status',
@@ -240,5 +241,15 @@ describe('the state another program reads', () => {
     const payload = toStatePayload(snapshot([account({ name: 'fresh' })]));
     expect(payload.accounts[0]?.status.state).toBe('ready');
     expect(payload.accounts[0]?.usage).toBeUndefined();
+  });
+});
+
+describe('tags in the state', () => {
+  it('gives every account its tags, an empty list for one without', () => {
+    const payload = toStatePayload(snapshot([account({ name: 'lent', tags: ['pat'] }), account({ name: 'plain' })]));
+    expect(payload.accounts.map((a) => [a.name, a.tags])).toEqual([
+      ['lent', ['pat']],
+      ['plain', []],
+    ]);
   });
 });
