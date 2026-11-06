@@ -27,6 +27,8 @@ export type KeyAction =
   | 'move-down'
   /** Open the settings panel (s). */
   | 'settings'
+  /** Edit the highlighted account's tags (g). */
+  | 'tags'
   | 'none';
 
 export interface KeyOutcome {
@@ -92,6 +94,7 @@ export function dispatchKey(
   if (key === '[') return { selected, action: 'move-up' };
   if (key === ']') return { selected, action: 'move-down' };
   if (key === 's') return { selected, action: 'settings' };
+  if (key === 'g') return { selected, action: 'tags' };
   return { selected, action: 'none' };
 }
 

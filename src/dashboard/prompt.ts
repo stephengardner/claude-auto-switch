@@ -17,6 +17,8 @@ export type PromptStatus = 'editing' | 'submit' | 'cancel';
 export type PromptKind =
   | 'add'
   | 'rename'
+  /** The highlighted account's tags (g); an empty box clears them. */
+  | 'tags'
   | 'remove'
   | 'desktop-prompt'
   | 'desktop-move'

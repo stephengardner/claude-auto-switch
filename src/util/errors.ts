@@ -27,3 +27,6 @@ export class RealClaudeError extends CasError {}
 
 /** An account name or path failed validation (traversal, separators, reserved). */
 export class InvalidNameError extends CasError {}
+
+/** A tag failed validation, or an account would carry too many. */
+export class TagError extends CasError {}

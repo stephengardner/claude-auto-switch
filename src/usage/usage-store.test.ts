@@ -915,3 +915,24 @@ describe('an account removed and added again while it was being read', () => {
     expect(readUsageSnapshot(c).accounts['a']).toBeUndefined();
   });
 });
+
+describe('a usage field this version does not know', () => {
+  it('survives a refresh that cannot read the account, and any other write', async () => {
+    const { c, accounts } = setup(['a']);
+    writeUsageSnapshot(
+      {
+        accounts: {
+          a: { fiveHour: 0.1, sevenDay: 0.2, fiveHourReset: null, sevenDayReset: null, at: 1, fromTheFuture: true } as never,
+          other: { fiveHour: 0.1, sevenDay: 0.2, fiveHourReset: null, sevenDayReset: null, at: Date.now(), fromTheFuture: 2 } as never,
+        },
+      },
+      c,
+    );
+    await refreshUsage(accounts, c, { probe: () => Promise.resolve({ verdict: 'unknown' }) });
+    const raw = JSON.parse(readFileSync(path.join(configHome(c), 'usage-snapshot.json'), 'utf8')) as {
+      accounts: Record<string, Record<string, unknown>>;
+    };
+    expect(raw.accounts['a']?.['fromTheFuture']).toBe(true);
+    expect(raw.accounts['other']?.['fromTheFuture']).toBe(2);
+  });
+});

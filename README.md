@@ -47,6 +47,7 @@ with `--resume`, so the conversation survives either way.
 | `/ccx`               | Inside Claude: see each account's room and switch this session  |
 | `ccx login <name>`   | Sign an account in again                                        |
 | `ccx disable <name>` | Keep an account out of rotation (`ccx enable` brings it back)   |
+| `ccx tag <name> pat` | Label an account with who or what it is kept for                |
 | `ccx doctor`         | Check the setup                                                 |
 
 Every command and setting: [docs/reference.md](docs/reference.md).

@@ -27,6 +27,7 @@ function account(
     enabled: true,
     active: false,
     priority: 0,
+    tags: [],
     usage,
     status: { state: 'ready', label: null, until: null, blockedBy: [], ...status },
   };
@@ -147,6 +148,21 @@ describe('an account with no 5-hour limit, on the swap board', () => {
     const row = rows.find((r) => r.account.name === 'verified')!;
     expect(card(row, withVerified).split('\n')[2]).toBe('5-hour no limit (a verified account)');
     expect(board.split('\n').find((l) => l.includes('verified'))).not.toContain('?');
+  });
+});
+
+describe('tags on the swap board', () => {
+  const here: Here = { kind: 'ccx', account: 'mid', pid: 4242 };
+  it('are said after the status of the account carrying them, and in its card', () => {
+    const tagged: StatePayload = {
+      ...state,
+      accounts: state.accounts.map((a) => (a.name === 'roomy' ? { ...a, tags: ['bot', 'pat'] } : a)),
+    };
+    const rows = rankAccounts(tagged, here);
+    const board = renderBoard(rows, tagged, here, false);
+    expect(board.split('\n').find((l) => l.includes('roomy'))).toMatch(/ready · #bot #pat$/);
+    expect(card(rows.find((r) => r.account.name === 'roomy')!, tagged)).toContain('#bot #pat');
+    expect(board.split('\n').find((l) => l.includes(' mid'))).not.toContain('#');
   });
 });
 

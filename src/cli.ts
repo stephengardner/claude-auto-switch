@@ -25,6 +25,7 @@ import { doctorCommand } from './commands/doctor.js';
 import { capCommand } from './commands/cap.js';
 import { loginCommand } from './commands/login.js';
 import { enableCommand, disableCommand, priorityCommand } from './commands/account-config.js';
+import { tagCommand, untagCommand, tagsCommand } from './commands/tags.js';
 import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
 import { keepaliveCommand } from './commands/keepalive.js';
@@ -70,11 +71,37 @@ function context() {
   return buildContext({ json: opts.json, quiet: opts.quiet });
 }
 
+/** A repeatable option (`--tag pat --tag bot`), collected into a list. */
+const collect = (value: string, previous: string[]): string[] => [...previous, value];
+
 program
   .command('list')
   .description('show all accounts and their health')
-  .action(async () => {
-    process.exitCode = await listCommand(context());
+  .option('--tagged <tag>', 'only accounts carrying this tag (repeat for all of several)', collect, [])
+  .action(async (opts: { tagged: string[] }) => {
+    process.exitCode = await listCommand(context(), {}, { tagged: opts.tagged });
+  });
+
+program
+  .command('tag <name> <tags...>')
+  .description('add tags to an account (who or what it is kept for: pat, bot)')
+  .action((name: string, tags: string[]) => {
+    process.exitCode = tagCommand(context(), name, tags);
+  });
+
+program
+  .command('untag <name> [tags...]')
+  .description('remove tags from an account')
+  .option('--all', 'remove every tag')
+  .action((name: string, tags: string[], opts: { all?: boolean }) => {
+    process.exitCode = untagCommand(context(), name, tags, opts);
+  });
+
+program
+  .command('tags')
+  .description('every tag in use, with the accounts carrying it')
+  .action(() => {
+    process.exitCode = tagsCommand(context());
   });
 
 program
@@ -118,7 +145,8 @@ program
   .option('--email <email>', 'email to pre-fill on the login page')
   .option('--dir <dir>', 'profile folder (defaults to <profilesDir>/<name>)')
   .option('--no-login', 'register without running the browser login')
-  .action(async (name: string, opts: { email?: string; dir?: string; login?: boolean }) => {
+  .option('--tag <tag>', 'tag it as it is added (repeatable)', collect, [])
+  .action(async (name: string, opts: { email?: string; dir?: string; login?: boolean; tag: string[] }) => {
     process.exitCode = await addCommand(context(), name, opts);
   });
 
@@ -254,17 +282,21 @@ program
   });
 
 program
-  .command('enable <name>')
-  .description('include an account in rotation')
-  .action((name: string) => {
-    process.exitCode = enableCommand(context(), name);
+  .command('enable [name]')
+  .description('include an account in rotation, or every account --tagged')
+  .option('--tagged <tag>', 'every account carrying this tag (repeat for all of several)', collect, [])
+  .option('--tag <tag>', 'also tag the accounts enabled (repeatable)', collect, [])
+  .action((name: string | undefined, opts: { tagged: string[]; tag: string[] }) => {
+    process.exitCode = enableCommand(context(), name, opts);
   });
 
 program
-  .command('disable <name>')
-  .description('exclude an account from rotation')
-  .action((name: string) => {
-    process.exitCode = disableCommand(context(), name);
+  .command('disable [name]')
+  .description('exclude an account from rotation, or every account --tagged')
+  .option('--tagged <tag>', 'every account carrying this tag (repeat for all of several)', collect, [])
+  .option('--tag <tag>', 'also tag the accounts disabled, e.g. who it is lent to (repeatable)', collect, [])
+  .action((name: string | undefined, opts: { tagged: string[]; tag: string[] }) => {
+    process.exitCode = disableCommand(context(), name, opts);
   });
 
 program

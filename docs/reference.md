@@ -19,7 +19,10 @@
 | `ccx order [smart\|most-room\|priority]` | the pick rule                                                                                                                  |
 | `ccx models [models...]`                 | the model chain (`--strategy model-first\|account-first`)                                                                      |
 | `ccx priority <name> <n>`                | an account's place in your order (lower first)                                                                                 |
-| `ccx enable <name>` / `disable <name>`   | include / exclude an account                                                                                                   |
+| `ccx enable <name>` / `disable <name>`   | include / exclude an account (`--tagged <tag>`: every account carrying it; `--tag <tag>`: tag it too)                          |
+| `ccx tag <name> <tag...>`                | label an account with who or what it is kept for (`pat`, `bot`); tags never change rotation                                    |
+| `ccx untag <name> [tag...]`              | remove those tags (`--all`: every one)                                                                                         |
+| `ccx tags`                               | every tag in use, with its accounts (`--json`)                                                                                 |
 | `ccx proactive on\|off`                  | move before an account runs out (off by default)                                                                               |
 | `ccx auto`                               | run that check once (`--once`, `--json`)                                                                                       |
 | `ccx resume-prompt "<text>"`             | what a session is told after ccx moves or relaunches it (`--clear`)                                                            |
@@ -28,7 +31,7 @@
 | `ccx login <name>` / `--all`             | sign a stale account back in                                                                                                   |
 | `ccx login --host <host> [name]`         | sign in a server's accounts from here, over SSH (`--all`, `--remote-ccx <path>`)                                               |
 | `ccx keepalive on\|off\|status`          | renew idle logins every four hours with cron, for a machine nobody uses                                                        |
-| `ccx list` / `status [name]`             | account health: email, plan, signed in, capped until                                                                           |
+| `ccx list` / `status [name]`             | account health: email, plan, signed in, capped until, tags (`--tagged <tag>`)                                                  |
 | `ccx doctor`                             | check the setup, shell by shell, and who each profile really is (`--fix`: repair a broken npm install of Claude first)         |
 | `ccx history`                            | what ccx did to logins, sessions and your settings                                                                             |
 | `ccx state`                              | everything ccx knows, as JSON (see [reading ccx from another program](reading-ccx-from-another-program.md))                    |

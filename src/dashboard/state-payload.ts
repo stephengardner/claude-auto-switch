@@ -30,6 +30,8 @@ export interface StateAccount {
   enabled: boolean;
   active: boolean;
   priority: number;
+  /** Its tags (accounts/tags); empty when it has none. */
+  tags: string[];
   /** Epoch ms ccx recorded this account as capped until, if it did. */
   cappedUntil?: number;
   usage?: DashboardSnapshot['accounts'][number]['usage'];
@@ -81,6 +83,7 @@ export function toStatePayload(snapshot: DashboardSnapshot): StatePayload {
         enabled: a.enabled,
         active: a.active,
         priority: a.priority,
+        tags: a.tags ?? [],
         ...(a.cappedUntil !== undefined ? { cappedUntil: a.cappedUntil } : {}),
         ...(a.usage !== undefined ? { usage: a.usage } : {}),
         status: {

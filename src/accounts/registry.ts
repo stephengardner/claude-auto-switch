@@ -36,6 +36,8 @@ export interface AddAccountInput {
   plan?: string;
   email?: string;
   browserProfile?: string;
+  /** Tags, already checked (accounts/tags); none are stored as no field. */
+  tags?: string[];
 }
 
 /** Register a new account. Throws RegistryError if the name already exists. */
@@ -52,6 +54,7 @@ export function addAccount(input: AddAccountInput, c: PathCtx = {}): Account {
     ...(input.plan !== undefined ? { plan: input.plan } : {}),
     ...(input.email !== undefined ? { email: input.email } : {}),
     ...(input.browserProfile !== undefined ? { browserProfile: input.browserProfile } : {}),
+    ...(input.tags && input.tags.length > 0 ? { tags: input.tags } : {}),
   };
   registry.accounts.push(account);
   saveRegistry(registry, c);
@@ -64,6 +67,8 @@ export function updateAccount(name: string, patch: Partial<Account>, c: PathCtx 
   const account = registry.accounts.find((a) => a.name === name);
   if (!account) throw new RegistryError(`account "${name}" not found`);
   Object.assign(account, patch, { name: account.name });
+  // No tags is no field, so a cleared account reads as one never tagged.
+  if (account.tags !== undefined && account.tags.length === 0) delete account.tags;
   saveRegistry(registry, c);
   return account;
 }

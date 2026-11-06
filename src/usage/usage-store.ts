@@ -65,8 +65,12 @@ const EntrySchema = z.object({
     })
     .nullable()
     .optional(),
-});
-const SnapshotSchema = z.object({ accounts: z.record(z.string(), EntrySchema) });
+})
+  // Kept through this version's writes when a newer ccx added it: an older
+  // ccx dropping `noFiveHourLimit` on every rewrite is what kept 2.6.30's
+  // "no limit" off the screen while sessions started before it ran.
+  .passthrough();
+const SnapshotSchema = z.object({ accounts: z.record(z.string(), EntrySchema) }).passthrough();
 
 export type UsageEntry = z.infer<typeof EntrySchema>;
 export type UsageSnapshot = z.infer<typeof SnapshotSchema>;

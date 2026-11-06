@@ -2,6 +2,7 @@ import { codes, paint, shadeForUsed } from '../ui/style.js';
 import { bar } from '../usage/report.js';
 import { bindsHarder, effectiveUtilization } from '../usage/window-open.js';
 import { normalizeModel } from '../usage/model-preference.js';
+import { tagNote } from '../accounts/tags.js';
 import type { Block, Placed } from './arrange.js';
 import type { DashboardAccount } from './render.js';
 
@@ -285,6 +286,9 @@ export interface Table {
 /** What is said at the end of a row, besides when a window resets. */
 function notesOf(placed: Placed, next: boolean, sessions: number): Note[] {
   const notes: Note[] = [];
+  // First: who or what the account is kept for says why it is where it is.
+  const tags = tagNote(placed.account.tags);
+  if (tags) notes.push({ text: tags, code: codes.magenta });
   if (placed.status.state === 'logged-out') notes.push({ text: 'signed out', code: codes.red });
   if (placed.status.state === 'on-hold') notes.push({ text: 'on hold', code: codes.red });
   if (placed.status.state === 'disabled') notes.push({ text: 'disabled', code: codes.dim });

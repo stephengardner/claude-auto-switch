@@ -86,6 +86,8 @@ const ACCOUNTS = [
     email: 'spare@example.com',
     plan: 'max',
     active: false,
+    // Tagged: kept for a bot, which the row says first.
+    tags: ['bot'],
     five: 0.12,
     week: 0.03,
     fable: 0,
@@ -161,6 +163,7 @@ const dashboardAccounts = [
     enabled: true,
     priority: i,
     usage: usageOf(a.name),
+    ...(a.tags ? { tags: a.tags } : {}),
     ...(picks.has(a.name) ? { pick: picks.get(a.name) } : {}),
   })),
   // Out of rotation, for the two reasons an account can be: signed out, and
@@ -174,6 +177,7 @@ const dashboardAccounts = [
     active: false,
     enabled: true,
     priority: ACCOUNTS.length,
+    tags: ['pat'],
   },
   {
     name: 'trial',
@@ -211,7 +215,7 @@ const dashboardAnsi = renderDashboard(
     now: NOW,
     refreshMs: 3000,
     model: 'opus',
-    version: '2.6.30',
+    version: '2.6.32',
     whenOut: describeWhenOut({
       candidates,
       current: ACCOUNTS.find((a) => a.active)?.name ?? null,

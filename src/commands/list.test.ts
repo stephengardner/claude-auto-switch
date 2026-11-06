@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { listCommand } from './list.js';
+import { updateAccount } from '../accounts/registry.js';
 import { refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
@@ -104,5 +105,37 @@ describe('ccx list', () => {
     const byName = new Map(rows(lines).map((r) => [r.name, r.loggedIn]));
     expect(byName.get('out')).toBe('no');
     expect(byName.get('fine')).toBe('yes');
+  });
+});
+
+describe('ccx list and tags', () => {
+  it('carries each account tags, an empty list for one with none', async () => {
+    const { ctx, context, lines } = setup(['lent', 'plain']);
+    updateAccount('lent', { tags: ['bot', 'pat'] }, ctx);
+    await listCommand(context, { probe: (accts) => allSignedIn(accts) });
+    const byName = new Map(
+      (JSON.parse(lines.join('\n')) as { accounts: Array<{ name: string; tags: string[] }> }).accounts.map((r) => [r.name, r.tags]),
+    );
+    expect(byName.get('lent')).toEqual(['bot', 'pat']);
+    expect(byName.get('plain')).toEqual([]);
+  });
+
+  it('shows only the accounts carrying every tag given, and says so when none does', async () => {
+    const { ctx, context, lines } = setup(['lent', 'plain']);
+    updateAccount('lent', { tags: ['pat'] }, ctx);
+    expect(await listCommand(context, { probe: (accts) => allSignedIn(accts) }, { tagged: ['PAT'] })).toBe(0);
+    expect(rows(lines).map((r) => r.name)).toEqual(['lent']);
+    lines.length = 0;
+    expect(await listCommand(context, { probe: (accts) => allSignedIn(accts) }, { tagged: ['bob'] })).toBe(1);
+    expect(lines.join('\n')).toContain('no account carries #bob');
+  });
+
+  it('has a TAGS column in the table', async () => {
+    const { ctx, context, lines } = setup(['lent', 'plain']);
+    updateAccount('lent', { tags: ['pat'] }, ctx);
+    await listCommand({ ...context, json: false }, { probe: (accts) => allSignedIn(accts) });
+    const table = lines.join('\n');
+    expect(table).toMatch(/TAGS/);
+    expect(table.split('\n').find((l) => l.includes('lent'))).toContain('#pat');
   });
 });

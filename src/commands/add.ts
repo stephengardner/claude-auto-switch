@@ -7,6 +7,7 @@ import { authLoginArgs } from '../login/login.js';
 import { assertProfileName, assertInsideProfiles } from '../util/names.js';
 import { secureMkdir } from '../util/secret-file.js';
 import { forgetUsage } from '../usage/usage-store.js';
+import { withTags } from '../accounts/tags.js';
 import { getClaude, type CliContext } from '../context.js';
 
 export interface AddOptions {
@@ -14,6 +15,8 @@ export interface AddOptions {
   email?: string;
   /** Run the browser login after registering (default true). */
   login?: boolean;
+  /** Tags to register it with (`--tag bot`). */
+  tag?: readonly string[];
 }
 
 /** Register a new account (its own profile folder) and, by default, log it in. */
@@ -23,13 +26,21 @@ export async function addCommand(
   options: AddOptions = {},
 ): Promise<number> {
   assertProfileName(name);
+  // Checked before anything is created, so a bad tag leaves nothing behind.
+  let tags: string[];
+  try {
+    tags = withTags([], options.tag ?? []);
+  } catch (err) {
+    context.out((err as Error).message);
+    return 1;
+  }
   const profiles = profilesDir(context.config, context.ctx);
   const dir = options.dir ? path.resolve(options.dir) : path.join(profiles, name);
   // A custom --dir must still live inside the profiles tree, so a later
   // `remove --purge` can never be pointed at an arbitrary system directory.
   assertInsideProfiles(profiles, dir);
   secureMkdir(dir);
-  addAccount({ name, dir, ...(options.email ? { email: options.email } : {}) }, context.ctx);
+  addAccount({ name, dir, ...(options.email ? { email: options.email } : {}), tags }, context.ctx);
   // The name is new to the registry, so anything stored under it is an old
   // account's, left by a version that kept usage after a removal.
   forgetUsage(name, context.ctx);

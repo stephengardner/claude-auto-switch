@@ -69,3 +69,18 @@ describe('toSnapshot', () => {
     expect(s.refreshMs).toBe(2000);
   });
 });
+
+describe('tags in the snapshot', () => {
+  it('carries each account tags, and nothing for one without', () => {
+    const s = toSnapshot(
+      input({
+        accounts: [
+          { name: 'a', enabled: true, priority: 0, tags: ['bot', 'pat'] },
+          { name: 'b', enabled: true, priority: 1 },
+        ],
+      }),
+    );
+    expect(s.accounts.find((a) => a.name === 'a')?.tags).toEqual(['bot', 'pat']);
+    expect('tags' in (s.accounts.find((a) => a.name === 'b') ?? {})).toBe(false);
+  });
+});

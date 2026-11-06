@@ -371,6 +371,28 @@ describe('what is left', () => {
     expect(out).toContain('verified (w@x.com · max · priority 0): no 5-hour limit (a verified account)');
   });
 
+  it('ends a row with its tags, before what else it says', () => {
+    const out = renderDashboard(
+      snapshot([account({ name: 'lent', enabled: false, tags: ['bot', 'pat'], usage: { fiveHour: 0, sevenDay: 0.2 } })]),
+      opts,
+    );
+    expect(rowOf(out, 'lent')).toMatch(/#bot #pat · disabled$/);
+  });
+
+  it('names the tags in the line about the highlighted account', () => {
+    const out = renderDashboard(snapshot([account({ name: 'lent', tags: ['pat'], usage: { fiveHour: 0, sevenDay: 0.2 } })]), {
+      ...opts,
+      interactive: true,
+      selected: 0,
+    });
+    expect(out).toContain('lent (w@x.com · max · priority 0): tags: pat');
+  });
+
+  it('offers g for tags among the keys', () => {
+    const out = renderDashboard(snapshot([account()]), { ...opts, interactive: true, width: 200 });
+    expect(out).toMatch(/g tags/);
+  });
+
   it('reads a window that has reset as full again', () => {
     // A number past its own reset records a limit that has already lifted.
     const out = renderDashboard(

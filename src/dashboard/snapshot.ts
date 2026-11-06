@@ -12,6 +12,7 @@ export interface SnapshotInput {
     plan?: string;
     enabled: boolean;
     priority: number;
+    tags?: string[];
   }>;
   /** Names currently logged in (from the health probe). */
   loggedIn: Set<string>;
@@ -72,6 +73,7 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
         active: input.active === a.name,
         enabled: a.enabled,
         priority: a.priority,
+        ...(a.tags && a.tags.length > 0 ? { tags: a.tags } : {}),
         ...(cap !== undefined ? { cappedUntil: cap } : {}),
         ...(usage !== undefined ? { usage } : {}),
         ...(pick !== undefined ? { pick } : {}),

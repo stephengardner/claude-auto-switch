@@ -7,9 +7,9 @@
   <circle cx="42" cy="17" r="6" fill="#f4bf50"/>
   <circle cx="62" cy="17" r="6" fill="#61c454"/>
   <text x="604" y="21.5" fill="#8b93a1" font-size="12" text-anchor="middle">ccx dashboard</text>
-  <text x="24.0" y="56" fill="#dcdfe4" font-weight="700" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">ccx 2.6.30</text>
-  <text x="796.8" y="56" fill="#dcdfe4" opacity="0.55" textLength="327.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">new sessions start on work · Opus first</text>
-  <rect x="24.0" y="73.0" width="1100.4" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <text x="24.0" y="56" fill="#dcdfe4" font-weight="700" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">ccx 2.6.32</text>
+  <text x="838.8" y="56" fill="#dcdfe4" opacity="0.55" textLength="327.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">new sessions start on work · Opus first</text>
+  <rect x="24.0" y="73.0" width="1142.4" height="1" fill="#dcdfe4" opacity="0.22"/>
   <text x="66.0" y="100" fill="#dcdfe4" opacity="0.55" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">ACCOUNT</text>
   <text x="150.0" y="100" fill="#dcdfe4" opacity="0.55" textLength="92.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">5-HOUR LEFT</text>
   <text x="452.4" y="100" fill="#dcdfe4" opacity="0.55" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">WEEK LEFT</text>
@@ -53,7 +53,9 @@
   <rect x="754.8" y="155.0" width="82.0" height="12" rx="2.5" fill="#b6e3a1"/>
   <text x="847.2" y="166" fill="#dcdfe4" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">100%</text>
   <text x="897.6" y="166" fill="#dcdfe4" opacity="0.55" textLength="100.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">resets in 2d</text>
-  <text x="1023.6" y="166" fill="#dcdfe4" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">1 session</text>
+  <text x="1023.6" y="166" fill="#c678dd" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">#bot</text>
+  <text x="1065.6" y="166" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">·</text>
+  <text x="1082.4" y="166" fill="#dcdfe4" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">1 session</text>
   <text x="32.4" y="188" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">4</text>
   <text x="66.0" y="188" fill="#dcdfe4" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">old</text>
   <rect x="150.0" y="177.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
@@ -71,7 +73,7 @@
   <text x="1023.6" y="188" fill="#e5c07b" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">held back</text>
   <rect x="24.0" y="205.0" width="16.8" height="1" fill="#dcdfe4" opacity="0.22"/>
   <text x="49.2" y="210" fill="#dcdfe4" opacity="0.55" textLength="92.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">out of room</text>
-  <rect x="150.0" y="205.0" width="974.4" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <rect x="150.0" y="205.0" width="1016.4" height="1" fill="#dcdfe4" opacity="0.22"/>
   <text x="49.2" y="232" fill="#56b6c2" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">*</text>
   <text x="66.0" y="232" fill="#56b6c2" font-weight="700" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">work</text>
   <rect x="150.0" y="221.0" width="82.0" height="12" rx="2.5" fill="#dcdfe4" opacity="0.12"/>
@@ -88,7 +90,7 @@
   <text x="1023.6" y="232" fill="#dcdfe4" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">2 sessions</text>
   <rect x="24.0" y="249.0" width="16.8" height="1" fill="#dcdfe4" opacity="0.22"/>
   <text x="49.2" y="254" fill="#dcdfe4" opacity="0.55" textLength="126.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">not in rotation</text>
-  <rect x="183.6" y="249.0" width="940.8" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <rect x="183.6" y="249.0" width="982.8" height="1" fill="#dcdfe4" opacity="0.22"/>
   <text x="66.0" y="276" fill="#dcdfe4" opacity="0.55" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">laptop</text>
   <text x="150.0" y="276" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">----------</text>
   <text x="267.6" y="276" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
@@ -96,7 +98,9 @@
   <text x="570.0" y="276" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
   <text x="754.8" y="276" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">----------</text>
   <text x="872.4" y="276" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
-  <text x="1023.6" y="276" fill="#e06c75" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">signed out</text>
+  <text x="1023.6" y="276" fill="#c678dd" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">#pat</text>
+  <text x="1065.6" y="276" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">·</text>
+  <text x="1082.4" y="276" fill="#e06c75" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">signed out</text>
   <text x="66.0" y="298" fill="#dcdfe4" opacity="0.55" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">trial</text>
   <text x="150.0" y="298" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">----------</text>
   <text x="267.6" y="298" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
@@ -105,7 +109,7 @@
   <text x="754.8" y="298" fill="#dcdfe4" opacity="0.55" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">----------</text>
   <text x="872.4" y="298" fill="#dcdfe4" opacity="0.55" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">?</text>
   <text x="1023.6" y="298" fill="#e06c75" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">on hold</text>
-  <rect x="24.0" y="315.0" width="1100.4" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <rect x="24.0" y="315.0" width="1142.4" height="1" fill="#dcdfe4" opacity="0.22"/>
   <text x="32.4" y="342" fill="#56b6c2" textLength="688.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">when one runs out → ultra (no 5-hour limit; 69% of its week left, resets in 1d 7h)</text>
   <text x="32.4" y="364" fill="#dcdfe4" font-weight="700" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">s</text>
   <text x="49.2" y="364" fill="#dcdfe4" opacity="0.55" textLength="798.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">settings  ·  model: Opus, then Fable  ·  pick: longest run first  ·  held back: weeks 80%+ used</text>
@@ -113,7 +117,7 @@
   <text x="32.4" y="408" fill="#dcdfe4" opacity="0.55" textLength="327.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">recent  08:41 a session started on work</text>
   <text x="99.6" y="430" fill="#dcdfe4" opacity="0.55" textLength="436.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">09:12 saved to your settings.json: permissions.allow</text>
   <text x="99.6" y="452" fill="#dcdfe4" opacity="0.55" textLength="579.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">09:26 sessions prefer Opus, then Fable, from their next start or move</text>
-  <rect x="24.0" y="469.0" width="1100.4" height="1" fill="#dcdfe4" opacity="0.22"/>
+  <rect x="24.0" y="469.0" width="1142.4" height="1" fill="#dcdfe4" opacity="0.22"/>
   <text x="24.0" y="496" fill="#dcdfe4" font-weight="700" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">q/esc</text>
   <text x="74.4" y="496" fill="#dcdfe4" opacity="0.55" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">quit  ·</text>
   <text x="150.0" y="496" fill="#dcdfe4" font-weight="700" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">j/k</text>

@@ -79,6 +79,12 @@ a window reading 100% while rotation refused to use that same account.
 - `blockedBy` is everything blocking it, when you want to explain the wait
   rather than just state it.
 
+### Tags
+
+Every account carries `tags`, a list of the labels given it with `ccx tag`
+(`["pat", "bot"]`), empty when it has none. Lowercase, sorted, each 1 to 32
+characters of letters, digits, `.`, `_` and `-`. Tags never change rotation.
+
 ### An account with no 5-hour limit
 
 A verified Ultra account has no 5-hour limit, only weekly ones (since

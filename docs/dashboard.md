@@ -19,8 +19,8 @@
     out says `back in ...`, which is when the last thing blocking it lifts,
     under the window blocking it, or at the end of the row when it waits on
     ccx's own record of being refused.
-  - The end of a row says what else matters about the account:
-    `next in line`, `held back` (its week is nearly spent, so it waits behind
+  - The end of a row says what else matters about the account: its tags
+    (`#pat #bot`, see `ccx tag`), `next in line`, `held back` (its week is nearly spent, so it waits behind
     healthier accounts), `signed out`, `on hold` (Anthropic put the account on hold;
     signing in again does not fix that), and how many sessions are running on
     it. `*` marks the account new sessions start on.
@@ -54,6 +54,7 @@ settings from a shell.
 | `M` / `o`       | cycle the model preference / the pick rule                                                            |
 | `[` / `]`       | move the highlighted account up / down your priority order                                            |
 | `e`             | enable or disable the highlighted account                                                             |
+| `g`             | edit the highlighted account's tags (spaces between; empty clears them)                               |
 | `a` `n` `l`     | add an account, rename one, sign one in again                                                         |
 | `x`             | remove the highlighted account, after asking (see below)                                              |
 | `d` `m` `t` `D` | Claude Desktop: handoff, mode, carry-on text, move a conversation                                     |

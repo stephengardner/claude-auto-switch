@@ -39,6 +39,7 @@ import path from 'node:path';
 import { configHome, profilesDir } from '../config/paths.js';
 import { addAccount, getAccount } from '../accounts/registry.js';
 import { renameAccount } from '../accounts/rename.js';
+import { setTagsFromText } from './tags.js';
 import { assertProfileName } from '../util/names.js';
 import { secureMkdir } from '../util/secret-file.js';
 import { appendEvent, readEvents, formatEvent } from '../events/log.js';
@@ -312,6 +313,7 @@ export async function dashboardCommand(
         ...(a.plan !== undefined ? { plan: a.plan } : {}),
         enabled: a.enabled,
         priority: a.priority,
+        ...(a.tags && a.tags.length > 0 ? { tags: a.tags } : {}),
       })),
       loggedIn,
       onHold,
@@ -557,7 +559,12 @@ export async function dashboardCommand(
         // screen, and this screen is already taken. One command finishes it.
         return `added "${text}" - finish it with: ccx login ${text}`;
       }
-      if (!target) return 'nothing selected to rename';
+      if (!target) return kind === 'tags' ? 'nothing selected to tag' : 'nothing selected to rename';
+      if (kind === 'tags') {
+        const said = setTagsFromText(context, target.name, text);
+        pushEvent(said);
+        return said;
+      }
       const result = renameAccount(target.name, text, context.config, context.ctx);
       rereadUsage();
       pushEvent(`renamed ${result.from} to ${result.to}`);
@@ -674,7 +681,7 @@ interface LoopDeps {
    * Apply a typed name. Returns a message to show, or throws to reject the value
    * and keep the box open so it can be corrected without retyping everything.
    */
-  onName: (kind: 'add' | 'rename', text: string, selected: DashboardAccount | undefined) => string;
+  onName: (kind: 'add' | 'rename' | 'tags', text: string, selected: DashboardAccount | undefined) => string;
   /** What removing an account would touch, read now; null once it is gone. */
   removal: (account: DashboardAccount) => RemovalStanding | null;
   /** Remove an account, its folder too when `purge`: whether it did, and what was said. */
@@ -897,6 +904,16 @@ async function runLiveLoop(
       ui.promptSessions = null;
       return null;
     }
+    if (next.kind === 'tags') {
+      // Before the empty check: an empty tags box is an answer, no tags.
+      if (!target) return null;
+      try {
+        ui.notice = deps.onName('tags', next.text, target);
+        return null;
+      } catch (err) {
+        return rejectPrompt(next, (err as Error).message);
+      }
+    }
     const typed = next.text.trim();
     if (typed.length === 0) return null; // confirming an empty box just closes it
     if (next.kind === 'remove') {
@@ -1070,6 +1087,15 @@ async function runLiveLoop(
         if (!target) return;
         // Captured with the label, so the box acts on the account it names.
         ui.prompt = openPrompt('rename', `new name for "${target.name}":`, '');
+        ui.promptTarget = target;
+      } else if (r.action === 'tags') {
+        if (!target) return;
+        // Holding the tags it has, so one is changed without retyping the rest.
+        ui.prompt = openPrompt(
+          'tags',
+          `tags for "${target.name}" (spaces between, empty clears):`,
+          (target.tags ?? []).join(' '),
+        );
         ui.promptTarget = target;
       } else if (r.action === 'desktop-handoff' || r.action === 'desktop-mode') {
         const action = r.action === 'desktop-handoff' ? 'handoff' : 'mode';
