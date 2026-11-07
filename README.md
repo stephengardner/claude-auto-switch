@@ -82,8 +82,11 @@ reads it on its next request, so the running process carries on. Everything else
 ### Building on `ccx state`
 
 `ccx state` prints everything ccx knows as JSON: each account's remaining usage,
-reset times, status and which account is next. Combined with `ccx use`, that is
-enough to build your own monitor or switcher:
+reset times, status, runway and place in the pick order, the sessions running,
+and which account is next. Combined with `ccx use`, that is enough to build your
+own monitor or switcher. A program reading it often can pass
+`--cached-logins 60` to reuse login checks up to a minute old, which is most of
+what a read costs:
 
 ```sh
 ccx state | jq '.accounts[] | {name, state: .status.state, until: .status.until}'
