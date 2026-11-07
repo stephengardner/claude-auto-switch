@@ -1,4 +1,11 @@
-import type { DashboardAccount, DashboardSession, DashboardSettings, DashboardSnapshot } from './render.js';
+import type {
+  AccountStanding,
+  DashboardAccount,
+  DashboardSession,
+  DashboardSettings,
+  DashboardSnapshot,
+  RotationValues,
+} from './render.js';
 
 /**
  * Pure mapping from the tool's own data (registry + health probe + ledger +
@@ -13,6 +20,8 @@ export interface SnapshotInput {
     enabled: boolean;
     priority: number;
     tags?: string[];
+    /** Its profile folder (the registry's `dir`). */
+    dir?: string;
   }>;
   /** Names currently logged in (from the health probe). */
   loggedIn: Set<string>;
@@ -32,6 +41,9 @@ export interface SnapshotInput {
       fiveHourReset?: number | null;
       sevenDayReset?: number | null;
       models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
+      /** The last successful read (see DashboardAccount). */
+      readAt?: number | null;
+      windowCost?: number | null;
       /** No 5-hour limit on this account (see DashboardAccount). */
       noFiveHourLimit?: boolean;
     }
@@ -56,6 +68,12 @@ export interface SnapshotInput {
   settings?: DashboardSettings;
   /** The ccx sessions running now. */
   sessions?: DashboardSession[];
+  /** Account name -> when its login was checked (epoch ms). */
+  loginCheckedAt?: Map<string, number>;
+  /** Account name -> where it stands for the next move, for every account (see dashboard.ts nextMove). */
+  standings?: Map<string, AccountStanding>;
+  /** The rotation settings as values. */
+  rotation?: RotationValues;
 }
 
 export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
@@ -64,6 +82,8 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
       const cap = input.cappedUntil.get(a.name);
       const usage = input.usage?.get(a.name);
       const pick = input.picks?.get(a.name);
+      const standing = input.standings?.get(a.name);
+      const checkedAt = input.loginCheckedAt?.get(a.name);
       return {
         name: a.name,
         email: input.liveEmail?.get(a.name) ?? a.email,
@@ -77,6 +97,9 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
         ...(cap !== undefined ? { cappedUntil: cap } : {}),
         ...(usage !== undefined ? { usage } : {}),
         ...(pick !== undefined ? { pick } : {}),
+        ...(a.dir !== undefined ? { configDir: a.dir } : {}),
+        ...(checkedAt !== undefined ? { loginCheckedAt: checkedAt } : {}),
+        ...(standing !== undefined ? { standing } : {}),
       };
     })
     // Stable, meaningful order: preferred (lowest priority) first, ties by name.
@@ -94,5 +117,6 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
     ...(input.desktop ? { desktop: input.desktop } : {}),
     ...(input.settings ? { settings: input.settings } : {}),
     ...(input.sessions && input.sessions.length > 0 ? { sessions: input.sessions } : {}),
+    ...(input.rotation ? { rotation: input.rotation } : {}),
   };
 }

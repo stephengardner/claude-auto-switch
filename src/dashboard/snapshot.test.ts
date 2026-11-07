@@ -84,3 +84,46 @@ describe('tags in the snapshot', () => {
     expect('tags' in (s.accounts.find((a) => a.name === 'b') ?? {})).toBe(false);
   });
 });
+
+describe('what the snapshot carries for `ccx state`', () => {
+  const standing = {
+    runway: 1,
+    binding: 'none' as const,
+    weeklyWindowsLeft: null,
+    weekLeft: null,
+    heldBack: false,
+    worthMoving: true,
+  };
+
+  it("carries each account's folder, login check and standing, and nothing it was not given", () => {
+    const s = toSnapshot(
+      input({
+        accounts: [
+          { name: 'a', enabled: true, priority: 0, dir: '/p/a' },
+          { name: 'b', enabled: true, priority: 1 },
+        ],
+        loginCheckedAt: new Map([['a', NOW - 5]]),
+        standings: new Map([['a', standing]]),
+      }),
+    );
+    const a = s.accounts.find((x) => x.name === 'a');
+    const b = s.accounts.find((x) => x.name === 'b') ?? {};
+    expect(a?.configDir).toBe('/p/a');
+    expect(a?.loginCheckedAt).toBe(NOW - 5);
+    expect(a?.standing).toEqual(standing);
+    for (const key of ['configDir', 'loginCheckedAt', 'standing']) expect(key in b).toBe(false);
+  });
+
+  it('carries the settings as values, and none when it was given none', () => {
+    const rotation = {
+      accountOrder: 'priority' as const,
+      modelPreference: ['opus'],
+      modelStrategy: 'account-first' as const,
+      preferSameModel: false,
+      holdBackAtPercent: null,
+      proactivePercent: 70,
+    };
+    expect(toSnapshot(input({ rotation })).rotation).toEqual(rotation);
+    expect('rotation' in toSnapshot(input())).toBe(false);
+  });
+});

@@ -44,6 +44,10 @@ function planFor(input: NextUpInput): RotationPlan {
 export interface WhenOut {
   /** The account a session would go to. Absent when there is nowhere to go. */
   account?: string;
+  /** The model it would run there, when models are in play. */
+  model?: string;
+  /** True when going there means changing model, because no account has room on the one in use. */
+  changesModel?: boolean;
   /** What follows "when one runs out" on the dashboard. */
   words: string;
 }
@@ -66,7 +70,12 @@ export function describeWhenOut(input: NextUpInput): WhenOut | null {
   const room = roomLeft(input.candidates, plan.account, plan.model);
   const aside = input.reasonFor?.(plan.account) ?? (room === null ? null : `${room}% of ${named} left`);
   const where = plan.changedModel ? `${plan.account}, on ${named} instead` : plan.account;
-  return { account: plan.account, words: aside ? `${where} (${aside})` : where };
+  return {
+    account: plan.account,
+    model,
+    changesModel: plan.changedModel === true,
+    words: aside ? `${where} (${aside})` : where,
+  };
 }
 
 export function describeNextUp(input: NextUpInput): string | null {

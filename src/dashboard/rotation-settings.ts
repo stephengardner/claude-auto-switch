@@ -4,6 +4,7 @@ import { DEFAULT_HOLD_BACK_PERCENT, pickScore, standingOf, type RunwayWindows, t
 import { remainingRoom, usableCapacity, type CapacityWindows } from '../usage/usable-capacity.js';
 import { orderComparator, type AccountOrder, type SelectableAccount } from '../selector/selector.js';
 import type { PickPolicy } from '../usage/account-room.js';
+import type { RotationValues } from './render.js';
 
 /**
  * The rotation settings the dashboard shows and changes: which model sessions
@@ -74,6 +75,29 @@ export function settingsWords(rotation: {
     model: modelPreferenceWords(rotation.modelPreference),
     order: orderWords(rotation.accountOrder),
     ...(holdBack !== null ? { holdBack: `weeks ${holdBack}%+ used` } : {}),
+  };
+}
+
+/**
+ * The same settings as values, for `ccx state`. Hold-back is the one in force,
+ * by the rule the screen words it with (holdBackOf), so a reader is not left
+ * to work out that only the smart order holds anything back.
+ */
+export function rotationValues(rotation: {
+  modelPreference: readonly string[];
+  accountOrder: AccountOrder;
+  holdBackAtPercent?: number;
+  modelStrategy: 'model-first' | 'account-first';
+  preferSameModel: boolean;
+  proactivePercent: number;
+}): RotationValues {
+  return {
+    accountOrder: rotation.accountOrder,
+    modelPreference: [...rotation.modelPreference],
+    modelStrategy: rotation.modelStrategy,
+    preferSameModel: rotation.preferSameModel,
+    holdBackAtPercent: holdBackOf(rotation),
+    proactivePercent: rotation.proactivePercent > 0 ? rotation.proactivePercent : null,
   };
 }
 

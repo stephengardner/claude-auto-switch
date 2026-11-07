@@ -28,7 +28,11 @@ function account(
     active: false,
     priority: 0,
     tags: [],
+    onHold: false,
     usage,
+    runway: null,
+    heldBack: false,
+    pick: null,
     status: { state: 'ready', label: null, until: null, blockedBy: [], ...status },
   };
 }
@@ -39,6 +43,9 @@ const state: StatePayload = {
   active: 'mid',
   preferredModel: 'fable',
   nextUp: null,
+  whenOut: null,
+  settings: null,
+  sessions: [],
   events: [],
   accounts: [
     account('mid', {

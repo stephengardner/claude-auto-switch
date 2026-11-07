@@ -214,7 +214,10 @@ describe('the state another program reads', () => {
       'active',
       'preferredModel',
       'nextUp',
+      'whenOut',
+      'settings',
       'accounts',
+      'sessions',
       'events',
     ]);
     expect(payload.accounts.map((a) => a.name)).toEqual(['spent', 'next']);
@@ -223,17 +226,26 @@ describe('the state another program reads', () => {
       'email',
       'plan',
       'loggedIn',
+      'onHold',
       'enabled',
       'active',
       'priority',
       'tags',
       'cappedUntil',
       'usage',
+      'runway',
+      'heldBack',
+      'pick',
       'status',
     ]);
     expect(Object.keys(payload.accounts[0]?.status ?? {})).toEqual(['state', 'label', 'until', 'blockedBy']);
     expect(payload.nextUp).toBe('over on next, on opus');
     expect(payload.events).toEqual(['09:00  session on next']);
+    // The screen's words stay on the screen: the move as values, the settings
+    // only as values (none were given here), and a session only with its pid.
+    expect(payload.whenOut).toEqual({ account: 'next', model: null, changesModel: false });
+    expect(payload.settings).toBeNull();
+    expect(payload.sessions).toEqual([]);
   });
 
   it('survives an account with no usage read yet', () => {
@@ -241,6 +253,111 @@ describe('the state another program reads', () => {
     const payload = toStatePayload(snapshot([account({ name: 'fresh' })]));
     expect(payload.accounts[0]?.status.state).toBe('ready');
     expect(payload.accounts[0]?.usage).toBeUndefined();
+  });
+});
+
+describe('what the screen works out, as values', () => {
+  const standing = {
+    runway: 0.4,
+    binding: 'weekly' as const,
+    weeklyWindowsLeft: 0.4,
+    weekLeft: 0.06,
+    heldBack: true,
+    worthMoving: true,
+  };
+
+  it('gives every account its folder, its runway, whether it is held back, and its place in the pick order', () => {
+    const payload = toStatePayload(
+      snapshot([
+        account({
+          name: 'tired',
+          configDir: '/p/tired',
+          loginCheckedAt: NOW - 1000,
+          standing,
+          pick: { rank: 2, runway: 0.4, binding: 'weekly', heldBack: { weekLeft: 0.06 } },
+        }),
+        account({ name: 'off', enabled: false, configDir: '/p/off', standing: { ...standing, heldBack: false } }),
+      ]),
+    );
+    const [tired, off] = payload.accounts;
+    expect(tired?.configDir).toBe('/p/tired');
+    expect(tired?.loginCheckedAt).toBe(NOW - 1000);
+    expect(tired?.runway).toEqual({
+      windows: 0.4,
+      binding: 'weekly',
+      weeklyWindowsLeft: 0.4,
+      weekLeft: 0.06,
+      worthMoving: true,
+    });
+    expect(tired?.heldBack).toBe(true);
+    expect(tired?.pick).toEqual({ rank: 2, binding: 'weekly' });
+    // Not picked, but it still has a runway: a reader can see where it stands.
+    expect(off?.pick).toBeNull();
+    expect(off?.runway?.windows).toBe(0.4);
+    expect(off?.heldBack).toBe(false);
+  });
+
+  it('says plainly when nothing was worked out for an account', () => {
+    const [a] = toStatePayload(snapshot([account()])).accounts;
+    expect(a?.runway).toBeNull();
+    expect(a?.heldBack).toBe(false);
+    expect(a?.pick).toBeNull();
+    expect(a?.onHold).toBe(false);
+    expect(a).not.toHaveProperty('configDir');
+    expect(a).not.toHaveProperty('loginCheckedAt');
+  });
+
+  it('marks an account on hold as such', () => {
+    const [a] = toStatePayload(snapshot([account({ loggedIn: false, onHold: true })])).accounts;
+    expect(a?.onHold).toBe(true);
+    expect(a?.status.state).toBe('on-hold');
+  });
+
+  it('carries the usage read time beside the numbers', () => {
+    const [a] = toStatePayload(
+      snapshot([account({ usage: { fiveHour: 0.2, sevenDay: 0.3, readAt: NOW - 60_000, windowCost: 0.2 } })]),
+    ).accounts;
+    expect(a?.usage?.readAt).toBe(NOW - 60_000);
+    expect(a?.usage?.windowCost).toBe(0.2);
+  });
+
+  it('gives the move when one runs out as values, and none when there is nowhere to go', () => {
+    const moving = toStatePayload(
+      snapshot([account()], { whenOut: { account: 'solo', model: 'opus', changesModel: true, words: 'solo, on Opus instead' } }),
+    );
+    expect(moving.whenOut).toEqual({ account: 'solo', model: 'opus', changesModel: true });
+    const stuck = toStatePayload(snapshot([account()], { whenOut: { words: 'every account is out of Fable' } }));
+    expect(stuck.whenOut).toEqual({ account: null, model: null, changesModel: false });
+    expect(toStatePayload(snapshot([account()])).whenOut).toBeNull();
+  });
+
+  it('gives the settings as values', () => {
+    const settings = {
+      accountOrder: 'smart' as const,
+      modelPreference: ['opus', 'fable'],
+      modelStrategy: 'model-first' as const,
+      preferSameModel: true,
+      holdBackAtPercent: 80,
+      proactivePercent: null,
+    };
+    expect(toStatePayload(snapshot([account()], { rotation: settings })).settings).toEqual(settings);
+  });
+
+  it('lists the sessions running with what their leases say, one per process', () => {
+    const payload = toStatePayload(
+      snapshot([account()], {
+        sessions: [
+          { number: 1, where: 'api', account: 'work', pid: 120, cwd: '/w/api', configDir: '/s/120', lastSeen: NOW - 5 },
+          { number: 2, where: '900', account: 'work', pid: 900, configDir: '/s/900' },
+          // A session the snapshot cannot name by process is not one a reader can act on.
+          { number: 3, where: 'x', account: 'work' },
+        ],
+      }),
+    );
+    expect(payload.sessions).toEqual([
+      { pid: 120, account: 'work', cwd: '/w/api', configDir: '/s/120', lastSeen: NOW - 5 },
+      { pid: 900, account: 'work', configDir: '/s/900' },
+    ]);
   });
 });
 

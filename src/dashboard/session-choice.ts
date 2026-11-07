@@ -48,6 +48,10 @@ export function numberSessions(leases: readonly SessionLease[]): NumberedSession
       pid: l.pid,
       account: clean(l.account),
       where: (taken.get(where) ?? 0) > 1 && where !== String(l.pid) ? `${where} (${l.pid})` : where,
+      // Carried for `ccx state`, which says them as data; the screen never draws them.
+      ...(l.cwd !== undefined ? { cwd: l.cwd } : {}),
+      ...(typeof l.configDir === 'string' ? { configDir: l.configDir } : {}),
+      ...(typeof l.at === 'number' ? { lastSeen: l.at } : {}),
     };
   });
 }

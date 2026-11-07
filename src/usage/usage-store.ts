@@ -51,8 +51,15 @@ const EntrySchema = z.object({
   sevenDayReset: z.number().nullable(),
   /** Per-model weekly windows (Fable, ...). */
   models: z.array(ModelSchema).optional(),
-  /** When this entry was fetched (epoch ms). */
+  /** When this entry was last fetched or tried (epoch ms). */
   at: z.number(),
+  /**
+   * When these numbers were last read successfully (epoch ms). A failed read
+   * keeps the old numbers and moves `at` on, so `at` cannot say how old they
+   * are; this moves only with a reading. Absent until a reading by a ccx that
+   * writes it, and kept, unchanged, by one that does not (an unknown field).
+   */
+  readAt: z.number().optional(),
   /**
    * What one full 5-hour window costs the week on this account, learned from
    * its own readings (see learnWindowCost). Absent until the first measurement.
@@ -534,6 +541,7 @@ export async function refreshUsage(
       // which ends the fact) or cannot tell, which leaves it as the newest
       // entry has it: decided when writing back, below.
       if (result.noFiveHourLimit !== true && result.fiveHour === undefined) undecided.add(account.name);
+      const readAt = now();
       const fresh = {
         fiveHour: result.fiveHour ?? null,
         ...(result.noFiveHourLimit === true ? { noFiveHourLimit: true } : {}),
@@ -543,7 +551,8 @@ export async function refreshUsage(
         ...(result.models
           ? { models: result.models.map((m) => ({ name: m.name, utilization: m.utilization, resetsAt: m.resetsAt ?? null })) }
           : {}),
-        at: now(),
+        at: readAt,
+        readAt,
       };
       const learned = learnWindowCost(previous, fresh);
       snapshot.accounts[account.name] = {

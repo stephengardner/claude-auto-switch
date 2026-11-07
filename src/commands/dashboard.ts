@@ -5,7 +5,7 @@ import { forgetUsage, refreshUsage, readUsageSnapshot, type UsageSnapshot } from
 import { probeAll, type ProbeResult } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { signInFailureNotice } from '../dashboard/sign-in-failure.js';
-import { renderDashboard, type DashboardAccount, type SettingsPanel } from '../dashboard/render.js';
+import { renderDashboard, type AccountStanding, type DashboardAccount, type SettingsPanel } from '../dashboard/render.js';
 import { toSnapshot } from '../dashboard/snapshot.js';
 import { dispatchKey, dispatchSettingsKey, confirmKey } from '../dashboard/keys.js';
 import {
@@ -44,7 +44,7 @@ import { assertProfileName } from '../util/names.js';
 import { secureMkdir } from '../util/secret-file.js';
 import { appendEvent, readEvents, formatEvent } from '../events/log.js';
 import { ccxVersion } from '../util/version.js';
-import { toStatePayload, STATE_SCHEMA_VERSION } from '../dashboard/state-payload.js';
+import { toStatePayload } from '../dashboard/state-payload.js';
 import { moveEditorToActive } from '../editor/folder.js';
 import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -72,6 +72,7 @@ import {
   pickReason,
   rankAccounts,
   reorder,
+  rotationValues,
   settingsWords,
 } from '../dashboard/rotation-settings.js';
 import { activeModelCaps, cappedNames } from '../ledger/ledger.js';
@@ -198,18 +199,18 @@ export async function dashboardCommand(
     // A reader asking for JSON gets JSON, even when the answer is "nothing".
     // Prose here would be a parse error at the worst possible moment: first run.
     if (options.json) {
+      // The same shape as any other read, built the same way, so a field added
+      // there is never missing here.
       context.out(
         JSON.stringify(
-          {
-            schemaVersion: STATE_SCHEMA_VERSION,
-            ccxVersion: ccxVersion(),
-            now: Date.now(),
-            active: null,
-            preferredModel: null,
-            nextUp: null,
+          toStatePayload({
             accounts: [],
             events: [],
-          },
+            now: Date.now(),
+            refreshMs: 0,
+            version: ccxVersion(),
+            rotation: rotationValues(context.config.rotation),
+          }),
           null,
           2,
         ),
@@ -303,6 +304,8 @@ export async function dashboardCommand(
           // The learned cost of a 5-hour window, so the pick column agrees with
           // rotation, which reads the whole entry.
           ...(typeof u.windowCost === 'number' ? { windowCost: u.windowCost } : {}),
+          // The last read that worked, not `at`, which a failed read moves on.
+          readAt: typeof u.readAt === 'number' ? u.readAt : null,
         },
       ]),
     );
@@ -314,6 +317,7 @@ export async function dashboardCommand(
         enabled: a.enabled,
         priority: a.priority,
         ...(a.tags && a.tags.length > 0 ? { tags: a.tags } : {}),
+        dir: a.dir,
       })),
       loggedIn,
       onHold,
@@ -334,7 +338,9 @@ export async function dashboardCommand(
       ...nextMove(context, accts, usage, cappedNames(loadLedger(context.ctx), now), loggedIn, now),
       desktop: desktopSummary(context, (name) => usage.get(name), now),
       settings: settingsWords(context.config.rotation),
+      rotation: rotationValues(context.config.rotation),
       sessions: numberSessions(liveLeases(context.ctx)),
+      loginCheckedAt: new Map(healths.map((h) => [h.name, h.checkedAt] as const)),
     });
   };
 
@@ -369,6 +375,7 @@ export async function dashboardCommand(
     nextUp?: string;
     whenOut?: WhenOut;
     picks: Map<string, NonNullable<DashboardAccount['pick']>>;
+    standings: Map<string, AccountStanding>;
   } {
     const rotation = ctx.config.rotation;
     // With models switched off, rotation still MOVES BETWEEN ACCOUNTS, and
@@ -389,6 +396,9 @@ export async function dashboardCommand(
     );
     const candidates = ordered.map((a) => modelUsageFor(a.name, usage.get(a.name), knownSpent, at));
     const picks = numberPicks(candidates, rotation.modelPreference, model !== null, standing);
+    // Every account's standing by the same rule the pick column ranks by, so
+    // a reader can see where an account rotation would not pick stands too.
+    const standings = new Map<string, AccountStanding>(accounts.map((a) => [a.name, standing(a.name)] as const));
     const current = getActive(ctx.ctx);
     const move: NextUpInput = {
       candidates,
@@ -413,7 +423,7 @@ export async function dashboardCommand(
       ...move,
       ...(smart ? { reasonFor: (name: string) => pickAside(standing(name), at) } : {}),
     });
-    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}), ...(whenOut ? { whenOut } : {}), picks };
+    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}), ...(whenOut ? { whenOut } : {}), picks, standings };
   }
 
   if (options.json) {
