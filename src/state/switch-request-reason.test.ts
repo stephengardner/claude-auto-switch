@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readSwitchRequest, requestMoves, writeSwitchRequest } from './switch-request.js';
@@ -8,6 +8,17 @@ function home() {
   return {
     env: { CLAUDE_AUTO_SWITCH_HOME: mkdtempSync(path.join(tmpdir(), 'cas-switch-reason-')) },
   };
+}
+
+/** The folder per-session requests live in, found by writing one: its name is the module's to choose. */
+function requestDir(c: ReturnType<typeof home>): string {
+  writeSwitchRequest('x', 0, 'seamless', c, 1);
+  const root = c.env.CLAUDE_AUTO_SWITCH_HOME;
+  const found = readdirSync(root).find(
+    (n) => n.startsWith('switch-') && statSync(path.join(root, n)).isDirectory(),
+  );
+  if (!found) throw new Error('no per-session request folder was written');
+  return path.join(root, found);
 }
 
 /** Why a move is asked for travels with the request, so the session can record it with the move. */
@@ -45,7 +56,7 @@ describe('the reason on a switch request', () => {
   it('reads as absent when a newer ccx wrote one this version does not know, and the move is still made', () => {
     const c = home();
     writeSwitchRequest('b', 5, 'seamless', c, 11, 'proactive');
-    const file = path.join(c.env.CLAUDE_AUTO_SWITCH_HOME, 'switch-' + 'requests', '11.json');
+    const file = path.join(requestDir(c), '11.json');
     writeFileSync(
       file,
       JSON.stringify({ account: 'b', at: 5, mode: 'seamless', reason: 'pooled' }),
@@ -56,8 +67,7 @@ describe('the reason on a switch request', () => {
 
   it('is absent from a request an older ccx wrote, which is still read', () => {
     const c = home();
-    const dir = path.join(c.env.CLAUDE_AUTO_SWITCH_HOME, 'switch-' + 'requests');
-    mkdirSync(dir, { recursive: true });
+    const dir = requestDir(c);
     writeFileSync(
       path.join(dir, '9.json'),
       JSON.stringify({ account: 'b', at: 4, mode: 'seamless' }),
