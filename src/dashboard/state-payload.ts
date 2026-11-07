@@ -57,6 +57,8 @@ export interface StateAccount {
   priority: number;
   /** Its tags (accounts/tags); empty when it has none. */
   tags: string[];
+  /** The pool it is drawn from (accounts/pools); null when it is in none. Pools never change rotation. */
+  pool: string | null;
   /** Its profile folder: the CLAUDE_CONFIG_DIR a session on it reads its login from. */
   configDir?: string;
   /**
@@ -161,6 +163,7 @@ export function toStatePayload(snapshot: DashboardSnapshot): StatePayload {
         active: a.active,
         priority: a.priority,
         tags: a.tags ?? [],
+        pool: a.pool ?? null,
         ...(a.configDir !== undefined ? { configDir: a.configDir } : {}),
         ...(a.loginCheckedAt !== undefined ? { loginCheckedAt: a.loginCheckedAt } : {}),
         ...(a.cappedUntil !== undefined ? { cappedUntil: a.cappedUntil } : {}),

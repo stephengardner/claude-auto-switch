@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { storedTags } from './tags.js';
+import { storedPool } from './pools.js';
 
 /**
  * A registered account (spec 6.2). `dir` is its CLAUDE_CONFIG_DIR. The name is
@@ -28,6 +29,12 @@ export const AccountSchema = z.object({
    * making every command that loads the accounts fail.
    */
   tags: z.preprocess(storedTags, z.array(z.string().max(256)).max(256).optional()).catch(undefined),
+  /**
+   * The pool it is drawn from (accounts/pools), one at most. Read into the
+   * form it is compared in (storedPool); anything that cannot be a pool's
+   * name reads as none rather than making the accounts unreadable.
+   */
+  pool: z.preprocess(storedPool, z.string().max(256).optional()).catch(undefined),
 })
   // A field a newer ccx added is kept through this version's writes rather
   // than dropped: an older ccx rewriting the file is how 2.6.30's

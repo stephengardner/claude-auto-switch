@@ -20,7 +20,9 @@ const HOUR = 3_600_000;
  * and the settings, which is where a field the screen has is easiest to drop
  * before a program ever sees it.
  */
-function setup(accounts: Array<{ name: string; enabled?: boolean; login?: boolean }> = []) {
+function setup(
+  accounts: Array<{ name: string; enabled?: boolean; login?: boolean; pool?: string }> = [],
+) {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-state-fields-'));
   const dirs = new Map<string, string>();
   for (const { name, login } of accounts) {
@@ -53,6 +55,7 @@ function setup(accounts: Array<{ name: string; enabled?: boolean; login?: boolea
         dir: dirs.get(a.name),
         priority,
         enabled: a.enabled ?? true,
+        ...(a.pool !== undefined ? { pool: a.pool } : {}),
       })),
     }),
     'utf8',
@@ -128,7 +131,7 @@ describe('a cheap `ccx state`', () => {
 describe('`ccx state` says what the dashboard works out', () => {
   it("gives every account its folder, its usage's last good read, runway, hold-back and pick", async () => {
     const { home, dirs, read } = setup([
-      { name: 'work' },
+      { name: 'work', pool: 'lanes' },
       { name: 'tired' },
       { name: 'off', enabled: false, login: false },
     ]);
@@ -171,6 +174,7 @@ describe('`ccx state` says what the dashboard works out', () => {
       dirs.get('tired'),
       dirs.get('off'),
     ]);
+    expect([work?.pool, tired?.pool]).toEqual(['lanes', null]);
     expect(work?.usage?.readAt).toBe(now - 2 * 60_000);
     expect(tired?.usage?.readAt).toBeNull();
 

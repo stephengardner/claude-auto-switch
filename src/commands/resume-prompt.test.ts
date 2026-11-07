@@ -66,6 +66,24 @@ describe('ccx resume-prompt', () => {
     expect(lines.join('\n')).toMatch(/armed: carry on/);
   });
 
+  it('says what is armed as JSON, in the envelope with a schemaVersion like every other JSON output', () => {
+    const { context, lines } = liveSession();
+    context.json = true;
+    expect(resumePromptCommand(context, [], { session: String(process.pid) })).toBe(0);
+    expect(JSON.parse(lines.join('\n'))).toEqual({
+      schemaVersion: 1,
+      pid: process.pid,
+      armed: false,
+      default: context.config.resume.prompt,
+    });
+    context.json = false;
+    resumePromptCommand(context, ['carry on'], { session: String(process.pid) });
+    context.json = true;
+    lines.length = 0;
+    expect(resumePromptCommand(context, [], { session: String(process.pid) })).toBe(0);
+    expect(JSON.parse(lines.join('\n'))).toEqual({ schemaVersion: 1, pid: process.pid, armed: true, prompt: 'carry on' });
+  });
+
   it('refuses a prompt that breaks the rules, and arms nothing', () => {
     const { context, dir, lines } = liveSession();
     expect(resumePromptCommand(context, ['--not-a-prompt'], { session: String(process.pid) })).toBe(

@@ -231,6 +231,7 @@ describe('the state another program reads', () => {
       'active',
       'priority',
       'tags',
+      'pool',
       'cappedUntil',
       'usage',
       'runway',

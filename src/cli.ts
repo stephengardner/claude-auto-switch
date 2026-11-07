@@ -26,6 +26,7 @@ import { capCommand } from './commands/cap.js';
 import { loginCommand } from './commands/login.js';
 import { enableCommand, disableCommand, priorityCommand } from './commands/account-config.js';
 import { tagCommand, untagCommand, tagsCommand } from './commands/tags.js';
+import { poolCommand, unpoolCommand, poolsCommand } from './commands/pools.js';
 import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
 import { keepaliveCommand } from './commands/keepalive.js';
@@ -102,6 +103,27 @@ program
   .description('every tag in use, with the accounts carrying it')
   .action(() => {
     process.exitCode = tagsCommand(context());
+  });
+
+program
+  .command('pool <name> <pool>')
+  .description('put an account in a pool, the one group it is drawn from (replaces any it was in)')
+  .action((name: string, pool: string) => {
+    process.exitCode = poolCommand(context(), name, pool);
+  });
+
+program
+  .command('unpool <name>')
+  .description('take an account out of its pool')
+  .action((name: string) => {
+    process.exitCode = unpoolCommand(context(), name);
+  });
+
+program
+  .command('pools')
+  .description('every pool in use, with the accounts in it')
+  .action(() => {
+    process.exitCode = poolsCommand(context());
   });
 
 program

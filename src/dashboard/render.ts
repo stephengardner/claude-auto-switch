@@ -44,6 +44,8 @@ export interface DashboardAccount {
   priority: number;
   /** Its tags (accounts/tags): who or what it is kept for. */
   tags?: string[];
+  /** The pool it is drawn from (accounts/pools), when it is in one. */
+  pool?: string;
   /** Its profile folder: the CLAUDE_CONFIG_DIR a session on it reads its login from. */
   configDir?: string;
   /**

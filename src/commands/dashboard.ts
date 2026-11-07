@@ -335,6 +335,7 @@ export async function dashboardCommand(
         enabled: a.enabled,
         priority: a.priority,
         ...(a.tags && a.tags.length > 0 ? { tags: a.tags } : {}),
+        ...(a.pool !== undefined ? { pool: a.pool } : {}),
         dir: a.dir,
       })),
       loggedIn,

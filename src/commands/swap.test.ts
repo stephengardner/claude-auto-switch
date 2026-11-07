@@ -30,6 +30,7 @@ function account(
     active: false,
     priority: 0,
     tags: [],
+    pool: null,
     onHold: false,
     usage,
     runway: null,

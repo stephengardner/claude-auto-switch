@@ -20,6 +20,8 @@ export interface SnapshotInput {
     enabled: boolean;
     priority: number;
     tags?: string[];
+    /** The pool it is drawn from (accounts/pools). */
+    pool?: string;
     /** Its profile folder (the registry's `dir`). */
     dir?: string;
   }>;
@@ -97,6 +99,7 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
         ...(cap !== undefined ? { cappedUntil: cap } : {}),
         ...(usage !== undefined ? { usage } : {}),
         ...(pick !== undefined ? { pick } : {}),
+        ...(a.pool !== undefined ? { pool: a.pool } : {}),
         ...(a.dir !== undefined ? { configDir: a.dir } : {}),
         ...(checkedAt !== undefined ? { loginCheckedAt: checkedAt } : {}),
         ...(standing !== undefined ? { standing } : {}),

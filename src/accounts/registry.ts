@@ -69,6 +69,8 @@ export function updateAccount(name: string, patch: Partial<Account>, c: PathCtx 
   Object.assign(account, patch, { name: account.name });
   // No tags is no field, so a cleared account reads as one never tagged.
   if (account.tags !== undefined && account.tags.length === 0) delete account.tags;
+  // Likewise no pool.
+  if (account.pool === undefined) delete account.pool;
   saveRegistry(registry, c);
   return account;
 }

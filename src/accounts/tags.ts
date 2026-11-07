@@ -27,13 +27,22 @@ const TAG = /^[a-z0-9][a-z0-9._-]*$/;
  * something the person did not type.
  */
 export function normalizeTag(raw: string): string {
-  const tag = raw.trim().toLowerCase();
-  if (tag === '') throw new TagError('a tag cannot be empty');
-  if (tag.length > MAX_LENGTH) throw new TagError(`"${raw}" is not a tag: at most ${MAX_LENGTH} characters`);
-  if (!TAG.test(tag)) {
-    throw new TagError(`"${raw}" is not a tag: use letters, digits, dot, dash or underscore, starting with a letter or digit`);
+  return normalizeLabel(raw, 'tag');
+}
+
+/**
+ * The one rule for a label on an account: a tag, or the name of a pool
+ * (accounts/pools), which is written the same way. `what` names which in
+ * the refusal.
+ */
+export function normalizeLabel(raw: string, what: 'tag' | 'pool'): string {
+  const label = raw.trim().toLowerCase();
+  if (label === '') throw new TagError(`a ${what} cannot be empty`);
+  if (label.length > MAX_LENGTH) throw new TagError(`"${raw}" is not a ${what}: at most ${MAX_LENGTH} characters`);
+  if (!TAG.test(label)) {
+    throw new TagError(`"${raw}" is not a ${what}: use letters, digits, dot, dash or underscore, starting with a letter or digit`);
   }
-  return tag;
+  return label;
 }
 
 /** Tags in one list: each normalized, once, sorted. */
