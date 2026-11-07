@@ -18,6 +18,7 @@ import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive, getActive } from '../../src/state/active.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
+import { readSwitchEvents } from '../../src/events/switch-events.js';
 import { loadConfig } from '../../src/config/config.js';
 import { liveLeases, leasePath } from '../../src/session/lease.js';
 import { saveToken } from '../../src/daemon/token-store.js';
@@ -245,6 +246,12 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
       caps: Array<{ account: string }>;
     }).caps;
     expect(caps.map((c) => c.account)).toEqual(['A']);
+    // As values: started on A, A ran out, and the same conversation carried on on B.
+    expect(readSwitchEvents(home, 50).map((e) => [e.kind, e.from, e.to, e.reason])).toEqual([
+      ['started', null, 'A', 'session-start'],
+      ['ran-out', 'A', null, 'capacity'],
+      ['started', null, 'B', 'continued'],
+    ]);
   });
 
   it('a VERIFIED cap on a still-alive session swaps the account IN PLACE, no relaunch', async () => {
@@ -287,6 +294,13 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     // The event stream records the in-place relief.
     const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
     expect(events).toContain('cap relief');
+    // The same moves as values, for `ccx history --json`: the session started
+    // on A, A ran out, and the session moved to B in place because of it.
+    expect(readSwitchEvents(home, 50).map((e) => [e.kind, e.from, e.to, e.reason])).toEqual([
+      ['started', null, 'A', 'session-start'],
+      ['ran-out', 'A', null, 'capacity'],
+      ['moved', 'A', 'B', 'capacity'],
+    ]);
     // A's real cap is still recorded, so other sessions avoid it.
     const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
       caps: Array<{ account: string }>;
@@ -596,10 +610,36 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     // The seamless swap fired (deterministic: logged to the event stream)...
     const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
     expect(events).toContain('switching to \\"B\\"');
+    // As a value too: moved from A to B because it was asked to.
+    expect(readSwitchEvents(home, 50)).toContainEqual(
+      expect.objectContaining({ kind: 'moved', from: 'A', to: 'B', reason: 'asked' }),
+    );
     // ...and it swapped the credential file to B underneath the running process
     // (the simulated ~30s re-read at run's end sees B), with no restart.
     const lastReread = runs.filter((r) => r.type === 'reread').pop();
     expect(lastReread?.marker).toBe('B');
+  });
+
+  it('records a move asked for early as proactive on the move the session makes', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-seamless-early-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    const running = runCommand(context, []);
+    await firstLaunch(runsLog);
+    // As `ccx auto` asks: the request says why, and the session's move says it too.
+    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, undefined, 'proactive');
+    expect(await running).toBe(0);
+
+    expect(readSwitchEvents(home, 50)).toContainEqual(
+      expect.objectContaining({ kind: 'moved', from: 'A', to: 'B', reason: 'proactive' }),
+    );
   });
 
   /**

@@ -1,5 +1,5 @@
 import { listAccounts } from '../accounts/registry.js';
-import { probeAll } from '../health/prober.js';
+import { probeAllRemembered } from '../health/login-checks.js';
 import { getClaude, type CliContext } from '../context.js';
 
 /** Print detailed health JSON for one account, or all of them. */
@@ -11,7 +11,8 @@ export async function statusCommand(context: CliContext, name?: string): Promise
     return 1;
   }
 
-  const healths = await probeAll(targets, { claude: getClaude(context) });
+  // Remembered for a cheap `ccx state` (health/login-checks), for all of them.
+  const healths = await probeAllRemembered(targets, { claude: getClaude(context) }, context.ctx);
   // Wrapped rather than bare, so every machine-readable output on this CLI has
   // the same envelope. Two of five carrying a schemaVersion was a trap for
   // whoever wrote against the other three.

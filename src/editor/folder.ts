@@ -532,7 +532,8 @@ function installFromText(
         ? { lock: (dir: string) => lockDirSteps(path.join(dir, CREDENTIALS_LOCK_DIR), { waitMs: lockWaitMs }) }
         : {},
     );
-    if (installed) logCredentialEvent({ account: account.name, kind: 'installed', detail }, c);
+    // Every caller saves home a login the editor's Claude renewed or kept.
+    if (installed) logCredentialEvent({ account: account.name, kind: 'installed', reason: 'saved-from-editor', detail }, c);
     return installed;
   } catch {
     return false;
@@ -672,7 +673,12 @@ function pullProfileIntoEditor(c: PathCtx): void {
     writeFolderLogin(login, theirs);
     nudgeFolderLogin(login);
     logCredentialEvent(
-      { account: name, kind: 'installed', detail: 'the stored login was renewed elsewhere; carried into the editor' },
+      {
+        account: name,
+        kind: 'installed',
+        reason: 'carried-into-editor',
+        detail: 'the stored login was renewed elsewhere; carried into the editor',
+      },
       c,
     );
   });

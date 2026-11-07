@@ -4,6 +4,29 @@
  * testable; the live loop supplies the snapshot and prints the frame.
  */
 
+import type { Standing } from '../usage/runway.js';
+
+/**
+ * Where an account stands for the next move, by the runway rule
+ * (usage/runway.ts): the same reading the pick column ranks by, for every
+ * account, whether rotation would pick it or not.
+ */
+export type AccountStanding = Pick<Standing, 'runway' | 'binding' | 'weeklyWindowsLeft' | 'weekLeft' | 'heldBack' | 'worthMoving'>;
+
+/** The rotation settings as values rather than words, for another program to read. */
+export interface RotationValues {
+  accountOrder: 'smart' | 'most-room' | 'priority';
+  /** Most wanted first. */
+  modelPreference: string[];
+  modelStrategy: 'model-first' | 'account-first';
+  /** False when rotation moves between accounts without regard to models. */
+  preferSameModel: boolean;
+  /** How full a week (in percent) holds an account back; null when nothing is held back. */
+  holdBackAtPercent: number | null;
+  /** How full the binding window (in percent) moves a session on; null when that is off. */
+  proactivePercent: number | null;
+}
+
 export interface DashboardAccount {
   name: string;
   email?: string;
@@ -21,6 +44,17 @@ export interface DashboardAccount {
   priority: number;
   /** Its tags (accounts/tags): who or what it is kept for. */
   tags?: string[];
+  /** The pool it is drawn from (accounts/pools), when it is in one. */
+  pool?: string;
+  /** Its profile folder: the CLAUDE_CONFIG_DIR a session on it reads its login from. */
+  configDir?: string;
+  /**
+   * When its login was checked (epoch ms): by this read's own probe, or the
+   * remembered check a cheap read reused (health/login-checks).
+   */
+  loginCheckedAt?: number;
+  /** Where it stands for the next move (see AccountStanding). */
+  standing?: AccountStanding;
   /**
    * Subscription usage (0..1 USED per window), including per-model weekly
    * windows and when each window resets. The screen shows what is left.
@@ -31,6 +65,14 @@ export interface DashboardAccount {
     fiveHourReset?: number | null;
     sevenDayReset?: number | null;
     models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
+    /**
+     * When these numbers were last read successfully (epoch ms); null when that
+     * is not known. Not the entry's `at`, which a failed read moves forward
+     * over the old numbers.
+     */
+    readAt?: number | null;
+    /** Learned: what one full 5-hour window costs the week (usage/runway.ts). */
+    windowCost?: number | null;
     /**
      * It has no 5-hour limit, only weekly ones (a verified account). Then a
      * null `fiveHour` is that fact, not a number that could not be read.
@@ -69,6 +111,14 @@ export interface DashboardSession {
   /** Its folder's name, or the pid when its folder is unknown. */
   where: string;
   account: string;
+  /** Its process. */
+  pid?: number;
+  /** The folder it was started in, when its lease says. */
+  cwd?: string;
+  /** The config folder it reads its login from. */
+  configDir?: string;
+  /** When it last said it was still going (epoch ms). */
+  lastSeen?: number;
 }
 
 /** One row of the settings panel, already in words. */
@@ -112,7 +162,13 @@ export interface DashboardSnapshot {
    * this screen that no other tool can show: not the state, but the
    * consequence of it.
    */
-  whenOut?: { account?: string; words: string };
+  whenOut?: { account?: string; model?: string; changesModel?: boolean; words: string };
+  /**
+   * For `ccx state`: the same plan with the active account out of it, where a
+   * session on the active account goes once that account cannot be used. Null
+   * when it would go nowhere; absent when it was not worked out.
+   */
+  afterActive?: { account?: string; model?: string; changesModel?: boolean; words: string } | null;
   /**
    * Claude Desktop, when it is in use here: which account it spends and its
    * open conversations (`line`), and the keys that act on it (`keys`).
@@ -122,6 +178,8 @@ export interface DashboardSnapshot {
   settings?: DashboardSettings;
   /** The ccx sessions running now, and the account each is on. Counted per account. */
   sessions?: DashboardSession[];
+  /** The rotation settings as values, for `ccx state`; the screen draws `settings`. */
+  rotation?: RotationValues;
 }
 
 export interface RenderOptions {

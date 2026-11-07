@@ -2,6 +2,7 @@ import { getAccount, listAccounts, updateAccount } from '../accounts/registry.js
 import { normalizeTag, parseTags, tagIndex, tagNote, taggedAll, withTags, withoutTags } from '../accounts/tags.js';
 import type { Account } from '../accounts/registry.schema.js';
 import type { CliContext } from '../context.js';
+import { answer, refuse } from './json-answer.js';
 
 /**
  * `ccx tag`, `ccx untag` and `ccx tags`, and the `--tagged` selection that
@@ -52,30 +53,26 @@ function carries(name: string, tags: readonly string[] | undefined): string {
   return tags && tags.length > 0 ? `"${name}" is tagged ${tagNote(tags)}` : `"${name}" has no tags`;
 }
 
-/** `ccx tag <account> <tag...>`: add tags. Nothing is written when one is not a tag. */
+/**
+ * `ccx tag <account> <tag...>`: add tags. Nothing is written when one is not a
+ * tag. With `--json`, `{ schemaVersion, account, tags }`: the tags it carries
+ * now, sorted; a refusal is `{ schemaVersion, error }`.
+ */
 export function tagCommand(context: CliContext, name: string, tags: readonly string[]): number {
   const account = getAccount(name, context.ctx);
-  if (!account) {
-    context.out(`account "${name}" not found`);
-    return 1;
-  }
-  if (tags.length === 0) {
-    context.out('name at least one tag: ccx tag <account> <tag...>');
-    return 1;
-  }
+  if (!account) return refuse(context, `account "${name}" not found`);
+  if (tags.length === 0) return refuse(context, 'name at least one tag: ccx tag <account> <tag...>');
   let next: string[];
   try {
     next = withTags(account.tags, tags);
   } catch (err) {
-    context.out((err as Error).message);
-    return 1;
+    return refuse(context, (err as Error).message);
   }
   updateAccount(name, { tags: next }, context.ctx);
-  context.out(carries(name, next));
-  return 0;
+  return answer(context, { account: name, tags: next }, carries(name, next));
 }
 
-/** `ccx untag <account> <tag...>` or `ccx untag <account> --all`. */
+/** `ccx untag <account> <tag...>` or `ccx untag <account> --all`. `--json` answers as `ccx tag` does. */
 export function untagCommand(
   context: CliContext,
   name: string,
@@ -83,22 +80,14 @@ export function untagCommand(
   options: { all?: boolean } = {},
 ): number {
   const account = getAccount(name, context.ctx);
-  if (!account) {
-    context.out(`account "${name}" not found`);
-    return 1;
-  }
-  if (options.all === true && tags.length > 0) {
-    context.out('name the tags to remove, or --all, not both');
-    return 1;
-  }
+  if (!account) return refuse(context, `account "${name}" not found`);
+  if (options.all === true && tags.length > 0) return refuse(context, 'name the tags to remove, or --all, not both');
   if (options.all !== true && tags.length === 0) {
-    context.out('name the tags to remove, or --all to remove every one');
-    return 1;
+    return refuse(context, 'name the tags to remove, or --all to remove every one');
   }
   const next = options.all === true ? [] : withoutTags(account.tags, tags);
   updateAccount(name, { tags: next }, context.ctx);
-  context.out(carries(name, next));
-  return 0;
+  return answer(context, { account: name, tags: next }, carries(name, next));
 }
 
 /** `ccx tags`: every tag in use, with the accounts carrying it. */

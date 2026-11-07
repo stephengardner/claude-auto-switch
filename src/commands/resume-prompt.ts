@@ -62,6 +62,8 @@ export function resumePromptCommand(
     if (context.json) {
       context.out(
         JSON.stringify({
+          // The envelope every other JSON output on this CLI carries; an addition, so 1.
+          schemaVersion: 1,
           pid,
           armed: read.armed,
           ...(read.armed ? { prompt: read.prompt } : {}),

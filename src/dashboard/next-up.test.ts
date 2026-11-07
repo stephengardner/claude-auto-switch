@@ -141,6 +141,8 @@ describe('saying it on the dashboard, under the table', () => {
     });
     expect(said).toEqual({
       account: 'phx',
+      model: 'fable',
+      changesModel: false,
       words: 'phx (a full 5-hour window; its week resets in 2d 3h)',
     });
   });
@@ -152,7 +154,7 @@ describe('saying it on the dashboard, under the table', () => {
       modelInUse: 'fable',
       ...policy,
     });
-    expect(said).toEqual({ account: 'phx', words: 'phx (80% of Fable left)' });
+    expect(said).toEqual({ account: 'phx', model: 'fable', changesModel: false, words: 'phx (80% of Fable left)' });
   });
 
   it('says so when the model is what changes', () => {
@@ -163,7 +165,13 @@ describe('saying it on the dashboard, under the table', () => {
       ...policy,
       spentThisRun: new Set([spentKey('solo', 'fable')]),
     });
-    expect(said).toEqual({ account: 'solo', words: 'solo, on Opus instead (90% of Opus left)' });
+    // The values say it as well as the words: the model it moves to, and that it changed.
+    expect(said).toEqual({
+      account: 'solo',
+      model: 'opus',
+      changesModel: true,
+      words: 'solo, on Opus instead (90% of Opus left)',
+    });
   });
 
   it('names the same account the line for other programs names', () => {

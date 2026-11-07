@@ -5,6 +5,7 @@ import { proactiveTick, type TickResult } from '../usage/proactive.js';
 import { DEFAULT_PROACTIVE_PERCENT } from './proactive-config.js';
 import { buildProactiveDeps } from '../usage/proactive-deps.js';
 import { appendEvent } from '../events/log.js';
+import { switchDetail } from '../events/switch-events.js';
 import { configHome } from '../config/paths.js';
 import { liveLeases } from '../session/lease.js';
 import { numberSessions } from '../dashboard/session-choice.js';
@@ -77,8 +78,8 @@ export async function autoCommand(context: CliContext, options: AutoOptions = {}
       // session looked first, which need not be one on that account at all.
       // With none running, this only decides where the next session starts.
       const onLeaving = numberSessions(liveLeases(context.ctx)).filter((s) => s.account === leaving);
-      requestMoves(account, onLeaving, 'seamless', context.ctx);
-      appendEvent(home, `proactive switch to ${account} (${reason})`, Date.now());
+      requestMoves(account, onLeaving, 'seamless', context.ctx, Date.now(), 'proactive');
+      appendEvent(home, `proactive switch to ${account} (${reason})`, Date.now(), switchDetail.asked(leaving, account, 'proactive'));
     },
     ...(options.model ? { model: options.model } : {}),
   });

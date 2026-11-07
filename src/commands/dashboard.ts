@@ -1,11 +1,12 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import { requestMoves, type SwitchMode } from '../state/switch-request.js';
-import { forgetUsage, refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
-import { probeAll, type ProbeResult } from '../health/prober.js';
+import { forgetUsage, lastReadAt, refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
+import { type ProbeResult } from '../health/prober.js';
+import { parseCachedLogins, probeAllRemembered } from '../health/login-checks.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { signInFailureNotice } from '../dashboard/sign-in-failure.js';
-import { renderDashboard, type DashboardAccount, type SettingsPanel } from '../dashboard/render.js';
+import { renderDashboard, type AccountStanding, type DashboardAccount, type SettingsPanel } from '../dashboard/render.js';
 import { toSnapshot } from '../dashboard/snapshot.js';
 import { dispatchKey, dispatchSettingsKey, confirmKey } from '../dashboard/keys.js';
 import {
@@ -72,6 +73,7 @@ import {
   pickReason,
   rankAccounts,
   reorder,
+  rotationValues,
   settingsWords,
 } from '../dashboard/rotation-settings.js';
 import { activeModelCaps, cappedNames } from '../ledger/ledger.js';
@@ -91,6 +93,12 @@ export interface DashboardOptions {
    * actually be used right now.
    */
   json?: boolean;
+  /**
+   * With `json`: use a remembered login check at most this many seconds old
+   * instead of checking every account again (health/login-checks). The
+   * checks are most of what a read costs; each account says how old its is.
+   */
+  cachedLogins?: string;
 }
 
 /** The terminal the live screen is drawn on. */
@@ -193,23 +201,34 @@ export async function dashboardCommand(
   options: DashboardOptions = {},
   deps: DashboardDeps = {},
 ): Promise<number> {
+  let cachedLoginsMs: number | null = null;
+  if (options.json && options.cachedLogins !== undefined) {
+    const parsed = parseCachedLogins(options.cachedLogins);
+    if ('error' in parsed) {
+      // Refused in the same envelope a reader parses, as `ccx list --json` refuses.
+      context.out(JSON.stringify({ schemaVersion: STATE_SCHEMA_VERSION, error: parsed.error }, null, 2));
+      return 1;
+    }
+    cachedLoginsMs = parsed.ms;
+  }
+
   const initial = listAccounts(context.ctx);
   if (initial.length === 0) {
     // A reader asking for JSON gets JSON, even when the answer is "nothing".
     // Prose here would be a parse error at the worst possible moment: first run.
     if (options.json) {
+      // The same shape as any other read, built the same way, so a field added
+      // there is never missing here.
       context.out(
         JSON.stringify(
-          {
-            schemaVersion: STATE_SCHEMA_VERSION,
-            ccxVersion: ccxVersion(),
-            now: Date.now(),
-            active: null,
-            preferredModel: null,
-            nextUp: null,
+          toStatePayload({
             accounts: [],
             events: [],
-          },
+            now: Date.now(),
+            refreshMs: 0,
+            version: ccxVersion(),
+            rotation: rotationValues(context.config.rotation),
+          }),
           null,
           2,
         ),
@@ -235,7 +254,7 @@ export async function dashboardCommand(
   const home = configHome(context.ctx);
   const refreshMs = Math.max(1000, (Number(options.interval) || 3) * 1000);
   const color = process.stdout.isTTY === true;
-  let healths: ProbeResult[] = await probeAll(initial, { claude });
+  let healths: ProbeResult[] = await probeAllRemembered(initial, { claude }, context.ctx, cachedLoginsMs);
   // Real per-account usage from the unified rate-limit signal, TTL-cached so the
   // network is touched at most once per account per window (about a token each).
   let usageSnap: UsageSnapshot = readUsageSnapshot(context.ctx);
@@ -303,6 +322,8 @@ export async function dashboardCommand(
           // The learned cost of a 5-hour window, so the pick column agrees with
           // rotation, which reads the whole entry.
           ...(typeof u.windowCost === 'number' ? { windowCost: u.windowCost } : {}),
+          // The last read that worked, not `at`, which a failed read moves on.
+          readAt: lastReadAt(u),
         },
       ]),
     );
@@ -314,6 +335,8 @@ export async function dashboardCommand(
         enabled: a.enabled,
         priority: a.priority,
         ...(a.tags && a.tags.length > 0 ? { tags: a.tags } : {}),
+        ...(a.pool !== undefined ? { pool: a.pool } : {}),
+        dir: a.dir,
       })),
       loggedIn,
       onHold,
@@ -334,7 +357,9 @@ export async function dashboardCommand(
       ...nextMove(context, accts, usage, cappedNames(loadLedger(context.ctx), now), loggedIn, now),
       desktop: desktopSummary(context, (name) => usage.get(name), now),
       settings: settingsWords(context.config.rotation),
+      rotation: rotationValues(context.config.rotation),
       sessions: numberSessions(liveLeases(context.ctx)),
+      loginCheckedAt: new Map(healths.map((h) => [h.name, h.checkedAt] as const)),
     });
   };
 
@@ -369,6 +394,8 @@ export async function dashboardCommand(
     nextUp?: string;
     whenOut?: WhenOut;
     picks: Map<string, NonNullable<DashboardAccount['pick']>>;
+    standings: Map<string, AccountStanding>;
+    afterActive: WhenOut | null;
   } {
     const rotation = ctx.config.rotation;
     // With models switched off, rotation still MOVES BETWEEN ACCOUNTS, and
@@ -389,6 +416,9 @@ export async function dashboardCommand(
     );
     const candidates = ordered.map((a) => modelUsageFor(a.name, usage.get(a.name), knownSpent, at));
     const picks = numberPicks(candidates, rotation.modelPreference, model !== null, standing);
+    // Every account's standing by the same rule the pick column ranks by, so
+    // a reader can see where an account rotation would not pick stands too.
+    const standings = new Map<string, AccountStanding>(accounts.map((a) => [a.name, standing(a.name)] as const));
     const current = getActive(ctx.ctx);
     const move: NextUpInput = {
       candidates,
@@ -413,7 +443,18 @@ export async function dashboardCommand(
       ...move,
       ...(smart ? { reasonFor: (name: string) => pickAside(standing(name), at) } : {}),
     });
-    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}), ...(whenOut ? { whenOut } : {}), picks };
+    // For `ccx state`, the same plan with the active account out of it: where
+    // a session on it goes once it cannot be used. The screen's line plans over
+    // every account, the active one included, and stays as it is.
+    const afterActive = current ? describeWhenOut({ ...move, candidates: candidates.filter((c) => c.name !== current) }) : whenOut;
+    return {
+      ...(model ? { model } : {}),
+      ...(nextUp ? { nextUp } : {}),
+      ...(whenOut ? { whenOut } : {}),
+      picks,
+      standings,
+      afterActive,
+    };
   }
 
   if (options.json) {
@@ -444,7 +485,7 @@ export async function dashboardCommand(
     newer: () => newerToFollow(context),
     color,
     reprobe: async () => {
-      healths = await probeAll(listAccounts(context.ctx), { claude });
+      healths = await probeAllRemembered(listAccounts(context.ctx), { claude }, context.ctx);
       try {
         // TTL-guarded internally: refetches only entries older than the window.
         usageSnap = await refreshUsage(listAccounts(context.ctx), context.ctx);
@@ -589,7 +630,7 @@ export async function dashboardCommand(
       const code = await loginCommand(context, target.name);
       pushEvent(code === 0 ? `signed in ${target.name}` : `sign-in for ${target.name} did not finish`);
       // Health is now stale for this account: re-probe so the row tells the truth.
-      healths = await probeAll(listAccounts(context.ctx), { claude });
+      healths = await probeAllRemembered(listAccounts(context.ctx), { claude }, context.ctx);
       return code === 0
         ? `signed "${target.name}" in again`
         : `"${target.name}" was not signed in; see the messages above`;

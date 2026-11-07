@@ -4,6 +4,63 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.33]
+
+### Added
+
+- **`ccx state` says what the dashboard works out.** Every account now carries
+  `configDir` (its profile folder), `runway` (the work it can do before a window
+  stops it, in 5-hour windows, with the window that binds, what is left of its
+  week and whether it is worth moving onto), `heldBack`, `pick` (its place in
+  the order rotation picks from, or null), `onHold` and `pool`, and its usage
+  carries `readAt`, when its numbers were last read successfully, which `at`
+  cannot say since a failed read moves `at` on over the old numbers. At the top,
+  `sessions` (each running session's pid, account, folder and config folder),
+  `whenOut` (where a session on the active account goes once that account
+  cannot be used: the account, never the active one, the model, whether the
+  model changes) and `settings` (the rotation settings in force). All values, never the screen's words; `schemaVersion` stays 1, since
+  nothing was renamed or removed.
+- **A cheap `ccx state`.** `--cached-logins <seconds>` uses a login check at
+  most that old instead of asking Claude about every account again, which is
+  most of what a read costs. `ccx state`, `ccx list`, `ccx status` and an open
+  dashboard (every 20 seconds) remember the checks they make; a check is used
+  only for the same account in the same folder, and never once its login file
+  has changed (a login kept in the macOS Keychain is bounded by the age alone).
+  Each account says when its check was made (`loginCheckedAt`).
+- **Pools.** `ccx pool <account> <pool>` puts an account in the one group it
+  is drawn from, `ccx unpool` takes it out, and `ccx pools` lists them. Kept on
+  the account's own record and written the way a tag is. Pools never change
+  rotation. A ccx older than 2.6.32 drops them, as it drops tags, when it
+  rewrites the accounts file.
+- **`ccx history --json` gives the moves.** `switchEvents` beside
+  `credentialEvents`: each move's kind (moved, move-failed, move-waiting,
+  move-asked, editor-moved, ran-out, started), when, from and to which account,
+  and why (capacity, asked, proactive, follows-active, session-start,
+  continued); a move made early, by `ccx auto` or a session itself, says
+  proactive from the request on, since a request now carries why it was made.
+  Every login event now carries a `reason` as well, recorded by what wrote it,
+  and worked out for older records from what was written then.
+- **More JSON.** `ccx tag`, `ccx untag`, `ccx pool` and `ccx unpool` answer
+  `--json`, refusals included, and `ccx resume-prompt --json` carries a
+  `schemaVersion` like every other JSON output.
+
+### Fixed
+
+- **The login history stops growing.** `credential-log.jsonl` kept every event
+  ever written, while everything that reads it reads only its last 256 KB: one
+  machine's had 43,504 lines, 4.2 MB over 85 days. Past 256 KB it is now
+  moved aside whole as `credential-log.jsonl.1`, replacing the one before, so
+  what is read is always there and each file holds about 256 KB, a few lines
+  more when several processes write as it moves (524,447 bytes together at most
+  over 20,000 appends, measured). Moved, never
+  copied, so a line another ccx was writing as it moved lands in one file or
+  the other. The first move after an upgrade takes the old file whole, and the
+  next one, 256 KB of events later, replaces it.
+- **The cost `ccx state` is documented at.** "Polling every couple of seconds is
+  fine" did not survive a measurement (48.75 s for one read of 17 accounts);
+  docs/reading-ccx-from-another-program.md says what a read costs, and how to
+  make it cheap.
+
 ## [2.6.32]
 
 ### Added

@@ -1,5 +1,6 @@
 import { readCredentialEvents, type CredentialEvent } from '../accounts/credential-log.js';
 import { readEvents, formatEvents } from '../events/log.js';
+import { readSwitchEvents } from '../events/switch-events.js';
 import { configHome } from '../config/paths.js';
 import { codes, paint } from '../ui/style.js';
 import type { CliContext } from '../context.js';
@@ -48,7 +49,11 @@ export function historyCommand(context: CliContext, options: HistoryOptions = {}
   const credential = readCredentialEvents(limit, context.ctx);
 
   if (context.json) {
-    context.out(JSON.stringify({ schemaVersion: 1, credentialEvents: credential }, null, 2));
+    // The moves as values beside the logins (events/switch-events): the
+    // sentences the human form prints stay out of what a program reads.
+    // `--logins` leaves the switches out of the JSON as it does on screen.
+    const switches = options.logins ? {} : { switchEvents: readSwitchEvents(configHome(context.ctx), limit) };
+    context.out(JSON.stringify({ schemaVersion: 1, credentialEvents: credential, ...switches }, null, 2));
     return 0;
   }
 

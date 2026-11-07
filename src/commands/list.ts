@@ -1,6 +1,7 @@
 import { listAccounts } from '../accounts/registry.js';
 import { getActive } from '../state/active.js';
 import { probeAll } from '../health/prober.js';
+import { probeAllRemembered } from '../health/login-checks.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { renderTable } from '../util/table.js';
 import { signedInAndNotRejected } from '../health/signed-in.js';
@@ -53,7 +54,10 @@ export async function listCommand(
   const active = getActive(context.ctx);
   const ledger = loadLedger(context.ctx);
   const now = Date.now();
-  const healths = await (deps.probe ?? probeAll)(accounts, { claude: getClaude(context) });
+  // Remembered for a cheap `ccx state` (health/login-checks).
+  const healths = await (deps.probe ?? ((a, d) => probeAllRemembered(a, d, context.ctx)))(accounts, {
+    claude: getClaude(context),
+  });
   const byName = new Map(healths.map((h) => [h.name, h]));
   // The probe reports a refused login as signed in, because the file still
   // looks like one. This table is where someone looks to find out which

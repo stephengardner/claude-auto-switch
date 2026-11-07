@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { readSwitchRequest } from '../state/switch-request.js';
+import { readSwitchEvents } from '../events/switch-events.js';
+import { takeLease } from '../session/lease.js';
+import { configHome } from '../config/paths.js';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { card, rankAccounts, renderBoard, swapCommand, whereAmI, type Here } from './swap.js';
@@ -28,7 +31,12 @@ function account(
     active: false,
     priority: 0,
     tags: [],
+    pool: null,
+    onHold: false,
     usage,
+    runway: null,
+    heldBack: false,
+    pick: null,
     status: { state: 'ready', label: null, until: null, blockedBy: [], ...status },
   };
 }
@@ -39,6 +47,9 @@ const state: StatePayload = {
   active: 'mid',
   preferredModel: 'fable',
   nextUp: null,
+  whenOut: null,
+  settings: null,
+  sessions: [],
   events: [],
   accounts: [
     account('mid', {
@@ -203,6 +214,8 @@ describe('ccx swap <name>', () => {
         ctx: { env: { ...outside.context.ctx.env, CLAUDE_CONFIG_DIR: dir } },
       },
     };
+    // Its lease says which account it is on, which the request then names as where it moves from.
+    takeLease('mid', dir, outside.context.ctx);
     expect(whereAmI(s.context, () => []).kind).toBe('ccx');
     expect(
       await swapCommand(
@@ -218,6 +231,10 @@ describe('ccx swap <name>', () => {
       mode: 'seamless',
     });
     expect(readSwitchRequest(outside.context.ctx)).toBeNull();
+    // Recorded as a value, for `ccx history --json`: a move asked for, to roomy.
+    expect(readSwitchEvents(configHome(outside.context.ctx), 10)).toEqual([
+      expect.objectContaining({ kind: 'move-asked', from: 'mid', to: 'roomy', reason: 'asked' }),
+    ]);
   });
 
   it('in Claude Desktop, carries the conversation on in a terminal on that account', async () => {

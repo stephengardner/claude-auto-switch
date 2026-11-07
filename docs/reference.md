@@ -20,9 +20,12 @@
 | `ccx models [models...]`                 | the model chain (`--strategy model-first\|account-first`)                                                                      |
 | `ccx priority <name> <n>`                | an account's place in your order (lower first)                                                                                 |
 | `ccx enable` / `disable`                 | `<name>` or `--tagged <tag>` (not both): include / exclude it, or every account carrying the tag; `--tag <tag>` tags it too    |
-| `ccx tag <name> <tag...>`                | label an account with who or what it is kept for (`pat`, `bot`); tags never change rotation                                    |
-| `ccx untag <name> [tag...]`              | remove those tags (`--all`: every one)                                                                                         |
+| `ccx tag <name> <tag...>`                | label an account with who or what it is kept for (`pat`, `bot`); tags never change rotation (`--json`)                         |
+| `ccx untag <name> [tag...]`              | remove those tags (`--all`: every one; `--json`)                                                                               |
 | `ccx tags`                               | every tag in use, with its accounts (`--json`)                                                                                 |
+| `ccx pool <name> <pool>`                 | put an account in a pool, the one group it is drawn from (`lanes`); pools never change rotation (`--json`)                     |
+| `ccx unpool <name>`                      | take it out of its pool (`--json`)                                                                                             |
+| `ccx pools`                              | every pool in use, with its accounts, and the accounts in none (`--json`)                                                      |
 | `ccx proactive on\|off`                  | move before an account runs out (off by default)                                                                               |
 | `ccx auto`                               | run that check once (`--once`, `--json`)                                                                                       |
 | `ccx resume-prompt "<text>"`             | what a session is told after ccx moves or relaunches it (`--clear`)                                                            |
@@ -33,8 +36,8 @@
 | `ccx keepalive on\|off\|status`          | renew idle logins every four hours with cron, for a machine nobody uses                                                        |
 | `ccx list` / `status [name]`             | account health: email, plan, signed in, capped until, tags; `list --tagged <tag>`: only those accounts                         |
 | `ccx doctor`                             | check the setup, shell by shell, and who each profile really is (`--fix`: repair a broken npm install of Claude first)         |
-| `ccx history`                            | what ccx did to logins, sessions and your settings                                                                             |
-| `ccx state`                              | everything ccx knows, as JSON (see [reading ccx from another program](reading-ccx-from-another-program.md))                    |
+| `ccx history`                            | what ccx did to logins, sessions and your settings (`--json`: logins and switches, each with a reason)                         |
+| `ccx state`                              | everything ccx knows, as JSON (`--cached-logins <s>`; see [reading ccx](reading-ccx-from-another-program.md))                  |
 | `ccx cap <name>`                         | mark an account out by hand (`--clear`)                                                                                        |
 | `ccx token <name>`                       | mint a long-lived token for headless use                                                                                       |
 | `ccx statusline`                         | the status line itself (`--install` prints the snippet, `--compact`)                                                           |
@@ -76,21 +79,23 @@ usage check, as `ccx config <key>` says.
 
 ## What ccx writes
 
-| Where                                    | What                                                                                         |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `~/.claude-auto-switch/profiles/<name>/` | each account's login, owner-only (separate Keychain entries on macOS)                        |
-| `~/.claude-auto-switch/sessions/<pid>/`  | per-session config folders, cleared after the session ends                                   |
-| `~/.claude-auto-switch/editor-active/`   | the editor's config folder: your setup linked in, its own login (a Keychain item on macOS)   |
-| `~/.claude-auto-switch/config.json`      | your settings                                                                                |
-| `~/.claude-auto-switch/events.jsonl`     | what ccx did (`ccx history`)                                                                 |
-| `~/.claude-auto-switch/rescued/`         | session and editor changes that could not be merged back; account folders' own files         |
-| `~/.claude-auto-switch/artifacts.jsonl`  | each page a session published while page routing was on, and its owner                       |
-| `~/.claude/settings.json`                | the `statusLine` key; the Desktop hooks and the Artifact hooks when enabled; session changes |
-| `~/.claude.json`                         | session changes to your preferences, MCP servers and folder trust                            |
-| `~/.claude/skills/ccx/`                  | the `/ccx` command                                                                           |
-| each shell's startup files               | the `claude` function (`.zshrc`, `.bashrc`, bash's login file, PowerShell's `profile.ps1`)   |
-| Cursor / VS Code settings                | `claudeCode.environmentVariables`                                                            |
-| your crontab                             | one line marked `# ccx keepalive`, only after `ccx keepalive on`                             |
+| Where                                        | What                                                                                         |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `~/.claude-auto-switch/profiles/<name>/`     | each account's login, owner-only (separate Keychain entries on macOS)                        |
+| `~/.claude-auto-switch/sessions/<pid>/`      | per-session config folders, cleared after the session ends                                   |
+| `~/.claude-auto-switch/editor-active/`       | the editor's config folder: your setup linked in, its own login (a Keychain item on macOS)   |
+| `~/.claude-auto-switch/config.json`          | your settings                                                                                |
+| `~/.claude-auto-switch/events.jsonl`         | what ccx did (`ccx history`)                                                                 |
+| `~/.claude-auto-switch/credential-log.jsonl` | what happened to each login (`ccx history`): about 256 KB, and the 256 KB before in `.1`     |
+| `~/.claude-auto-switch/login-checks.json`    | each account's last login check, owner-only (`ccx state --cached-logins`)                    |
+| `~/.claude-auto-switch/rescued/`             | session and editor changes that could not be merged back; account folders' own files         |
+| `~/.claude-auto-switch/artifacts.jsonl`      | each page a session published while page routing was on, and its owner                       |
+| `~/.claude/settings.json`                    | the `statusLine` key; the Desktop hooks and the Artifact hooks when enabled; session changes |
+| `~/.claude.json`                             | session changes to your preferences, MCP servers and folder trust                            |
+| `~/.claude/skills/ccx/`                      | the `/ccx` command                                                                           |
+| each shell's startup files                   | the `claude` function (`.zshrc`, `.bashrc`, bash's login file, PowerShell's `profile.ps1`)   |
+| Cursor / VS Code settings                    | `claudeCode.environmentVariables`                                                            |
+| your crontab                                 | one line marked `# ccx keepalive`, only after `ccx keepalive on`                             |
 
 To read ccx from another program, use `ccx state`; the files above are internal
 and change between releases. See

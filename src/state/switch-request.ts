@@ -23,6 +23,13 @@ const SwitchRequestSchema = z.object({
   account: z.string(),
   at: z.number(),
   mode: z.enum(['seamless', 'restart']).optional(),
+  /**
+   * Why it is asked for, which the session records with the move it makes
+   * (events/switch-events). Absent from a request an older ccx wrote, which
+   * reads as asked; one this version does not know reads as absent too, so a
+   * newer ccx's reason never makes the move itself unreadable.
+   */
+  reason: z.enum(['asked', 'proactive']).optional().catch(undefined),
 });
 export type SwitchRequest = z.infer<typeof SwitchRequestSchema>;
 export type SwitchMode = 'seamless' | 'restart';
@@ -60,8 +67,10 @@ export function writeSwitchRequest(
   mode: SwitchMode = 'seamless',
   c: PathCtx = {},
   targetPid?: number,
+  reason: 'asked' | 'proactive' = 'asked',
 ): void {
-  writeJsonFile(switchRequestPath(c, targetPid), { account, at, mode });
+  // Asked is what a request without a reason means, so only another is written.
+  writeJsonFile(switchRequestPath(c, targetPid), { account, at, mode, ...(reason !== 'asked' ? { reason } : {}) });
 }
 
 /**
@@ -77,9 +86,10 @@ export function requestMoves<T extends { pid: number; account: string }>(
   mode: SwitchMode,
   c: PathCtx = {},
   at: number = Date.now(),
+  reason: 'asked' | 'proactive' = 'asked',
 ): T[] {
   const moving = sessions.filter((s) => s.account !== account);
-  for (const s of moving) writeSwitchRequest(account, at, mode, c, s.pid);
+  for (const s of moving) writeSwitchRequest(account, at, mode, c, s.pid, reason);
   takeBackMoves(account, sessions, c);
   return moving;
 }

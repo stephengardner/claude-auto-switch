@@ -165,8 +165,9 @@ import { ensureLoginUsable, readinessMessage } from '../session/preflight.js';
 import { renewalIsDue, refreshCredentialIfExpired, takeUpRenewal } from '../usage/oauth-refresh.js';
 import { probeUsage } from '../usage/limit-probe.js';
 import { acquireLockDir, lockDirHeld, lockDirSteps, CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
-import { logCredentialEvent } from '../accounts/credential-log.js';
+import { logCredentialEvent, needsLoginReason } from '../accounts/credential-log.js';
 import { appendEvent, flushQueuedEvents, type EventDetail } from '../events/log.js';
+import { switchDetail } from '../events/switch-events.js';
 import { claudeForSession, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 
@@ -937,6 +938,7 @@ export async function runInteractiveHotSwap(
         {
           account: account.name,
           kind: 'signed-out',
+          reason: 'session-had-no-login',
           detail: 'session had no login; left the stored one alone',
         },
         context.ctx,
@@ -1034,6 +1036,7 @@ export async function runInteractiveHotSwap(
         {
           account: name,
           kind: 'installed',
+          reason: 'carried-shared-login',
           detail: `shares a login with "${account.name}", which was just renewed; carried across so this one keeps working`,
         },
         context.ctx,
@@ -1725,6 +1728,7 @@ export async function runInteractiveHotSwap(
     logEvent(`${accountName} hit its limit`, {
       kind: 'capped',
       data: {
+        account: accountName,
         reason,
         resetAt: resetAt ?? limitedResetAt ?? null,
         ...(limitedModel ? { model: limitedModel } : {}),
@@ -1951,14 +1955,17 @@ export async function runInteractiveHotSwap(
         return accounts;
       },
       requestSwitch: (account, reason) => {
-        notice(`${reason}; moving to "${account}" before this account runs out`);
+        notice(
+          `${reason}; moving to "${account}" before this account runs out`,
+          switchDetail.asked(current?.name ?? null, account, 'proactive'),
+        );
         if (!worker) {
           setActive(account, context.ctx);
           void moveEditorToActive(context, { session: true });
         }
         // Addressed to THIS session. A shared request is taken by whichever
         // session looks first, so this one's early move could move another.
-        writeSwitchRequest(account, Date.now(), 'seamless', context.ctx, process.pid);
+        writeSwitchRequest(account, Date.now(), 'seamless', context.ctx, process.pid, 'proactive');
       },
     }),
     Math.max(30, context.config.rotation.usageCheckSeconds) * 1000,
@@ -2191,6 +2198,7 @@ export async function runInteractiveHotSwap(
           {
             account: account.name,
             kind: 'renewed',
+            reason: 'renewed-before-start',
             detail: 'expired login renewed before starting',
           },
           context.ctx,
@@ -2206,7 +2214,12 @@ export async function runInteractiveHotSwap(
         carryToSharedProfiles(account, sharing);
       } else if (readiness.state === 'needs-login') {
         logCredentialEvent(
-          { account: account.name, kind: 'needs-login', detail: readiness.detail },
+          {
+            account: account.name,
+            kind: 'needs-login',
+            detail: readiness.detail,
+            reason: needsLoginReason(readiness.detail, hasLogin(account.dir)),
+          },
           context.ctx,
         );
         // Said where the dashboard shows it too, unless there was simply no login to check.
@@ -2390,7 +2403,10 @@ export async function runInteractiveHotSwap(
             setActive(target.name, context.ctx);
             void moveEditorToActive(context, { session: true });
           }
-          notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
+          notice(
+            `switching to "${target.name}" (no restart; takes effect within ~30s)`,
+            switchDetail.moved(from, target.name, request?.reason ?? 'asked', targeted ? { targeted: true } : {}),
+          );
           notifyAccountSwitch(target.name, 'switched in place');
         };
         const notMoved = (error: unknown): void => {
@@ -2398,10 +2414,10 @@ export async function runInteractiveHotSwap(
             // Rolled back: still on its account, and the request is taken, as one that cannot be honoured.
             moveWaiting = null;
             consumeMovedFor();
-            logEvent(`could not move this session to "${target.name}" in place, so it stays on "${from}": ${thrownReason(error)}`, {
-              kind: 'move-failed',
-              data: { to: target.name, from },
-            });
+            logEvent(
+              `could not move this session to "${target.name}" in place, so it stays on "${from}": ${thrownReason(error)}`,
+              switchDetail.failed(from, target.name, request?.reason ?? 'asked'),
+            );
             return;
           }
           if (error.why !== 'locks') return;
@@ -2414,7 +2430,7 @@ export async function runInteractiveHotSwap(
             notice(
               `the move to "${target.name}" is waiting: Claude in this session is using its login, so this session ` +
                 `stays on "${from}" until it lets go, and ccx moves it then`,
-              { kind: 'move-pending', data: { to: target.name, from } },
+              switchDetail.waiting(from, target.name, request?.reason ?? 'asked'),
             );
           }
         };
@@ -2793,7 +2809,7 @@ export async function runInteractiveHotSwap(
       // Not printed: which account you are on shows in Claude's status line
       // (`ccx statusline`) and in the terminal title, and a line per session
       // start was the most frequent of the [ccx] messages cluttering the screen.
-      logEvent(`session on ${account.name}`);
+      logEvent(`session on ${account.name}`, switchDetail.sessionStart(account.name, isContinue));
       // Claude owns the screen from here, so tell the operator through the
       // terminal itself (a notification / title change draws nothing).
       notifyAccountSwitch(account.name, isContinue ? 'continued here' : 'session start');

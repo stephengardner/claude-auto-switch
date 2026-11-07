@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
-import { logCredentialEvent } from '../accounts/credential-log.js';
+import { logCredentialEvent, needsLoginReason, type WrittenCredentialReason } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers, carryTargets } from '../accounts/duplicate-guard.js';
 import { sessionIdentityEmail } from '../accounts/credential-vault.js';
 import { renewAndCarry } from '../accounts/shared-login.js';
@@ -51,8 +51,22 @@ const EntrySchema = z.object({
   sevenDayReset: z.number().nullable(),
   /** Per-model weekly windows (Fable, ...). */
   models: z.array(ModelSchema).optional(),
-  /** When this entry was fetched (epoch ms). */
+  /** When this entry was last fetched or tried (epoch ms). */
   at: z.number(),
+  /**
+   * When these numbers were last read successfully (epoch ms). A failed read
+   * keeps the old numbers and moves `at` on, so `at` cannot say how old they
+   * are; this moves only with a reading. Absent until a reading by a ccx that
+   * writes it.
+   */
+  readAt: z.number().optional(),
+  /**
+   * The numbers `readAt` belongs to (readingKey). 2.6.32 keeps both as fields
+   * it does not know while writing numbers of its own beside them, so a time
+   * whose numbers no longer match is one nobody can vouch for, and reads as
+   * unknown rather than as the time of numbers it never saw.
+   */
+  readFor: z.string().optional(),
   /**
    * What one full 5-hour window costs the week on this account, learned from
    * its own readings (see learnWindowCost). Absent until the first measurement.
@@ -90,6 +104,31 @@ function unknownFields(entry: UsageEntry | undefined): Record<string, unknown> {
   return Object.fromEntries(Object.entries(entry ?? {}).filter(([key]) => !KNOWN_FIELDS.has(key)));
 }
 export type UsageSnapshot = z.infer<typeof SnapshotSchema>;
+
+/**
+ * The numbers one reading gave, as one string, kept beside its `readAt`
+ * (`readFor`) so the time can be told apart from numbers it does not belong to.
+ */
+export function readingKey(entry: {
+  fiveHour: number | null;
+  sevenDay: number | null;
+  fiveHourReset?: number | null;
+  sevenDayReset?: number | null;
+  models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
+}): string {
+  return JSON.stringify([
+    entry.fiveHour,
+    entry.sevenDay,
+    entry.fiveHourReset ?? null,
+    entry.sevenDayReset ?? null,
+    (entry.models ?? []).map((m) => [m.name, m.utilization, m.resetsAt ?? null]),
+  ]);
+}
+
+/** When `entry`'s numbers were read, when its record can say so; null otherwise. */
+export function lastReadAt(entry: UsageEntry): number | null {
+  return typeof entry.readAt === 'number' && entry.readFor === readingKey(entry) ? entry.readAt : null;
+}
 
 const FILENAME = 'usage-snapshot.json';
 export const USAGE_TTL_MS = 5 * 60_000;
@@ -326,17 +365,29 @@ export async function renewIdleLogin(
   const lease = [account.name, ...siblings]
     .map((name) => busy.get(name))
     .find((candidate): candidate is SessionLease => candidate !== undefined);
-  const refusal =
+  // Why not: the words for a person, and the reason the log records beside them.
+  const refused: { detail: string; reason: WrittenCredentialReason } | null =
     inSessionNow.length > 0
-      ? `not renewed: a session is using ${inSessionNow.join(', ')}; renewing would sign it out`
+      ? {
+          detail: `not renewed: a session is using ${inSessionNow.join(', ')}; renewing would sign it out`,
+          reason: 'session-using-it',
+        }
       : editorMayBeUsingIt
-        ? 'not renewed: your editor is pointed at a profile that shares this login and may be using it'
+        ? {
+            detail: 'not renewed: your editor is pointed at a profile that shares this login and may be using it',
+            reason: 'editor-may-be-using-it',
+          }
         : editorCopy === 'unconfirmed'
-          ? "not renewed: your editor holds a newer copy of this login, which ccx could not yet confirm is this account's"
+          ? {
+              detail:
+                "not renewed: your editor holds a newer copy of this login, which ccx could not yet confirm is this account's",
+              reason: 'editor-copy-unconfirmed',
+            }
           : null;
-  const mayRenew = refusal === null;
-  if (refusal && renewalIsDue(account.dir)) {
-    logCredentialEvent({ account: account.name, kind: 'refused', detail: refusal }, c);
+  const refusal = refused?.detail ?? null;
+  const mayRenew = refused === null;
+  if (refused && renewalIsDue(account.dir)) {
+    logCredentialEvent({ account: account.name, kind: 'refused', detail: refused.detail, reason: refused.reason }, c);
   }
   // Renewal rotates the token, so it is the single most likely reason a
   // login stops working. Record what happened, with the reason.
@@ -350,12 +401,13 @@ export async function renewIdleLogin(
     : { result: { status: 'not-needed' as const }, carried: [] as string[] };
   // A renewal another caller started is logged by that caller.
   if (renewal.status === 'refreshed' && !renewal.alreadyKnown) {
-    logCredentialEvent({ account: account.name, kind: 'renewed' }, c);
+    logCredentialEvent({ account: account.name, kind: 'renewed', reason: 'idle-renewal' }, c);
     for (const name of carried) {
       logCredentialEvent(
         {
           account: name,
           kind: 'installed',
+          reason: 'carried-shared-login',
           detail: `shares a login with "${account.name}", which was just renewed; carried across so this one keeps working`,
         },
         c,
@@ -366,12 +418,22 @@ export async function renewIdleLogin(
     // cannot change until the credential does, so repeating it every few
     // minutes buries the log that is read to work out why a login broke.
     logCredentialEvent(
-      { account: account.name, kind: 'needs-login', detail: renewal.detail ?? 'renewal refused' },
+      {
+        account: account.name,
+        kind: 'needs-login',
+        detail: renewal.detail ?? 'renewal refused',
+        reason: needsLoginReason(renewal.detail, true),
+      },
       c,
     );
   } else if (renewal.status === 'unavailable') {
     logCredentialEvent(
-      { account: account.name, kind: 'renew-failed', detail: renewal.detail ?? 'renewal unavailable' },
+      {
+        account: account.name,
+        kind: 'renew-failed',
+        detail: renewal.detail ?? 'renewal unavailable',
+        reason: 'renewal-unavailable',
+      },
       c,
     );
   }
@@ -401,7 +463,12 @@ export async function takeUpKeptRenewals(
     if (result.state !== 'saved') continue;
     saved.push(account.name);
     logCredentialEvent(
-      { account: account.name, kind: 'installed', detail: 'a renewal kept when its save failed, saved now' },
+      {
+        account: account.name,
+        kind: 'installed',
+        detail: 'a renewal kept when its save failed, saved now',
+        reason: 'kept-renewal-saved',
+      },
       c,
     );
     for (const name of carried) {
@@ -409,6 +476,7 @@ export async function takeUpKeptRenewals(
         {
           account: name,
           kind: 'installed',
+          reason: 'carried-shared-login',
           detail: `shares a login with "${account.name}", whose kept renewal was just saved; carried across so this one keeps working`,
         },
         c,
@@ -534,6 +602,7 @@ export async function refreshUsage(
       // which ends the fact) or cannot tell, which leaves it as the newest
       // entry has it: decided when writing back, below.
       if (result.noFiveHourLimit !== true && result.fiveHour === undefined) undecided.add(account.name);
+      const readAt = now();
       const fresh = {
         fiveHour: result.fiveHour ?? null,
         ...(result.noFiveHourLimit === true ? { noFiveHourLimit: true } : {}),
@@ -543,11 +612,14 @@ export async function refreshUsage(
         ...(result.models
           ? { models: result.models.map((m) => ({ name: m.name, utilization: m.utilization, resetsAt: m.resetsAt ?? null })) }
           : {}),
-        at: now(),
+        at: readAt,
+        readAt,
       };
+      const readFor = readingKey(fresh);
       const learned = learnWindowCost(previous, fresh);
       snapshot.accounts[account.name] = {
         ...fresh,
+        readFor,
         ...(learned.windowCost !== null ? { windowCost: learned.windowCost } : {}),
         // A plain CostAnchor is a stored anchor with nothing extra on it.
         ...(learned.costAnchor ? { costAnchor: { ...learned.costAnchor } as NonNullable<UsageEntry['costAnchor']> } : {}),

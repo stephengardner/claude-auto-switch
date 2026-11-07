@@ -26,6 +26,7 @@ import {
   type ProcessFlags,
 } from '../desktop/handoff.js';
 import { appendEvent } from '../events/log.js';
+import { switchDetail } from '../events/switch-events.js';
 import { configHome } from '../config/paths.js';
 import { tagNote } from '../accounts/tags.js';
 import type { CliContext } from '../context.js';
@@ -360,7 +361,12 @@ export async function swapCommand(
   const home = configHome(context.ctx);
   if (here.kind === 'ccx' && here.pid !== undefined) {
     writeSwitchRequest(name, Date.now(), 'seamless', context.ctx, here.pid);
-    appendEvent(home, `swap: session ${here.pid} asked to move to ${name}`, Date.now());
+    appendEvent(
+      home,
+      `swap: session ${here.pid} asked to move to ${name}`,
+      Date.now(),
+      switchDetail.asked(here.account, name, 'asked', { pid: here.pid }),
+    );
     context.out(
       `This session moves to ${name} in place, within about 30 seconds. Nothing restarts.`,
     );

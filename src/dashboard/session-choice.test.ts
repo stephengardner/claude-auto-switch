@@ -13,16 +13,24 @@ const lease = (pid: number, account: string, cwd?: string, at = 1): SessionLease
 describe('numbering the running sessions', () => {
   it('numbers one per process by pid, named by folder, with the account it is on', () => {
     const numbered = numberSessions([lease(900, 'b', '/work/web'), lease(120, 'a', '/work/api')]);
+    // The lease's folder, config folder and last word travel too, for `ccx state`.
     expect(numbered).toEqual([
-      { number: 1, pid: 120, account: 'a', where: 'api' },
-      { number: 2, pid: 900, account: 'b', where: 'web' },
+      { number: 1, pid: 120, account: 'a', where: 'api', cwd: '/work/api', configDir: '/s/120', lastSeen: 1 },
+      { number: 2, pid: 900, account: 'b', where: 'web', cwd: '/work/web', configDir: '/s/900', lastSeen: 1 },
     ]);
   });
 
   it("keeps a process's freshest lease when it holds two after a move", () => {
     // Leases arrive oldest first.
     const numbered = numberSessions([lease(120, 'old', '/work/api', 1), lease(120, 'new', '/work/api', 2)]);
-    expect(numbered).toEqual([{ number: 1, pid: 120, account: 'new', where: 'api' }]);
+    expect(numbered).toEqual([
+      { number: 1, pid: 120, account: 'new', where: 'api', cwd: '/work/api', configDir: '/s/120', lastSeen: 2 },
+    ]);
+  });
+
+  it('leaves out a folder the lease does not name', () => {
+    const [s] = numberSessions([lease(7, 'a')]);
+    expect(s).toEqual({ number: 1, pid: 7, account: 'a', where: '7', configDir: '/s/7', lastSeen: 1 });
   });
 
   it('tells two sessions in one folder apart by pid, and names one with no folder by its pid', () => {

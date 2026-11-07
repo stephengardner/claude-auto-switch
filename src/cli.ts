@@ -26,6 +26,7 @@ import { capCommand } from './commands/cap.js';
 import { loginCommand } from './commands/login.js';
 import { enableCommand, disableCommand, priorityCommand } from './commands/account-config.js';
 import { tagCommand, untagCommand, tagsCommand } from './commands/tags.js';
+import { poolCommand, unpoolCommand, poolsCommand } from './commands/pools.js';
 import { tokenCommand } from './commands/token.js';
 import { daemonCommand } from './commands/daemon.js';
 import { keepaliveCommand } from './commands/keepalive.js';
@@ -105,6 +106,27 @@ program
   });
 
 program
+  .command('pool <name> <pool>')
+  .description('put an account in a pool, the one group it is drawn from (replaces any it was in)')
+  .action((name: string, pool: string) => {
+    process.exitCode = poolCommand(context(), name, pool);
+  });
+
+program
+  .command('unpool <name>')
+  .description('take an account out of its pool')
+  .action((name: string) => {
+    process.exitCode = unpoolCommand(context(), name);
+  });
+
+program
+  .command('pools')
+  .description('every pool in use, with the accounts in it')
+  .action(() => {
+    process.exitCode = poolsCommand(context());
+  });
+
+program
   .command('dashboard')
   .alias('watch')
   .description('live account dashboard (auto-refreshing)')
@@ -121,8 +143,15 @@ program
 program
   .command('state')
   .description('everything ccx knows, as JSON, for another program to read')
-  .action(async () => {
-    process.exitCode = await dashboardCommand(context(), { json: true });
+  .option(
+    '--cached-logins <seconds>',
+    'use a login check at most this many seconds old instead of checking every account again (each account says how old its is)',
+  )
+  .action(async (opts: { cachedLogins?: string }) => {
+    process.exitCode = await dashboardCommand(context(), {
+      json: true,
+      ...(opts.cachedLogins !== undefined ? { cachedLogins: opts.cachedLogins } : {}),
+    });
   });
 
 program
