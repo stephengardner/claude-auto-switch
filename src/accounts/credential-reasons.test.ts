@@ -211,6 +211,29 @@ describe('why a credential event happened', () => {
     }
   });
 
+  it('publishes exactly these reasons: a reader depends on each, so none leaves without a schema change', () => {
+    expect([...CREDENTIAL_EVENT_REASONS]).toEqual([
+      'idle-renewal',
+      'renewed-before-start',
+      'carried-shared-login',
+      'carried-into-session',
+      'adopted-from-session',
+      'kept-renewal-saved',
+      'carried-into-editor',
+      'saved-from-editor',
+      'on-hold',
+      'renewal-refused',
+      'no-login',
+      'renewal-unavailable',
+      'session-using-it',
+      'editor-may-be-using-it',
+      'editor-copy-unconfirmed',
+      'saved-cut-short',
+      'session-had-no-login',
+      'unknown',
+    ]);
+  });
+
   it('lists each reason once', () => {
     expect(new Set(CREDENTIAL_EVENT_REASONS).size).toBe(CREDENTIAL_EVENT_REASONS.length);
   });
