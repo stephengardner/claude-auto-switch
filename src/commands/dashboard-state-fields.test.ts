@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dashboardCommand } from './dashboard.js';
 import { loadConfig } from '../config/config.js';
 import { takeLease } from '../session/lease.js';
+import { readingKey } from '../usage/usage-store.js';
 import type { CliContext } from '../context.js';
 import type { StatePayload } from '../dashboard/state-payload.js';
 
@@ -149,6 +150,12 @@ describe('`ccx state` says what the dashboard works out', () => {
             sevenDayReset: now + 90 * HOUR,
             at: now,
             readAt: now - 2 * 60_000,
+            readFor: readingKey({
+              fiveHour: 0.5,
+              sevenDay: 0.4,
+              fiveHourReset: now + 2 * HOUR,
+              sevenDayReset: now + 90 * HOUR,
+            }),
           },
           // Written before ccx kept a read time: not known, rather than `at`.
           tired: {
@@ -245,6 +252,57 @@ describe('`ccx state` says what the dashboard works out', () => {
         lastSeen: expect.any(Number),
       },
     ]);
+  });
+
+  it('says the read time is unknown once an older ccx has written numbers it did not read', async () => {
+    const { home, read } = setup([{ name: 'a' }]);
+    const now = Date.now();
+    const numbers = {
+      fiveHour: 0.2,
+      sevenDay: 0.3,
+      fiveHourReset: now + HOUR,
+      sevenDayReset: now + 50 * HOUR,
+    };
+    // As 2.6.32 leaves an entry: its own reading's numbers, beside the time and key of an earlier one.
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({
+        accounts: {
+          a: {
+            ...numbers,
+            fiveHour: 0.6,
+            at: now,
+            readAt: now - HOUR,
+            readFor: readingKey(numbers),
+          },
+        },
+      }),
+      'utf8',
+    );
+    const [a] = (await read()).accounts;
+    expect(a?.usage?.readAt).toBeNull();
+  });
+
+  it('names where a session on the active account goes, never the active account itself', async () => {
+    const { home, read } = setup([{ name: 'work' }, { name: 'spare' }]);
+    const now = Date.now();
+    writeFileSync(path.join(home, 'active.json'), JSON.stringify({ active: 'work' }), 'utf8');
+    // The active account is the roomier one, so a plan over every account stays on it.
+    const at = (fiveHour: number) => ({
+      fiveHour,
+      sevenDay: 0.1,
+      fiveHourReset: now + HOUR,
+      sevenDayReset: now + 60 * HOUR,
+      at: now,
+    });
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({ accounts: { work: at(0.1), spare: at(0.5) } }),
+      'utf8',
+    );
+    const state = await read();
+    expect(state.active).toBe('work');
+    expect(state.whenOut).toEqual({ account: 'spare', model: 'opus', changesModel: false });
   });
 
   it('gives the same top-level shape when no account is registered yet', async () => {

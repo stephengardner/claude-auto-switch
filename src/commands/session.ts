@@ -165,7 +165,7 @@ import { ensureLoginUsable, readinessMessage } from '../session/preflight.js';
 import { renewalIsDue, refreshCredentialIfExpired, takeUpRenewal } from '../usage/oauth-refresh.js';
 import { probeUsage } from '../usage/limit-probe.js';
 import { acquireLockDir, lockDirHeld, lockDirSteps, CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
-import { logCredentialEvent } from '../accounts/credential-log.js';
+import { logCredentialEvent, needsLoginReason } from '../accounts/credential-log.js';
 import { appendEvent, flushQueuedEvents, type EventDetail } from '../events/log.js';
 import { switchDetail } from '../events/switch-events.js';
 import { claudeForSession, type CliContext } from '../context.js';
@@ -1955,14 +1955,17 @@ export async function runInteractiveHotSwap(
         return accounts;
       },
       requestSwitch: (account, reason) => {
-        notice(`${reason}; moving to "${account}" before this account runs out`);
+        notice(
+          `${reason}; moving to "${account}" before this account runs out`,
+          switchDetail.asked(current?.name ?? null, account, 'proactive'),
+        );
         if (!worker) {
           setActive(account, context.ctx);
           void moveEditorToActive(context, { session: true });
         }
         // Addressed to THIS session. A shared request is taken by whichever
         // session looks first, so this one's early move could move another.
-        writeSwitchRequest(account, Date.now(), 'seamless', context.ctx, process.pid);
+        writeSwitchRequest(account, Date.now(), 'seamless', context.ctx, process.pid, 'proactive');
       },
     }),
     Math.max(30, context.config.rotation.usageCheckSeconds) * 1000,
@@ -2215,7 +2218,7 @@ export async function runInteractiveHotSwap(
             account: account.name,
             kind: 'needs-login',
             detail: readiness.detail,
-            reason: isOnHold(readiness.detail) ? 'on-hold' : hasLogin(account.dir) ? 'renewal-refused' : 'no-login',
+            reason: needsLoginReason(readiness.detail, hasLogin(account.dir)),
           },
           context.ctx,
         );
@@ -2402,7 +2405,7 @@ export async function runInteractiveHotSwap(
           }
           notice(
             `switching to "${target.name}" (no restart; takes effect within ~30s)`,
-            switchDetail.moved(from, target.name, 'asked', targeted ? { targeted: true } : {}),
+            switchDetail.moved(from, target.name, request?.reason ?? 'asked', targeted ? { targeted: true } : {}),
           );
           notifyAccountSwitch(target.name, 'switched in place');
         };
@@ -2411,10 +2414,10 @@ export async function runInteractiveHotSwap(
             // Rolled back: still on its account, and the request is taken, as one that cannot be honoured.
             moveWaiting = null;
             consumeMovedFor();
-            logEvent(`could not move this session to "${target.name}" in place, so it stays on "${from}": ${thrownReason(error)}`, {
-              kind: 'move-failed',
-              data: { to: target.name, from },
-            });
+            logEvent(
+              `could not move this session to "${target.name}" in place, so it stays on "${from}": ${thrownReason(error)}`,
+              switchDetail.failed(from, target.name, request?.reason ?? 'asked'),
+            );
             return;
           }
           if (error.why !== 'locks') return;
@@ -2427,7 +2430,7 @@ export async function runInteractiveHotSwap(
             notice(
               `the move to "${target.name}" is waiting: Claude in this session is using its login, so this session ` +
                 `stays on "${from}" until it lets go, and ccx moves it then`,
-              { kind: 'move-pending', data: { to: target.name, from } },
+              switchDetail.waiting(from, target.name, request?.reason ?? 'asked'),
             );
           }
         };

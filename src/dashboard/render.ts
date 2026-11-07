@@ -164,6 +164,12 @@ export interface DashboardSnapshot {
    */
   whenOut?: { account?: string; model?: string; changesModel?: boolean; words: string };
   /**
+   * For `ccx state`: the same plan with the active account out of it, where a
+   * session on the active account goes once that account cannot be used. Null
+   * when it would go nowhere; absent when it was not worked out.
+   */
+  afterActive?: { account?: string; model?: string; changesModel?: boolean; words: string } | null;
+  /**
    * Claude Desktop, when it is in use here: which account it spends and its
    * open conversations (`line`), and the keys that act on it (`keys`).
    */

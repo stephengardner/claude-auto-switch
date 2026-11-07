@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
-import { logCredentialEvent, type WrittenCredentialReason } from '../accounts/credential-log.js';
+import { logCredentialEvent, needsLoginReason, type WrittenCredentialReason } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers, carryTargets } from '../accounts/duplicate-guard.js';
 import { sessionIdentityEmail } from '../accounts/credential-vault.js';
 import { renewAndCarry } from '../accounts/shared-login.js';
@@ -57,9 +57,16 @@ const EntrySchema = z.object({
    * When these numbers were last read successfully (epoch ms). A failed read
    * keeps the old numbers and moves `at` on, so `at` cannot say how old they
    * are; this moves only with a reading. Absent until a reading by a ccx that
-   * writes it, and kept, unchanged, by one that does not (an unknown field).
+   * writes it.
    */
   readAt: z.number().optional(),
+  /**
+   * The numbers `readAt` belongs to (readingKey). 2.6.32 keeps both as fields
+   * it does not know while writing numbers of its own beside them, so a time
+   * whose numbers no longer match is one nobody can vouch for, and reads as
+   * unknown rather than as the time of numbers it never saw.
+   */
+  readFor: z.string().optional(),
   /**
    * What one full 5-hour window costs the week on this account, learned from
    * its own readings (see learnWindowCost). Absent until the first measurement.
@@ -97,6 +104,31 @@ function unknownFields(entry: UsageEntry | undefined): Record<string, unknown> {
   return Object.fromEntries(Object.entries(entry ?? {}).filter(([key]) => !KNOWN_FIELDS.has(key)));
 }
 export type UsageSnapshot = z.infer<typeof SnapshotSchema>;
+
+/**
+ * The numbers one reading gave, as one string, kept beside its `readAt`
+ * (`readFor`) so the time can be told apart from numbers it does not belong to.
+ */
+export function readingKey(entry: {
+  fiveHour: number | null;
+  sevenDay: number | null;
+  fiveHourReset?: number | null;
+  sevenDayReset?: number | null;
+  models?: Array<{ name: string; utilization: number; resetsAt?: number | null }> | null;
+}): string {
+  return JSON.stringify([
+    entry.fiveHour,
+    entry.sevenDay,
+    entry.fiveHourReset ?? null,
+    entry.sevenDayReset ?? null,
+    (entry.models ?? []).map((m) => [m.name, m.utilization, m.resetsAt ?? null]),
+  ]);
+}
+
+/** When `entry`'s numbers were read, when its record can say so; null otherwise. */
+export function lastReadAt(entry: UsageEntry): number | null {
+  return typeof entry.readAt === 'number' && entry.readFor === readingKey(entry) ? entry.readAt : null;
+}
 
 const FILENAME = 'usage-snapshot.json';
 export const USAGE_TTL_MS = 5 * 60_000;
@@ -390,7 +422,7 @@ export async function renewIdleLogin(
         account: account.name,
         kind: 'needs-login',
         detail: renewal.detail ?? 'renewal refused',
-        reason: isOnHold(renewal.detail) ? 'on-hold' : 'renewal-refused',
+        reason: needsLoginReason(renewal.detail, true),
       },
       c,
     );
@@ -583,9 +615,11 @@ export async function refreshUsage(
         at: readAt,
         readAt,
       };
+      const readFor = readingKey(fresh);
       const learned = learnWindowCost(previous, fresh);
       snapshot.accounts[account.name] = {
         ...fresh,
+        readFor,
         ...(learned.windowCost !== null ? { windowCost: learned.windowCost } : {}),
         // A plain CostAnchor is a stored anchor with nothing extra on it.
         ...(learned.costAnchor ? { costAnchor: { ...learned.costAnchor } as NonNullable<UsageEntry['costAnchor']> } : {}),

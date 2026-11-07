@@ -22,16 +22,16 @@ function setup() {
     json: true,
     quiet: false,
   };
-  const read = () => {
+  const read = (options: { logins?: boolean } = {}) => {
     lines.length = 0;
-    expect(historyCommand(context)).toBe(0);
+    expect(historyCommand(context, options)).toBe(0);
     return JSON.parse(lines.join('\n')) as {
       schemaVersion: number;
       credentialEvents: CredentialEvent[];
       switchEvents: SwitchEvent[];
     };
   };
-  return { home, ctx, read };
+  return { home, ctx, context, read };
 }
 
 describe('`ccx history --json`', () => {
@@ -49,6 +49,14 @@ describe('`ccx history --json`', () => {
     expect(history.switchEvents).toEqual([
       { at: 20, kind: 'moved', from: 'a', to: 'b', reason: 'capacity', v: expect.any(String) },
     ]);
+  });
+
+  it('leaves the switches out with --logins, as it does on screen', () => {
+    const { home, ctx, context, read } = setup();
+    logCredentialEvent({ account: 'a', kind: 'renewed', reason: 'idle-renewal', at: 10 }, ctx);
+    appendEvent(home, 'a sentence', 20, { kind: 'cap-relief', data: { from: 'a', to: 'b' } });
+    expect(Object.keys(read({ logins: true }))).toEqual(['schemaVersion', 'credentialEvents']);
+    void context;
   });
 
   it('answers with empty lists on a machine where nothing has happened', () => {

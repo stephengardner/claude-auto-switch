@@ -28,7 +28,7 @@ was taken, not a subscription: poll it if you want to keep up.
   "active": "maxed",
   "preferredModel": "fable",
   "nextUp": "staying here, on fable (92% left)",
-  "whenOut": { "account": "maxed", "model": "fable", "changesModel": false },
+  "whenOut": { "account": null, "model": null, "changesModel": false },
   "settings": {
     "accountOrder": "smart",
     "modelPreference": ["fable", "opus"],
@@ -125,7 +125,8 @@ Every account carries `pool`, the one group it is drawn from (`ccx pool <name>
 lanes`), or null when it is in none. A tag says what an account is and an
 account has many; a pool says which group a program takes it from, so it is in
 one at most. Written the way a tag is. Pools never change rotation: ccx moves a
-session by the same rules whatever pool its account is in.
+session by the same rules whatever pool its account is in. A ccx older than
+2.6.32 drops pools, and tags, when it rewrites the accounts file.
 
 ### Where it stands, and why
 
@@ -151,9 +152,10 @@ What the dashboard works out for every account, as values:
 ### When the numbers were read
 
 `usage.readAt` is when the numbers in `usage` were last read successfully, null
-when that is not known. It is not how recently ccx tried: a read that fails
-keeps the old numbers, so numbers that look current can be days old, and this
-is how to tell. `usage.windowCost` is what one full 5-hour window costs the
+when that is not known (an entry no read of this version has written, or one an
+older ccx has written numbers to since). It is not how recently ccx tried: a
+read that fails keeps the old numbers, so numbers that look current can be days
+old, and this is how to tell. `usage.windowCost` is what one full 5-hour window costs the
 week on that account, learned from its own readings, so `1 / windowCost` is
 about how many 5-hour windows its week holds.
 
@@ -162,9 +164,10 @@ about how many 5-hour windows its week holds.
 - `sessions` lists the ccx sessions running now, one per process: `pid`, the
   `account` it is on, the folder it started in (`cwd`, when known), the
   `configDir` it reads its login from, and `lastSeen`.
-- `whenOut` is where a session on the active account goes when that account
-  runs out: `account` (null when no account has room), the `model` it would run
-  there (null when nothing pins one), and `changesModel`. Null when there is
+- `whenOut` is where a session on the active account goes once that account
+  cannot be used: rotation's plan without it, so never the active account
+  itself. `account` (null when no other account has room), the `model` it would
+  run there (null when nothing pins one), and `changesModel`. Null when there is
   nothing to plan for.
 - `settings` are the rotation settings in force: `accountOrder`,
   `modelPreference`, `modelStrategy`, `preferSameModel`, `holdBackAtPercent`
@@ -239,8 +242,11 @@ record ccx cannot place.
 `reason`. `kind` is `moved` (in place, no restart), `move-failed`,
 `move-waiting`, `move-asked`, `editor-moved`, `ran-out` or `started`; `reason`
 is `capacity`, `asked`, `proactive`, `follows-active`, `session-start`,
-`continued` or `unknown`; `from` and `to` are account names or null. A record
-from before 2.6.33 that wrote only words for a move is not among them.
+`continued` or `unknown`; `from` and `to` are account names or null. A move
+made early, by `ccx auto` or by a session itself, says `proactive` at each step;
+one asked for by a person says `asked`. The same move several times in a row is
+one, with `count`. A record from before 2.6.33 that wrote only words for a move
+is not among them. With `--logins`, only `credentialEvents` is given.
 
 `ccx state` is the one to build a UI on. The others answer narrower questions.
 

@@ -1,7 +1,7 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import { requestMoves, type SwitchMode } from '../state/switch-request.js';
-import { forgetUsage, refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
+import { forgetUsage, lastReadAt, refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
 import { type ProbeResult } from '../health/prober.js';
 import { parseCachedLogins, probeAllRemembered } from '../health/login-checks.js';
 import { loadLedger } from '../ledger/ledger.js';
@@ -323,7 +323,7 @@ export async function dashboardCommand(
           // rotation, which reads the whole entry.
           ...(typeof u.windowCost === 'number' ? { windowCost: u.windowCost } : {}),
           // The last read that worked, not `at`, which a failed read moves on.
-          readAt: typeof u.readAt === 'number' ? u.readAt : null,
+          readAt: lastReadAt(u),
         },
       ]),
     );
@@ -395,6 +395,7 @@ export async function dashboardCommand(
     whenOut?: WhenOut;
     picks: Map<string, NonNullable<DashboardAccount['pick']>>;
     standings: Map<string, AccountStanding>;
+    afterActive: WhenOut | null;
   } {
     const rotation = ctx.config.rotation;
     // With models switched off, rotation still MOVES BETWEEN ACCOUNTS, and
@@ -442,7 +443,18 @@ export async function dashboardCommand(
       ...move,
       ...(smart ? { reasonFor: (name: string) => pickAside(standing(name), at) } : {}),
     });
-    return { ...(model ? { model } : {}), ...(nextUp ? { nextUp } : {}), ...(whenOut ? { whenOut } : {}), picks, standings };
+    // For `ccx state`, the same plan with the active account out of it: where
+    // a session on it goes once it cannot be used. The screen's line plans over
+    // every account, the active one included, and stays as it is.
+    const afterActive = current ? describeWhenOut({ ...move, candidates: candidates.filter((c) => c.name !== current) }) : whenOut;
+    return {
+      ...(model ? { model } : {}),
+      ...(nextUp ? { nextUp } : {}),
+      ...(whenOut ? { whenOut } : {}),
+      picks,
+      standings,
+      afterActive,
+    };
   }
 
   if (options.json) {

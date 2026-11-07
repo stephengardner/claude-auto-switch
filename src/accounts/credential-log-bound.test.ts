@@ -10,6 +10,8 @@ import {
   writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { renameSync } from 'node:fs';
+import { acquireOwnedLock } from '../claude/locks.js';
 import path from 'node:path';
 import {
   MAX_BYTES,
@@ -38,6 +40,39 @@ function longTrail(count: number): string {
 }
 
 const size = (file: string): number => (existsSync(file) ? statSync(file).size : 0);
+
+describe('two rotations', () => {
+  it('leave the file alone while another holds the rotation lock', () => {
+    const { c, file } = setup();
+    writeFileSync(file, longTrail(20_000), 'utf8');
+    const held = acquireOwnedLock(`${file}.rotate.lock`, { waitMs: 0, staleMs: 60_000 });
+    try {
+      expect(held.held).toBe(true);
+      rotateIfLong(c);
+      expect(existsSync(`${file}.1`)).toBe(false);
+    } finally {
+      held.release();
+    }
+    rotateIfLong(c);
+    expect(existsSync(`${file}.1`)).toBe(true);
+  });
+
+  it('move it once: one that finds it already moved under the lock leaves the archive alone', () => {
+    const { c, file } = setup();
+    writeFileSync(file, longTrail(20_000), 'utf8');
+    // Another rotation finishes just before this one looks again under the lock.
+    rotateIfLong(c, () => {
+      renameSync(file, `${file}.1`);
+      writeFileSync(
+        file,
+        `${JSON.stringify({ at: 1, account: 'next', kind: 'renewed', reason: 'idle-renewal' })}\n`,
+        'utf8',
+      );
+    });
+    expect(readFileSync(`${file}.1`, 'utf8')).toBe(longTrail(20_000));
+    expect(readCredentialEvents(1, c)[0]?.account).toBe('next');
+  });
+});
 
 describe('the credential log stays bounded', () => {
   it('moves the long file aside whole at the next append, keeping what a reader reads', () => {
@@ -99,12 +134,15 @@ describe('the credential log stays bounded', () => {
     writeFileSync(file, longTrail(20_000), 'utf8');
     // Another process opens the file to append, and is slow to write.
     const fd = openSync(file, 'a');
-    rotateIfLong(c);
-    writeSync(
-      fd,
-      `${JSON.stringify({ at: 50_000, account: 'slow', kind: 'renewed', reason: 'idle-renewal' })}\n`,
-    );
-    closeSync(fd);
+    try {
+      rotateIfLong(c);
+      writeSync(
+        fd,
+        `${JSON.stringify({ at: 50_000, account: 'slow', kind: 'renewed', reason: 'idle-renewal' })}\n`,
+      );
+    } finally {
+      closeSync(fd);
+    }
     logCredentialEvent(
       { account: 'later', kind: 'renewed', reason: 'idle-renewal', at: 60_000 },
       c,

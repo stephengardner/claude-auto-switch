@@ -122,11 +122,11 @@ export interface StatePayload {
   /** Where rotation goes next, in words. Null when nothing pins a model. */
   nextUp: string | null;
   /**
-   * Where a session on the active account goes when that account runs out,
-   * the move the screen words under its table: the account (null when no
-   * account has room), the model it would run there (null when nothing pins
-   * one), and whether that means changing model. Null when there is nothing
-   * to plan for.
+   * Where a session on the active account goes once that account cannot be
+   * used: rotation's plan without it, never the active account itself. The
+   * account (null when no other account has room), the model it would run
+   * there (null when nothing pins one), and whether that means changing model.
+   * Null when there is nothing to plan for.
    */
   whenOut: { account: string | null; model: string | null; changesModel: boolean } | null;
   /** The rotation settings in force, as values. */
@@ -136,6 +136,19 @@ export interface StatePayload {
   sessions: StateSession[];
   /** Recent activity, newest last, already formatted for reading. */
   events: string[];
+}
+
+/** A planned move as values, without the screen's words. */
+function moveOf(
+  move: { account?: string; model?: string; changesModel?: boolean } | null,
+): StatePayload['whenOut'] {
+  return move
+    ? {
+        account: move.account ?? null,
+        model: move.model ?? null,
+        changesModel: move.changesModel === true,
+      }
+    : null;
 }
 
 /** Turn the dashboard's snapshot into the published shape. */
@@ -148,13 +161,9 @@ export function toStatePayload(snapshot: DashboardSnapshot): StatePayload {
     active: snapshot.accounts.find((a) => a.active)?.name ?? null,
     preferredModel: model,
     nextUp: snapshot.nextUp ?? null,
-    whenOut: snapshot.whenOut
-      ? {
-          account: snapshot.whenOut.account ?? null,
-          model: snapshot.whenOut.model ?? null,
-          changesModel: snapshot.whenOut.changesModel === true,
-        }
-      : null,
+    whenOut: moveOf(
+      snapshot.afterActive !== undefined ? snapshot.afterActive : (snapshot.whenOut ?? null),
+    ),
     settings: snapshot.rotation ?? null,
     accounts: snapshot.accounts.map((a) => {
       const status = accountStatus(a, model, snapshot.now);

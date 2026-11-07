@@ -5,8 +5,12 @@ import path from 'node:path';
 import {
   CREDENTIAL_EVENT_REASONS,
   logCredentialEvent,
+  needsLoginReason,
   readCredentialEvents,
+  type WrittenCredentialReason,
 } from './credential-log.js';
+import { mkdirSync } from 'node:fs';
+import { renewIdleLogin } from '../usage/usage-store.js';
 
 function ctx() {
   return { env: { CLAUDE_AUTO_SWITCH_HOME: mkdtempSync(path.join(tmpdir(), 'cas-credreason-')) } };
@@ -161,6 +165,50 @@ describe('why a credential event happened', () => {
       'renewal-refused',
       'on-hold',
     ]);
+  });
+
+  it('reads every reason a writer can record back as written, whatever the words beside it', () => {
+    const c = ctx();
+    const written = CREDENTIAL_EVENT_REASONS.filter(
+      (r): r is WrittenCredentialReason => r !== 'unknown',
+    );
+    // Words the decoder for older records cannot place, so only the stored value can answer.
+    written.forEach((reason, i) =>
+      logCredentialEvent({ account: `a${i}`, kind: 'refused', detail: `x${i}`, reason }, c),
+    );
+    expect(readCredentialEvents(100, c).map((e) => e.reason)).toEqual(written);
+  });
+
+  it('says why a login has to be signed in again by one rule', () => {
+    expect(needsLoginReason('invalid_grant: account_on_hold', true)).toBe('on-hold');
+    expect(needsLoginReason('see claude.ai/restricted', false)).toBe('on-hold');
+    expect(needsLoginReason('invalid_grant', true)).toBe('renewal-refused');
+    expect(needsLoginReason(undefined, true)).toBe('renewal-refused');
+    expect(needsLoginReason('no stored login', false)).toBe('no-login');
+  });
+
+  it('is on-hold or refused, as the renewal says, when a usage refresh renews a login', async () => {
+    for (const [detail, reason] of [
+      ['invalid_grant: account_on_hold', 'on-hold'],
+      ['invalid_grant', 'renewal-refused'],
+    ] as const) {
+      const c = ctx();
+      const dir = path.join(c.env.CLAUDE_AUTO_SWITCH_HOME, 'profiles', 'a');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        path.join(dir, '.credentials.json'),
+        JSON.stringify({ claudeAiOauth: { accessToken: 't' } }),
+        'utf8',
+      );
+      const account = { name: 'a', dir };
+      await renewIdleLogin(account, [account], c, {
+        renew: () => Promise.resolve({ status: 'needs-login', detail }),
+        editorAccount: null,
+      });
+      expect(readCredentialEvents(10, c).map((e) => [e.kind, e.reason])).toEqual([
+        ['needs-login', reason],
+      ]);
+    }
   });
 
   it('lists each reason once', () => {

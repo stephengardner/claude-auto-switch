@@ -51,8 +51,9 @@ export function historyCommand(context: CliContext, options: HistoryOptions = {}
   if (context.json) {
     // The moves as values beside the logins (events/switch-events): the
     // sentences the human form prints stay out of what a program reads.
-    const switchEvents = readSwitchEvents(configHome(context.ctx), limit);
-    context.out(JSON.stringify({ schemaVersion: 1, credentialEvents: credential, switchEvents }, null, 2));
+    // `--logins` leaves the switches out of the JSON as it does on screen.
+    const switches = options.logins ? {} : { switchEvents: readSwitchEvents(configHome(context.ctx), limit) };
+    context.out(JSON.stringify({ schemaVersion: 1, credentialEvents: credential, ...switches }, null, 2));
     return 0;
   }
 

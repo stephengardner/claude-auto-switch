@@ -38,68 +38,60 @@ export type CredentialEventKind =
  * not. Each writer of this log records its own, so a record says which of
  * them wrote it and a reader never has to parse the sentence.
  */
-export type CredentialEventReason =
+export const CREDENTIAL_EVENT_REASONS = [
   /** renewed: an idle login renewed as it fell due, during a usage refresh. */
-  | 'idle-renewal'
-  /** renewed: an expired login renewed as a session started on it. */
-  | 'renewed-before-start'
-  /** installed: a profile sharing a login that was just renewed was given the renewal. */
-  | 'carried-shared-login'
-  /** installed: a login renewed elsewhere was carried into a running session. */
-  | 'carried-into-session'
-  /** installed: a dead stored login was replaced by a running session's working one. */
-  | 'adopted-from-session'
-  /** installed: a renewal kept when its save failed was saved. */
-  | 'kept-renewal-saved'
-  /** installed: a login renewed elsewhere was carried into the editor's folder. */
-  | 'carried-into-editor'
-  /** installed: a login the editor's Claude renewed or kept was saved back to its profile. */
-  | 'saved-from-editor'
-  /** needs-login: Anthropic put the account on hold; signing in again does not bring it back. */
-  | 'on-hold'
-  /** needs-login: the login was refused for good, so the account has to be signed in again. */
-  | 'renewal-refused'
-  /** needs-login: there was no stored login to use. */
-  | 'no-login'
-  /** renew-failed: the renewal did not go through, for a reason that may pass (offline, a server error). */
-  | 'renewal-unavailable'
-  /** refused: a session is using the login, or a profile sharing it, so renewing would sign it out. */
-  | 'session-using-it'
-  /** refused: the editor is pointed at a profile sharing this login and may be using it. */
-  | 'editor-may-be-using-it'
-  /** refused: the editor holds a newer copy of this login that ccx could not yet confirm is this account's. */
-  | 'editor-copy-unconfirmed'
-  /** rolled-back: the stored login had been saved cut short, so the copy kept before it was put back. */
-  | 'saved-cut-short'
-  /** signed-out: the session had no login, so the stored one was left alone. */
-  | 'session-had-no-login'
-  /** A record this version cannot place: hand-edited, or from a writer it does not know. */
-  | 'unknown';
-
-/** Every reason, for a reader to check a value against. */
-export const CREDENTIAL_EVENT_REASONS: readonly CredentialEventReason[] = [
   'idle-renewal',
+  /** renewed: an expired login renewed as a session started on it. */
   'renewed-before-start',
+  /** installed: a profile sharing a login that was just renewed was given the renewal. */
   'carried-shared-login',
+  /** installed: a login renewed elsewhere was carried into a running session. */
   'carried-into-session',
+  /** installed: a dead stored login was replaced by a running session's working one. */
   'adopted-from-session',
+  /** installed: a renewal kept when its save failed was saved. */
   'kept-renewal-saved',
+  /** installed: a login renewed elsewhere was carried into the editor's folder. */
   'carried-into-editor',
+  /** installed: a login the editor's Claude renewed or kept was saved back to its profile. */
   'saved-from-editor',
+  /** needs-login: Anthropic put the account on hold; signing in again does not bring it back. */
   'on-hold',
+  /** needs-login: the login was refused for good, so the account has to be signed in again. */
   'renewal-refused',
+  /** needs-login: there was no stored login to use. */
   'no-login',
+  /** renew-failed: the renewal did not go through, for a reason that may pass (offline, a server error). */
   'renewal-unavailable',
+  /** refused: a session is using the login, or a profile sharing it, so renewing would sign it out. */
   'session-using-it',
+  /** refused: the editor is pointed at a profile sharing this login and may be using it. */
   'editor-may-be-using-it',
+  /** refused: the editor holds a newer copy of this login that ccx could not yet confirm is this account's. */
   'editor-copy-unconfirmed',
+  /** rolled-back: the stored login had been saved cut short, so the copy kept before it was put back. */
   'saved-cut-short',
+  /** signed-out: the session had no login, so the stored one was left alone. */
   'session-had-no-login',
+  /** A record this version cannot place: hand-edited, or from a writer it does not know. */
   'unknown',
-];
+] as const;
+
+/** One of CREDENTIAL_EVENT_REASONS, the one list both the type and a reader check against. */
+export type CredentialEventReason = (typeof CREDENTIAL_EVENT_REASONS)[number];
 
 /** What a writer may record: every reason but the one kept for records nobody can place. */
 export type WrittenCredentialReason = Exclude<CredentialEventReason, 'unknown'>;
+
+/**
+ * Why a login has to be signed in again: on hold when the refusal says so,
+ * no login when there was none to use, and otherwise refused. One rule for
+ * the writers that record it and for the records written before they did.
+ */
+export function needsLoginReason(detail: string | undefined, hadLogin: boolean): WrittenCredentialReason {
+  if (isOnHold(detail)) return 'on-hold';
+  return hadLogin ? 'renewal-refused' : 'no-login';
+}
 
 export interface CredentialEvent {
   /** When this happened, or when it last happened if it repeated. */
@@ -247,15 +239,18 @@ function foldRepeats(events: CredentialEvent[]): CredentialEvent[] {
  * The first rotation after an older ccx moves that ccx's whole file aside, and
  * the next, ROTATE_BYTES of events later, replaces it.
  *
- * Exported so a test can rotate at a chosen moment, as another process would.
+ * Exported so a test can rotate at a chosen moment, as another process would;
+ * `underLock` runs once the lock is held, so a test can stand in for another
+ * rotation finishing just before this one looks again.
  */
-export function rotateIfLong(c: PathCtx = {}): void {
+export function rotateIfLong(c: PathCtx = {}, underLock: () => void = () => {}): void {
   try {
     const file = logPath(c);
     if (statSync(file).size <= ROTATE_BYTES) return;
     const lock = acquireOwnedLock(`${file}${ROTATE_LOCK_SUFFIX}`, { waitMs: 0, staleMs: 5_000 });
     if (!lock.held) return;
     try {
+      underLock();
       // Again under the lock: another rotation may have just moved it.
       if (statSync(file).size > ROTATE_BYTES) renameSync(file, `${file}${ARCHIVE_SUFFIX}`);
     } finally {
@@ -318,8 +313,7 @@ function legacyReason(kind: unknown, detail: string | undefined): CredentialEven
       if (said.startsWith('the editor ')) return 'saved-from-editor';
       return 'unknown';
     case 'needs-login':
-      if (isOnHold(detail)) return 'on-hold';
-      return said === 'no stored login' ? 'no-login' : 'renewal-refused';
+      return needsLoginReason(detail, said !== 'no stored login');
     case 'renew-failed':
       return 'renewal-unavailable';
     case 'refused':

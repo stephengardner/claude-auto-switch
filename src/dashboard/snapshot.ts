@@ -62,6 +62,8 @@ export interface SnapshotInput {
   nextUp?: string;
   /** The same move in the screen's words, and the account it names. */
   whenOut?: DashboardSnapshot['whenOut'] | null;
+  /** The plan without the active account (see DashboardSnapshot). */
+  afterActive?: DashboardSnapshot['afterActive'];
   /** Claude Desktop's line and keys. See desktop/summary.ts. */
   desktop?: { line: string; keys: string } | null;
   /** Where each account stands in the pick order (see dashboard.ts nextMove). */
@@ -117,6 +119,7 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
     ...(input.version ? { version: input.version } : {}),
     ...(input.nextUp ? { nextUp: input.nextUp } : {}),
     ...(input.whenOut ? { whenOut: input.whenOut } : {}),
+    ...(input.afterActive !== undefined ? { afterActive: input.afterActive } : {}),
     ...(input.desktop ? { desktop: input.desktop } : {}),
     ...(input.settings ? { settings: input.settings } : {}),
     ...(input.sessions && input.sessions.length > 0 ? { sessions: input.sessions } : {}),

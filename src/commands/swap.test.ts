@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { readSwitchRequest } from '../state/switch-request.js';
 import { readSwitchEvents } from '../events/switch-events.js';
+import { takeLease } from '../session/lease.js';
 import { configHome } from '../config/paths.js';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -213,6 +214,8 @@ describe('ccx swap <name>', () => {
         ctx: { env: { ...outside.context.ctx.env, CLAUDE_CONFIG_DIR: dir } },
       },
     };
+    // Its lease says which account it is on, which the request then names as where it moves from.
+    takeLease('mid', dir, outside.context.ctx);
     expect(whereAmI(s.context, () => []).kind).toBe('ccx');
     expect(
       await swapCommand(
@@ -230,7 +233,7 @@ describe('ccx swap <name>', () => {
     expect(readSwitchRequest(outside.context.ctx)).toBeNull();
     // Recorded as a value, for `ccx history --json`: a move asked for, to roomy.
     expect(readSwitchEvents(configHome(outside.context.ctx), 10)).toEqual([
-      expect.objectContaining({ kind: 'move-asked', to: 'roomy', reason: 'asked' }),
+      expect.objectContaining({ kind: 'move-asked', from: 'mid', to: 'roomy', reason: 'asked' }),
     ]);
   });
 

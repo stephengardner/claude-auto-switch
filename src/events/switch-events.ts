@@ -1,5 +1,5 @@
 import { AccountSchema } from '../accounts/registry.schema.js';
-import { readEvents, type EventDetail, type EventRecord } from './log.js';
+import { readEventRecords, type EventDetail, type EventRecord } from './log.js';
 
 /**
  * The account moves in ccx's event log, as values: what happened, between
@@ -97,6 +97,16 @@ export const switchDetail = {
     kind: 'switch-request',
     data: { from, to, reason, ...extra },
   }),
+  /** A move to `to` was tried and the session stayed on `from`. */
+  failed: (from: string | null, to: string, reason: RecordedSwitchReason): EventDetail => ({
+    kind: 'move-failed',
+    data: { from, to, reason },
+  }),
+  /** A move to `to` waits for the session's Claude to let go of its login. */
+  waiting: (from: string | null, to: string, reason: RecordedSwitchReason): EventDetail => ({
+    kind: 'move-pending',
+    data: { from, to, reason },
+  }),
   /** A session started on `account`, or carried on there after a restart. */
   sessionStart: (account: string, continued: boolean): EventDetail => ({
     kind: 'session-start',
@@ -113,6 +123,15 @@ function accountName(value: unknown): string | null {
 
 function recordedReason(value: unknown): SwitchReason {
   return RECORDED_REASONS.has(value as SwitchReason) ? (value as SwitchReason) : 'unknown';
+}
+
+/**
+ * The reason a failed or waiting move records, or, for one written before it
+ * recorded any (2.6.32 and older), `asked`: only a move asked for could fail
+ * or wait then.
+ */
+function moveReason(value: unknown): SwitchReason {
+  return value === undefined ? 'asked' : recordedReason(value);
 }
 
 /** The move one record describes, or null when it describes none. */
@@ -142,9 +161,9 @@ export function toSwitchEvent(record: EventRecord): SwitchEvent | null {
     case 'switch-request':
       return to ? event('move-asked', recordedReason(data.reason), from, to) : null;
     case 'move-failed':
-      return to ? event('move-failed', 'asked', from, to) : null;
+      return to ? event('move-failed', moveReason(data.reason), from, to) : null;
     case 'move-pending':
-      return to ? event('move-waiting', 'asked', from, to) : null;
+      return to ? event('move-waiting', moveReason(data.reason), from, to) : null;
     case 'editor-move':
       // The same kind records the editor's folder being made or taken over,
       // whose `from` is a folder, not an account: only a move between
@@ -167,12 +186,34 @@ export function toSwitchEvent(record: EventRecord): SwitchEvent | null {
   }
 }
 
-/** The moves among `records`, in their order. */
+/**
+ * The moves among `records`, in their order, a run of the same move told as
+ * one with its count and the time of the last. The same move is the same in
+ * every field, never the same words: the log folds by its message, and
+ * "switching to c" said for a move from a and then for one from b is two
+ * moves, which is why this reads the records unfolded (readEventRecords).
+ */
 export function switchEvents(records: readonly EventRecord[]): SwitchEvent[] {
-  return records.flatMap((record) => {
+  const out: SwitchEvent[] = [];
+  for (const record of records) {
     const event = toSwitchEvent(record);
-    return event ? [event] : [];
-  });
+    if (!event) continue;
+    const last = out[out.length - 1];
+    if (
+      last &&
+      last.kind === event.kind &&
+      last.from === event.from &&
+      last.to === event.to &&
+      last.reason === event.reason &&
+      last.v === event.v
+    ) {
+      const count = Math.min(Number.MAX_SAFE_INTEGER, (last.count ?? 1) + (event.count ?? 1));
+      out[out.length - 1] = { ...event, count };
+    } else {
+      out.push(event);
+    }
+  }
+  return out;
 }
 
 /**
@@ -181,5 +222,5 @@ export function switchEvents(records: readonly EventRecord[]): SwitchEvent[] {
  * the moves out gives `count` moves rather than `count` events of any kind.
  */
 export function readSwitchEvents(configHome: string, count: number): SwitchEvent[] {
-  return switchEvents(readEvents(configHome, Number.MAX_SAFE_INTEGER)).slice(-Math.max(1, count));
+  return switchEvents(readEventRecords(configHome)).slice(-Math.max(1, count));
 }

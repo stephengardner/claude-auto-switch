@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseCachedLogins, probeAllRemembered, rememberChecks } from './login-checks.js';
+import { probe } from './prober.js';
 
 const fakeClaude = fileURLToPath(
   new URL('../../test/fake-claude/fake-claude.mjs', import.meta.url),
@@ -111,6 +112,41 @@ describe('remembered login checks', () => {
     expect(file.checks['a']?.checkedAt).toBe(NOW - 1_000);
   });
 
+  it('keeps every other registered account when it checked only some', () => {
+    const { home, c, accounts, remembered, writeChecks } = setup(['a', 'b', 'c']);
+    writeFileSync(
+      path.join(home, 'accounts.json'),
+      JSON.stringify({
+        accounts: accounts.map((a, priority) => ({ ...a, priority, enabled: true })),
+      }),
+      'utf8',
+    );
+    writeChecks({
+      a: remembered(accounts[0]?.dir ?? '', NOW - 9_000),
+      b: remembered(accounts[1]?.dir ?? '', NOW - 8_000),
+      c: remembered(accounts[2]?.dir ?? '', NOW - 7_000),
+    });
+    // `ccx status a`: one account checked.
+    rememberChecks([{ name: 'a', checkedAt: NOW, loggedIn: true }], [accounts[0]!], c);
+    const file = JSON.parse(readFileSync(path.join(home, 'login-checks.json'), 'utf8')) as {
+      checks: Record<string, { checkedAt: number }>;
+    };
+    expect(
+      Object.fromEntries(Object.entries(file.checks).map(([n, k]) => [n, k.checkedAt])),
+    ).toEqual({
+      a: NOW,
+      b: NOW - 8_000,
+      c: NOW - 7_000,
+    });
+  });
+
+  it('stamps a check with when it began, so a login written while it ran is newer', async () => {
+    const { accounts } = setup(['a']);
+    const times = [NOW, NOW + 5_000];
+    const result = await probe(accounts[0]!, { claude, now: () => times.shift() ?? NOW + 9_000 });
+    expect(result.checkedAt).toBe(NOW);
+  });
+
   it('forgets an account that is no longer registered', () => {
     const { home, c, accounts, remembered, writeChecks } = setup(['a']);
     writeChecks({ gone: remembered('/p/gone', NOW, true) });
@@ -138,7 +174,7 @@ describe('--cached-logins', () => {
   });
 
   it('refuses anything that is not a number of seconds, naming what it got', () => {
-    for (const raw of ['', 'soon', '-1', 'Infinity']) {
+    for (const raw of ['', 'soon', '-1', 'Infinity', '0x10', '1e3', '1e400', '1,5']) {
       expect(parseCachedLogins(raw)).toEqual({ error: expect.stringContaining(`"${raw}"`) });
     }
   });

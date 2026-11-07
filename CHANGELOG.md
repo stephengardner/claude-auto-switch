@@ -16,9 +16,9 @@ semantic versioning.
   carries `readAt`, when its numbers were last read successfully, which `at`
   cannot say since a failed read moves `at` on over the old numbers. At the top,
   `sessions` (each running session's pid, account, folder and config folder),
-  `whenOut` (where a session on the active account goes when that account runs
-  out: the account, the model, whether the model changes) and `settings` (the rotation settings in
-  force). All values, never the screen's words; `schemaVersion` stays 1, since
+  `whenOut` (where a session on the active account goes once that account
+  cannot be used: the account, never the active one, the model, whether the
+  model changes) and `settings` (the rotation settings in force). All values, never the screen's words; `schemaVersion` stays 1, since
   nothing was renamed or removed.
 - **A cheap `ccx state`.** `--cached-logins <seconds>` uses a login check at
   most that old instead of asking Claude about every account again, which is
@@ -30,13 +30,16 @@ semantic versioning.
 - **Pools.** `ccx pool <account> <pool>` puts an account in the one group it
   is drawn from, `ccx unpool` takes it out, and `ccx pools` lists them. Kept on
   the account's own record and written the way a tag is. Pools never change
-  rotation.
+  rotation. A ccx older than 2.6.32 drops them, as it drops tags, when it
+  rewrites the accounts file.
 - **`ccx history --json` gives the moves.** `switchEvents` beside
   `credentialEvents`: each move's kind (moved, move-failed, move-waiting,
   move-asked, editor-moved, ran-out, started), when, from and to which account,
   and why (capacity, asked, proactive, follows-active, session-start,
-  continued). Every login event now carries a `reason` as well, recorded by
-  what wrote it, and worked out for older records from what was written then.
+  continued); a move made early, by `ccx auto` or a session itself, says
+  proactive from the request on, since a request now carries why it was made.
+  Every login event now carries a `reason` as well, recorded by what wrote it,
+  and worked out for older records from what was written then.
 - **More JSON.** `ccx tag`, `ccx untag`, `ccx pool` and `ccx unpool` answer
   `--json`, refusals included, and `ccx resume-prompt --json` carries a
   `schemaVersion` like every other JSON output.
@@ -47,8 +50,9 @@ semantic versioning.
   ever written, while everything that reads it reads only its last 256 KB: one
   machine's had 43,504 lines, 4.2 MB over 85 days. Past 256 KB it is now
   moved aside whole as `credential-log.jsonl.1`, replacing the one before, so
-  what is read is always there and each file holds at most 256 KB and a line
-  (524,447 bytes together at most over 20,000 appends, measured). Moved, never
+  what is read is always there and each file holds about 256 KB, a few lines
+  more when several processes write as it moves (524,447 bytes together at most
+  over 20,000 appends, measured). Moved, never
   copied, so a line another ccx was writing as it moved lands in one file or
   the other. The first move after an upgrade takes the old file whole, and the
   next one, 256 KB of events later, replaces it.

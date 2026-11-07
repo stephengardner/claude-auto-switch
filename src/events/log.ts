@@ -126,6 +126,16 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
  * gives five things that happened rather than five copies of one of them.
  */
 export function readEvents(configHome: string, limit = 5): EventRecord[] {
+  return foldRepeats(readEventRecords(configHome)).slice(-limit);
+}
+
+/**
+ * Every record in the log, oldest first, NOT folded, for a reader that goes by
+ * each record's own `kind` and `data` (events/switch-events), to whom two moves
+ * worded alike are still two moves. The archive was folded when it was
+ * compacted, so its repeats arrive already counted.
+ */
+export function readEventRecords(configHome: string): EventRecord[] {
   const file = eventsFilePath(configHome);
   // Oldest first: the compacted archive, then anything a compaction was moving
   // when it was interrupted, then the live file. Reading the middle one is what
@@ -140,8 +150,7 @@ export function readEvents(configHome: string, limit = 5): EventRecord[] {
       /* an unreadable piece must not lose the readable ones */
     }
   }
-  if (chunks.length === 0) return [];
-  return foldRepeats(parseRecords(joinChunks(chunks))).slice(-limit);
+  return chunks.length === 0 ? [] : parseRecords(joinChunks(chunks));
 }
 
 /**

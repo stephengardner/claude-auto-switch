@@ -31,6 +31,19 @@ describe('what a writer records with a move', () => {
       'b',
       'proactive',
     ]);
+    // session.ts, a move that failed or waits, with the reason it was asked for.
+    expect(back(switchDetail.failed('a', 'b', 'proactive'))).toEqual([
+      'move-failed',
+      'a',
+      'b',
+      'proactive',
+    ]);
+    expect(back(switchDetail.waiting('a', 'b', 'asked'))).toEqual([
+      'move-waiting',
+      'a',
+      'b',
+      'asked',
+    ]);
     // session.ts, a session starting, and one carrying on after a restart.
     expect(back(switchDetail.sessionStart('a', false))).toEqual([
       'started',
@@ -118,6 +131,37 @@ describe('the moves in the event log, as values', () => {
     expect(toSwitchEvent(record('switch', { from: 'a', to: 'b', reason: 'whim' }))?.reason).toBe(
       'unknown',
     );
+  });
+
+  it('reads a failed or waiting move an older ccx wrote, without a reason, as asked', () => {
+    expect(
+      switchEvents([
+        record('move-failed', { from: 'a', to: 'b' }),
+        record('move-pending', { from: 'a', to: 'b' }),
+      ]).map((e) => e.reason),
+    ).toEqual(['asked', 'asked']);
+  });
+
+  it('keeps two moves worded alike apart, and tells a run of one move as one', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-switch-fold-'));
+    // The log folds these by their words: two moves to c, from a and from b.
+    appendEvent(home, 'switching to "c"', 1, switchDetail.moved('a', 'c', 'asked'));
+    appendEvent(home, 'switching to "c"', 2, switchDetail.moved('b', 'c', 'asked'));
+    // A start, then a carry-on, on one account: the same words, two events.
+    appendEvent(home, 'session on c', 3, switchDetail.sessionStart('c', false));
+    appendEvent(home, 'session on c', 4, switchDetail.sessionStart('c', true));
+    // The same move twice in a row is one, counted.
+    appendEvent(home, 'moved', 5, { kind: 'cap-relief', data: { from: 'c', to: 'd' } });
+    appendEvent(home, 'moved', 6, { kind: 'cap-relief', data: { from: 'c', to: 'd' } });
+    expect(
+      readSwitchEvents(home, 10).map((e) => [e.kind, e.from, e.to, e.reason, e.count ?? 1, e.at]),
+    ).toEqual([
+      ['moved', 'a', 'c', 'asked', 1, 1],
+      ['moved', 'b', 'c', 'asked', 1, 2],
+      ['started', null, 'c', 'session-start', 1, 3],
+      ['started', null, 'c', 'continued', 1, 4],
+      ['moved', 'c', 'd', 'capacity', 2, 6],
+    ]);
   });
 
   it('counts moves, not events, when asked for the last few', () => {

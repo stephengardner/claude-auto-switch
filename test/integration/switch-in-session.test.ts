@@ -246,6 +246,12 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
       caps: Array<{ account: string }>;
     }).caps;
     expect(caps.map((c) => c.account)).toEqual(['A']);
+    // As values: started on A, A ran out, and the same conversation carried on on B.
+    expect(readSwitchEvents(home, 50).map((e) => [e.kind, e.from, e.to, e.reason])).toEqual([
+      ['started', null, 'A', 'session-start'],
+      ['ran-out', 'A', null, 'capacity'],
+      ['started', null, 'B', 'continued'],
+    ]);
   });
 
   it('a VERIFIED cap on a still-alive session swaps the account IN PLACE, no relaunch', async () => {

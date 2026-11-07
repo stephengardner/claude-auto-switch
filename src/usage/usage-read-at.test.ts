@@ -2,7 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { refreshUsage, readUsageSnapshot, writeUsageSnapshot } from './usage-store.js';
+import {
+  lastReadAt,
+  readingKey,
+  refreshUsage,
+  readUsageSnapshot,
+  writeUsageSnapshot,
+} from './usage-store.js';
 
 /**
  * `readAt` is when the numbers were last READ, which `at` cannot say: a read
@@ -42,6 +48,9 @@ describe('when usage was last read', () => {
     const entry = readUsageSnapshot(c).accounts['a'];
     expect(entry?.readAt).toBe(5_000_000);
     expect(entry?.at).toBe(5_000_000);
+    // Beside it, the numbers it belongs to, so a reader can tell it still does.
+    expect(entry?.readFor).toBe(readingKey(entry!));
+    expect(lastReadAt(entry!)).toBe(5_000_000);
   });
 
   it('stays where it was when a later read fails, while `at` moves on', async () => {

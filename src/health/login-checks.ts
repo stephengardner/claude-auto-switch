@@ -5,6 +5,7 @@ import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile } from '../util/fs-json.js';
 import { writeSecretFile } from '../util/secret-file.js';
 import { credentialPath } from '../accounts/credential-vault.js';
+import { listAccounts } from '../accounts/registry.js';
 import { probe, type ProbeableAccount, type ProberDeps, type ProbeResult } from './prober.js';
 
 /**
@@ -19,9 +20,10 @@ import { probe, type ProbeableAccount, type ProberDeps, type ProbeResult } from 
  *
  * So the reads a program or a person makes to look remember what they found
  * (the dashboard, which checks again every 20 s while it is open, `ccx state`,
- * `ccx list` and `ccx status`; a session start, `ccx rotate` and `ccx doctor`
- * ask afresh and leave no record), and `ccx state --cached-logins <seconds>` uses a remembered
- * check no older than that instead of asking again. A check is used only for
+ * `ccx list` and `ccx status`; a session start, the editor's launch,
+ * `ccx rotate` and `ccx doctor` ask afresh and leave no record), and
+ * `ccx state --cached-logins <seconds>` uses a remembered check no older than
+ * that instead of asking again. A check is used only for
  * the same account in the same folder, never when its login file has changed
  * since (a sign-in, a renewal), and never when it failed to read. A login with
  * no file to watch (one kept in the macOS Keychain) is bounded by the age
@@ -61,10 +63,13 @@ function readChecks(c: PathCtx): Checks {
 }
 
 /**
- * Remember these checks, for the accounts given (an account no longer
- * registered is forgotten). A check that could not be read is not
- * remembered: it says nothing about the login. Best effort; owner-only, since
- * a check names the account's email, as the account registry does.
+ * Remember these checks of `accounts`, keeping what is remembered of every
+ * other account still registered: `ccx status a` and `ccx list --tagged`
+ * check only some, and forgetting the rest would cost the next cheap read a
+ * check of each. An account no longer registered is forgotten. A check that
+ * could not be read is not remembered: it says nothing about the login. Best
+ * effort; owner-only, since a check names the account's email, as the account
+ * registry does.
  */
 export function rememberChecks(
   results: readonly ProbeResult[],
@@ -73,7 +78,9 @@ export function rememberChecks(
 ): void {
   try {
     const known = readChecks(c).checks;
+    const kept = new Set([...listAccounts(c).map((a) => a.name), ...accounts.map((a) => a.name)]);
     const checks: Checks['checks'] = {};
+    for (const [name, check] of Object.entries(known)) if (kept.has(name)) checks[name] = check;
     for (const account of accounts) {
       const result = results.find((r) => r.name === account.name);
       if (result && result.error === undefined) {
@@ -85,9 +92,6 @@ export function rememberChecks(
           ...(result.orgName !== undefined ? { orgName: result.orgName } : {}),
           ...(result.plan !== undefined ? { plan: result.plan } : {}),
         };
-      } else {
-        const before = known[account.name];
-        if (before) checks[account.name] = before;
       }
     }
     writeSecretFile(checksPath(c), `${JSON.stringify({ checks }, null, 2)}\n`);
@@ -164,9 +168,12 @@ export async function probeAllRemembered(
  * which in practice asks again.
  */
 export function parseCachedLogins(raw: string): { ms: number } | { error: string } {
-  const seconds = Number(raw.trim());
-  if (raw.trim() === '' || !Number.isFinite(seconds) || seconds < 0) {
+  // Plain decimal seconds only: Number() would also take `0x10`, `1e3`, and
+  // `1e400`, which is Infinity and would reuse a check forever.
+  const text = raw.trim();
+  const ms = /^\d+(\.\d+)?$/.test(text) ? Math.round(Number(text) * 1000) : NaN;
+  if (!Number.isSafeInteger(ms)) {
     return { error: `--cached-logins takes a number of seconds (0 or more), got "${raw}"` };
   }
-  return { ms: Math.round(seconds * 1000) };
+  return { ms };
 }
