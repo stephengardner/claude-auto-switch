@@ -174,13 +174,13 @@ about how many 5-hour windows its week holds.
 
 Most of what one `ccx state` costs is checking every account's login, a run of
 `claude auth status` each. `ccx state --cached-logins <seconds>` uses a login
-check at most that many seconds old instead, where one is remembered: every
-read that checks logins (`ccx state`, `ccx list`, `ccx status`, and an open
-`ccx dashboard` every 20 seconds) remembers what it found. A check is used only
-for the same account in the same folder, and never once its login file has
-changed since; a login kept in the macOS Keychain has no file, so only the age
-bounds its check. `loginCheckedAt` on each account says when its check was made, so you
-always know how old what you are reading is; `--cached-logins 0` asks again.
+check at most that many seconds old instead, where one is remembered: `ccx
+state`, `ccx list`, `ccx status` and an open `ccx dashboard` (every 20 seconds)
+remember the checks they make. A check is used only for the same account in the
+same folder, and never once its login file has changed since; a login kept in
+the macOS Keychain has no file, so only the age bounds its check.
+`loginCheckedAt` on each account says when its check was made, so you always
+know how old what you are reading is; `--cached-logins 0` asks again.
 Usage still refreshes on its own schedule either way.
 
 ### An account with no 5-hour limit

@@ -22,10 +22,10 @@ semantic versioning.
   nothing was renamed or removed.
 - **A cheap `ccx state`.** `--cached-logins <seconds>` uses a login check at
   most that old instead of asking Claude about every account again, which is
-  most of what a read costs. Every read that checks logins remembers what it
-  found, an open dashboard every 20 seconds among them; a check is used only for
-  the same account in the same folder, and never once its login file has
-  changed (a login kept in the macOS Keychain is bounded by the age alone).
+  most of what a read costs. `ccx state`, `ccx list`, `ccx status` and an open
+  dashboard (every 20 seconds) remember the checks they make; a check is used
+  only for the same account in the same folder, and never once its login file
+  has changed (a login kept in the macOS Keychain is bounded by the age alone).
   Each account says when its check was made (`loginCheckedAt`).
 - **Pools.** `ccx pool <account> <pool>` puts an account in the one group it
   is drawn from, `ccx unpool` takes it out, and `ccx pools` lists them. Kept on
