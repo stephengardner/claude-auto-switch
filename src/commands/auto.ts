@@ -78,7 +78,10 @@ export async function autoCommand(context: CliContext, options: AutoOptions = {}
       // With none running, this only decides where the next session starts.
       const onLeaving = numberSessions(liveLeases(context.ctx)).filter((s) => s.account === leaving);
       requestMoves(account, onLeaving, 'seamless', context.ctx);
-      appendEvent(home, `proactive switch to ${account} (${reason})`, Date.now());
+      appendEvent(home, `proactive switch to ${account} (${reason})`, Date.now(), {
+        kind: 'switch-request',
+        data: { from: leaving, to: account, reason: 'proactive' },
+      });
     },
     ...(options.model ? { model: options.model } : {}),
   });

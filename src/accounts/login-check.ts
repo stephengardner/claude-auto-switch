@@ -4,6 +4,7 @@ import { deadLoginReason } from '../usage/dead-login-store.js';
 import { probeUsage, type LimitProbeResult } from '../usage/limit-probe.js';
 import { refreshCredentialIfExpired, type RefreshOutcome } from '../usage/oauth-refresh.js';
 import { credentialFileFingerprint, credentialPath } from './credential-vault.js';
+import { isOnHold } from './on-hold.js';
 
 /**
  * Asking Anthropic whether a stored login still works, rather than looking at it.
@@ -74,15 +75,8 @@ export async function askAboutLogin(dir: string, deps: LoginCheckDeps & { ctx?: 
   }
 }
 
-/**
- * Whether the token endpoint's refusal says the account is on hold, as it did
- * for a restricted account: invalid_grant, "account_on_hold", and a link to
- * claude.ai/restricted. Signing in again does not fix that, which is why it is
- * told apart from an ordinary sign-out.
- */
-export function isOnHold(detail: string | undefined): boolean {
-  return !!detail && /account_on_hold|claude\.ai\/restricted/i.test(detail);
-}
+/** Whether a refusal says the account is on hold (accounts/on-hold). */
+export { isOnHold } from './on-hold.js';
 
 /** Whether the login stored in `dir` was refused because the account is on hold. */
 export function loginOnHold(dir: string, ctx: PathCtx): boolean {

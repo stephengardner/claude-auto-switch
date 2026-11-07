@@ -403,6 +403,7 @@ export function restoreCutShortLogins(context: CliContext): string[] {
       {
         account: account.name,
         kind: 'rolled-back',
+        reason: 'saved-cut-short',
         detail: 'the stored login had been saved cut short; put back the one kept before it',
       },
       context.ctx,

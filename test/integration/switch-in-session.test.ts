@@ -18,6 +18,7 @@ import { addCommand } from '../../src/commands/add.js';
 import { runCommand } from '../../src/commands/run.js';
 import { setActive, getActive } from '../../src/state/active.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
+import { readSwitchEvents } from '../../src/events/switch-events.js';
 import { loadConfig } from '../../src/config/config.js';
 import { liveLeases, leasePath } from '../../src/session/lease.js';
 import { saveToken } from '../../src/daemon/token-store.js';
@@ -287,6 +288,13 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     // The event stream records the in-place relief.
     const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
     expect(events).toContain('cap relief');
+    // The same moves as values, for `ccx history --json`: the session started
+    // on A, A ran out, and the session moved to B in place because of it.
+    expect(readSwitchEvents(home, 50).map((e) => [e.kind, e.from, e.to, e.reason])).toEqual([
+      ['started', null, 'A', 'session-start'],
+      ['ran-out', 'A', null, 'capacity'],
+      ['moved', 'A', 'B', 'capacity'],
+    ]);
     // A's real cap is still recorded, so other sessions avoid it.
     const caps = (JSON.parse(readFileSync(path.join(home, 'ledger.json'), 'utf8')) as {
       caps: Array<{ account: string }>;
@@ -596,6 +604,10 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     // The seamless swap fired (deterministic: logged to the event stream)...
     const events = readFileSync(path.join(home, 'events.jsonl'), 'utf8');
     expect(events).toContain('switching to \\"B\\"');
+    // As a value too: moved from A to B because it was asked to.
+    expect(readSwitchEvents(home, 50)).toContainEqual(
+      expect.objectContaining({ kind: 'moved', from: 'A', to: 'B', reason: 'asked' }),
+    );
     // ...and it swapped the credential file to B underneath the running process
     // (the simulated ~30s re-read at run's end sees B), with no restart.
     const lastReread = runs.filter((r) => r.type === 'reread').pop();

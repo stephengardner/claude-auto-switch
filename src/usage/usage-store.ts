@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { configHome, type PathCtx } from '../config/paths.js';
 import { readJsonFile, writeJsonFile } from '../util/fs-json.js';
 import { hasWorkingLogin } from '../accounts/account-login.js';
-import { logCredentialEvent } from '../accounts/credential-log.js';
+import { logCredentialEvent, type WrittenCredentialReason } from '../accounts/credential-log.js';
 import { renewalWouldBreakOthers, carryTargets } from '../accounts/duplicate-guard.js';
 import { sessionIdentityEmail } from '../accounts/credential-vault.js';
 import { renewAndCarry } from '../accounts/shared-login.js';
@@ -333,17 +333,29 @@ export async function renewIdleLogin(
   const lease = [account.name, ...siblings]
     .map((name) => busy.get(name))
     .find((candidate): candidate is SessionLease => candidate !== undefined);
-  const refusal =
+  // Why not: the words for a person, and the reason the log records beside them.
+  const refused: { detail: string; reason: WrittenCredentialReason } | null =
     inSessionNow.length > 0
-      ? `not renewed: a session is using ${inSessionNow.join(', ')}; renewing would sign it out`
+      ? {
+          detail: `not renewed: a session is using ${inSessionNow.join(', ')}; renewing would sign it out`,
+          reason: 'session-using-it',
+        }
       : editorMayBeUsingIt
-        ? 'not renewed: your editor is pointed at a profile that shares this login and may be using it'
+        ? {
+            detail: 'not renewed: your editor is pointed at a profile that shares this login and may be using it',
+            reason: 'editor-may-be-using-it',
+          }
         : editorCopy === 'unconfirmed'
-          ? "not renewed: your editor holds a newer copy of this login, which ccx could not yet confirm is this account's"
+          ? {
+              detail:
+                "not renewed: your editor holds a newer copy of this login, which ccx could not yet confirm is this account's",
+              reason: 'editor-copy-unconfirmed',
+            }
           : null;
-  const mayRenew = refusal === null;
-  if (refusal && renewalIsDue(account.dir)) {
-    logCredentialEvent({ account: account.name, kind: 'refused', detail: refusal }, c);
+  const refusal = refused?.detail ?? null;
+  const mayRenew = refused === null;
+  if (refused && renewalIsDue(account.dir)) {
+    logCredentialEvent({ account: account.name, kind: 'refused', detail: refused.detail, reason: refused.reason }, c);
   }
   // Renewal rotates the token, so it is the single most likely reason a
   // login stops working. Record what happened, with the reason.
@@ -357,12 +369,13 @@ export async function renewIdleLogin(
     : { result: { status: 'not-needed' as const }, carried: [] as string[] };
   // A renewal another caller started is logged by that caller.
   if (renewal.status === 'refreshed' && !renewal.alreadyKnown) {
-    logCredentialEvent({ account: account.name, kind: 'renewed' }, c);
+    logCredentialEvent({ account: account.name, kind: 'renewed', reason: 'idle-renewal' }, c);
     for (const name of carried) {
       logCredentialEvent(
         {
           account: name,
           kind: 'installed',
+          reason: 'carried-shared-login',
           detail: `shares a login with "${account.name}", which was just renewed; carried across so this one keeps working`,
         },
         c,
@@ -373,12 +386,22 @@ export async function renewIdleLogin(
     // cannot change until the credential does, so repeating it every few
     // minutes buries the log that is read to work out why a login broke.
     logCredentialEvent(
-      { account: account.name, kind: 'needs-login', detail: renewal.detail ?? 'renewal refused' },
+      {
+        account: account.name,
+        kind: 'needs-login',
+        detail: renewal.detail ?? 'renewal refused',
+        reason: isOnHold(renewal.detail) ? 'on-hold' : 'renewal-refused',
+      },
       c,
     );
   } else if (renewal.status === 'unavailable') {
     logCredentialEvent(
-      { account: account.name, kind: 'renew-failed', detail: renewal.detail ?? 'renewal unavailable' },
+      {
+        account: account.name,
+        kind: 'renew-failed',
+        detail: renewal.detail ?? 'renewal unavailable',
+        reason: 'renewal-unavailable',
+      },
       c,
     );
   }
@@ -408,7 +431,12 @@ export async function takeUpKeptRenewals(
     if (result.state !== 'saved') continue;
     saved.push(account.name);
     logCredentialEvent(
-      { account: account.name, kind: 'installed', detail: 'a renewal kept when its save failed, saved now' },
+      {
+        account: account.name,
+        kind: 'installed',
+        detail: 'a renewal kept when its save failed, saved now',
+        reason: 'kept-renewal-saved',
+      },
       c,
     );
     for (const name of carried) {
@@ -416,6 +444,7 @@ export async function takeUpKeptRenewals(
         {
           account: name,
           kind: 'installed',
+          reason: 'carried-shared-login',
           detail: `shares a login with "${account.name}", whose kept renewal was just saved; carried across so this one keeps working`,
         },
         c,

@@ -937,6 +937,7 @@ export async function runInteractiveHotSwap(
         {
           account: account.name,
           kind: 'signed-out',
+          reason: 'session-had-no-login',
           detail: 'session had no login; left the stored one alone',
         },
         context.ctx,
@@ -1034,6 +1035,7 @@ export async function runInteractiveHotSwap(
         {
           account: name,
           kind: 'installed',
+          reason: 'carried-shared-login',
           detail: `shares a login with "${account.name}", which was just renewed; carried across so this one keeps working`,
         },
         context.ctx,
@@ -1725,6 +1727,7 @@ export async function runInteractiveHotSwap(
     logEvent(`${accountName} hit its limit`, {
       kind: 'capped',
       data: {
+        account: accountName,
         reason,
         resetAt: resetAt ?? limitedResetAt ?? null,
         ...(limitedModel ? { model: limitedModel } : {}),
@@ -2191,6 +2194,7 @@ export async function runInteractiveHotSwap(
           {
             account: account.name,
             kind: 'renewed',
+            reason: 'renewed-before-start',
             detail: 'expired login renewed before starting',
           },
           context.ctx,
@@ -2206,7 +2210,12 @@ export async function runInteractiveHotSwap(
         carryToSharedProfiles(account, sharing);
       } else if (readiness.state === 'needs-login') {
         logCredentialEvent(
-          { account: account.name, kind: 'needs-login', detail: readiness.detail },
+          {
+            account: account.name,
+            kind: 'needs-login',
+            detail: readiness.detail,
+            reason: isOnHold(readiness.detail) ? 'on-hold' : hasLogin(account.dir) ? 'renewal-refused' : 'no-login',
+          },
           context.ctx,
         );
         // Said where the dashboard shows it too, unless there was simply no login to check.
@@ -2390,7 +2399,10 @@ export async function runInteractiveHotSwap(
             setActive(target.name, context.ctx);
             void moveEditorToActive(context, { session: true });
           }
-          notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`);
+          notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`, {
+            kind: 'switch',
+            data: { from, to: target.name, reason: 'asked', ...(targeted ? { targeted: true } : {}) },
+          });
           notifyAccountSwitch(target.name, 'switched in place');
         };
         const notMoved = (error: unknown): void => {
@@ -2793,7 +2805,10 @@ export async function runInteractiveHotSwap(
       // Not printed: which account you are on shows in Claude's status line
       // (`ccx statusline`) and in the terminal title, and a line per session
       // start was the most frequent of the [ccx] messages cluttering the screen.
-      logEvent(`session on ${account.name}`);
+      logEvent(`session on ${account.name}`, {
+        kind: 'session-start',
+        data: { account: account.name, continued: isContinue },
+      });
       // Claude owns the screen from here, so tell the operator through the
       // terminal itself (a notification / title change draws nothing).
       notifyAccountSwitch(account.name, isContinue ? 'continued here' : 'session start');

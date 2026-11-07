@@ -206,6 +206,7 @@ function* pullSteps(account: SyncAccount, sessionDir: string, ctx: PathCtx, io: 
       {
         account: account.name,
         kind: 'installed',
+        reason: 'carried-into-session',
         detail:
           'the stored login was renewed elsewhere; carried into this running session ' +
           'so its next refresh cannot die on the retired one',
@@ -291,6 +292,7 @@ export function recoverLoginFromLiveSession(
       {
         account: account.name,
         kind: 'installed',
+        reason: 'adopted-from-session',
         detail:
           `the stored login was dead, but the live session (pid ${lease.pid}) holds a working ` +
           'one for this account; adopted it instead of asking for a sign-in',

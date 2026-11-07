@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { readSwitchRequest } from '../state/switch-request.js';
+import { readSwitchEvents } from '../events/switch-events.js';
+import { configHome } from '../config/paths.js';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { card, rankAccounts, renderBoard, swapCommand, whereAmI, type Here } from './swap.js';
@@ -225,6 +227,10 @@ describe('ccx swap <name>', () => {
       mode: 'seamless',
     });
     expect(readSwitchRequest(outside.context.ctx)).toBeNull();
+    // Recorded as a value, for `ccx history --json`: a move asked for, to roomy.
+    expect(readSwitchEvents(configHome(outside.context.ctx), 10)).toEqual([
+      expect.objectContaining({ kind: 'move-asked', to: 'roomy', reason: 'asked' }),
+    ]);
   });
 
   it('in Claude Desktop, carries the conversation on in a terminal on that account', async () => {
