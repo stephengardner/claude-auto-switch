@@ -82,6 +82,8 @@ export function eventsFilePath(configHome: string): string {
  * immediately, without rewriting a file the operator may still be watching.
  */
 function foldRepeats(records: EventRecord[]): EventRecord[] {
+  // The same rule folds what is read and what is compacted, so a move kept
+  // apart here stays apart in the archive.
   const out: EventRecord[] = [];
   for (const record of records) {
     const previous = out[out.length - 1];
@@ -92,7 +94,7 @@ function foldRepeats(records: EventRecord[]): EventRecord[] {
     // fill the window with repeats for everyone who upgrades mid-log.
     const sameBuild =
       previous?.v === undefined || record.v === undefined || previous.v === record.v;
-    if (previous && previous.msg === record.msg && sameBuild) {
+    if (previous && previous.msg === record.msg && sameBuild && sameMove(previous, record)) {
       // Clamped, because the sum of two counts read from a file can leave the
       // safe-integer range, and a count that is not a safe integer is dropped on
       // the next read, turning "a great many" into "once". No real log reaches
@@ -130,10 +132,35 @@ export function readEvents(configHome: string, limit = 5): EventRecord[] {
 }
 
 /**
+ * The kinds that record an account move (events/switch-events). Two of them in
+ * a row fold only when their data are the same as well as their words:
+ * "switching to c" said for a move from a and for one from b is two moves.
+ * Every other record folds by its words, which is what keeps a writer stuck
+ * in a loop from filling the log.
+ */
+export const MOVE_KINDS: ReadonlySet<string> = new Set([
+  'cap-relief',
+  'switch',
+  'switch-request',
+  'move-failed',
+  'move-pending',
+  'editor-move',
+  'capped',
+  'session-start',
+]);
+
+/** Whether two records in a row may fold, by MOVE_KINDS. */
+function sameMove(a: EventRecord, b: EventRecord): boolean {
+  const isMove = (r: EventRecord): boolean => r.kind !== undefined && MOVE_KINDS.has(r.kind);
+  if (!isMove(a) && !isMove(b)) return true;
+  return a.kind === b.kind && JSON.stringify(a.data ?? null) === JSON.stringify(b.data ?? null);
+}
+
+/**
  * Every record in the log, oldest first, NOT folded, for a reader that goes by
- * each record's own `kind` and `data` (events/switch-events), to whom two moves
- * worded alike are still two moves. The archive was folded when it was
- * compacted, so its repeats arrive already counted.
+ * each record's own `kind` and `data` (events/switch-events). The archive was
+ * folded when it was compacted, by the same rule as a read (MOVE_KINDS), so a
+ * repeat it counts is one move made again, never two moves worded alike.
  */
 export function readEventRecords(configHome: string): EventRecord[] {
   const file = eventsFilePath(configHome);

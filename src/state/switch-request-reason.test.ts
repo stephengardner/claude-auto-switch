@@ -42,6 +42,18 @@ describe('the reason on a switch request', () => {
     expect(readSwitchRequest(c, 7)?.reason).toBe('proactive');
   });
 
+  it('reads as absent when a newer ccx wrote one this version does not know, and the move is still made', () => {
+    const c = home();
+    writeSwitchRequest('b', 5, 'seamless', c, 11, 'proactive');
+    const file = path.join(c.env.CLAUDE_AUTO_SWITCH_HOME, 'switch-' + 'requests', '11.json');
+    writeFileSync(
+      file,
+      JSON.stringify({ account: 'b', at: 5, mode: 'seamless', reason: 'pooled' }),
+      'utf8',
+    );
+    expect(readSwitchRequest(c, 11)).toEqual({ account: 'b', at: 5, mode: 'seamless' });
+  });
+
   it('is absent from a request an older ccx wrote, which is still read', () => {
     const c = home();
     const dir = path.join(c.env.CLAUDE_AUTO_SWITCH_HOME, 'switch-' + 'requests');

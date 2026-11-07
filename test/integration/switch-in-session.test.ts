@@ -620,6 +620,28 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('on-demand switch in a runnin
     expect(lastReread?.marker).toBe('B');
   });
 
+  it('records a move asked for early as proactive on the move the session makes', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-seamless-early-'));
+    const runsLog = path.join(home, 'runs.jsonl');
+    process.env.FAKE_CLAUDE_IDLE_MS = '2500';
+    process.env.FAKE_CLAUDE_RUNS_LOG = runsLog;
+
+    const context = makeContext(home);
+    await loginAccount(context, home, 'A');
+    await loginAccount(context, home, 'B');
+    setActive('A', context.ctx);
+
+    const running = runCommand(context, []);
+    await firstLaunch(runsLog);
+    // As `ccx auto` asks: the request says why, and the session's move says it too.
+    writeSwitchRequest('B', Date.now(), 'seamless', context.ctx, undefined, 'proactive');
+    expect(await running).toBe(0);
+
+    expect(readSwitchEvents(home, 50)).toContainEqual(
+      expect.objectContaining({ kind: 'moved', from: 'A', to: 'B', reason: 'proactive' }),
+    );
+  });
+
   /**
    * A switch to B, whose login is due for renewal. Claude stays busy for the
    * whole run, so a switch that needs a restart waits and is never made: only

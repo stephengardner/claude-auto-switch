@@ -126,7 +126,10 @@ export interface StatePayload {
    * used: rotation's plan without it, never the active account itself. The
    * account (null when no other account has room), the model it would run
    * there (null when nothing pins one), and whether that means changing model.
-   * Null when there is nothing to plan for.
+   * Null when there is nothing to plan for. It describes the account being
+   * used up: when only the model in use runs out, rotation can keep the
+   * session on the active account with another model, which `nextUp` says
+   * and this does not.
    */
   whenOut: { account: string | null; model: string | null; changesModel: boolean } | null;
   /** The rotation settings in force, as values. */

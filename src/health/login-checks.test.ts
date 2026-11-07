@@ -140,6 +140,31 @@ describe('remembered login checks', () => {
     });
   });
 
+  it('asks again about a login that was written while its check was running', async () => {
+    const { home, c, accounts } = setup(['a']);
+    // A stand-in for `claude auth status`: it reads the folder as it starts (signed out),
+    // a sign-in then writes the login, and only then does it answer.
+    const stub = path.join(home, 'slow-auth.mjs');
+    writeFileSync(
+      stub,
+      [
+        "import { writeFileSync } from 'node:fs';",
+        "import path from 'node:path';",
+        'const dir = process.env.CLAUDE_CONFIG_DIR;',
+        "writeFileSync(path.join(dir, '.credentials.json'), '{}');",
+        'setTimeout(() => console.log(JSON.stringify({ loggedIn: false })), 400);',
+      ].join('\n'),
+      'utf8',
+    );
+    const slow = { bin: process.execPath, prefixArgs: [stub] };
+    const [first] = await probeAllRemembered(accounts, { claude: slow }, c);
+    expect(first?.loggedIn).toBe(false);
+    // The check answered about a folder whose login changed during it: not reused.
+    const [second] = await probeAllRemembered(accounts, { claude }, c, 600_000);
+    expect(second?.loggedIn).toBe(true);
+    expect(second?.checkedAt).toBeGreaterThan(first?.checkedAt ?? Infinity);
+  });
+
   it('stamps a check with when it began, so a login written while it ran is newer', async () => {
     const { accounts } = setup(['a']);
     const times = [NOW, NOW + 5_000];

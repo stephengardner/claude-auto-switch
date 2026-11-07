@@ -2,8 +2,53 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { appendEvent, type EventRecord } from './log.js';
+import { appendEvent, MOVE_KINDS, TRIM_BYTES, trimIfLong, type EventRecord } from './log.js';
 import { readSwitchEvents, switchDetail, switchEvents, toSwitchEvent } from './switch-events.js';
+
+describe('the moves, once the log is compacted', () => {
+  it('stay apart when they are worded alike, as they do while the log is live', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-switch-compact-'));
+    appendEvent(home, 'switching to "c"', 1, switchDetail.moved('a', 'c', 'asked'));
+    appendEvent(home, 'switching to "c"', 2, switchDetail.moved('b', 'c', 'asked'));
+    appendEvent(home, 'session on c', 3, switchDetail.sessionStart('c', false));
+    appendEvent(home, 'session on c', 4, switchDetail.sessionStart('c', true));
+    // Enough other lines to compact the file into the archive.
+    const filler = 'x'.repeat(500);
+    for (let at = 5; at < 5 + Math.ceil(TRIM_BYTES / 500) + 10; at += 1)
+      appendEvent(home, `${filler} ${at}`, at);
+    trimIfLong(home);
+    expect(
+      readSwitchEvents(home, 10).map((e) => [e.kind, e.from, e.to, e.reason, e.count ?? 1]),
+    ).toEqual([
+      ['moved', 'a', 'c', 'asked', 1],
+      ['moved', 'b', 'c', 'asked', 1],
+      ['started', null, 'c', 'session-start', 1],
+      ['started', null, 'c', 'continued', 1],
+    ]);
+  });
+});
+
+describe('the kinds the log keeps apart and the kinds that are moves', () => {
+  it('are the same kinds', () => {
+    // Pinned: each is a record kind a writer already uses, and leaving one out folds its moves together.
+    expect([...MOVE_KINDS].sort()).toEqual([
+      'cap-relief',
+      'capped',
+      'editor-move',
+      'move-failed',
+      'move-pending',
+      'session-start',
+      'switch',
+      'switch-request',
+    ]);
+    const data = { from: 'a', to: 'b', account: 'a', continued: false };
+    for (const kind of MOVE_KINDS)
+      expect(toSwitchEvent({ at: 1, msg: 'm', kind, data }), kind).not.toBeNull();
+    for (const kind of ['credential-sync', 'update', 'resume-prompt', 'write-back', 'renewal']) {
+      expect(toSwitchEvent({ at: 1, msg: 'm', kind, data }), kind).toBeNull();
+    }
+  });
+});
 
 describe('what a writer records with a move', () => {
   it('reads back as the move it was written for, from each constructor the writers use', () => {

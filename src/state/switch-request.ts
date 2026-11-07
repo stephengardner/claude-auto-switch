@@ -26,9 +26,10 @@ const SwitchRequestSchema = z.object({
   /**
    * Why it is asked for, which the session records with the move it makes
    * (events/switch-events). Absent from a request an older ccx wrote, which
-   * reads as asked.
+   * reads as asked; one this version does not know reads as absent too, so a
+   * newer ccx's reason never makes the move itself unreadable.
    */
-  reason: z.enum(['asked', 'proactive']).optional(),
+  reason: z.enum(['asked', 'proactive']).optional().catch(undefined),
 });
 export type SwitchRequest = z.infer<typeof SwitchRequestSchema>;
 export type SwitchMode = 'seamless' | 'restart';

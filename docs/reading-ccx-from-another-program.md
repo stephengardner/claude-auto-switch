@@ -168,7 +168,9 @@ about how many 5-hour windows its week holds.
   cannot be used: rotation's plan without it, so never the active account
   itself. `account` (null when no other account has room), the `model` it would
   run there (null when nothing pins one), and `changesModel`. Null when there is
-  nothing to plan for.
+  nothing to plan for. It is about the account being used up: when only the
+  model in use runs out, rotation can keep the session on the active account
+  with another model, which `nextUp` says and this does not.
 - `settings` are the rotation settings in force: `accountOrder`,
   `modelPreference`, `modelStrategy`, `preferSameModel`, `holdBackAtPercent`
   and `proactivePercent`, each null when that behaviour is off.
