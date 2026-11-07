@@ -121,8 +121,15 @@ program
 program
   .command('state')
   .description('everything ccx knows, as JSON, for another program to read')
-  .action(async () => {
-    process.exitCode = await dashboardCommand(context(), { json: true });
+  .option(
+    '--cached-logins <seconds>',
+    'use a login check at most this many seconds old instead of checking every account again (each account says how old its is)',
+  )
+  .action(async (opts: { cachedLogins?: string }) => {
+    process.exitCode = await dashboardCommand(context(), {
+      json: true,
+      ...(opts.cachedLogins !== undefined ? { cachedLogins: opts.cachedLogins } : {}),
+    });
   });
 
 program

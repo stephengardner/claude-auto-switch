@@ -2,7 +2,8 @@ import { listAccounts, updateAccount } from '../accounts/registry.js';
 import { getActive, setActive } from '../state/active.js';
 import { requestMoves, type SwitchMode } from '../state/switch-request.js';
 import { forgetUsage, refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
-import { probeAll, type ProbeResult } from '../health/prober.js';
+import { type ProbeResult } from '../health/prober.js';
+import { parseCachedLogins, probeAllRemembered } from '../health/login-checks.js';
 import { loadLedger } from '../ledger/ledger.js';
 import { signInFailureNotice } from '../dashboard/sign-in-failure.js';
 import { renderDashboard, type AccountStanding, type DashboardAccount, type SettingsPanel } from '../dashboard/render.js';
@@ -44,7 +45,7 @@ import { assertProfileName } from '../util/names.js';
 import { secureMkdir } from '../util/secret-file.js';
 import { appendEvent, readEvents, formatEvent } from '../events/log.js';
 import { ccxVersion } from '../util/version.js';
-import { toStatePayload } from '../dashboard/state-payload.js';
+import { toStatePayload, STATE_SCHEMA_VERSION } from '../dashboard/state-payload.js';
 import { moveEditorToActive } from '../editor/folder.js';
 import { loginCommand } from './login.js';
 import { getClaude, type CliContext } from '../context.js';
@@ -92,6 +93,12 @@ export interface DashboardOptions {
    * actually be used right now.
    */
   json?: boolean;
+  /**
+   * With `json`: use a remembered login check at most this many seconds old
+   * instead of checking every account again (health/login-checks). The
+   * checks are most of what a read costs; each account says how old its is.
+   */
+  cachedLogins?: string;
 }
 
 /** The terminal the live screen is drawn on. */
@@ -194,6 +201,17 @@ export async function dashboardCommand(
   options: DashboardOptions = {},
   deps: DashboardDeps = {},
 ): Promise<number> {
+  let cachedLoginsMs: number | null = null;
+  if (options.json && options.cachedLogins !== undefined) {
+    const parsed = parseCachedLogins(options.cachedLogins);
+    if ('error' in parsed) {
+      // Refused in the same envelope a reader parses, as `ccx list --json` refuses.
+      context.out(JSON.stringify({ schemaVersion: STATE_SCHEMA_VERSION, error: parsed.error }, null, 2));
+      return 1;
+    }
+    cachedLoginsMs = parsed.ms;
+  }
+
   const initial = listAccounts(context.ctx);
   if (initial.length === 0) {
     // A reader asking for JSON gets JSON, even when the answer is "nothing".
@@ -236,7 +254,7 @@ export async function dashboardCommand(
   const home = configHome(context.ctx);
   const refreshMs = Math.max(1000, (Number(options.interval) || 3) * 1000);
   const color = process.stdout.isTTY === true;
-  let healths: ProbeResult[] = await probeAll(initial, { claude });
+  let healths: ProbeResult[] = await probeAllRemembered(initial, { claude }, context.ctx, cachedLoginsMs);
   // Real per-account usage from the unified rate-limit signal, TTL-cached so the
   // network is touched at most once per account per window (about a token each).
   let usageSnap: UsageSnapshot = readUsageSnapshot(context.ctx);
@@ -454,7 +472,7 @@ export async function dashboardCommand(
     newer: () => newerToFollow(context),
     color,
     reprobe: async () => {
-      healths = await probeAll(listAccounts(context.ctx), { claude });
+      healths = await probeAllRemembered(listAccounts(context.ctx), { claude }, context.ctx);
       try {
         // TTL-guarded internally: refetches only entries older than the window.
         usageSnap = await refreshUsage(listAccounts(context.ctx), context.ctx);
@@ -599,7 +617,7 @@ export async function dashboardCommand(
       const code = await loginCommand(context, target.name);
       pushEvent(code === 0 ? `signed in ${target.name}` : `sign-in for ${target.name} did not finish`);
       // Health is now stale for this account: re-probe so the row tells the truth.
-      healths = await probeAll(listAccounts(context.ctx), { claude });
+      healths = await probeAllRemembered(listAccounts(context.ctx), { claude }, context.ctx);
       return code === 0
         ? `signed "${target.name}" in again`
         : `"${target.name}" was not signed in; see the messages above`;

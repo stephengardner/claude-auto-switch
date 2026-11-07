@@ -68,13 +68,62 @@ function setup(accounts: Array<{ name: string; enabled?: boolean; login?: boolea
     quiet: false,
     claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
   } as CliContext;
-  const read = async (): Promise<StatePayload> => {
+  const read = async (cachedLogins?: string): Promise<StatePayload> => {
     lines.length = 0;
-    expect(await dashboardCommand(context, { json: true })).toBe(0);
+    expect(
+      await dashboardCommand(context, {
+        json: true,
+        ...(cachedLogins !== undefined ? { cachedLogins } : {}),
+      }),
+    ).toBe(0);
     return JSON.parse(lines.join('\n')) as StatePayload;
   };
-  return { home, dirs, ctx, read };
+  const refused = async (cachedLogins: string): Promise<unknown> => {
+    lines.length = 0;
+    expect(await dashboardCommand(context, { json: true, cachedLogins })).toBe(1);
+    return JSON.parse(lines.join('\n'));
+  };
+  return { home, dirs, ctx, read, refused };
 }
+
+describe('a cheap `ccx state`', () => {
+  it('uses the login checks the last read made, and says how old each is', async () => {
+    const { home, read } = setup([{ name: 'a' }, { name: 'b' }]);
+    const now = Date.now();
+    const fresh = {
+      fiveHour: 0.1,
+      sevenDay: 0.1,
+      fiveHourReset: now + HOUR,
+      sevenDayReset: now + 60 * HOUR,
+      at: now,
+    };
+    writeFileSync(
+      path.join(home, 'usage-snapshot.json'),
+      JSON.stringify({ accounts: { a: fresh, b: fresh } }),
+      'utf8',
+    );
+
+    const full = await read();
+    const cheap = await read('600');
+    const checked = (s: StatePayload) =>
+      s.accounts.map((a) => [a.name, a.loggedIn, a.loginCheckedAt]);
+    // The same checks, at the times they were made, not asked again.
+    expect(checked(cheap)).toEqual(checked(full));
+    // And a read that will not use them asks again.
+    const again = await read();
+    for (const [i, a] of again.accounts.entries()) {
+      expect(a.loginCheckedAt).toBeGreaterThan(full.accounts[i]?.loginCheckedAt ?? Infinity);
+    }
+  });
+
+  it('refuses a bound that is not a number of seconds, in the envelope a reader parses', async () => {
+    const { refused } = setup([{ name: 'a' }]);
+    expect(await refused('soon')).toEqual({
+      schemaVersion: 1,
+      error: expect.stringContaining('"soon"'),
+    });
+  });
+});
 
 describe('`ccx state` says what the dashboard works out', () => {
   it("gives every account its folder, its usage's last good read, runway, hold-back and pick", async () => {
