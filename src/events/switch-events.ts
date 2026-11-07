@@ -1,5 +1,5 @@
 import { AccountSchema } from '../accounts/registry.schema.js';
-import { readEvents, type EventRecord } from './log.js';
+import { readEvents, type EventDetail, type EventRecord } from './log.js';
 
 /**
  * The account moves in ccx's event log, as values: what happened, between
@@ -62,8 +62,47 @@ export interface SwitchEvent {
   v?: string;
 }
 
+/** Why a move was asked for or made, as its writer records it in `data.reason`. */
+export type RecordedSwitchReason = 'asked' | 'proactive';
+
 /** Reasons a writer may record in its own `data.reason`. */
-const RECORDED_REASONS: ReadonlySet<SwitchReason> = new Set(['capacity', 'asked', 'proactive']);
+const RECORDED_REASONS: ReadonlySet<SwitchReason> = new Set<RecordedSwitchReason>([
+  'asked',
+  'proactive',
+]);
+
+/**
+ * What a writer records with a move, built here so the kind and the fields
+ * are spelled once, beside the reader that turns them back into moves
+ * (toSwitchEvent). A record built any other way is one this file has to guess.
+ */
+export const switchDetail = {
+  /** A session moved in place to `to`, because it was asked to. */
+  moved: (
+    from: string | null,
+    to: string,
+    reason: RecordedSwitchReason,
+    extra: Record<string, unknown> = {},
+  ): EventDetail => ({
+    kind: 'switch',
+    data: { from, to, reason, ...extra },
+  }),
+  /** A move to `to` was asked for; the session makes it at its next look. */
+  asked: (
+    from: string | null,
+    to: string,
+    reason: RecordedSwitchReason,
+    extra: Record<string, unknown> = {},
+  ): EventDetail => ({
+    kind: 'switch-request',
+    data: { from, to, reason, ...extra },
+  }),
+  /** A session started on `account`, or carried on there after a restart. */
+  sessionStart: (account: string, continued: boolean): EventDetail => ({
+    kind: 'session-start',
+    data: { account, continued },
+  }),
+};
 
 /** An account name by the registry's own rule, or null for anything else (a folder path, say). */
 function accountName(value: unknown): string | null {

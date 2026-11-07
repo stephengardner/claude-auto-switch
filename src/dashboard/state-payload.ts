@@ -69,7 +69,12 @@ export interface StateAccount {
   /** Epoch ms ccx recorded this account as capped until, if it did. */
   cappedUntil?: number;
   usage?: DashboardSnapshot['accounts'][number]['usage'];
-  /** Where it stands for the next move. Null only for an account the snapshot has no reading of at all. */
+  /**
+   * Where it stands for the next move. Every account in `ccx state` has one;
+   * an account with no usage read yet stands as fully open (`windows` 1,
+   * `binding` none), as rotation treats it. Null only when nothing was worked
+   * out for the account at all.
+   */
   runway: StateRunway | null;
   /** Its week is nearly spent (rotation.holdBackAtPercent), so rotation picks it after healthier accounts. */
   heldBack: boolean;
@@ -117,10 +122,11 @@ export interface StatePayload {
   /** Where rotation goes next, in words. Null when nothing pins a model. */
   nextUp: string | null;
   /**
-   * Where a session goes when the account it is on runs out, the move the
-   * screen words under its table: the account (null when no account has room),
-   * the model it would run there (null when nothing pins one), and whether that
-   * means changing model. Null when there is nothing to plan for.
+   * Where a session on the active account goes when that account runs out,
+   * the move the screen words under its table: the account (null when no
+   * account has room), the model it would run there (null when nothing pins
+   * one), and whether that means changing model. Null when there is nothing
+   * to plan for.
    */
   whenOut: { account: string | null; model: string | null; changesModel: boolean } | null;
   /** The rotation settings in force, as values. */

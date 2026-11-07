@@ -17,13 +17,14 @@ import { probe, type ProbeableAccount, type ProberDeps, type ProbeResult } from 
  * in parallel. A program reading the state every minute was paying that every
  * minute for answers that had not changed.
  *
- * So every read that checks every login remembers what it found (the
- * dashboard, which checks again every 20 s while it is open, `ccx state`,
- * `ccx list` and `ccx status`), and `ccx state --cached-logins <seconds>` uses
- * a remembered check no older than that instead of asking again. A check is
- * used only for the same account in the same folder, never when its login
- * file has changed since (a sign-in, a renewal), and never when it failed to
- * read. Each account in the state says when its check was made, so a reader
+ * So every read that checks logins remembers what it found (the dashboard,
+ * which checks again every 20 s while it is open, `ccx state`, `ccx list` and
+ * `ccx status`), and `ccx state --cached-logins <seconds>` uses a remembered
+ * check no older than that instead of asking again. A check is used only for
+ * the same account in the same folder, never when its login file has changed
+ * since (a sign-in, a renewal), and never when it failed to read. A login with
+ * no file to watch (one kept in the macOS Keychain) is bounded by the age
+ * alone. Each account in the state says when its check was made, so a reader
  * always knows how old what it is reading is.
  *
  * What the check found is not the whole answer either way: a login the token

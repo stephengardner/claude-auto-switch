@@ -3,7 +3,44 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appendEvent, type EventRecord } from './log.js';
-import { readSwitchEvents, switchEvents, toSwitchEvent } from './switch-events.js';
+import { readSwitchEvents, switchDetail, switchEvents, toSwitchEvent } from './switch-events.js';
+
+describe('what a writer records with a move', () => {
+  it('reads back as the move it was written for, from each constructor the writers use', () => {
+    const back = (detail: ReturnType<typeof switchDetail.moved>) => {
+      const event = toSwitchEvent({ at: 5, msg: 'words', ...detail });
+      return event && [event.kind, event.from, event.to, event.reason];
+    };
+    // session.ts, a move made in place on request.
+    expect(back(switchDetail.moved('a', 'b', 'asked', { targeted: true }))).toEqual([
+      'moved',
+      'a',
+      'b',
+      'asked',
+    ]);
+    // ccx swap, and ccx auto's proactive switch.
+    expect(back(switchDetail.asked(null, 'b', 'asked', { pid: 9 }))).toEqual([
+      'move-asked',
+      null,
+      'b',
+      'asked',
+    ]);
+    expect(back(switchDetail.asked('a', 'b', 'proactive'))).toEqual([
+      'move-asked',
+      'a',
+      'b',
+      'proactive',
+    ]);
+    // session.ts, a session starting, and one carrying on after a restart.
+    expect(back(switchDetail.sessionStart('a', false))).toEqual([
+      'started',
+      null,
+      'a',
+      'session-start',
+    ]);
+    expect(back(switchDetail.sessionStart('a', true))).toEqual(['started', null, 'a', 'continued']);
+  });
+});
 
 const record = (
   kind: string,

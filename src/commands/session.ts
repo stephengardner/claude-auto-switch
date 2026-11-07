@@ -167,6 +167,7 @@ import { probeUsage } from '../usage/limit-probe.js';
 import { acquireLockDir, lockDirHeld, lockDirSteps, CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { appendEvent, flushQueuedEvents, type EventDetail } from '../events/log.js';
+import { switchDetail } from '../events/switch-events.js';
 import { claudeForSession, type CliContext } from '../context.js';
 import type { Account } from '../accounts/registry.schema.js';
 
@@ -2399,10 +2400,10 @@ export async function runInteractiveHotSwap(
             setActive(target.name, context.ctx);
             void moveEditorToActive(context, { session: true });
           }
-          notice(`switching to "${target.name}" (no restart; takes effect within ~30s)`, {
-            kind: 'switch',
-            data: { from, to: target.name, reason: 'asked', ...(targeted ? { targeted: true } : {}) },
-          });
+          notice(
+            `switching to "${target.name}" (no restart; takes effect within ~30s)`,
+            switchDetail.moved(from, target.name, 'asked', targeted ? { targeted: true } : {}),
+          );
           notifyAccountSwitch(target.name, 'switched in place');
         };
         const notMoved = (error: unknown): void => {
@@ -2805,10 +2806,7 @@ export async function runInteractiveHotSwap(
       // Not printed: which account you are on shows in Claude's status line
       // (`ccx statusline`) and in the terminal title, and a line per session
       // start was the most frequent of the [ccx] messages cluttering the screen.
-      logEvent(`session on ${account.name}`, {
-        kind: 'session-start',
-        data: { account: account.name, continued: isContinue },
-      });
+      logEvent(`session on ${account.name}`, switchDetail.sessionStart(account.name, isContinue));
       // Claude owns the screen from here, so tell the operator through the
       // terminal itself (a notification / title change draws nothing).
       notifyAccountSwitch(account.name, isContinue ? 'continued here' : 'session start');

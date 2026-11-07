@@ -62,7 +62,7 @@ function setup(
   );
   const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home } };
   const lines: string[] = [];
-  const context = {
+  const context: CliContext = {
     ctx,
     config: loadConfig(ctx),
     out: (m: string) => lines.push(m),
@@ -70,7 +70,7 @@ function setup(
     json: false,
     quiet: false,
     claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
-  } as CliContext;
+  };
   const read = async (cachedLogins?: string): Promise<StatePayload> => {
     lines.length = 0;
     expect(

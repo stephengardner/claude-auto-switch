@@ -15,14 +15,14 @@ function setup(json: boolean) {
   addAccount({ name: 'a', dir: '/p/a' }, ctx);
   addAccount({ name: 'b', dir: '/p/b' }, ctx);
   const lines: string[] = [];
-  const context = {
+  const context: CliContext = {
     ctx,
     config: loadConfig(ctx),
     out: (m: string) => lines.push(m),
     err: () => {},
     json,
     quiet: false,
-  } as unknown as CliContext;
+  };
   const said = (): unknown => {
     const text = lines.join('\n');
     lines.length = 0;

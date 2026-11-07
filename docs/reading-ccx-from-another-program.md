@@ -162,10 +162,10 @@ about how many 5-hour windows its week holds.
 - `sessions` lists the ccx sessions running now, one per process: `pid`, the
   `account` it is on, the folder it started in (`cwd`, when known), the
   `configDir` it reads its login from, and `lastSeen`.
-- `whenOut` is where a session goes when the account it is on runs out:
-  `account` (null when no account has room), the `model` it would run there
-  (null when nothing pins one), and `changesModel`. Null when there is nothing
-  to plan for.
+- `whenOut` is where a session on the active account goes when that account
+  runs out: `account` (null when no account has room), the `model` it would run
+  there (null when nothing pins one), and `changesModel`. Null when there is
+  nothing to plan for.
 - `settings` are the rotation settings in force: `accountOrder`,
   `modelPreference`, `modelStrategy`, `preferSameModel`, `holdBackAtPercent`
   and `proactivePercent`, each null when that behaviour is off.
@@ -175,10 +175,11 @@ about how many 5-hour windows its week holds.
 Most of what one `ccx state` costs is checking every account's login, a run of
 `claude auth status` each. `ccx state --cached-logins <seconds>` uses a login
 check at most that many seconds old instead, where one is remembered: every
-read that checks every login (`ccx state`, `ccx list`, `ccx status`, and an open
+read that checks logins (`ccx state`, `ccx list`, `ccx status`, and an open
 `ccx dashboard` every 20 seconds) remembers what it found. A check is used only
-for the same account in the same folder, and never once its login has changed
-since. `loginCheckedAt` on each account says when its check was made, so you
+for the same account in the same folder, and never once its login file has
+changed since; a login kept in the macOS Keychain has no file, so only the age
+bounds its check. `loginCheckedAt` on each account says when its check was made, so you
 always know how old what you are reading is; `--cached-logins 0` asks again.
 Usage still refreshes on its own schedule either way.
 

@@ -86,7 +86,7 @@ usage check, as `ccx config <key>` says.
 | `~/.claude-auto-switch/editor-active/`       | the editor's config folder: your setup linked in, its own login (a Keychain item on macOS)   |
 | `~/.claude-auto-switch/config.json`          | your settings                                                                                |
 | `~/.claude-auto-switch/events.jsonl`         | what ccx did (`ccx history`)                                                                 |
-| `~/.claude-auto-switch/credential-log.jsonl` | what happened to each login (`ccx history`); its last 512 KB, and a 256 KB `.1`              |
+| `~/.claude-auto-switch/credential-log.jsonl` | what happened to each login (`ccx history`): at most 256 KB, and the 256 KB before in `.1`   |
 | `~/.claude-auto-switch/login-checks.json`    | each account's last login check, owner-only (`ccx state --cached-logins`)                    |
 | `~/.claude-auto-switch/rescued/`             | session and editor changes that could not be merged back; account folders' own files         |
 | `~/.claude-auto-switch/artifacts.jsonl`      | each page a session published while page routing was on, and its owner                       |

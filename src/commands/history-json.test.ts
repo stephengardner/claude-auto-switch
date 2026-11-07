@@ -14,14 +14,14 @@ function setup() {
   const home = mkdtempSync(path.join(tmpdir(), 'cas-history-json-'));
   const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home } };
   const lines: string[] = [];
-  const context = {
+  const context: CliContext = {
     ctx,
     config: loadConfig(ctx),
     out: (m: string) => lines.push(m),
     err: () => {},
     json: true,
     quiet: false,
-  } as unknown as CliContext;
+  };
   const read = () => {
     lines.length = 0;
     expect(historyCommand(context)).toBe(0);

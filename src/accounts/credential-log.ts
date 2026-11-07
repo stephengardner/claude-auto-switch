@@ -1,7 +1,7 @@
-import { appendFileSync, readFileSync, existsSync, renameSync, rmSync, statSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync, renameSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { configHome, type PathCtx } from '../config/paths.js';
-import { secureMkdir, writeSecretFile } from '../util/secret-file.js';
+import { secureMkdir } from '../util/secret-file.js';
 import { acquireOwnedLock } from '../claude/locks.js';
 import { isOnHold } from './on-hold.js';
 
@@ -121,15 +121,14 @@ const FILENAME = 'credential-log.jsonl';
 /** Keep the tail readable; this is a diagnostic trail, not an archive. */
 export const MAX_BYTES = 256 * 1024;
 /**
- * How large the live file grows before it is set aside (rotateIfLong). Twice
- * what a reader reads, so the archive and the live file together always hold
- * at least the last MAX_BYTES, and on disk the trail stays under three times it.
+ * How large the live file grows before it is moved aside whole, as the archive
+ * (rotateIfLong). The same as a reader reads, so the archive and the live file
+ * together always hold at least the last MAX_BYTES, and on disk each holds at
+ * most that and one line.
  */
-export const ROTATE_BYTES = 2 * MAX_BYTES;
-/** The last MAX_BYTES of the file before the live one. Only a rotation writes it. */
+export const ROTATE_BYTES = MAX_BYTES;
+/** The file before the live one. Only a rotation makes it. */
 const ARCHIVE_SUFFIX = '.1';
-/** Where the live file is parked mid-rotation, so a rotation stopped there loses nothing. */
-const ROTATING_SUFFIX = '.rotating';
 /** Held by a rotation only; an append never waits for it. */
 const ROTATE_LOCK_SUFFIX = '.rotate.lock';
 
@@ -147,7 +146,10 @@ function logPath(c: PathCtx = {}): string {
  * overstates what happened is worse than no trail.
  */
 export function logCredentialEvent(
-  event: Omit<CredentialEvent, 'at' | 'count' | 'reason'> & { at?: number; reason: WrittenCredentialReason },
+  event: Omit<CredentialEvent, 'at' | 'count' | 'reason'> & {
+    at?: number;
+    reason: WrittenCredentialReason;
+  },
   c: PathCtx = {},
 ): void {
   try {
@@ -230,16 +232,20 @@ function foldRepeats(events: CredentialEvent[]): CredentialEvent[] {
 /**
  * Keep the file bounded. Until 2.6.33 every event since the first was kept,
  * while every reader only ever read the last MAX_BYTES: one machine's file had
- * 43,504 lines, 4.2 MB over 85 days. Past ROTATE_BYTES the live file is set
- * aside and its last MAX_BYTES become the archive, so what a reader reads is
- * always there and nothing older is.
+ * 43,504 lines, 4.2 MB over 85 days. Past ROTATE_BYTES the live file is moved
+ * aside whole, replacing the archive before it, so what a reader reads is
+ * always there and nothing older is kept.
  *
- * The common path is one stat. The live file is moved aside in one step, so an
- * append that races it lands in one file or the other and is never lost; the
- * lock is a rotation's alone, and is never waited for, so an append on the
- * credential path never waits either. A rotation stopped part way leaves every
- * line in a file readers still read, and the next one finishes it. Best effort
- * throughout: a trail that stays long for now is no harm.
+ * Moved, never read and written again, because other processes append to it
+ * without a lock: an append that opened the file just before the move writes
+ * into the archive, which readers read, rather than into a copy about to be
+ * deleted. The lock is a rotation's alone and is never waited for, so an
+ * append on the credential path never waits; a rotation checks the size again
+ * under it, so two cannot move the file twice. Best effort throughout: a trail
+ * that stays long for now is no harm.
+ *
+ * The first rotation after an older ccx moves that ccx's whole file aside, and
+ * the next, ROTATE_BYTES of events later, replaces it.
  *
  * Exported so a test can rotate at a chosen moment, as another process would.
  */
@@ -250,10 +256,8 @@ export function rotateIfLong(c: PathCtx = {}): void {
     const lock = acquireOwnedLock(`${file}${ROTATE_LOCK_SUFFIX}`, { waitMs: 0, staleMs: 5_000 });
     if (!lock.held) return;
     try {
-      if (existsSync(`${file}${ROTATING_SUFFIX}`)) archiveRotating(file);
-      if (statSync(file).size <= ROTATE_BYTES) return; // another rotation just finished
-      renameSync(file, `${file}${ROTATING_SUFFIX}`);
-      archiveRotating(file);
+      // Again under the lock: another rotation may have just moved it.
+      if (statSync(file).size > ROTATE_BYTES) renameSync(file, `${file}${ARCHIVE_SUFFIX}`);
     } finally {
       lock.release();
     }
@@ -262,30 +266,15 @@ export function rotateIfLong(c: PathCtx = {}): void {
   }
 }
 
-/** Write the tail of the parked file as the archive, then remove it. */
-function archiveRotating(file: string): void {
-  const rotating = `${file}${ROTATING_SUFFIX}`;
-  writeSecretFile(`${file}${ARCHIVE_SUFFIX}`, tailLines(readFileSync(rotating, 'utf8'), MAX_BYTES));
-  rmSync(rotating, { force: true });
-}
-
-/** At most the last `max` characters of `text`, starting at a whole line. */
-function tailLines(text: string, max: number): string {
-  if (text.length <= max) return text;
-  const cut = text.slice(-max);
-  const newline = cut.indexOf('\n');
-  return newline === -1 ? '' : cut.slice(newline + 1);
-}
-
 /**
  * The last MAX_BYTES of the trail: the live file, then, while that holds less,
- * a rotation stopped part way and the archive before it. Each piece is read
- * whole or not at all, and joined so no line runs into the next.
+ * the archive before it. Each is read whole or not at all, and joined so no
+ * line runs into the next.
  */
 function readTail(c: PathCtx): string {
   const file = logPath(c);
   let text = '';
-  for (const part of [file, `${file}${ROTATING_SUFFIX}`, `${file}${ARCHIVE_SUFFIX}`]) {
+  for (const part of [file, `${file}${ARCHIVE_SUFFIX}`]) {
     if (text.length >= MAX_BYTES) break;
     if (!existsSync(part)) continue;
     try {
@@ -316,12 +305,16 @@ function legacyReason(kind: unknown, detail: string | undefined): CredentialEven
       return said === 'expired login renewed before starting' ? 'renewed-before-start' : 'unknown';
     case 'installed':
       if (said.startsWith('shares a login with ')) return 'carried-shared-login';
-      if (said.startsWith('the stored login was renewed elsewhere; carried into this running session')) {
+      if (
+        said.startsWith('the stored login was renewed elsewhere; carried into this running session')
+      ) {
         return 'carried-into-session';
       }
-      if (said.startsWith('the stored login was dead, but the live session')) return 'adopted-from-session';
+      if (said.startsWith('the stored login was dead, but the live session'))
+        return 'adopted-from-session';
       if (said === 'a renewal kept when its save failed, saved now') return 'kept-renewal-saved';
-      if (said === 'the stored login was renewed elsewhere; carried into the editor') return 'carried-into-editor';
+      if (said === 'the stored login was renewed elsewhere; carried into the editor')
+        return 'carried-into-editor';
       if (said.startsWith('the editor ')) return 'saved-from-editor';
       return 'unknown';
     case 'needs-login':
@@ -331,11 +324,15 @@ function legacyReason(kind: unknown, detail: string | undefined): CredentialEven
       return 'renewal-unavailable';
     case 'refused':
       if (said.startsWith('not renewed: a session is using ')) return 'session-using-it';
-      if (said.startsWith('not renewed: your editor is pointed at ')) return 'editor-may-be-using-it';
-      if (said.startsWith('not renewed: your editor holds a newer copy ')) return 'editor-copy-unconfirmed';
+      if (said.startsWith('not renewed: your editor is pointed at '))
+        return 'editor-may-be-using-it';
+      if (said.startsWith('not renewed: your editor holds a newer copy '))
+        return 'editor-copy-unconfirmed';
       return 'unknown';
     case 'rolled-back':
-      return said.startsWith('the stored login had been saved cut short') ? 'saved-cut-short' : 'unknown';
+      return said.startsWith('the stored login had been saved cut short')
+        ? 'saved-cut-short'
+        : 'unknown';
     case 'signed-out':
       return said.startsWith('session had no login') ? 'session-had-no-login' : 'unknown';
     default:

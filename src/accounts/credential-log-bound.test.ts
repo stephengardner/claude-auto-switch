@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -28,23 +37,22 @@ function longTrail(count: number): string {
   return `${lines.join('\n')}\n`;
 }
 
+const size = (file: string): number => (existsSync(file) ? statSync(file).size : 0);
+
 describe('the credential log stays bounded', () => {
-  it('sets the long file aside at the next append, keeping what a reader reads', () => {
+  it('moves the long file aside whole at the next append, keeping what a reader reads', () => {
     const { c, file } = setup();
     // Well past the bound, as on a machine that ran an unbounded ccx for months.
-    writeFileSync(file, longTrail(30_000), 'utf8');
-    expect(statSync(file).size).toBeGreaterThan(ROTATE_BYTES * 2);
+    const old = longTrail(30_000);
+    writeFileSync(file, old, 'utf8');
+    expect(size(file)).toBeGreaterThan(ROTATE_BYTES * 2);
     const before = readCredentialEvents(100_000, c);
 
     logCredentialEvent({ account: 'now', kind: 'renewed', reason: 'idle-renewal', at: 99_999 }, c);
 
-    // The live file starts again with the new line; the archive is the old tail.
+    // The live file starts again with the new line; the old one is the archive, untouched.
     expect(readFileSync(file, 'utf8').trim().split('\n')).toHaveLength(1);
-    const archive = readFileSync(`${file}.1`, 'utf8');
-    expect(archive.length).toBeLessThanOrEqual(MAX_BYTES);
-    // It starts at a whole line, so nothing in it is a fragment.
-    expect(() => JSON.parse(archive.split('\n', 1)[0] ?? '')).not.toThrow();
-    expect(existsSync(`${file}.rotating`)).toBe(false);
+    expect(readFileSync(`${file}.1`, 'utf8')).toBe(old);
 
     // What a reader reads is unchanged, apart from the new event at the end.
     const after = readCredentialEvents(100_000, c);
@@ -62,9 +70,10 @@ describe('the credential log stays bounded', () => {
     expect(readCredentialEvents(10, c).map((e) => e.account)).toEqual(['a']);
   });
 
-  it('holds the trail on disk under three times what a reader reads, however long it runs', () => {
+  it('holds each file to the bound and a line, over two thousand appends', () => {
     const { c, file } = setup();
     const line = 'x'.repeat(900);
+    let most = 0;
     for (let i = 0; i < 2_000; i += 1) {
       logCredentialEvent(
         {
@@ -75,31 +84,44 @@ describe('the credential log stays bounded', () => {
         },
         c,
       );
+      most = Math.max(most, size(file), size(`${file}.1`));
     }
-    const total = statSync(file).size + (existsSync(`${file}.1`) ? statSync(`${file}.1`).size : 0);
     // Two thousand lines of about a kilobyte: 1.8 MB unbounded.
-    expect(total).toBeLessThan(3 * MAX_BYTES);
-    // The newest is always the last one read.
+    expect(most).toBeLessThanOrEqual(ROTATE_BYTES + 1_100);
+    expect(size(file) + size(`${file}.1`)).toBeLessThanOrEqual(2 * (ROTATE_BYTES + 1_100));
+    // The newest is always the last one read, and a reader still has a full tail.
     expect(readCredentialEvents(1, c)[0]?.detail).toMatch(/^1999 /);
+    expect(readCredentialEvents(10_000, c).length).toBeGreaterThan(MAX_BYTES / 1_100);
   });
 
-  it('loses nothing to a rotation stopped part way, and the next one finishes it', () => {
+  it('loses no line that a process had opened the file to write as it was moved', () => {
     const { c, file } = setup();
-    // Stopped after the live file was moved aside, before the archive was written.
-    writeFileSync(`${file}.rotating`, longTrail(20_000), 'utf8');
+    writeFileSync(file, longTrail(20_000), 'utf8');
+    // Another process opens the file to append, and is slow to write.
+    const fd = openSync(file, 'a');
+    rotateIfLong(c);
+    writeSync(
+      fd,
+      `${JSON.stringify({ at: 50_000, account: 'slow', kind: 'renewed', reason: 'idle-renewal' })}\n`,
+    );
+    closeSync(fd);
     logCredentialEvent(
-      { account: 'later', kind: 'renewed', reason: 'idle-renewal', at: 50_000 },
+      { account: 'later', kind: 'renewed', reason: 'idle-renewal', at: 60_000 },
       c,
     );
-    // Read meanwhile: the parked records are still there, before the live one.
-    const read = readCredentialEvents(100_000, c).map((e) => e.account);
-    expect(read.at(-1)).toBe('later');
-    expect(read.at(-2)).toBe('acct-19999');
+    expect(readCredentialEvents(100_000, c).map((e) => e.account)).toEqual(
+      expect.arrayContaining(['slow', 'later']),
+    );
+  });
 
-    // The next rotation archives what was parked.
+  it('moves the file once: a rotation after it finds the live file short and leaves both alone', () => {
+    const { c, file } = setup();
     writeFileSync(file, longTrail(20_000), 'utf8');
     rotateIfLong(c);
-    expect(existsSync(`${file}.rotating`)).toBe(false);
-    expect(statSync(`${file}.1`).size).toBeLessThanOrEqual(MAX_BYTES);
+    const archived = readFileSync(`${file}.1`, 'utf8');
+    logCredentialEvent({ account: 'next', kind: 'renewed', reason: 'idle-renewal' }, c);
+    rotateIfLong(c);
+    expect(readFileSync(`${file}.1`, 'utf8')).toBe(archived);
+    expect(readCredentialEvents(1, c)[0]?.account).toBe('next');
   });
 });

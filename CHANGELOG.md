@@ -16,15 +16,16 @@ semantic versioning.
   carries `readAt`, when its numbers were last read successfully, which `at`
   cannot say since a failed read moves `at` on over the old numbers. At the top,
   `sessions` (each running session's pid, account, folder and config folder),
-  `whenOut` (where a session goes when its account runs out: the account, the
-  model, whether the model changes) and `settings` (the rotation settings in
+  `whenOut` (where a session on the active account goes when that account runs
+  out: the account, the model, whether the model changes) and `settings` (the rotation settings in
   force). All values, never the screen's words; `schemaVersion` stays 1, since
   nothing was renamed or removed.
 - **A cheap `ccx state`.** `--cached-logins <seconds>` uses a login check at
   most that old instead of asking Claude about every account again, which is
-  most of what a read costs. Every read that checks every login remembers what
-  it found, an open dashboard every 20 seconds among them; a check is used only
-  for the same account in the same folder and never once its login has changed.
+  most of what a read costs. Every read that checks logins remembers what it
+  found, an open dashboard every 20 seconds among them; a check is used only for
+  the same account in the same folder, and never once its login file has
+  changed (a login kept in the macOS Keychain is bounded by the age alone).
   Each account says when its check was made (`loginCheckedAt`).
 - **Pools.** `ccx pool <account> <pool>` puts an account in the one group it
   is drawn from, `ccx unpool` takes it out, and `ccx pools` lists them. Kept on
@@ -44,10 +45,13 @@ semantic versioning.
 
 - **The login history stops growing.** `credential-log.jsonl` kept every event
   ever written, while everything that reads it reads only its last 256 KB: one
-  machine's had 43,504 lines, 4.2 MB over 85 days. Past 512 KB it is now set
-  aside and its last 256 KB kept as `credential-log.jsonl.1`, so what is read
-  is always there and the two stay under 768 KB together; a line written while
-  that happens lands in one file or the other.
+  machine's had 43,504 lines, 4.2 MB over 85 days. Past 256 KB it is now
+  moved aside whole as `credential-log.jsonl.1`, replacing the one before, so
+  what is read is always there and each file holds at most 256 KB and a line
+  (524,447 bytes together at most over 20,000 appends, measured). Moved, never
+  copied, so a line another ccx was writing as it moved lands in one file or
+  the other. The first move after an upgrade takes the old file whole, and the
+  next one, 256 KB of events later, replaces it.
 - **The cost `ccx state` is documented at.** "Polling every couple of seconds is
   fine" did not survive a measurement (48.75 s for one read of 17 accounts);
   docs/reading-ccx-from-another-program.md says what a read costs, and how to
