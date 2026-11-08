@@ -383,6 +383,9 @@ describe('ccx worker (against fake-claude)', () => {
       expect(launches.map((l) => l.marker)).toEqual(['A', 'B']);
       expect(valueAfter(launches[1]?.args ?? [], '--resume')).toBe(valueAfter(launches[0]?.args ?? [], '--session-id'));
       expect(hasWorkingLogin(path.join(home, 'profiles', 'A'), context.ctx)).toBe(true);
+      // Passed over for now, never called signed out.
+      const said = readEvents(home, 100).map((r) => r.msg);
+      expect(said.filter((m) => /"A" (was signed out|needs signing in)/.test(m))).toEqual([]);
     },
   );
 

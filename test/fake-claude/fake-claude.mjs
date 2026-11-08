@@ -802,8 +802,12 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
         turnRunning = true;
         setStatus('busy');
         setTimeout(() => {
+          // Refused for the login, as the timed refusal is, when that is what this run refuses with.
+          const forLogin = process.env.FAKE_CLAUDE_REFUSE_AS === 'signed-out';
           const answer = refused
-            ? refusalEntry()
+            ? forLogin
+              ? signedOutEntry()
+              : refusalEntry()
             : {
                 type: 'assistant',
                 isSidechain: false,
@@ -811,10 +815,10 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
                 message: { role: 'assistant', content: [{ type: 'text', text: 'carrying on' }] },
               };
           appendFileSync(transcript, `${JSON.stringify(answer)}\n`);
-          if (refused) showRefusal(answer);
+          if (refused && !forLogin) showRefusal(answer);
           turnRunning = false;
           setStatus(resting);
-          if (refused) openLimitMenu();
+          if (refused && !forLogin) openLimitMenu();
           if (!refused) answered += 1;
           // Done once it has answered as many prompts as the test waits for,
           // after a moment for whoever is watching to see the answer.

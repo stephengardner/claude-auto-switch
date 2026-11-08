@@ -299,6 +299,41 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a login revoked while a sess
   );
 
   it(
+    'relaunches a Claude that cannot be typed into on another account when nothing can be learned, holding nothing against the first',
+    { timeout: 60_000 },
+    async () => {
+      const home = mkdtempSync(path.join(tmpdir(), 'cas-signed-out-unknown-relaunch-'));
+      const runsLog = path.join(home, 'runs.jsonl');
+      Object.assign(process.env, {
+        FAKE_CLAUDE_RUNS_LOG: runsLog,
+        FAKE_CLAUDE_IDLE_MS: '6000',
+        FAKE_CLAUDE_SESSION_RECORD: '1',
+        FAKE_CLAUDE_TRANSCRIPT: '1',
+        FAKE_CLAUDE_REFUSE_AFTER_MS: '2500',
+        FAKE_CLAUDE_REFUSE_AS: 'signed-out',
+        FAKE_CLAUDE_REFUSE_ON: 'A',
+      });
+      const server = loginServer();
+      server.rateLimit();
+      server.cutOff('A');
+      const context = makeContext(home, server);
+      const dirA = await loginAccount(context, home, 'A');
+      await loginAccount(context, home, 'B');
+      setActive('A', context.ctx);
+
+      expect(await runCommand(context, ['--resume', CONVERSATION])).toBe(0);
+
+      const launches = launchesIn(runsLog);
+      expect(launches.map((l) => l.marker)).toEqual(['A', 'B']);
+      expect(launches[1]?.args).toContain(CONVERSATION);
+      expect(hasWorkingLogin(dirA, context.ctx)).toBe(true);
+      // Passed over for now, never called signed out.
+      const said = eventsIn(context).map((e) => e.msg);
+      expect(said.filter((m) => /"A" (was signed out|needs signing in)/.test(m))).toEqual([]);
+    },
+  );
+
+  it(
     'keeps a session with nowhere else to go where it is when nothing can be learned about its login, and says so',
     { timeout: 60_000 },
     async () => {
@@ -365,6 +400,36 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a login revoked while a sess
       expect(eventsIn(context).filter((e) => e.kind === 'signed-out-check').map((e) => e.data)).toEqual([
         { account: 'A', outcome: 'renewed' },
       ]);
+    },
+  );
+
+  it(
+    'moves the session in place once Claude is refused again with a login just found working',
+    { timeout: 60_000 },
+    async () => {
+      // Renewing A works, yet Claude keeps being refused on it: the prompt
+      // typed to carry on is refused too. It is not typed into A again.
+      const home = mkdtempSync(path.join(tmpdir(), 'cas-signed-out-again-'));
+      const runsLog = path.join(home, 'runs.jsonl');
+      Object.assign(process.env, typeableRefusedForLogin(runsLog, 'A'));
+      const server = loginServer();
+      const context = { ...makeContext(home, server), carryOn: QUICK };
+      const dirA = await loginAccount(context, home, 'A');
+      await loginAccount(context, home, 'B');
+      setActive('A', context.ctx);
+
+      expect(await runCommand(context, [])).toBe(0);
+
+      const log = readLog(runsLog);
+      expect(launches(log).map((l) => l.marker)).toEqual(['A']);
+      expect(prompts(log).map((p) => ({ marker: p.marker, refused: p.refused }))).toEqual([
+        { marker: 'A', refused: true },
+        { marker: 'B', refused: false },
+      ]);
+      expect(hasWorkingLogin(dirA, context.ctx)).toBe(true);
+      const checks = eventsIn(context).filter((e) => e.kind === 'signed-out-check');
+      expect(checks.map((e) => e.data?.outcome)).toEqual(['renewed', 'unknown']);
+      expect(checks[1]?.msg).toMatch(/Claude was refused again with the login just found working/);
     },
   );
 
