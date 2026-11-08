@@ -114,7 +114,8 @@ import {
   hasUsableLogin,
   nudgeLoginReread,
 } from '../accounts/credential-vault.js';
-import { hasLogin, hasWorkingLogin } from '../accounts/account-login.js';
+import { hasLogin, hasWorkingLogin, loginWasRejected } from '../accounts/account-login.js';
+import { rememberDeadLogin } from '../usage/dead-login-store.js';
 import {
   askAboutLogin,
   isOnHold,
@@ -1695,7 +1696,15 @@ export async function runInteractiveHotSwap(
         refused: { expired: SAYS_EXPIRED.test(text) },
       });
       if (own.state !== 'finished') return own;
-      if (credentialFileFingerprint(on.dir) === credentialFileFingerprint(sessionDir)) return own;
+      const storedFile = credentialFileFingerprint(on.dir);
+      if (storedFile === credentialFileFingerprint(sessionDir)) return own;
+      // The account's copy of the very login just refused (the same refresh
+      // token, or with none, the same access token), only written out
+      // differently: refused as well, and written down when this copy was.
+      if (credentialFingerprint(on.dir) === credentialFingerprint(sessionDir)) {
+        if (loginWasRejected(sessionDir, context.ctx)) rememberDeadLogin(storedFile, own.detail, context.ctx);
+        return own;
+      }
       const stored = await askLogin(on.dir);
       if (stored.state === 'finished') return stored;
       if (stored.state === 'unknown') {

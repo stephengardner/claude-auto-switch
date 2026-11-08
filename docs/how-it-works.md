@@ -192,7 +192,9 @@ names an account with one waiting.
 expiry: signed out at claude.ai, or the account put on hold. ccx asks Anthropic
 rather than trusting the expiry. A token the usage endpoint turns away is
 renewed at once (never one a session or your editor may be using), and when the
-token endpoint refuses that, the account leaves rotation. A session start asks
+token endpoint refuses that, the account leaves rotation. A login saved with no
+refresh token cannot be renewed at all, so it leaves rotation the same way once
+its access token has expired or been turned away. A session start asks
 first. A "Please run /login" inside a running session is decided within one
 check of a few seconds: the account's newer stored login is carried in when
 there is one, and otherwise the session's own copy is renewed, straight at the

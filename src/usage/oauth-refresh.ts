@@ -314,7 +314,6 @@ function* assessSteps(
   if (!oauth || typeof oauth !== 'object') {
     return { renew: false, outcome: { status: 'unavailable', detail: 'not an oauth login' } };
   }
-  if (!oauth.refreshToken) return { renew: false, outcome: { status: 'needs-login', detail: 'no refresh token stored' } };
 
   // A dead grant stays dead until this file changes, and only signing in again
   // changes it. Asking the token endpoint a second time cannot get a different
@@ -347,6 +346,20 @@ function* assessSteps(
 
   const expiresAt = typeof oauth.expiresAt === 'number' ? oauth.expiresAt : 0;
   const turnedAway = rejected !== undefined && !!oauth.accessToken && sha256Fingerprint(oauth.accessToken) === rejected;
+  if (!oauth.refreshToken) {
+    // Nothing can renew it, so once its access token is gone, has expired by
+    // its own stored time, or was just turned away, it is as finished as a
+    // refused grant, and written down the same way, which is what takes it out
+    // of rotation. While that token still works it is left to work.
+    const lapsed = !oauth.accessToken || turnedAway || (expiresAt > 0 && expiresAt <= now());
+    if (!lapsed) return { renew: false, outcome: { status: 'needs-login', detail: 'no refresh token stored' } };
+    const detail = `no refresh token stored, and its access token ${
+      turnedAway ? 'was turned away' : oauth.accessToken ? 'has expired' : 'is empty'
+    }`;
+    rememberRefused(identity, detail);
+    if (ctx) rememberDeadLogin(identity, detail, ctx);
+    return { renew: false, outcome: { status: 'needs-login', detail } };
+  }
   if (expiresAt > now() + EXPIRY_BUFFER_MS && oauth.accessToken && !turnedAway) {
     return { renew: false, outcome: { status: 'not-needed' } };
   }

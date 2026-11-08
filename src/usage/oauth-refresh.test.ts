@@ -9,6 +9,7 @@ import { forgetRefusals } from './dead-login-memo.js';
 import { credentialFileFingerprint, credentialPath, previousCredentialPath } from '../accounts/credential-vault.js';
 import { deadLoginReason } from './dead-login-store.js';
 import { sha256Fingerprint } from '../util/fingerprint.js';
+import { hasWorkingLogin } from '../accounts/account-login.js';
 
 const HOUR = 3600_000;
 
@@ -415,6 +416,38 @@ describe('renewing a login something else may be renewing', () => {
     ]);
     expect(outcome).toMatchObject({ status: 'unavailable' });
     expect(existsSync(path.join(dir, CREDENTIALS_LOCK_DIR))).toBe(false);
+  });
+});
+
+describe('a login with no refresh token', () => {
+  beforeEach(() => forgetRefusals());
+  const scratch = () => ({ env: { CLAUDE_AUTO_SWITCH_HOME: mkdtempSync(path.join(tmpdir(), 'cas-no-refresh-')) } });
+
+  it('is written down as finished once its access token has expired, until a new login is saved', async () => {
+    // Nothing can renew it, so rotation must pass it over: a session moved
+    // onto one was refused on every turn until somebody ran /login.
+    const ctx = scratch();
+    const dir = account({ accessToken: 'only', expiresAt: now() - HOUR });
+    expect((await refreshCredentialIfExpired(dir, { now, ctx })).status).toBe('needs-login');
+    expect(hasWorkingLogin(dir, ctx)).toBe(false);
+    expect(deadLoginReason(credentialFileFingerprint(dir), ctx) ?? '').toMatch(/no refresh token stored/);
+    // Signing in again saves a new login, which nothing has refused.
+    writeFileSync(
+      credentialPath(dir),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'new', refreshToken: 'r-new', expiresAt: now() + 8 * HOUR } }),
+      'utf8',
+    );
+    expect(hasWorkingLogin(dir, ctx)).toBe(true);
+  });
+
+  it('is left alone while its access token works, and written down once that token is turned away', async () => {
+    const ctx = scratch();
+    const dir = account({ accessToken: 'only', expiresAt: now() + 8 * HOUR });
+    await refreshCredentialIfExpired(dir, { now, ctx });
+    expect(hasWorkingLogin(dir, ctx)).toBe(true);
+    const outcome = await refreshCredentialIfExpired(dir, { now, ctx, renewRejected: sha256Fingerprint('only') });
+    expect(outcome.status).toBe('needs-login');
+    expect(hasWorkingLogin(dir, ctx)).toBe(false);
   });
 });
 

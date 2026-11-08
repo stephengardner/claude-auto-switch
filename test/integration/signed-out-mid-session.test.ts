@@ -14,7 +14,7 @@ import { hasWorkingLogin } from '../../src/accounts/account-login.js';
 import { takeLease } from '../../src/session/lease.js';
 import type { CliContext } from '../../src/context.js';
 import { loginServer, signIn, type LoginServer } from './login-server.js';
-import { QUICK, TYPEABLE, launches, prompts, readLog } from './typeable-claude.js';
+import { QUICK, TYPEABLE, launches, prompts, readLog, waitFor } from './typeable-claude.js';
 
 /**
  * A login revoked while a session is running on it: signed out at claude.ai,
@@ -430,6 +430,58 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('a login revoked while a sess
       const checks = eventsIn(context).filter((e) => e.kind === 'signed-out-check');
       expect(checks.map((e) => e.data?.outcome)).toEqual(['renewed', 'unknown']);
       expect(checks[1]?.msg).toMatch(/Claude was refused again with the login just found working/);
+    },
+  );
+
+  it(
+    'takes a login with no refresh token out of rotation once Claude is refused with it, so the next session does not start on it',
+    { timeout: 60_000 },
+    async () => {
+      // As on 11-08: A's saved login had no refresh token, every turn on it was
+      // refused, and each new session went straight back onto A, since the
+      // usage endpoint was rate limited and nothing had written A down.
+      const home = mkdtempSync(path.join(tmpdir(), 'cas-signed-out-no-refresh-'));
+      const runsLog = path.join(home, 'runs.jsonl');
+      Object.assign(
+        process.env,
+        typeableRefusedForLogin(runsLog, 'A', 'Please run /login · API Error: 401 OAuth access token is invalid'),
+        { FAKE_CLAUDE_IDLE_MS: '8000' },
+      );
+      const server = loginServer();
+      server.rateLimit();
+      const context = { ...makeContext(home, server), carryOn: QUICK };
+      const dirA = await loginAccount(context, home, 'A');
+      writeFileSync(
+        path.join(dirA, '.credentials.json'),
+        JSON.stringify({ account: 'A', claudeAiOauth: { accessToken: 'a-A', expiresAt: Date.now() + 8 * 3_600_000 } }),
+        'utf8',
+      );
+      await loginAccount(context, home, 'B');
+      setActive('A', context.ctx);
+
+      const running = runCommand(context, []);
+      await waitFor('the launch', () => readLog(runsLog), (log) => launches(log).length === 1);
+      // The account's copy written out again, the same login: the session's
+      // copy and the account's then differ, as they do when the session keeps
+      // MCP sign-ins of its own, which a session moved onto the account does.
+      writeFileSync(
+        path.join(dirA, '.credentials.json'),
+        JSON.stringify({ claudeAiOauth: { accessToken: 'a-A', expiresAt: Date.now() + 8 * 3_600_000 }, account: 'A' }),
+        'utf8',
+      );
+      expect(await running).toBe(0);
+
+      // The next session, started with A still the active account.
+      const nextLog = path.join(home, 'next-runs.jsonl');
+      Object.assign(process.env, { FAKE_CLAUDE_RUNS_LOG: nextLog, FAKE_CLAUDE_IDLE_MS: '1500', FAKE_CLAUDE_REFUSE_AFTER_MS: '0' });
+      setActive('A', context.ctx);
+      expect(await runCommand(context, [])).toBe(0);
+
+      expect(launchesIn(nextLog).map((l) => l.marker)).toEqual(['B']);
+      expect(hasWorkingLogin(dirA, context.ctx)).toBe(false);
+      const first = readLog(runsLog);
+      expect(launches(first).map((l) => l.marker)).toEqual(['A']);
+      expect(prompts(first)).toEqual([expect.objectContaining({ marker: 'B', refused: false })]);
     },
   );
 

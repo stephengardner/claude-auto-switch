@@ -25,6 +25,14 @@ semantic versioning.
   its login is asked about again a few minutes later; with no other account to
   go to, the session stays where it is. A worker takes the same answers by
   relaunch. Each outcome, with its reason, is in the event log.
+- **A saved login with no refresh token leaves rotation once it stops working.**
+  Nothing can renew such a login, and ccx said so ("no refresh token stored")
+  every five minutes, but never wrote it down where rotation looks, so a limit
+  moved a session onto it and every new session started on it, each refused on
+  every turn until somebody ran /login. Once its access token has expired or
+  been turned away it now counts as signed out everywhere a refused login does,
+  and comes back by itself when a new login is saved. One whose access token
+  still works is left alone.
 - **"Adopted the working one" is said only of a login that was checked.** A
   session start whose stored login was dead took a live session's copy and
   said it had adopted a working login before asking about it; that copy was
