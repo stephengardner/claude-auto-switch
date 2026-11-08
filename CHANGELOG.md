@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.33]
+
+### Fixed
+
+- **A session signed out mid-run no longer sits there.** When Claude refused a
+  turn with "Please run /login", ccx moved the session only once the token
+  endpoint proved the login finished. Any other answer (the usage endpoint
+  asking it to wait, a busy lock, being offline) left it where it was, said
+  nothing, and looked again only when Claude failed another turn: one session
+  sat signed out for 29 hours while eleven other accounts had room. Now one
+  check of a few seconds decides. The account's newer stored login is carried
+  in when there is one; otherwise the session's own copy is renewed, straight
+  at the token endpoint when Claude said the token expired, since the usage
+  endpoint is often rate limited. When that works, Claude reads its login again
+  and the carry-on prompt is typed, so the session carries on where it is. When
+  the token endpoint refuses, the account leaves rotation and the session moves
+  in place to another account, as it does for a limit. When nothing can be
+  learned in time, it moves all the same, the account stays in rotation, and
+  its login is asked about again a few minutes later; with no other account to
+  go to, the session stays where it is. A worker takes the same answers by
+  relaunch. Each outcome, with its reason, is in the event log.
+- **"Adopted the working one" is said only of a login that was checked.** A
+  session start whose stored login was dead took a live session's copy and
+  said it had adopted a working login before asking about it; that copy was
+  often as dead. The log now says what the check after it found: working,
+  dead too, or not checked.
+
 ## [2.6.32]
 
 ### Added

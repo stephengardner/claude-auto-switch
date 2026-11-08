@@ -193,10 +193,19 @@ expiry: signed out at claude.ai, or the account put on hold. ccx asks Anthropic
 rather than trusting the expiry. A token the usage endpoint turns away is
 renewed at once (never one a session or your editor may be using), and when the
 token endpoint refuses that, the account leaves rotation. A session start asks
-first, and a "Please run /login" inside a running session is checked the same
-way; when the login really is finished, the session moves to the next account
-and carries on. An account Anthropic put on hold shows as `on hold`, since
-signing in again does not bring it back.
+first. A "Please run /login" inside a running session is decided within one
+check of a few seconds: the account's newer stored login is carried in when
+there is one, and otherwise the session's own copy is renewed, straight at the
+token endpoint when Claude said the token expired, since the usage endpoint is
+often rate limited. When that works, Claude reads its login again and the
+carry-on prompt is typed, so the session carries on where it is. When the
+token endpoint refuses it, the account leaves rotation and the session moves
+in place to another account, as for a limit (below). When nothing can be
+learned in time, the session moves all the same, the account stays in
+rotation, and its login is asked about again a few minutes later; with no
+other account to go to, the session stays where it is. Each outcome is in the
+event log. An account Anthropic put on hold shows as `on hold`, since signing
+in again does not bring it back.
 
 **Moving.** A refused turn has already ended, so the session needs another
 account and to be told to carry on. ccx replaces the login under the running

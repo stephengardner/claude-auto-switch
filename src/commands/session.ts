@@ -1672,6 +1672,11 @@ export async function runInteractiveHotSwap(
         () => refreshCredentialIfExpired(dir, { ctx: context.ctx, lockWaitMs: 0, renewRejected: rejected }),
         (outcome) => outcome.status === 'busy',
       );
+    // Its Claude was refused the long-lived token it was started with, which
+    // nothing here can renew, and the login in its folder is not what it uses.
+    if (tokenAccount !== null) {
+      return { state: 'unknown', detail: 'this session signs in with a long-lived token (ccx token), which ccx cannot check' };
+    }
     try {
       if ((await carry(false)) === 'pulled') {
         if (!renewalIsDue(sessionDir)) return { state: 'carried' };
