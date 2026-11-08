@@ -1,8 +1,9 @@
 import { configHome, type PathCtx } from '../config/paths.js';
 import { appendEvent } from '../events/log.js';
 import { deadLoginReason } from '../usage/dead-login-store.js';
-import { probeUsage, type LimitProbeResult } from '../usage/limit-probe.js';
+import { probeUsage, readOauthToken, type LimitProbeResult } from '../usage/limit-probe.js';
 import { refreshCredentialIfExpired, type RefreshOutcome } from '../usage/oauth-refresh.js';
+import { sha256Fingerprint } from '../util/fingerprint.js';
 import { credentialFileFingerprint, credentialPath } from './credential-vault.js';
 
 /**
@@ -37,6 +38,15 @@ export interface LoginCheckDeps {
   probe?: (credentialsFile: string) => Promise<LimitProbeResult>;
   /** Renew the login in `dir`, for the access token `rejected` fingerprints. */
   renew?: (dir: string, rejected: string) => Promise<RefreshOutcome>;
+  /**
+   * Claude was just refused with this login ("Please run /login"), which is
+   * the API turning its access token away already. The login is then renewed
+   * for the token it holds whenever the usage read cannot say otherwise, and
+   * without the usage read at all when Claude said the token had `expired`:
+   * that endpoint is often rate limited, and only the token endpoint can say
+   * whether an expired token's login is finished.
+   */
+  refused?: { expired: boolean };
 }
 
 /** Ask about the login stored in `dir` (a profile, or a session's own copy). */
@@ -47,18 +57,29 @@ export async function askAboutLogin(dir: string, deps: LoginCheckDeps & { ctx?: 
     ((accountDir: string, rejected: string) =>
       refreshCredentialIfExpired(accountDir, { renewRejected: rejected, ...(deps.ctx ? { ctx: deps.ctx } : {}) }));
 
-  let read: LimitProbeResult;
-  try {
-    read = await probe(credentialPath(dir));
-  } catch (err) {
-    return { state: 'unknown', detail: (err as Error).message };
+  let rejected: { message: string; token: string } | null = null;
+  if (!deps.refused?.expired) {
+    let read: LimitProbeResult | null = null;
+    let unread: string;
+    try {
+      read = await probe(credentialPath(dir));
+      unread = read.detail ?? 'usage could not be read';
+    } catch (err) {
+      unread = (err as Error).message;
+    }
+    if (read && read.verdict !== 'unknown') return { state: 'works' };
+    if (read?.rejected) rejected = read.rejected;
+    else if (!deps.refused) return { state: 'unknown', detail: unread };
   }
-  if (read.verdict !== 'unknown') return { state: 'works' };
-  if (!read.rejected) return { state: 'unknown', detail: read.detail ?? 'usage could not be read' };
+  if (rejected === null) {
+    const held = readOauthToken(credentialPath(dir));
+    if (!held) return { state: 'unknown', detail: 'it holds no access token to renew' };
+    rejected = { message: 'Claude was refused with this login', token: sha256Fingerprint(held) };
+  }
 
   let renewal: RefreshOutcome;
   try {
-    renewal = await renew(dir, read.rejected.token);
+    renewal = await renew(dir, rejected.token);
   } catch (err) {
     return { state: 'unknown', detail: (err as Error).message };
   }
@@ -66,7 +87,7 @@ export async function askAboutLogin(dir: string, deps: LoginCheckDeps & { ctx?: 
     case 'refreshed':
       return { state: 'renewed' };
     case 'needs-login': {
-      const detail = renewal.detail ?? read.rejected.message;
+      const detail = renewal.detail ?? rejected.message;
       return { state: 'finished', detail, onHold: isOnHold(detail) };
     }
     default:

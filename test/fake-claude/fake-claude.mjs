@@ -588,7 +588,8 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
   /**
    * A turn refused because the login no longer works, as Claude writes one
    * (measured): its own code, no HTTP status, "Please run /login". Written in
-   * place of a limit when FAKE_CLAUDE_REFUSE_AS is "signed-out".
+   * place of a limit when FAKE_CLAUDE_REFUSE_AS is "signed-out", in the words
+   * FAKE_CLAUDE_SIGNED_OUT_SAYS gives, when it does.
    */
   const signedOutEntry = () => ({
     type: 'assistant',
@@ -599,7 +600,7 @@ if (process.env.FAKE_CLAUDE_SESSION_RECORD) {
     message: {
       model: '<synthetic>',
       role: 'assistant',
-      content: [{ type: 'text', text: 'Login expired · Please run /login' }],
+      content: [{ type: 'text', text: process.env.FAKE_CLAUDE_SIGNED_OUT_SAYS || 'Login expired · Please run /login' }],
     },
   });
 

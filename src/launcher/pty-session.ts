@@ -42,7 +42,31 @@ export interface CapContext {
    * marked paste as text.
    */
   canType: boolean;
+  /**
+   * Set when the move is for a turn refused because the login does not work,
+   * not for a limit (see SignedOutVerdict): 'finished' when the token endpoint
+   * refused that login, 'unknown' when nothing could be learned about it.
+   */
+  login?: 'finished' | 'unknown';
 }
+
+/** What a turn refused for the login ("Please run /login") comes to, once asked about. */
+export type SignedOutVerdict =
+  /** Nothing to act on now (the session is away on another account for one call). */
+  | { kind: 'left' }
+  /**
+   * The login under Claude works again, on `account`: Claude reads it at its
+   * next request, and the prompt, when one is due, is typed so the turn that
+   * was refused is carried on.
+   */
+  | { kind: 'working'; account: string; carryOn?: { prompt: string; canRelaunch: boolean } }
+  /**
+   * Move off the account, as a limit moves it: in place when it can be, by a
+   * relaunch on another account when not. `finished`: the token endpoint
+   * refused the login, which is written down already; otherwise nothing could
+   * be learned, and the account is not to be held against.
+   */
+  | { kind: 'move'; finished: boolean };
 
 export type CapDecision =
   /** End the child so the swap loop relaunches on the next account. */
@@ -63,6 +87,8 @@ export type CarryOnEvent =
   | { kind: 'relaunch'; why: string };
 
 type Hit = { reason?: string; resetAt?: number };
+/** A move waiting to be made under the live child: for a limit, or for a turn refused for the login (`login`). */
+type PendingMove = Hit & { sidechain: boolean; login?: 'finished' | 'unknown' };
 /**
  * A refused turn as the checks take it: its words, and its entry in the record
  * when it came from there, which says the conversation it was read from.
@@ -122,14 +148,16 @@ export interface PtySessionOptions {
    */
   verifyCap?: (renderedText: string, recorded?: RecordedRefusal) => Promise<boolean>;
   /**
-   * Called when the conversation's record says a turn was refused because the
-   * login no longer works ("Please run /login"); resolves true ONLY when the
-   * login is confirmed finished (asked of the token endpoint, and written down,
-   * so the account leaves rotation). The session then ends as `needs-login`,
-   * and the swap loop carries the conversation on elsewhere. When absent, or
-   * not confirmed, nothing happens: Claude's word alone is not enough.
+   * Called with what Claude said when the conversation's record says a turn
+   * was refused because the login no longer works ("Please run /login"), and
+   * resolves to what that comes to. A move goes through `onCapConfirmed`, as a
+   * limit's does, with `login` set in its context; one that cannot be made in
+   * place ends the session as `needs-login` when the login is finished, and
+   * as an unproven hold when nothing could be learned, so the swap loop
+   * carries the conversation on elsewhere without holding the account against
+   * it. When absent, nothing happens.
    */
-  verifySignedOut?: () => Promise<boolean>;
+  verifySignedOut?: (text: string) => Promise<SignedOutVerdict>;
   /**
    * Do not act on usage limits during this run. Used for the deliberate "run
    * anyway" case, where the limit is already known and the operator needs the
@@ -266,7 +294,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      * attemptCapRelief, which either swaps the account under the live child or
      * falls through to the confirm-and-kill restart path.
      */
-    let pendingCapRelief: (Hit & { sidechain: boolean }) | null = null;
+    let pendingCapRelief: PendingMove | null = null;
     /**
      * Until when a subagent's refusals are not asked about again. Kept apart
      * from the main thread's backoff: several subagents fail on one limit
@@ -313,9 +341,9 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      */
     const UNPROVEN_HOLD_MS = 2 * 60_000;
     /**
-     * How long after a login check that confirmed nothing (the login works, or
-     * could not be asked about) Claude's "Please run /login" is let be. Each
-     * check is two requests at most, and Claude says it on every turn.
+     * How long after a login check that acted on nothing (the session was away
+     * on another account) Claude's "Please run /login" is let be. Claude says
+     * it on every turn.
      */
     const LOGIN_RECHECK_MS = options.refuteBackoffMs ?? 60_000;
     /**
@@ -354,7 +382,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     let pendingVerify: Promise<boolean> | null = null;
     /** What Claude showed when its login was turned away, once that was confirmed finished. */
     let signedOut: string | null = null;
-    /** A login check in flight, and when another may be asked after one that confirmed nothing. */
+    /** A login check in flight, and when another may be asked after one that acted on nothing. */
     let checkingLogin = false;
     let pendingLoginCheck: Promise<void> | null = null;
     let loginQuietUntil = 0;
@@ -444,32 +472,73 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
     };
 
     /**
-     * A turn refused because the login no longer works. Ended, to carry on
-     * elsewhere, only once that is confirmed: Claude's word alone is not enough,
-     * since the session's copy of the login may only be behind the account's.
-     * One check at a time, and after one that confirmed nothing, none for a
-     * while, however often Claude says it again. `last`: read after the child
-     * exited, the last chance there is, so the quiet period does not apply.
+     * A turn refused because the login no longer works, decided by one check
+     * (see SignedOutVerdict): the session carries on where it is, told to by
+     * the prompt, or is moved off the account as a limit moves it. One check
+     * at a time, and none while a limit or a move owns the session. `last`:
+     * read after the child exited, the last chance there is, so the quiet
+     * period does not apply.
      */
     const onSignedOut = (text: string, last = false): void => {
       if (!options.verifySignedOut || checkingLogin || signedOut !== null || switching) return;
+      if (cap.isSet() || pendingCapRelief) return;
       if (!last && (exited || Date.now() < loginQuietUntil)) return;
+      // The prompt typed to carry on was refused for the login too.
+      if (carryOn) {
+        carryOn.refused(Date.now(), watch.promptAt());
+        options.onCarryOn?.({ kind: 'refused' });
+      }
       checkingLogin = true;
       pendingLoginCheck = options
-        .verifySignedOut()
-        .catch(() => false)
-        .then((finished) => {
+        .verifySignedOut(text)
+        .catch((): SignedOutVerdict => ({ kind: 'left' }))
+        .then((verdict) => {
           checkingLogin = false;
-          // A switch owns the session's outcome, and this check does not take
-          // it over. A child that exited meanwhile still counts: the exit waits
-          // for this answer (see finalize), as it does for a limit check.
-          if (finished && !switching) {
-            signedOut = text;
-            if (!exited) setTimeout(safeKill, 150);
-          } else if (!finished) {
+          // A switch, or a limit acted on meanwhile, owns the session's
+          // outcome, and this check does not take it over.
+          if (switching || cap.isSet() || pendingCapRelief) return;
+          if (verdict.kind === 'left') {
             loginQuietUntil = Date.now() + LOGIN_RECHECK_MS;
+            return;
           }
+          if (verdict.kind === 'working') {
+            if (!exited && verdict.carryOn) {
+              carryOnAccount = verdict.account;
+              carryOn = createCarryOn({
+                prompt: verdict.carryOn.prompt,
+                movedAt: Date.now(),
+                stalled: true,
+                canRelaunch: verdict.carryOn.canRelaunch,
+                ...(options.carryOnTiming ? { timing: options.carryOnTiming } : {}),
+              });
+            }
+            return;
+          }
+          const move: PendingMove = { reason: text, sidechain: false, login: verdict.finished ? 'finished' : 'unknown' };
+          // A child that exited meanwhile still counts: the exit waits for
+          // this answer (see finalize), as it does for a limit check.
+          if (exited || !options.onCapConfirmed) {
+            settleUnmoved(move);
+            if (!exited) setTimeout(safeKill, 150);
+            return;
+          }
+          // After the same grace a limit gets, so a Claude that exits meanwhile
+          // is relaunched rather than moved under (see attemptCapRelief).
+          pendingCapRelief = move;
+          setTimeout(attemptCapRelief, RELIEF_GRACE_MS);
         });
+    };
+
+    /**
+     * What a move that cannot be made under the live child ends the session
+     * as, for the swap loop to relaunch on another account: a confirmed limit,
+     * a finished login (`needs-login`), or, when nothing could be learned
+     * about the login, a hold that measured nothing and records nothing.
+     */
+    const settleUnmoved = (pending: PendingMove): void => {
+      if (pending.login === 'finished') signedOut = pending.reason ?? '';
+      else if (pending.login === 'unknown') cap.hold({ reason: pending.reason, resetAt: Date.now() + UNPROVEN_HOLD_MS });
+      else cap.confirm(pending);
     };
 
     /** Whether a prompt can be typed into this child at all (see CapContext.canType). */
@@ -482,8 +551,8 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
      */
     const stepCarryOn = (): void => {
       if (!carryOn || exited || !child.pid) return;
-      // A limit or a switch being decided owns what happens next.
-      if (cap.isSet() || switching || pendingCapRelief || verifying || noConversation) return;
+      // A limit, a refused login or a switch being decided owns what happens next.
+      if (cap.isSet() || switching || pendingCapRelief || verifying || checkingLogin || noConversation) return;
       const now = Date.now();
       const status = readLiveStatus(options.configDir, child.pid, startedAt, now);
       const step = carryOn.step({
@@ -648,6 +717,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
         switching: switching !== null,
         sidechain: pending.sidechain,
         canType: relieve && canType(),
+        ...(pending.login ? { login: pending.login } : {}),
       }) ?? { kind: 'restart' };
       if (decision.kind === 'retry') {
         // Held as it was, so nothing else takes this limit up meanwhile.
@@ -692,7 +762,7 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
       // be (the cap is already recorded). Otherwise confirm and end so the swap
       // loop relaunches on the next account.
       if (!switching) {
-        cap.confirm(pending);
+        settleUnmoved(pending);
         // Kill ONLY a child that is genuinely still alive. When it is already gone
         // (its exit event just lags, which is why we ask the OS and not `exited`),
         // there is nothing to end, and the lagging exit event will resolve the
@@ -1081,10 +1151,11 @@ export function runPtySession(options: PtySessionOptions): Promise<SessionOutcom
             switching: switching !== null,
             sidechain: pendingCapRelief.sidechain,
             canType: false,
+            ...(pendingCapRelief.login ? { login: pendingCapRelief.login } : {}),
           });
           // A session that ended is relaunched for a limit its main thread met,
           // never for one only a subagent did: it may simply have been closed.
-          if (!switching && !pendingCapRelief.sidechain) cap.confirm(pendingCapRelief);
+          if (!switching && !pendingCapRelief.sidechain) settleUnmoved(pendingCapRelief);
           pendingCapRelief = null;
         }
         // A capped outcome waits for a probe that is still in flight. The

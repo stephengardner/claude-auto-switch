@@ -75,6 +75,11 @@ export interface PullEvidence {
   /** When each side's access token expires; 0 when unknown. */
   sessionExpiresAt: number;
   profileExpiresAt: number;
+  /**
+   * The token endpoint has just refused the session's copy, so how long its
+   * stored expiry says it has left means nothing.
+   */
+  sessionRefused?: boolean;
 }
 
 /**
@@ -99,6 +104,9 @@ export function decidePull(e: PullEvidence): PullDecision {
   }
   if (!e.sessionUsable) {
     return { pull: true, reason: 'the session has no working login; the profile does' };
+  }
+  if (e.sessionRefused) {
+    return { pull: true, reason: "the token endpoint refused the session's copy; the profile holds another login" };
   }
   if (e.profileExpiresAt > e.sessionExpiresAt) {
     return {
@@ -181,17 +189,24 @@ export async function pullProfileIntoSessionAsync(
   account: SyncAccount,
   sessionDir: string,
   ctx: PathCtx = {},
+  options: { sessionRefused?: boolean } = {},
 ): Promise<PullResult> {
   if (readPullEvidence(account, sessionDir).sameLineage) return 'skipped';
-  return runOnTimers(pullSteps(account, sessionDir, ctx, keychainOnTimers));
+  return runOnTimers(pullSteps(account, sessionDir, ctx, keychainOnTimers, options.sessionRefused === true));
 }
 
-function* pullSteps(account: SyncAccount, sessionDir: string, ctx: PathCtx, io: KeychainIo): Steps<PullResult> {
+function* pullSteps(
+  account: SyncAccount,
+  sessionDir: string,
+  ctx: PathCtx,
+  io: KeychainIo,
+  sessionRefused = false,
+): Steps<PullResult> {
   const lock = yield* lockDirSteps(path.join(sessionDir, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
   if (!lock.held) return 'busy';
   try {
     const evidence = yield* readPullEvidenceSteps(account, sessionDir, io);
-    const decision = decidePull(evidence);
+    const decision = decidePull({ ...evidence, sessionRefused });
     if (!decision.pull) return 'skipped';
     // From a snapshot taken under the PROFILE's own lock, so a refresh that is
     // mid-write when we look can never be half-copied into a running session.
@@ -206,9 +221,10 @@ function* pullSteps(account: SyncAccount, sessionDir: string, ctx: PathCtx, io: 
       {
         account: account.name,
         kind: 'installed',
-        detail:
-          'the stored login was renewed elsewhere; carried into this running session ' +
-          'so its next refresh cannot die on the retired one',
+        detail: sessionRefused
+          ? "the token endpoint refused this running session's copy, so the account's stored login was carried into it"
+          : 'the stored login was renewed elsewhere; carried into this running session ' +
+            'so its next refresh cannot die on the retired one',
       },
       ctx,
     );
@@ -254,8 +270,10 @@ export interface RecoverResult {
 }
 
 /**
- * A profile whose login is dead, while a live session of the same account runs
- * on a working one: adopt the session's copy instead of demanding a sign-in.
+ * A profile whose login is dead, while a live session of the same account holds
+ * a login of its own: adopt the session's copy instead of demanding a sign-in.
+ * Nothing here asks Anthropic whether that copy works, and an idle session's
+ * can be as dead as the profile's, so the caller asks, and says how it went.
  *
  * Only on positive identity: the lease says which account the session is FOR,
  * but leases have lied before (a contaminated session carried another account's
@@ -292,8 +310,8 @@ export function recoverLoginFromLiveSession(
         account: account.name,
         kind: 'installed',
         detail:
-          `the stored login was dead, but the live session (pid ${lease.pid}) holds a working ` +
-          'one for this account; adopted it instead of asking for a sign-in',
+          `the stored login was dead, so the copy the live session (pid ${lease.pid}) holds for this ` +
+          'account was put in its place, to be checked before it is used',
       },
       ctx,
     );

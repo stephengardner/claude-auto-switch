@@ -8,7 +8,7 @@ import { matchesCapText, resetAtIn } from './cap-detect.js';
 import { scrubHostEnv } from './child-env.js';
 import { conversationIdIn, wantsExistingConversation } from './conversation.js';
 import type { SessionOutcome } from './hot-swap.js';
-import type { RestartBlocker } from './pty-session.js';
+import type { RestartBlocker, SignedOutVerdict } from './pty-session.js';
 import { exitCodeForSignal, type Interruption } from './interruption.js';
 
 /**
@@ -46,8 +46,13 @@ export interface HeadlessSessionOptions {
    * `recorded`: the refused turn itself, when it was read from the record.
    */
   verifyCap?: (renderedText: string, recorded?: RecordedRefusal) => Promise<boolean>;
-  /** As runPtySession's: resolves true only when the login is confirmed finished. */
-  verifySignedOut?: () => Promise<boolean>;
+  /**
+   * As runPtySession's. A headless run cannot be moved under its Claude, which
+   * gives up on a refused turn and exits, so a move ends the run for the swap
+   * loop to carry it on elsewhere, and a login found working again relaunches
+   * it on the same account.
+   */
+  verifySignedOut?: (text: string) => Promise<SignedOutVerdict>;
   /** As runPtySession's: asked when a limit turns up, or `true` for the whole run. */
   ignoreLimits?: boolean | (() => boolean);
   /** As runPtySession's: which refused turns are held back or passed over. */
@@ -66,6 +71,8 @@ const KILL_GRACE_MS = 3000;
 const VERIFY_WAIT_MS = 12_000;
 /** How long Claude's output may stay open after it exits, held by something it started, before the run is over anyway. */
 const CLOSE_WAIT_MS = 5000;
+/** As runPtySession's: how long an account nothing was learned about is passed over. */
+const UNPROVEN_HOLD_MS = 2 * 60_000;
 
 type Hit = { reason?: string; resetAt?: number };
 
@@ -279,6 +286,10 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
   /** What Claude showed when its login was turned away, once confirmed finished; and a check in flight. */
   let signedOut: string | null = null;
   let checkingLogin: Promise<void> | null = null;
+  /** What Claude showed when its login was turned away and nothing could be learned about it. */
+  let loginUnknown: string | null = null;
+  /** The account whose login was found working again after a refused turn, to carry the run on there. */
+  let loginWorkingOn: string | null = null;
   let exited = false;
   let stopped = false;
 
@@ -353,17 +364,23 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
 
   /**
    * A turn refused because the login no longer works. Claude headless gives
-   * up on it and exits; once the login is confirmed finished, the run ends as
-   * `needs-login` and its conversation carries on on the next account.
+   * up on it and exits. A finished login ends the run as `needs-login`, and
+   * one nothing could be learned about as a hold that records nothing, so the
+   * conversation carries on on the next account either way; a login found
+   * working again carries it on on the same one.
    */
   const loginEvidence = (text: string): void => {
-    if (!options.verifySignedOut || checkingLogin !== null || signedOut !== null) return;
+    if (!options.verifySignedOut || checkingLogin !== null || signedOut !== null || loginUnknown !== null) return;
     checkingLogin = options
-      .verifySignedOut()
-      .catch(() => false)
-      .then((finished) => {
-        if (finished && !switchTo && interruptedBy === null) {
-          signedOut = text;
+      .verifySignedOut(text)
+      .catch((): SignedOutVerdict => ({ kind: 'left' }))
+      .then((verdict) => {
+        if (switchTo || capped || interruptedBy !== null) return;
+        if (verdict.kind === 'working') {
+          loginWorkingOn = verdict.account;
+        } else if (verdict.kind === 'move') {
+          if (verdict.finished) signedOut = text;
+          else loginUnknown = text;
           stop();
         }
       })
@@ -373,7 +390,7 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
   };
 
   const checkRecord = (): void => {
-    if (capped || switchTo || interruptedBy !== null || signedOut !== null) return;
+    if (capped || switchTo || interruptedBy !== null || signedOut !== null || loginUnknown !== null) return;
     const seen = record.poll(conversation);
     recordReadable = recordReadable || seen.readable;
     // Not a limit, so watched even when limits are not.
@@ -479,6 +496,22 @@ export function runHeadlessSession(options: HeadlessSessionOptions): Promise<Ses
       }
       if (signedOut !== null) {
         resolve({ kind: 'needs-login', exitCode, reason: signedOut, ranMs, midSession: true });
+        return;
+      }
+      if (loginUnknown !== null) {
+        resolve({
+          kind: 'capped',
+          exitCode,
+          reason: loginUnknown,
+          resetAt: Date.now() + UNPROVEN_HOLD_MS,
+          ranMs,
+          unproven: true,
+        });
+        return;
+      }
+      // Claude gave up on the refused turn, and the login under it works now.
+      if (loginWorkingOn !== null && exitCode !== 0) {
+        resolve({ kind: 'switch', exitCode: 0, switchTo: loginWorkingOn, ranMs });
         return;
       }
       // A resume of a conversation that was never written: the swap loop's

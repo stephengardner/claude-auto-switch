@@ -61,6 +61,12 @@ export interface CliContext {
    */
   refuteBackoffMs?: number;
   /**
+   * Injected in tests: how long a login refused mid-session that nothing could
+   * be learned about waits before it is asked about again, once the session
+   * has moved off it. Production waits 5 minutes, then longer each time.
+   */
+  loginRecheckMs?: number;
+  /**
    * Injected in tests: how long a login renewal for a switch that did not
    * happen (another session using the login, an outage) waits before the same
    * switch tries it again. Production waits 20 s.

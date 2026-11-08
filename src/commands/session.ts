@@ -48,6 +48,7 @@ import {
   type CapDecision,
   type CarryOnEvent,
   type RestartBlocker,
+  type SignedOutVerdict,
 } from '../launcher/pty-session.js';
 import { runHeadlessSession } from '../launcher/headless-session.js';
 import { openTerminalInput } from '../launcher/terminal-input.js';
@@ -114,7 +115,13 @@ import {
   nudgeLoginReread,
 } from '../accounts/credential-vault.js';
 import { hasLogin, hasWorkingLogin } from '../accounts/account-login.js';
-import { askAboutLogin, isOnHold, reportFinishedLogin } from '../accounts/login-check.js';
+import {
+  askAboutLogin,
+  isOnHold,
+  reportFinishedLogin,
+  type LoginCheck,
+  type LoginCheckDeps,
+} from '../accounts/login-check.js';
 import {
   propagateRenewal,
   snapshotSharing,
@@ -163,7 +170,8 @@ import { holdBackOf } from '../dashboard/rotation-settings.js';
 import { activateWithLease, finishWithLease } from '../session/handoff.js';
 import { ensureLoginUsable, readinessMessage } from '../session/preflight.js';
 import { renewalIsDue, refreshCredentialIfExpired, takeUpRenewal } from '../usage/oauth-refresh.js';
-import { probeUsage } from '../usage/limit-probe.js';
+import { probeUsage, readOauthToken } from '../usage/limit-probe.js';
+import { sha256Fingerprint } from '../util/fingerprint.js';
 import { acquireLockDir, lockDirHeld, lockDirSteps, CREDENTIALS_LOCK_DIR } from '../claude/locks.js';
 import { logCredentialEvent } from '../accounts/credential-log.js';
 import { appendEvent, flushQueuedEvents, type EventDetail } from '../events/log.js';
@@ -199,6 +207,33 @@ const EDITOR_TAKE_UP_MS = 60_000;
 const MOVE_LOCK_WAIT_MS = 10_000;
 /** How soon a move a limit makes, which found the locks taken, is tried again. */
 const RELIEF_RETRY_MS = 200;
+/**
+ * The longest a turn refused for the login waits to hear about that login,
+ * leaving the rest of CHECK_BUDGET_MS to renew the login a move would go onto.
+ */
+const LOGIN_CHECK_MS = 7_000;
+/**
+ * When a login nothing could be learned about is asked about again, after the
+ * session was moved off it: this long, then twice as long each time, at most
+ * LOGIN_RECHECKS times.
+ */
+const LOGIN_RECHECK_MS = 5 * 60_000;
+const LOGIN_RECHECKS = 5;
+/** Claude saying the access token it was refused with had expired, in any of its wordings. */
+const SAYS_EXPIRED = /\bexpired\b/i;
+/**
+ * How long after a refused login was found working again a second refusal
+ * counts as the same trouble: the prompt typed to carry on is refused after
+ * the pickup wait and its answer, about a minute in production.
+ */
+const LOGIN_AGAIN_MS = 10 * 60_000;
+
+/**
+ * What a turn refused for the login came to (askAfterRefusal): the login under
+ * Claude works again, carried in from the account, renewed, or accepted as it
+ * was; or it is finished; or nothing could be learned, and why.
+ */
+type RefusedLoginAnswer = { state: 'carried' } | LoginCheck;
 
 /**
  * A move under the running Claude that was not made, because its Claude holds
@@ -589,6 +624,23 @@ export async function runInteractiveHotSwap(
     liveConversationId ?? readConversation(sessionDir) ?? plannedConversationId;
   /** A fork's own first launch, kept to copy it again if the copy was never saved. */
   const forkLaunch = forksConversation(args) && conversation.id !== null ? { args, id: conversation.id } : null;
+  /**
+   * The prompt that tells a session stopped on a refused turn to carry on in
+   * place, when one is due, and whether a relaunch would hand it over instead
+   * (a run launched with a prompt of its own keeps that one: withResumePrompt).
+   * The default prompt says the session was restarted, which only a relaunch
+   * does, so in place it gets the wording for that; a prompt the session armed,
+   * or one the person set, is theirs and is typed as written.
+   */
+  const inPlaceCarryOn = (): { prompt: string; canRelaunch: boolean } | null => {
+    const carryOn = relaunchPrompt();
+    if (carryOn === null) return null;
+    const unchangedDefault = carryOn.source === 'default' && carryOn.prompt === DEFAULT_RESUME_PROMPT;
+    return {
+      prompt: unchangedDefault ? IN_PLACE_PROMPT : carryOn.prompt,
+      canRelaunch: withResumePrompt(relaunchArgs(args, conversationId()), carryOn.prompt).applied,
+    };
+  };
 
   /**
    * True while Claude owns the screen. Anything ccx writes to stderr then lands
@@ -1385,26 +1437,41 @@ export async function runInteractiveHotSwap(
   };
 
   /**
-   * `renewBeforeMove`, tried again while something else is renewing the login
-   * right now, until `deadline`: a second session that met the same limit is
-   * often renewing it, and is done within a second. Meanwhile only the lock is
-   * looked at, every BUSY_RETRY_MS, and the whole renewal is tried again once
-   * it is let go: the whole one reads every profile's login, through a
-   * `security` process on macOS, on the thread that relays the terminal.
+   * A renewal of the login in `dir`, tried again while something else is
+   * renewing that login right now, until `deadline`: a second session that met
+   * the same limit, or Claude itself, is often renewing it, and is done within
+   * a second. Meanwhile only the lock is looked at, every BUSY_RETRY_MS, and
+   * the whole renewal is tried again once it is let go: the whole one reads
+   * every profile's login, through a `security` process on macOS, on the
+   * thread that relays the terminal.
    */
-  const renewWhileBusy = async (account: Account, deadline: number): Promise<MoveRenewal> => {
-    const lock = path.join(account.dir, CREDENTIALS_LOCK_DIR);
+  const whileBusy = async <T>(
+    dir: string,
+    deadline: number,
+    attempt: () => Promise<T>,
+    busy: (result: T) => boolean,
+  ): Promise<T> => {
+    const lock = path.join(dir, CREDENTIALS_LOCK_DIR);
     for (;;) {
-      const result = await renewBeforeMove(account).catch(
-        (error: unknown): MoveRenewal => ({ ok: false, why: 'failed', detail: thrownReason(error) }),
-      );
-      if (result.ok || result.why !== 'busy') return result;
+      const result = await attempt();
+      if (!busy(result)) return result;
       do {
         if (Date.now() + BUSY_RETRY_MS >= deadline) return result;
         await new Promise((resolve) => setTimeout(resolve, BUSY_RETRY_MS));
       } while (lockDirHeld(lock));
     }
   };
+  /** `renewBeforeMove`, tried again while something else is renewing that login (see whileBusy). */
+  const renewWhileBusy = (account: Account, deadline: number): Promise<MoveRenewal> =>
+    whileBusy(
+      account.dir,
+      deadline,
+      () =>
+        renewBeforeMove(account).catch(
+          (error: unknown): MoveRenewal => ({ ok: false, why: 'failed', detail: thrownReason(error) }),
+        ),
+      (result) => !result.ok && result.why === 'busy',
+    );
 
   /** Why a renewal for a move did not happen, as the end of a sentence. */
   const renewalWithheld = (account: Account, result: Exclude<MoveRenewal, { ok: true }>): string =>
@@ -1566,31 +1633,212 @@ export async function runInteractiveHotSwap(
     held: () => hop.holding() || moveUnderWay(),
     ignores: (refusal) => hop.duringHop(refusal.at),
   };
+  /** Ask Anthropic about the login in `dir` (accounts/login-check), the way every check here does. */
+  const askLogin = (dir: string, deps: LoginCheckDeps = {}): Promise<LoginCheck> =>
+    askAboutLogin(dir, { ctx: context.ctx, ...(context.loginProbe ? { probe: context.loginProbe } : {}), ...deps });
+
+  /**
+   * What a turn refused for this session's login comes to, asked of Anthropic
+   * by `deadline`. In this order, since each is cheaper and keeps more of the
+   * session than the next:
+   *
+   * 1. The account's stored login is newer than this session's copy (another
+   *    holder renewed it): carried in, renewed first when it is due.
+   * 2. This session's own copy, the one Claude was refused with, renewed for
+   *    the token it holds (login-check's `refused`).
+   * 3. That copy is finished, and the account's stored login is a different
+   *    one: asked about too, and carried in when it works, since then only
+   *    this copy was stale.
+   *
+   * Never throws: what went wrong is the reason it could not tell.
+   */
+  const askAfterRefusal = async (on: Account, text: string, deadline: number): Promise<RefusedLoginAnswer> => {
+    const carry = async (sessionRefused: boolean) => {
+      const result = await pullProfileIntoSessionAsync(on, sessionDir, context.ctx, { sessionRefused });
+      if (result === 'pulled') {
+        // It came from the profile, so it is not a change to mirror back (as pullRenewedLogin).
+        const stamp = credStamp();
+        mirror = finishCheck(beginCheck(mirror, stamp), stamp, 'settled');
+      }
+      return result;
+    };
+    const renewOwn = (dir: string, rejected: string) =>
+      whileBusy(
+        dir,
+        deadline,
+        () => refreshCredentialIfExpired(dir, { ctx: context.ctx, lockWaitMs: 0, renewRejected: rejected }),
+        (outcome) => outcome.status === 'busy',
+      );
+    try {
+      if ((await carry(false)) === 'pulled') {
+        if (!renewalIsDue(sessionDir)) return { state: 'carried' };
+        const held = readOauthToken(sessionCreds);
+        const renewal = held ? await renewOwn(sessionDir, sha256Fingerprint(held)) : null;
+        if (renewal?.status === 'needs-login') {
+          const detail = renewal.detail ?? 'the token endpoint refused it';
+          return { state: 'finished', detail, onHold: isOnHold(detail) };
+        }
+        // Not renewed here, for a reason the next renewal can get past: Claude
+        // renews a due login itself once it reads it.
+        return { state: 'carried' };
+      }
+      const own = await askLogin(sessionDir, {
+        renew: renewOwn,
+        refused: { expired: SAYS_EXPIRED.test(text) },
+      });
+      if (own.state !== 'finished') return own;
+      if (credentialFileFingerprint(on.dir) === credentialFileFingerprint(sessionDir)) return own;
+      const stored = await askLogin(on.dir);
+      if (stored.state === 'finished') return stored;
+      if (stored.state === 'unknown') {
+        return {
+          state: 'unknown',
+          detail: `this session's copy was refused, and the account's stored login could not be asked about (${stored.detail})`,
+        };
+      }
+      const carried = await carry(true);
+      if (carried === 'pulled') return { state: 'carried' };
+      return {
+        state: 'unknown',
+        detail:
+          carried === 'busy'
+            ? "the account's stored login works, but Claude held this session's login, so it could not be carried in"
+            : "the account's stored login works, but it could not be carried into this session",
+      };
+    } catch (error) {
+      return { state: 'unknown', detail: `the check failed: ${thrownReason(error)}` };
+    }
+  };
+
+  /**
+   * Accounts this session was moved off without an answer about their login,
+   * each asked about again on a timer while the session runs, until there is one.
+   */
+  const loginRechecks = new Map<string, NodeJS.Timeout>();
+  const recheckLoginLater = (account: Account, attempt = 0): void => {
+    if (attempt === 0 && loginRechecks.has(account.name)) return;
+    const waitMs = (context.loginRecheckMs ?? LOGIN_RECHECK_MS) * 2 ** attempt;
+    const timer = setTimeout(() => {
+      void askLogin(account.dir).then((check) => {
+        const said = `asked about the "${account.name}" login again`;
+        const data = { account: account.name, outcome: check.state, attempt: attempt + 1 };
+        if (check.state === 'unknown') {
+          if (attempt + 1 < LOGIN_RECHECKS) {
+            logEvent(`${said}, and still could not tell (${check.detail}); asking once more later`, {
+              kind: 'signed-out-check',
+              data,
+            });
+            recheckLoginLater(account, attempt + 1);
+            return;
+          }
+          loginRechecks.delete(account.name);
+          logEvent(
+            `${said}, and still could not tell (${check.detail}); stopped asking, so its next renewal or the ` +
+              'next session start on it decides',
+            { kind: 'signed-out-check', data },
+          );
+          return;
+        }
+        loginRechecks.delete(account.name);
+        if (check.state === 'finished') {
+          reportFinishedLogin(account.name, check, context.ctx);
+          logEvent(`${said}: the token endpoint refused it (${check.detail})`, { kind: 'signed-out-check', data });
+          return;
+        }
+        logEvent(`${said}: ${check.state === 'renewed' ? 'renewing it worked' : 'it works'}`, {
+          kind: 'signed-out-check',
+          data,
+        });
+      });
+    }, waitMs);
+    timer.unref?.();
+    loginRechecks.set(account.name, timer);
+  };
+
   /**
    * A turn refused because the session's login no longer works ("Please run
-   * /login"): true only when the token endpoint says the login is finished, and
-   * then the session ends and carries on elsewhere. Claude saying it is not
-   * enough on its own: the session's copy may just be behind the account's.
-   *
-   * The session's own copy is asked first, since it is what Claude was refused
-   * with; renewing it, when that works, is all the session needed. Then the
-   * account's stored login, when it is a different one: if THAT works, the
-   * account is fine and only this copy is stale, which is not a reason to leave
-   * it. Never while away, for the reason given at `verifyCap`.
+   * /login"), decided within one bounded check (askAfterRefusal): the session
+   * carries on where it is once its login works again, and is otherwise moved
+   * in place to another account, as a limit moves it. Claude's word alone does
+   * not take the account out of rotation; only the token endpoint's refusal
+   * does. When nothing can be learned in time the session is moved all the
+   * same, the account is left in rotation, and its login is asked about again
+   * later. A login found working a moment ago that Claude is refused with once
+   * more is moved off, whatever Anthropic says of it now, so a prompt is never
+   * typed into a refusal, nor a worker relaunched into one, over and over.
+   * Never while away, for the reason given at `verifyCap`.
    */
-  const verifySignedOut = async (): Promise<boolean> => {
+  let loginWorkedOn: { account: string; at: number } | null = null;
+  const checkSignedOut = async (text: string): Promise<SignedOutVerdict> => {
     const on = current;
-    if (hop.away() || !on) return false;
-    const ask = (dir: string) =>
-      askAboutLogin(dir, { ctx: context.ctx, ...(context.loginProbe ? { probe: context.loginProbe } : {}) });
-    const own = await ask(sessionDir);
-    if (own.state !== 'finished') return false;
-    if (credentialFileFingerprint(on.dir) !== credentialFileFingerprint(sessionDir)) {
-      const stored = await ask(on.dir);
-      if (stored.state !== 'finished') return false;
+    if (hop.away() || !on) return { kind: 'left' };
+    const again = loginWorkedOn?.account === on.name && Date.now() - loginWorkedOn.at < LOGIN_AGAIN_MS;
+    loginWorkedOn = null;
+    const startedAt = Date.now();
+    const deadline = startedAt + LOGIN_CHECK_MS;
+    // Counted as a limit check is: nothing else moves the session meanwhile.
+    capChecks += 1;
+    let answer: RefusedLoginAnswer;
+    try {
+      answer = (await within(() => askAfterRefusal(on, text, deadline), LOGIN_CHECK_MS)) ?? {
+        state: 'unknown',
+        detail: `no answer came within ${LOGIN_CHECK_MS / 1000} s`,
+      };
+    } finally {
+      capChecks -= 1;
     }
-    reportFinishedLogin(on.name, own, context.ctx);
-    return true;
+    if (again && answer.state !== 'finished' && answer.state !== 'unknown') {
+      answer = { state: 'unknown', detail: 'Claude was refused again with the login just found working' };
+    }
+    const refused = `a turn on "${on.name}" was refused for its login`;
+    if (answer.state === 'carried' || answer.state === 'renewed' || answer.state === 'works') {
+      // A Claude that keeps its login in the Keychain reads it again at once.
+      nudgeLoginReread(sessionDir, new Date(), loginStore);
+      const how =
+        answer.state === 'carried'
+          ? "; carried the account's newer login into this session"
+          : answer.state === 'renewed'
+            ? "; renewed this session's copy of it"
+            : ', but Anthropic accepts the login this session holds, and Claude was told to read it again';
+      logEvent(`${refused}${how}, so it carries on on "${on.name}" in place`, {
+        kind: 'signed-out-check',
+        data: { account: on.name, outcome: answer.state },
+      });
+      loginWorkedOn = { account: on.name, at: Date.now() };
+      const handOver = inPlaceCarryOn();
+      return { kind: 'working', account: on.name, ...(handOver ? { carryOn: handOver } : {}) };
+    }
+    if (answer.state === 'finished') {
+      reportFinishedLogin(on.name, answer, context.ctx);
+      logEvent(`${refused}, and the token endpoint refused it too (${answer.detail}); moving this session to another account`, {
+        kind: 'signed-out-check',
+        data: { account: on.name, outcome: 'finished' },
+      });
+    } else {
+      const againMs = context.loginRecheckMs ?? LOGIN_RECHECK_MS;
+      logEvent(
+        `${refused}, and ccx could not tell whether that login works, because ${answer.detail}; moving this ` +
+          `session to another account without marking "${on.name}" signed out, and asking about it again in ` +
+          `${Math.max(1, Math.round(againMs / 60_000))} min`,
+        { kind: 'signed-out-check', data: { account: on.name, outcome: 'unknown', detail: answer.detail } },
+      );
+      recheckLoginLater(on);
+    }
+    // Moved as a limit moves it (onCapConfirmed), off this account, onto one
+    // whose login can go under Claude: renewed first when that is all it needs.
+    limitMetOn = on.name;
+    limitedModel = undefined;
+    limitedResetAt = undefined;
+    capConfirmedAt = Date.now();
+    try {
+      await renewForRelief(CHECK_BUDGET_MS - (Date.now() - startedAt));
+    } catch (error) {
+      logEvent(`could not prepare this session's move after its login was refused: ${thrownReason(error)}`, {
+        kind: 'renewal',
+        data: { for: 'signed-out', ok: false },
+      });
+    }
+    return { kind: 'move', finished: answer.state === 'finished' };
   };
   /**
    * The check every limit goes through. Never while away: the login in the
@@ -2147,8 +2395,11 @@ export async function runInteractiveHotSwap(
       // this account yet, and a login that is genuinely finished is named, with
       // the command that fixes it, rather than turning into Claude saying you are
       // logged out for no visible reason.
-      const checkReadiness = () =>
-        ensureLoginUsable({
+      /** Whether the last check's usage read was answered, which says the token in it is accepted. */
+      const lastRead = { answered: false };
+      const checkReadiness = () => {
+        lastRead.answered = false;
+        return ensureLoginUsable({
           hasLogin: () => hasLogin(account.dir),
           renewalDue: () => !editorHoldsNewer && renewalIsDue(account.dir),
           // Before Claude starts, nothing is relayed, so this one may wait for the lock.
@@ -2163,9 +2414,12 @@ export async function runInteractiveHotSwap(
             if (editorHoldsNewer) return null;
             const probe =
               context.loginProbe ?? ((file: string) => probeUsage(file, fetch, PREFLIGHT_PROBE_MS));
-            return (await probe(path.join(account.dir, CREDS))).rejected?.token ?? null;
+            const read = await probe(path.join(account.dir, CREDS));
+            lastRead.answered = read.verdict !== 'unknown';
+            return read.rejected?.token ?? null;
           },
         });
+      };
       let readiness = await checkReadiness();
       if (readiness.state === 'needs-login') {
         // The stored login is dead, but a LIVE session of this account may be
@@ -2175,15 +2429,27 @@ export async function runInteractiveHotSwap(
         // starting normally and demanding a sign-in the operator does not owe.
         const recovered = recoverLoginFromLiveSession(account, sessionDir, context.ctx);
         if (recovered.recovered) {
+          readiness = await checkReadiness();
+          // Said as the check found it: an idle session's copy can be as dead as the stored one.
+          const from = `its live session (pid ${recovered.fromPid})`;
+          const checked = readiness.state === 'renewed' || (readiness.state === 'ready' && lastRead.answered);
           logEvent(
-            `the stored "${account.name}" login was dead; adopted the working one from ` +
-              `its live session (pid ${recovered.fromPid})`,
+            readiness.state === 'needs-login'
+              ? `the stored "${account.name}" login was dead, and so was the copy ${from} holds (${readiness.detail})`
+              : checked
+                ? `the stored "${account.name}" login was dead; adopted the working one from ${from}`
+                : `the stored "${account.name}" login was dead; took the copy ${from} holds, which could not be ` +
+                  `checked (${readiness.state === 'unknown' ? readiness.detail : 'its usage could not be read'})`,
             {
               kind: 'credential-sync',
-              data: { account: account.name, direction: 'recover', fromPid: recovered.fromPid },
+              data: {
+                account: account.name,
+                direction: 'recover',
+                fromPid: recovered.fromPid,
+                checked: readiness.state === 'needs-login' ? 'dead' : checked ? 'works' : 'unchecked',
+              },
             },
           );
-          readiness = await checkReadiness();
         }
       }
       if (readiness.state === 'renewed') {
@@ -2453,16 +2719,13 @@ export async function runInteractiveHotSwap(
        */
       const onCapConfirmed = (hit: { reason?: string; resetAt?: number }, opts: CapContext): CapDecision => {
         // Whose limit it is was settled when it was confirmed (see limitMetOn).
+        // For a turn refused for the login, the account whose login it was.
         const capName = limitMetOn ?? capOwner ?? current?.name ?? account.name;
         const confirmedAt = capConfirmedAt;
         capConfirmedAt = null;
 
-        const carryOn = relaunchPrompt();
-        // Whether a relaunch would hand the prompt over at all: a run launched
-        // with a prompt of its own keeps that one (see withResumePrompt).
-        const relaunchDelivers =
-          carryOn !== null &&
-          withResumePrompt(relaunchArgs(args, conversationId()), carryOn.prompt).applied;
+        const carryOn = inPlaceCarryOn();
+        const relaunchDelivers = carryOn?.canRelaunch ?? false;
         // A session stopped on the limit, with a prompt due that cannot be typed
         // into this Claude, is relaunched as before: left in place it would sit
         // idle, exactly the stall the prompt exists to end. One whose subagent
@@ -2565,7 +2828,9 @@ export async function runInteractiveHotSwap(
         // recordCap twice (a duplicate event, and worse, a second call can cap the
         // believed account after the first cleared the unregistered-identity
         // guard). limitedModel/limitedResetAt scope it to a model when model-only.
-        if (relievedTo !== null || opts.switching) {
+        // A login refused is no limit: the token endpoint's refusal is already
+        // written down where rotation looks, and an unanswered one is not to be.
+        if (!opts.login && (relievedTo !== null || opts.switching)) {
           capUnregisteredEmail = unregistered;
           // From the session's poll, which relays Claude's terminal.
           recordCap(capName, hit.reason ?? 'usage cap', hit.resetAt, { blocking: false });
@@ -2604,37 +2869,40 @@ export async function runInteractiveHotSwap(
           setActive(relievedTo.name, context.ctx);
           void moveEditorToActive(context, { session: true });
         }
+        const why =
+          opts.login === 'finished'
+            ? `"${capName}" was signed out`
+            : opts.login === 'unknown'
+              ? `ccx could not tell whether the "${capName}" login works`
+              : `"${capName}" hit its limit`;
         notice(
           anyway !== null
-            ? `"${capName}" hit its limit, and ${anyway}`
-            : `"${capName}" hit its limit; moved this session to "${relievedTo.name}" in place (no restart)`,
+            ? `${why}, and ${anyway}`
+            : `${why}; moved this session to "${relievedTo.name}" in place (no restart)`,
         );
         notifyAccountSwitch(relievedTo.name, 'switched in place');
-        logEvent(`seamless cap relief: ${capName} -> ${relievedTo.name}`, {
-          kind: 'cap-relief',
-          data: {
-            from: capName,
-            to: relievedTo.name,
-            ...(anyway !== null ? { everyAccountLookedOut: true } : {}),
-            ...(opts.sidechain ? { metBy: 'subagent' } : {}),
+        logEvent(
+          opts.login
+            ? `moved this session in place after a turn refused for its login: ${capName} -> ${relievedTo.name}`
+            : `seamless cap relief: ${capName} -> ${relievedTo.name}`,
+          {
+            kind: 'cap-relief',
+            data: {
+              from: capName,
+              to: relievedTo.name,
+              ...(opts.login ? { login: opts.login } : {}),
+              ...(anyway !== null ? { everyAccountLookedOut: true } : {}),
+              ...(opts.sidechain ? { metBy: 'subagent' } : {}),
+            },
           },
-        });
-        if (carryOn === null) return { kind: 'relieved', account: relievedTo.name };
+        );
         // Handed over even when this Claude cannot be typed into. A session
         // moved on a subagent's refusal has not stopped, but its main thread
         // can still be refused by a request already on its way, and then it is
         // stalled with nothing to tell it so: the prompt is what gets it
         // relaunched in that case.
-        //
-        // The default says the session was restarted, which is what a relaunch
-        // does. In place it gets the wording for that; a prompt the session
-        // armed, or one the person set, is theirs and is typed as written.
-        const unchangedDefault = carryOn.source === 'default' && carryOn.prompt === DEFAULT_RESUME_PROMPT;
-        return {
-          kind: 'relieved',
-          account: relievedTo.name,
-          carryOn: { prompt: unchangedDefault ? IN_PLACE_PROMPT : carryOn.prompt, canRelaunch: relaunchDelivers },
-        };
+        if (carryOn === null) return { kind: 'relieved', account: relievedTo.name };
+        return { kind: 'relieved', account: relievedTo.name, carryOn };
       };
       /** What became of a prompt typed into the live session, for `ccx history`. */
       const onCarryOn = (event: CarryOnEvent): void => {
@@ -2663,7 +2931,7 @@ export async function runInteractiveHotSwap(
         switchWatch,
         onTick,
         verifyCap,
-        verifySignedOut,
+        verifySignedOut: checkSignedOut,
         limitGate,
         onCapConfirmed,
         onCarryOn,
@@ -2715,7 +2983,7 @@ export async function runInteractiveHotSwap(
           switchWatch,
           onTick,
           verifyCap,
-          verifySignedOut,
+          verifySignedOut: checkSignedOut,
           limitGate,
           ...(runOptions?.ignoreLimits ? { ignoreLimits: nowhereToGo } : {}),
           ...(stdin !== undefined ? { stdin } : {}),
@@ -2965,6 +3233,7 @@ export async function runInteractiveHotSwap(
   // No more sessions will run: stop watching usage and restore the terminal.
   proactive.stop();
   usageWatch.stop();
+  for (const timer of loginRechecks.values()) clearTimeout(timer);
   // Drop this session's own per-session switch request so it cannot outlive the
   // run and be read by a later session that reuses this pid. Startup clears it
   // too; this just keeps the folder from collecting files between runs.
