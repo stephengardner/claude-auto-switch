@@ -52,7 +52,10 @@ export interface CapContext {
 
 /** What a turn refused for the login ("Please run /login") comes to, once asked about. */
 export type SignedOutVerdict =
-  /** Nothing to act on now (the session is away on another account for one call). */
+  /**
+   * Left as it is: the session is away on another account for one call, or
+   * nothing could be learned about the login and no other account can take it.
+   */
   | { kind: 'left' }
   /**
    * The login under Claude works again, on `account`: Claude reads it at its

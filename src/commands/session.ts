@@ -1654,6 +1654,9 @@ export async function runInteractiveHotSwap(
    */
   const askAfterRefusal = async (on: Account, text: string, deadline: number): Promise<RefusedLoginAnswer> => {
     const carry = async (sessionRefused: boolean) => {
+      // Past the deadline the session may be moving, or moved, onto another
+      // account, and this would put the old one's login back under Claude.
+      if (Date.now() >= deadline || current !== on) return 'skipped' as const;
       const result = await pullProfileIntoSessionAsync(on, sessionDir, context.ctx, { sessionRefused });
       if (result === 'pulled') {
         // It came from the profile, so it is not a change to mirror back (as pullRenewedLogin).
@@ -1720,7 +1723,7 @@ export async function runInteractiveHotSwap(
     const waitMs = (context.loginRecheckMs ?? LOGIN_RECHECK_MS) * 2 ** attempt;
     const timer = setTimeout(() => {
       void askLogin(account.dir).then((check) => {
-        const said = `asked about the "${account.name}" login again`;
+        const said = `asked about the "${account.name}" login again (${attempt + 1} of ${LOGIN_RECHECKS})`;
         const data = { account: account.name, outcome: check.state, attempt: attempt + 1 };
         if (check.state === 'unknown') {
           if (attempt + 1 < LOGIN_RECHECKS) {
@@ -1815,14 +1818,22 @@ export async function runInteractiveHotSwap(
         data: { account: on.name, outcome: 'finished' },
       });
     } else {
-      const againMs = context.loginRecheckMs ?? LOGIN_RECHECK_MS;
-      logEvent(
-        `${refused}, and ccx could not tell whether that login works, because ${answer.detail}; moving this ` +
-          `session to another account without marking "${on.name}" signed out, and asking about it again in ` +
-          `${Math.max(1, Math.round(againMs / 60_000))} min`,
-        { kind: 'signed-out-check', data: { account: on.name, outcome: 'unknown', detail: answer.detail } },
-      );
+      const unsure = `${refused}, and ccx could not tell whether that login works, because ${answer.detail}`;
+      const later = `asking about it again in ${Math.max(1, Math.round((context.loginRecheckMs ?? LOGIN_RECHECK_MS) / 60_000))} min`;
       recheckLoginLater(on);
+      // A login nothing could be learned about may well work: with no other
+      // account to carry the session on, ending it would only lose it.
+      if (!otherAccountFor(on.name)) {
+        logEvent(`${unsure}; no other account can take this session, so it stays on "${on.name}", ${later}`, {
+          kind: 'signed-out-check',
+          data: { account: on.name, outcome: 'unknown', detail: answer.detail, stayed: true },
+        });
+        return { kind: 'left' };
+      }
+      logEvent(`${unsure}; moving this session to another account without marking "${on.name}" signed out, ${later}`, {
+        kind: 'signed-out-check',
+        data: { account: on.name, outcome: 'unknown', detail: answer.detail },
+      });
     }
     // Moved as a limit moves it (onCapConfirmed), off this account, onto one
     // whose login can go under Claude: renewed first when that is all it needs.
@@ -2142,6 +2153,12 @@ export async function runInteractiveHotSwap(
       modelOnly: inPlace ? null : modelOnlyLimit(loadLedger(context.ctx), Date.now()),
       ...(inPlace ? { inPlace: true } : {}),
     });
+
+  /** Whether a relaunch could carry this session on anywhere but `name`, as the swap loop would choose. */
+  const otherAccountFor = (name: string): boolean => {
+    const excluding = new Set([name, ...setAsideNow(), ...deadLogins()]);
+    return pickAccount(excluding, { quiet: true }) !== null || startAnyway(excluding) !== null;
+  };
 
   // Claim the operator's keyboard once for the whole run; every session in the
   // swap loop borrows it, so terminal mode is never toggled mid-swap.

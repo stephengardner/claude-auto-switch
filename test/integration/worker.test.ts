@@ -14,6 +14,7 @@ import { leasePath, processIsAlive } from '../../src/session/lease.js';
 import { sessionDirFor } from '../../src/session/session-dir.js';
 import { updateLedger } from '../../src/ledger/ledger.js';
 import { readEvents } from '../../src/events/log.js';
+import { hasWorkingLogin } from '../../src/accounts/account-login.js';
 import { writeSwitchRequest } from '../../src/state/switch-request.js';
 import { saveToken } from '../../src/daemon/token-store.js';
 import type { CliContext } from '../../src/context.js';
@@ -356,6 +357,32 @@ describe('ccx worker (against fake-claude)', () => {
       const id = valueAfter(launches[0]?.args ?? [], '--session-id');
       expect(valueAfter(launches[1]?.args ?? [], '--resume')).toBe(id);
       expect(launches[1]?.prompt).toBe(WORKER_CARRY_ON);
+    },
+  );
+
+  it(
+    'carries on on the next account, leaving the account in rotation, when nothing can be learned about its login',
+    { timeout: 60_000 },
+    async () => {
+      const { home, context, runsLog } = await setup(['A', 'B']);
+      for (const name of ['A', 'B']) signIn(path.join(home, 'profiles', name), name);
+      const server = loginServer();
+      // The usage endpoint rate limited, and the token endpoint out of reach for A.
+      server.rateLimit();
+      server.cutOff('A');
+      context.loginProbe = server.loginProbe;
+      Object.assign(process.env, refusing(), {
+        FAKE_CLAUDE_REFUSE_AS: 'signed-out',
+        FAKE_CLAUDE_REFUSE_ON: 'A',
+        FAKE_CLAUDE_REFUSAL_ENDS_RUN: '1',
+      });
+      const seen = capture();
+      expect(await workerCommand(context, ['refactor', 'billing'], {}, [], seen.io)).toBe(0);
+
+      const launches = launchesIn(runsLog);
+      expect(launches.map((l) => l.marker)).toEqual(['A', 'B']);
+      expect(valueAfter(launches[1]?.args ?? [], '--resume')).toBe(valueAfter(launches[0]?.args ?? [], '--session-id'));
+      expect(hasWorkingLogin(path.join(home, 'profiles', 'A'), context.ctx)).toBe(true);
     },
   );
 

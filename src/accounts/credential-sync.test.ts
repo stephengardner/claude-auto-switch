@@ -10,6 +10,7 @@ import {
   type PullEvidence,
 } from './credential-sync.js';
 import { credentialPath, credentialFingerprint } from './credential-vault.js';
+import { readCredentialEvents } from './credential-log.js';
 import { takeLease } from '../session/lease.js';
 
 function evidence(overrides: Partial<PullEvidence> = {}): PullEvidence {
@@ -134,6 +135,20 @@ describe('carrying a renewal into a running session', () => {
     expect(credentialFingerprint(session)).not.toBe(credentialFingerprint(profile));
   });
 
+  it("carries the account's login over a session copy the token endpoint just refused, however long it says it has", async () => {
+    // Claude was refused with this session's copy and the token endpoint
+    // refused to renew it, while the account's stored login is another one
+    // that works. The dead copy's later expiry must not keep the working one out.
+    const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-'));
+    const profile = dirWithLogin(root, 'profile', 'working', 5_000);
+    const session = dirWithLogin(root, 'session', 'refused', 9_000, 'a@example.com');
+    const account = { name: 'work', dir: profile, email: 'a@example.com' };
+    expect(await pullProfileIntoSessionAsync(account, session, scratch(root), { sessionRefused: true })).toBe(
+      'pulled',
+    );
+    expect(credentialFingerprint(session)).toBe(credentialFingerprint(profile));
+  });
+
   it('does the same on timers for a running session, by the same rules', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'cas-sync-'));
     const profile = dirWithLogin(root, 'profile', 'new', 9_000);
@@ -207,6 +222,21 @@ describe('recovering a dead profile login from a live session', () => {
         .recovered,
     ).toBe(false);
     expect(credentialFingerprint(profile)).toBe(before);
+  });
+
+  it('never calls the copy it adopts a working one, since nothing here asked Anthropic', () => {
+    // An idle session's copy can be as dead as the profile's: one adopted
+    // that way at 03:58 was found dead by the very next check.
+    const { root, c } = home();
+    const profile = dirWithLogin(root, 'profile', 'dead', 1);
+    const live = dirWithLogin(root, 'live-session', 'also-dead', 9_000, 'a@example.com');
+    takeLease('work', live, c);
+    expect(
+      recoverLoginFromLiveSession({ name: 'work', dir: profile, email: 'a@example.com' }, null, c).recovered,
+    ).toBe(true);
+    const said = readCredentialEvents(10, c).map((e) => e.detail ?? '');
+    expect(said).toHaveLength(1);
+    expect(said[0]).not.toMatch(/working/);
   });
 
   it('never adopts from the session that is asking', () => {

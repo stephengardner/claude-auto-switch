@@ -5,6 +5,7 @@ import path from 'node:path';
 import { askAboutLogin, isOnHold, loginOnHold } from './login-check.js';
 import { credentialFileFingerprint, credentialPath } from './credential-vault.js';
 import { rememberDeadLogin } from '../usage/dead-login-store.js';
+import { sha256Fingerprint } from '../util/fingerprint.js';
 import type { LimitProbeResult } from '../usage/limit-probe.js';
 import type { RefreshOutcome } from '../usage/oauth-refresh.js';
 
@@ -88,6 +89,46 @@ describe('asking Anthropic whether a login still works', () => {
       const check = await askAboutLogin(dir(), { probe: read(turnedAway), renew: async () => ({ status }) });
       expect(check.state, status).toBe('unknown');
     }
+  });
+});
+
+describe('a login Claude was just refused with', () => {
+  const rateLimited: LimitProbeResult = { verdict: 'unknown', detail: 'status 429' };
+
+  it('goes straight to the token endpoint when Claude said its token expired', async () => {
+    const login = dir();
+    let reads = 0;
+    const asked: string[] = [];
+    const check = await askAboutLogin(login, {
+      probe: async () => {
+        reads += 1;
+        return rateLimited;
+      },
+      renew: async (_dir, rejected) => {
+        asked.push(rejected);
+        return { status: 'refreshed' };
+      },
+      refused: { expired: true },
+    });
+    expect(check).toEqual({ state: 'renewed' });
+    expect(reads).toBe(0);
+    // For the access token the login holds, and no other.
+    expect(asked).toEqual([sha256Fingerprint(login)]);
+  });
+
+  it('is still asked of the token endpoint when the usage read cannot answer', async () => {
+    const login = dir();
+    const asked: string[] = [];
+    const check = await askAboutLogin(login, {
+      probe: read(rateLimited),
+      renew: async (_dir, rejected) => {
+        asked.push(rejected);
+        return { status: 'needs-login', detail: SIGNED_OUT };
+      },
+      refused: { expired: false },
+    });
+    expect(check).toEqual({ state: 'finished', detail: SIGNED_OUT, onHold: false });
+    expect(asked).toEqual([sha256Fingerprint(login)]);
   });
 });
 
