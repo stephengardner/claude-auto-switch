@@ -42,6 +42,7 @@ import { homeCommand } from './commands/home.js';
 import { sessionsCommand } from './commands/sessions.js';
 import { setupCommand } from './commands/setup.js';
 import { editorCommand } from './commands/editor.js';
+import { setDefaultLoginMode } from './accounts/default-login.js';
 import { CasError } from './util/errors.js';
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -384,6 +385,19 @@ program
   .option('--editor <name>', 'cursor or vscode (defaults to cursor)')
   .action(async (action: string | undefined, opts: { editor?: string }) => {
     process.exitCode = await editorCommand(context(), action, opts);
+  });
+
+program
+  .command('chat [action]')
+  .description("macOS and Linux: chats on Claude's own login (plain ~/.claude) switch mid-chat along with ccx: on|off")
+  .action(async (action: string | undefined) => {
+    const c = context();
+    if (action !== undefined && action !== 'on' && action !== 'off') {
+      c.out(`unknown action "${action}": use \`ccx chat on\` or \`ccx chat off\``);
+      process.exitCode = 1;
+      return;
+    }
+    c.out(await setDefaultLoginMode(action !== 'off', c.ctx));
   });
 
 program

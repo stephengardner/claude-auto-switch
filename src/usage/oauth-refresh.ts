@@ -2,6 +2,7 @@ import path from 'node:path';
 import { CREDENTIALS_LOCK_DIR, lockDirSteps } from '../claude/locks.js';
 import {
   copyCredentialSteps,
+  holdsDefaultLogin,
   readCredential,
   readCredentialSteps,
   writeCredentialSteps,
@@ -181,6 +182,12 @@ export async function refreshCredentialIfExpired(
       status: kept.busy ? 'busy' : 'unavailable',
       detail: `a renewal kept when its save failed is not saved yet: ${kept.detail}`,
     };
+  }
+  // Chat mode: the chats on Claude's default login renew this one, and a second renewer would sign them out.
+  if (holdsDefaultLogin(accountDir)) {
+    return kept.state === 'saved'
+      ? { status: 'refreshed', detail: 'saved a renewal kept when its save failed' }
+      : { status: 'not-needed', detail: 'renewed by the chats using it' };
   }
   // Looked at first without the lock, so a login with nothing to do never waits for it.
   const before = assess(credentialPath(accountDir), now, options.ctx, options.renewRejected);

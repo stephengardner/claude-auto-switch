@@ -1,6 +1,10 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
+import path from 'node:path';
+import { writeSecretFile } from '../util/secret-file.js';
+import { DEFAULT_LOGIN, defaultLoginFolder } from './default-login-item.js';
 
 /**
  * `security`, the program macOS reaches the Keychain through. Each call has a
@@ -30,8 +34,34 @@ const NOT_FOUND = 44;
  */
 const INTERACTIVE_LINE_LIMIT = 4000;
 
+/** The file Claude's default login (DEFAULT_LOGIN) is kept in on Linux; null for every other item and platform. */
+function defaultLoginFile(dir: string, options: KeychainOptions): string | null {
+  if (dir !== DEFAULT_LOGIN || (options.platform ?? process.platform) !== 'linux') return null;
+  return path.join(defaultLoginFolder(), '.credentials.json');
+}
+
+function readDefaultLoginFile(file: string): string | null {
+  try {
+    return readFileSync(file, 'utf8').trim() || null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return null;
+    throw new Error("Could not read Claude's default login file");
+  }
+}
+
+/** Written whole, owner-only, as Claude writes it; never removed by ccx. */
+function writeDefaultLoginFile(file: string, text: string): void {
+  try {
+    writeSecretFile(file, text);
+  } catch {
+    throw new Error("Could not save Claude's default login file");
+  }
+}
+
 /** Claude namespaces an explicit CLAUDE_CONFIG_DIR by its NFC-normalized path. */
 export function keychainService(dir: string): string {
+  // CCX_DEFAULT_LOGIN_SERVICE lets an end-to-end test use a throwaway item instead of the real login.
+  if (dir === DEFAULT_LOGIN) return process.env.CCX_DEFAULT_LOGIN_SERVICE || 'Claude Code-credentials';
   const hash = createHash('sha256').update(dir.normalize('NFC')).digest('hex');
   return `Claude Code-credentials-${hash.slice(0, 8)}`;
 }
@@ -93,8 +123,10 @@ export const execFileAsync: ExecAsync = (file, args, options) =>
     child.stdin?.end(options.input ?? '');
   });
 
-/** No global/default Keychain fallback: it could belong to a different account. */
+/** No global/default Keychain fallback: it could belong to a different account. Claude's default login only when asked for by name. */
 export function readKeychainCredential(dir: string, options: KeychainOptions = {}): string | null {
+  const file = defaultLoginFile(dir, options);
+  if (file !== null) return readDefaultLoginFile(file);
   if (!onMac(options)) return null;
   try {
     return (
@@ -114,6 +146,8 @@ export function readKeychainCredential(dir: string, options: KeychainOptions = {
 
 /** readKeychainCredential with the thread free while `security` runs. */
 export async function readKeychainCredentialAsync(dir: string, options: KeychainOptions = {}): Promise<string | null> {
+  const file = defaultLoginFile(dir, options);
+  if (file !== null) return readDefaultLoginFile(file);
   if (!onMac(options)) return null;
   try {
     return (await (options.execAsync ?? execFileAsync)(SECURITY, findArgs(dir, options), { timeout: TIMEOUT_MS })).trim() || null;
@@ -130,6 +164,11 @@ export async function readKeychainCredentialAsync(dir: string, options: Keychain
  * it holds, nothing is written.
  */
 export function writeKeychainCredential(dir: string, text: string, options: KeychainOptions = {}): void {
+  const file = defaultLoginFile(dir, options);
+  if (file !== null) {
+    writeDefaultLoginFile(file, text);
+    return;
+  }
   if (!onMac(options)) {
     throw new Error('macOS Keychain is unavailable on this platform');
   }
@@ -165,6 +204,11 @@ export function writeKeychainCredential(dir: string, text: string, options: Keyc
 
 /** writeKeychainCredential with the thread free while `security` runs. */
 export async function writeKeychainCredentialAsync(dir: string, text: string, options: KeychainOptions = {}): Promise<void> {
+  const file = defaultLoginFile(dir, options);
+  if (file !== null) {
+    writeDefaultLoginFile(file, text);
+    return;
+  }
   if (!onMac(options)) {
     throw new Error('macOS Keychain is unavailable on this platform');
   }

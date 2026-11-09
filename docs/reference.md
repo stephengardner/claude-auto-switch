@@ -40,6 +40,7 @@
 | `ccx statusline`                         | the status line itself (`--install` prints the snippet, `--compact`)                                                           |
 | `ccx setup`                              | the next setup step, wherever you are                                                                                          |
 | `ccx editor on\|off`                     | set up / remove just the editor                                                                                                |
+| `ccx chat on\|off`                       | chats on Claude's own login (plain `~/.claude`) switch mid-chat with ccx (macOS, Linux)                                        |
 | `ccx daemon install`                     | always-on rotation outside a terminal                                                                                          |
 | `ccx remove <name>`                      | remove an account (`--purge` also deletes its folder and login, once nothing is using them)                                    |
 

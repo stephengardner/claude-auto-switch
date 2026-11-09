@@ -136,6 +136,8 @@ import {
   type KeychainIo,
   type KeychainWatch,
 } from '../accounts/keychain-view.js';
+import { DEFAULT_LOGIN } from '../accounts/default-login-item.js';
+import { defaultLoginEnabled } from '../accounts/default-login.js';
 import { call, runBlocking, runOnTimers, type Steps } from '../util/steps.js';
 import { decideSaveBack, savesOnLeaving } from '../accounts/save-back.js';
 import { readExpiresAtSteps } from '../usage/token-expiry.js';
@@ -2737,6 +2739,8 @@ export async function runInteractiveHotSwap(
           return [];
         }
       };
+      /** Claude's own default login, which a profile's saved login is read through while chat mode has it there. */
+      const chatModeLogins = (): string[] => (defaultLoginEnabled(context.ctx) ? [DEFAULT_LOGIN] : []);
       const runChild = async (childArgs: string[], stdin?: string): Promise<SessionOutcome> => {
         // While Claude runs, ccx reads the Keychain only off this thread, which
         // relays its terminal, and only where a folder says a login may have
@@ -2745,7 +2749,7 @@ export async function runInteractiveHotSwap(
         const watch = watchKeychain();
         try {
           // Kept however long nothing asks about one, so a decision made later never reads one on this thread.
-          const dirs = [sessionDir, ...accounts.map((a) => a.dir), ...editorSpellings()];
+          const dirs = [sessionDir, ...accounts.map((a) => a.dir), ...editorSpellings(), ...chatModeLogins()];
           await watch.watch(dirs, { pinned: true });
           watchedDirs = new Set(dirs);
           keychainWatch = watch;
