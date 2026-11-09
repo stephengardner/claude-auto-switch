@@ -59,6 +59,7 @@ import { removeSessionDir } from '../session/session-dir.js';
 import { processIsAlive } from '../session/lease.js';
 import { editorPointerAccount, editorTargetAccount, syncEditorPointerIfEnabled } from './junction.js';
 import { editorChatNoted } from './editor-chats.js';
+import { followActiveInDefaultLogin } from '../accounts/default-login.js';
 import {
   editorFolderLogin,
   editorFolderPath,
@@ -190,6 +191,9 @@ function heldLoginRefused(text: string, account: Account, c: PathCtx): boolean {
  * worth ending a session.
  */
 export function moveEditorToActive(context: CliContext, from: { session?: boolean } = {}): Promise<EditorUp> {
+  // Chat mode: chats on Claude's own default login follow the switch too, on
+  // timers and off the thread; it never throws (accounts/default-login).
+  void followActiveInDefaultLogin(context.ctx);
   // From a running session's thread, which relays Claude's terminal, ccx's
   // own locks are tried once and the refresh left to the next event.
   return bringEditorUp(context, { move: true, setUp: false, ...(from.session ? { lockWaitMs: 0 } : {}) });

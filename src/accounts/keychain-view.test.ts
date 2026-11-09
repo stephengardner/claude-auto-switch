@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,7 @@ import {
   type KeychainWatch,
 } from './keychain-view.js';
 import { acquireLockDir, CREDENTIALS_LOCK_DIR, lockDirSteps } from '../claude/locks.js';
+import { DEFAULT_LOGIN } from './default-login-item.js';
 import { runOnTimers } from '../util/steps.js';
 
 /**
@@ -319,5 +320,57 @@ describe('the Keychain while a session runs Claude', () => {
     first.stop();
     expect(readKeychainItem(dir)).toBe('login-1');
     expect(blocking()).toBe(1);
+  });
+});
+
+describe("Claude's default login while a session runs Claude (chat mode)", () => {
+  let home: string;
+  let claudeFolder: string;
+  const before = process.env.CCX_DEFAULT_CLAUDE_HOME;
+  beforeEach(() => {
+    home = mkdtempSync(path.join(tmpdir(), 'cas-kcview-default-'));
+    claudeFolder = path.join(home, '.claude');
+    mkdirSync(claudeFolder);
+    age(claudeFolder);
+    process.env.CCX_DEFAULT_CLAUDE_HOME = home;
+  });
+  afterEach(() => {
+    if (before === undefined) delete process.env.CCX_DEFAULT_CLAUDE_HOME;
+    else process.env.CCX_DEFAULT_CLAUDE_HOME = before;
+  });
+
+  it('is read again, off the thread, once ~/.claude says Claude saved it', async () => {
+    fake.items.set(DEFAULT_LOGIN, 'login-1');
+    watch = watchKeychain();
+    await watch.watch([DEFAULT_LOGIN]);
+    await watch.look();
+    expect(readKeychainItem(DEFAULT_LOGIN)).toBe('login-1');
+    expect(off()).toBe(1);
+    // A chat on plain ~/.claude saves a renewal there, under its lock in that folder.
+    mkdirSync(path.join(claudeFolder, '.storage-write.lock'));
+    fake.items.set(DEFAULT_LOGIN, 'login-2');
+    rmdirSync(path.join(claudeFolder, '.storage-write.lock'));
+    await watch.look();
+    expect(off()).toBe(2);
+    expect(readKeychainItem(DEFAULT_LOGIN)).toBe('login-2');
+    expect(blocking()).toBe(0);
+  });
+
+  it("marks ~/.claude when ccx writes it, and reads it afresh under this process's hold on its lock", async () => {
+    fake.items.set(DEFAULT_LOGIN, 'login-1');
+    watch = watchKeychain();
+    await watch.watch([DEFAULT_LOGIN]);
+    const was = statSync(claudeFolder).mtimeMs;
+    writeKeychainItem(DEFAULT_LOGIN, 'login-2');
+    expect(statSync(claudeFolder).mtimeMs).toBeGreaterThan(was);
+    expect(readKeychainItem(DEFAULT_LOGIN)).toBe('login-2');
+    fake.items.set(DEFAULT_LOGIN, 'login-3');
+    const lock = acquireLockDir(path.join(claudeFolder, CREDENTIALS_LOCK_DIR), { waitMs: 0 });
+    try {
+      expect(lock.held).toBe(true);
+      expect(readKeychainItem(DEFAULT_LOGIN)).toBe('login-3');
+    } finally {
+      lock.release();
+    }
   });
 });

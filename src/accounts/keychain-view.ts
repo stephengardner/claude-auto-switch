@@ -1,6 +1,7 @@
 import { existsSync, statSync, utimesSync } from 'node:fs';
 import path from 'node:path';
 import { CREDENTIALS_LOCK_DIR, lockDirHeldHere } from '../claude/locks.js';
+import { DEFAULT_LOGIN, defaultLoginFolder } from './default-login-item.js';
 import {
   deleteKeychainCredential,
   deleteKeychainCredentialAsync,
@@ -80,7 +81,11 @@ interface Item {
   reading: Promise<void> | null;
 }
 
-function lookAtFolder(dir: string): FolderLook {
+/** The folder whose changes speak for an item: its own, or ~/.claude for Claude's default login (default-login-item.ts DEFAULT_LOGIN). */
+const folderOf = (item: string): string => (item === DEFAULT_LOGIN ? defaultLoginFolder() : item);
+
+function lookAtFolder(item: string): FolderLook {
+  const dir = folderOf(item);
   let changedAt: number | null;
   try {
     changedAt = statSync(dir).mtimeMs;
@@ -95,10 +100,10 @@ function lookAtFolder(dir: string): FolderLook {
 }
 
 /** Change a folder's time, so a session looking at it reads its item again. Never throws. */
-function markFolder(dir: string): void {
+function markFolder(item: string): void {
   try {
     const now = new Date();
-    utimesSync(dir, now, now);
+    utimesSync(folderOf(item), now, now);
   } catch {
     /* no folder there: nothing can be watching it */
   }
@@ -116,7 +121,7 @@ interface Landed {
 
 /** This process's hold on `dir`'s login lock now, if it has one. */
 const holdOn = (dir: string): { hold: symbol; synchronous: boolean } | null =>
-  lockDirHeldHere(path.join(dir, CREDENTIALS_LOCK_DIR));
+  lockDirHeldHere(path.join(folderOf(dir), CREDENTIALS_LOCK_DIR));
 
 export interface KeychainWatch {
   /** Read each of these folders' items off the thread, and keep it in step from then on; `pinned` ones are never let go. */

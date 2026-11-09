@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DEFAULT_LOGIN } from './default-login-item.js';
 import {
   deleteKeychainCredentialAsync,
   execFileAsync,
@@ -34,6 +36,20 @@ describe('macOS profile Keychain', () => {
       keychainService(path.resolve('cafe\u0301')),
     );
     expect(keychainService('/profiles/one')).not.toBe(keychainService('/profiles/two'));
+  });
+
+  it("names Claude's own default login without a hash, and a test can point it at a throwaway item", () => {
+    const before = process.env.CCX_DEFAULT_LOGIN_SERVICE;
+    try {
+      delete process.env.CCX_DEFAULT_LOGIN_SERVICE;
+      expect(keychainService(DEFAULT_LOGIN)).toBe('Claude Code-credentials');
+      process.env.CCX_DEFAULT_LOGIN_SERVICE = 'ccx-test-throwaway';
+      expect(keychainService(DEFAULT_LOGIN)).toBe('ccx-test-throwaway');
+      expect(keychainService('/profiles/one')).toMatch(/^Claude Code-credentials-[0-9a-f]{8}$/);
+    } finally {
+      if (before === undefined) delete process.env.CCX_DEFAULT_LOGIN_SERVICE;
+      else process.env.CCX_DEFAULT_LOGIN_SERVICE = before;
+    }
   });
 
   it('does not access Keychain on Linux or Windows', () => {
@@ -416,5 +432,58 @@ describe('the program `security` is run as, off the thread', () => {
       clearInterval(tick);
     }
     expect(ticks).toBeGreaterThan(3);
+  });
+});
+
+describe("Linux: Claude's default login is ~/.claude/.credentials.json", () => {
+  const linux = { platform: 'linux' as const };
+  const inHome = async (run: (file: string) => Promise<void> | void): Promise<void> => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'ccx-linux-default-'));
+    const before = process.env.CCX_DEFAULT_CLAUDE_HOME;
+    process.env.CCX_DEFAULT_CLAUDE_HOME = home;
+    try {
+      await run(path.join(home, '.claude', '.credentials.json'));
+    } finally {
+      if (before === undefined) delete process.env.CCX_DEFAULT_CLAUDE_HOME;
+      else process.env.CCX_DEFAULT_CLAUDE_HOME = before;
+      rmSync(home, { recursive: true, force: true });
+    }
+  };
+
+  it('reads it and writes it whole, owner-only, and never touches a profile login', () =>
+    inHome((file) => {
+      expect(readKeychainCredential(DEFAULT_LOGIN, linux)).toBeNull();
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify({ claudeAiOauth: { accessToken: 'a' }, mcpOAuth: { slack: {} } }));
+      expect(JSON.parse(readKeychainCredential(DEFAULT_LOGIN, linux)!).mcpOAuth).toEqual({ slack: {} });
+      writeKeychainCredential(DEFAULT_LOGIN, JSON.stringify({ claudeAiOauth: { accessToken: 'b' } }), linux);
+      expect(JSON.parse(readFileSync(file, 'utf8')).claudeAiOauth.accessToken).toBe('b');
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(readKeychainCredential('/profile', linux)).toBeNull();
+      expect(() => writeKeychainCredential('/profile', '{}', linux)).toThrow('unavailable');
+      // Removing it is never ccx's to do.
+      deleteKeychainCredential(DEFAULT_LOGIN, linux);
+      expect(readFileSync(file, 'utf8')).toContain('"b"');
+    }));
+
+  it('reads and writes it the same way off the thread', () =>
+    inHome(async (file) => {
+      expect(await readKeychainCredentialAsync(DEFAULT_LOGIN, linux)).toBeNull();
+      await writeKeychainCredentialAsync(DEFAULT_LOGIN, JSON.stringify({ claudeAiOauth: { accessToken: 'c' } }), linux);
+      expect(JSON.parse((await readKeychainCredentialAsync(DEFAULT_LOGIN, linux))!).claudeAiOauth.accessToken).toBe('c');
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      await deleteKeychainCredentialAsync(DEFAULT_LOGIN, linux);
+      expect(readFileSync(file, 'utf8')).toContain('"c"');
+    }));
+
+  it('runs no `security` for it on Linux, and on macOS reads the item named without a hash', () => {
+    const { mock, options } = runner(() => '{"claudeAiOauth":{}}');
+    expect(readKeychainCredential(DEFAULT_LOGIN, options)).toBe('{"claudeAiOauth":{}}');
+    expect(mock.mock.calls[0]?.[1]).toEqual(['find-generic-password', '-a', 'tester', '-w', '-s', keychainService(DEFAULT_LOGIN)]);
+    mock.mockClear();
+    return inHome(() => {
+      readKeychainCredential(DEFAULT_LOGIN, { ...options, platform: 'linux' });
+      expect(mock).not.toHaveBeenCalled();
+    });
   });
 });

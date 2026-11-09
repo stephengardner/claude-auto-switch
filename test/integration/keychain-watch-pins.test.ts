@@ -7,6 +7,7 @@ import { runCommand } from '../../src/commands/run.js';
 import { setActive } from '../../src/state/active.js';
 import { loadConfig } from '../../src/config/config.js';
 import type { CliContext } from '../../src/context.js';
+import { DEFAULT_LOGIN } from '../../src/accounts/default-login-item.js';
 import { FAKE_ENV, PTY_AVAILABLE, fakeClaude, freshUsage, launches, readLog } from './typeable-claude.js';
 
 /**
@@ -107,6 +108,46 @@ describe.skipIf(!PTY_AVAILABLE && !process.env.CI)('the logins a running session
       expect(of.length, name).toBeGreaterThan(0);
       expect(of.every((w) => w.pinned), name).toBe(true);
     }
+    // Claude's own default login only with chat mode on.
+    expect(watched.some((w) => w.dir === DEFAULT_LOGIN)).toBe(false);
     expect(existsSync(runsLog) && readFileSync(runsLog, 'utf8').length > 0).toBe(true);
+  });
+
+  it("keeps Claude's own default login in step too while chat mode is on", { timeout: 60_000 }, async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cas-keychain-pins-chat-'));
+    const ctx = { env: { CLAUDE_AUTO_SWITCH_HOME: home, HOME: home, USERPROFILE: home } };
+    const context: CliContext = {
+      ctx,
+      config: loadConfig(ctx),
+      claude: { bin: process.execPath, prefixArgs: [fakeClaude] },
+      verifyCap: () => Promise.resolve('allowed'),
+      out: () => {},
+      err: () => {},
+      json: false,
+      quiet: false,
+    };
+    const dir = path.join(home, 'profiles', 'A');
+    await addCommand(context, 'A', { dir, login: false });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({ account: 'A' }), 'utf8');
+    freshUsage(home, ['A']);
+    setActive('A', ctx);
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    writeFileSync(path.join(home, 'default-login.on'), '');
+    const runsLog = path.join(home, 'runs.jsonl');
+    const exitClaude = path.join(home, 'claude-exit');
+    Object.assign(process.env, { FAKE_CLAUDE_RUNS_LOG: runsLog, FAKE_CLAUDE_IDLE_MS: '30000', FAKE_CLAUDE_EXIT_WHEN: exitClaude });
+    process.env.CCX_DEFAULT_CLAUDE_HOME = home;
+    try {
+      const running = runCommand(context, []);
+      await until(() => launches(readLog(runsLog)).length > 0, 30_000);
+      writeFileSync(exitClaude, '');
+      expect(await running).toBe(0);
+    } finally {
+      delete process.env.CCX_DEFAULT_CLAUDE_HOME;
+    }
+    const of = watched.filter((w) => w.dir === DEFAULT_LOGIN);
+    expect(of.length).toBeGreaterThan(0);
+    expect(of.every((w) => w.pinned)).toBe(true);
   });
 });
