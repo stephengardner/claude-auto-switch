@@ -41,16 +41,33 @@ describe('toSnapshot', () => {
     expect(s.accounts.find((x) => x.name === 'a')!.cappedUntil).toBeUndefined();
   });
 
-  it('prefers live email/plan over the cached registry values', () => {
+  it('prefers the live plan over the cached registry value', () => {
+    const s = toSnapshot(input({ livePlan: new Map([['a', 'team']]) }));
+    expect(s.accounts.find((x) => x.name === 'a')!.plan).toBe('team');
+  });
+
+  it('carries an unchecked claim only on the account it is given for', () => {
     const s = toSnapshot(
       input({
-        liveEmail: new Map([['a', 'live@x']]),
-        livePlan: new Map([['a', 'team']]),
+        accounts: [
+          { name: 'a', enabled: true, priority: 0, email: 'a@x' },
+          { name: 'b', enabled: true, priority: 1, claimedEmail: 'b@x' },
+        ],
       }),
     );
-    const a = s.accounts.find((x) => x.name === 'a')!;
-    expect(a.email).toBe('live@x');
-    expect(a.plan).toBe('team');
+    expect(s.accounts.map((x) => [x.name, x.email, x.claimedEmail])).toEqual([
+      ['a', 'a@x', undefined],
+      ['b', undefined, 'b@x'],
+    ]);
+    expect('claimedEmail' in s.accounts[0]!).toBe(false);
+  });
+
+  it('carries the address it is given, decided before it (accounts/account-email)', () => {
+    const s = toSnapshot(input());
+    expect(s.accounts.map((x) => [x.name, x.email])).toEqual([
+      ['a', 'a@x'],
+      ['b', 'b@x'],
+    ]);
   });
 
   it('carries the next move in both wordings, and neither when there is none', () => {

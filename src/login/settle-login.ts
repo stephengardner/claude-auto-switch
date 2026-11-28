@@ -102,7 +102,7 @@ function refuseOtherAccount(
   owner: string,
 ): SettleResult {
   const restored = restoreOrClear(account.dir);
-  context.out(`  REFUSED: "${account.name}" is registered as ${registered}, but this sign-in is ${owner}.`);
+  context.out(`  REFUSED: "${account.name}" is recorded as ${registered}, but this sign-in is ${owner}.`);
   context.out(`  The browser that approved it is signed in to ${owner}.`);
   context.out(
     `  Switch it to ${registered} (or use a separate browser profile), then: ccx login ${account.name}`,

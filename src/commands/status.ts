@@ -1,5 +1,6 @@
 import { listAccounts } from '../accounts/registry.js';
 import { probeAll } from '../health/prober.js';
+import { accountEmail } from '../accounts/account-email.js';
 import { getClaude, type CliContext } from '../context.js';
 
 /** Print detailed health JSON for one account, or all of them. */
@@ -12,9 +13,18 @@ export async function statusCommand(context: CliContext, name?: string): Promise
   }
 
   const healths = await probeAll(targets, { claude: getClaude(context) });
+  // Each account named as `ccx state` names it (accounts/account-email): what
+  // its check reports, else what is recorded for it. A blank reported address
+  // with nothing recorded is none, so the field is left out rather than kept.
+  const named = healths.map((h) => {
+    const { email: reported, ...rest } = h;
+    const email = accountEmail(targets.find((a) => a.name === h.name) ?? {}, reported);
+    if (email === reported) return h;
+    return email === undefined ? rest : { ...rest, email };
+  });
   // Wrapped rather than bare, so every machine-readable output on this CLI has
   // the same envelope. Two of five carrying a schemaVersion was a trap for
   // whoever wrote against the other three.
-  context.out(JSON.stringify({ schemaVersion: 1, accounts: healths }, null, 2));
+  context.out(JSON.stringify({ schemaVersion: 1, accounts: named }, null, 2));
   return 0;
 }

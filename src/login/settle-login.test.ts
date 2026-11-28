@@ -217,7 +217,7 @@ describe('settleNewLogin', () => {
     });
 
     expect(r.ok).toBe(false);
-    expect(lines.join('\n')).toContain('registered as two@example.com');
+    expect(lines.join('\n')).toContain('"second" is recorded as two@example.com');
   });
 
   it('never prints a token', async () => {

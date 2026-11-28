@@ -6,7 +6,10 @@
 
 export interface DashboardAccount {
   name: string;
+  /** Its address: reported by its login check, else recorded (accounts/account-email). */
   email?: string;
+  /** What its profile claims, unchecked, when nothing reports or records one (accounts/account-email). */
+  claimedEmail?: string;
   plan?: string;
   loggedIn: boolean;
   /**

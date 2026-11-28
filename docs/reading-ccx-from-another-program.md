@@ -79,6 +79,28 @@ a window reading 100% while rotation refused to use that same account.
 - `blockedBy` is everything blocking it, when you want to explain the wait
   rather than just state it.
 
+### Email
+
+`email` is the address `claude auth status` reports in the account's folder
+while it is signed in, else the one recorded for it (given to
+`ccx add --email`, or the owner the API confirmed at a sign-in through ccx).
+The reported one is the identity the folder's config records, which is not
+proof of whose its stored login is; `ccx doctor` asks the API that, and
+reports a profile whose login belongs to someone else. Only the recorded
+address is checked at a sign-in: `ccx login` refuses a sign-in that comes back
+as a different one.
+
+`claimedEmail` is UNCHECKED. It is what the profile's own `.claude.json` says
+it is signed in as, and nothing has verified it: `ccx login` does not check a
+sign-in against it, so it is never proof of which account will approve one.
+Show it as unconfirmed, never as the account. It is present only when there is
+no `email`, and left out when any account reports or is recorded as the same
+address, or another account without an `email` claims it too (compared without
+case), since a refused sign-in leaves the profile claiming the address it was
+refused for. With neither, nothing is known.
+
+Reading `ccx state` never writes the account record.
+
 ### Tags
 
 Every account carries `tags`, a list of the labels given it with `ccx tag`
