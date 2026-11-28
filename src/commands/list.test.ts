@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { listCommand } from './list.js';
-import { updateAccount } from '../accounts/registry.js';
+import { listCommand, type ListCommandDeps } from './list.js';
+import { listAccounts, registryFilePath, updateAccount } from '../accounts/registry.js';
 import { refreshCredentialIfExpired } from '../usage/oauth-refresh.js';
 import { loadConfig } from '../config/config.js';
 import type { CliContext } from '../context.js';
@@ -145,5 +145,52 @@ describe('ccx list and tags', () => {
     const table = lines.join('\n');
     expect(table).toMatch(/TAGS/);
     expect(table.split('\n').find((l) => l.includes('lent'))).toContain('#pat');
+  });
+});
+
+describe('ccx list and the address of each account', () => {
+  /** A probe reporting each account signed in as the address given it, or signed out. */
+  const probeSays =
+    (live: Record<string, string>): NonNullable<ListCommandDeps['probe']> =>
+    (accts) =>
+      Promise.resolve(
+        accts.map((a) => {
+          const email = live[a.name];
+          return email === undefined
+            ? { name: a.name, checkedAt: 0, loggedIn: false }
+            : { name: a.name, checkedAt: 0, loggedIn: true, email };
+        }),
+      );
+
+  const emails = (lines: string[]) => {
+    const payload = JSON.parse(lines.join('\n')) as {
+      accounts: Array<{ name: string; email: string }>;
+    };
+    return new Map(payload.accounts.map((r) => [r.name, r.email]));
+  };
+
+  it('names a signed-out account by its record, and one with only a claim by nothing', async () => {
+    const { ctx, accounts, context, lines } = setup(['kept', 'claimed', 'unknown']);
+    updateAccount('kept', { email: 'kept@example.com' }, ctx);
+    writeFileSync(
+      path.join(accounts[1]!.dir, '.claude.json'),
+      JSON.stringify({ oauthAccount: { emailAddress: 'claimed@example.com' } }),
+      'utf8',
+    );
+    await listCommand(context, { probe: probeSays({}) });
+    expect([...emails(lines)]).toEqual([
+      ['kept', 'kept@example.com'],
+      ['claimed', ''],
+      ['unknown', ''],
+    ]);
+  });
+
+  it('writes nothing when a check reports an address nothing records', async () => {
+    const { ctx, context, lines } = setup(['work']);
+    const before = readFileSync(registryFilePath(ctx), 'utf8');
+    await listCommand(context, { probe: probeSays({ work: 'work@example.com' }) });
+    expect(emails(lines).get('work')).toBe('work@example.com');
+    expect(readFileSync(registryFilePath(ctx), 'utf8')).toBe(before);
+    expect(listAccounts(ctx)[0]?.email).toBeUndefined();
   });
 });

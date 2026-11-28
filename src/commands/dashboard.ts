@@ -1,4 +1,5 @@
 import { listAccounts, updateAccount } from '../accounts/registry.js';
+import { accountAddresses } from '../accounts/account-email.js';
 import { getActive, setActive } from '../state/active.js';
 import { requestMoves, type SwitchMode } from '../state/switch-request.js';
 import { forgetUsage, refreshUsage, readUsageSnapshot, type UsageSnapshot } from '../usage/usage-store.js';
@@ -285,6 +286,8 @@ export async function dashboardCommand(
     const onHold = new Set(accts.filter((a) => !loggedIn.has(a.name) && loginOnHold(a.dir, context.ctx)).map((a) => a.name));
     const liveEmail = new Map(healths.filter((h) => h.email).map((h) => [h.name, h.email!]));
     const livePlan = new Map(healths.filter((h) => h.plan).map((h) => [h.name, h.plan!]));
+    // Reported or recorded, else the profile's unchecked claim (accounts/account-email).
+    const addresses = accountAddresses(accts, liveEmail);
     const now = Date.now();
     const cappedUntil = new Map<string, number>();
     for (const c of loadLedger(context.ctx).caps) {
@@ -309,7 +312,7 @@ export async function dashboardCommand(
     return toSnapshot({
       accounts: accts.map((a) => ({
         name: a.name,
-        ...(a.email !== undefined ? { email: a.email } : {}),
+        ...addresses.get(a.name),
         ...(a.plan !== undefined ? { plan: a.plan } : {}),
         enabled: a.enabled,
         priority: a.priority,
@@ -317,7 +320,6 @@ export async function dashboardCommand(
       })),
       loggedIn,
       onHold,
-      liveEmail,
       livePlan,
       cappedUntil,
       usage,

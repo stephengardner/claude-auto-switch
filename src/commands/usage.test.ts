@@ -6,6 +6,7 @@ import { usageCommand } from './usage.js';
 import { rememberDeadLogin } from '../usage/dead-login-store.js';
 import { credentialFileFingerprint } from '../accounts/credential-vault.js';
 import { loadConfig } from '../config/config.js';
+import { updateAccount } from '../accounts/registry.js';
 import type { CliContext } from '../context.js';
 
 /**
@@ -110,5 +111,19 @@ describe('ccx usage and an account with no 5-hour limit', () => {
     const out = lines.join('\n');
     expect(out).toContain('5-hour   no limit (a verified account)');
     expect(out).not.toContain('?');
+  });
+});
+
+describe('ccx usage and the address of each account', () => {
+  it('names an account by its record, and a blank record by nothing', async () => {
+    const { context, lines } = setup();
+    updateAccount('work', { email: 'kept@example.com' }, context.ctx);
+    expect(await usageCommand(context)).toBe(0);
+    expect(lines.join('\n')).toContain('work  ·  kept@example.com  ACTIVE');
+
+    lines.length = 0;
+    updateAccount('work', { email: '  ' }, context.ctx);
+    expect(await usageCommand(context)).toBe(0);
+    expect(lines.join('\n')).toMatch(/^work {2}ACTIVE$/m);
   });
 });

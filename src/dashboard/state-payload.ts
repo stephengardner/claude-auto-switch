@@ -24,7 +24,22 @@ export const STATE_SCHEMA_VERSION = 1;
 
 export interface StateAccount {
   name: string;
+  /**
+   * Its address: what `claude auth status` reports in its folder while it is
+   * signed in (the identity its config records, not proof of whose its stored
+   * login is), else what is recorded for it (`ccx add --email`, or the owner
+   * the API confirmed at a sign-in through ccx). Only the recorded address is
+   * checked at a sign-in.
+   */
   email?: string;
+  /**
+   * UNCHECKED: what the profile's own `.claude.json` says it is signed in as.
+   * Only when there is no `email`, no other account without one claims the
+   * same address, and no account reports or is recorded as it. `ccx login`
+   * does not check a sign-in against it, so it is never proof of which account
+   * will approve one.
+   */
+  claimedEmail?: string;
   plan?: string;
   loggedIn: boolean;
   enabled: boolean;
@@ -78,6 +93,7 @@ export function toStatePayload(snapshot: DashboardSnapshot): StatePayload {
       return {
         name: a.name,
         ...(a.email !== undefined ? { email: a.email } : {}),
+        ...(a.claimedEmail !== undefined ? { claimedEmail: a.claimedEmail } : {}),
         ...(a.plan !== undefined ? { plan: a.plan } : {}),
         loggedIn: a.loggedIn,
         enabled: a.enabled,

@@ -8,7 +8,13 @@ import type { DashboardAccount, DashboardSession, DashboardSettings, DashboardSn
 export interface SnapshotInput {
   accounts: Array<{
     name: string;
+    /**
+     * Its address, already decided (accounts/account-email): what its login
+     * check reports, else what is recorded for it.
+     */
     email?: string;
+    /** What its profile claims, unchecked, when nothing reports or records one (accounts/account-email). */
+    claimedEmail?: string;
     plan?: string;
     enabled: boolean;
     priority: number;
@@ -18,8 +24,7 @@ export interface SnapshotInput {
   loggedIn: Set<string>;
   /** Names whose login was refused because Anthropic put the account on hold. */
   onHold?: Set<string>;
-  /** Live email/plan from the health probe, overriding the cached registry values. */
-  liveEmail?: Map<string, string>;
+  /** Live plan from the health probe, overriding the cached registry value. */
   livePlan?: Map<string, string>;
   /** Account name -> epoch ms it is capped until. */
   cappedUntil: Map<string, number>;
@@ -66,7 +71,8 @@ export function toSnapshot(input: SnapshotInput): DashboardSnapshot {
       const pick = input.picks?.get(a.name);
       return {
         name: a.name,
-        email: input.liveEmail?.get(a.name) ?? a.email,
+        email: a.email,
+        ...(a.claimedEmail !== undefined ? { claimedEmail: a.claimedEmail } : {}),
         plan: input.livePlan?.get(a.name) ?? a.plan,
         loggedIn: input.loggedIn.has(a.name),
         ...(input.onHold?.has(a.name) ? { onHold: true } : {}),

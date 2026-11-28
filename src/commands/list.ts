@@ -1,4 +1,5 @@
 import { listAccounts } from '../accounts/registry.js';
+import { accountEmail } from '../accounts/account-email.js';
 import { getActive } from '../state/active.js';
 import { probeAll } from '../health/prober.js';
 import { loadLedger } from '../ledger/ledger.js';
@@ -67,7 +68,7 @@ export async function listCommand(
     return {
       active: a.name === active ? '*' : '',
       name: a.name,
-      email: h?.email ?? '',
+      email: accountEmail(a, h?.email) ?? '',
       plan: h?.plan ?? a.plan ?? '',
       loggedIn: usable.has(a.name) ? 'yes' : 'no',
       cappedUntil: cap ? (cap.capUntil ? new Date(cap.capUntil).toLocaleTimeString() : 'indefinite') : '',

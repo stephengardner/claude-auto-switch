@@ -244,6 +244,23 @@ describe('the state another program reads', () => {
   });
 });
 
+describe('the address in the state', () => {
+  it('publishes an unchecked claim apart from `email`, beside it in order, and only where there is one', () => {
+    const payload = toStatePayload(
+      snapshot([
+        account({ name: 'out', loggedIn: false, claimedEmail: 'claimed@x' }),
+        account({ name: 'in', email: 'live@x' }),
+      ]),
+    );
+    const [out, signedIn] = payload.accounts;
+    expect(out).not.toHaveProperty('email');
+    expect(out?.claimedEmail).toBe('claimed@x');
+    expect(Object.keys(out ?? {}).slice(0, 3)).toEqual(['name', 'claimedEmail', 'loggedIn']);
+    expect(signedIn?.email).toBe('live@x');
+    expect(signedIn).not.toHaveProperty('claimedEmail');
+  });
+});
+
 describe('tags in the state', () => {
   it('gives every account its tags, an empty list for one without', () => {
     const payload = toStatePayload(snapshot([account({ name: 'lent', tags: ['pat'] }), account({ name: 'plain' })]));

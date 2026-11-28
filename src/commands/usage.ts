@@ -1,4 +1,5 @@
 import { listAccounts } from '../accounts/registry.js';
+import { accountEmail } from '../accounts/account-email.js';
 import { getActive } from '../state/active.js';
 import { refreshUsage } from '../usage/usage-store.js';
 import { renderUsageReport, type UsageAccount } from '../usage/report.js';
@@ -44,7 +45,7 @@ export async function usageCommand(context: CliContext): Promise<number> {
       u && (u.fiveHour !== null || u.sevenDay !== null || (u.models ?? []).length > 0);
     return {
       name: a.name,
-      email: a.email,
+      email: accountEmail(a),
       plan: a.plan,
       active: a.name === active,
       // Room means nothing on a login the endpoint has already rejected.

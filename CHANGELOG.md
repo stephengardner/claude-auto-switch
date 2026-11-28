@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [2.6.33]
+
+### Added
+
+- **`ccx state` says who a signed-out account claims to be, as a claim.** A
+  signed-out account with no address recorded (added without `--email`, and
+  never signed in through a ccx that confirmed its owner) had no `email`, even
+  when its profile said who it was. It now carries `claimedEmail`: what the
+  profile's own `.claude.json` says it is signed in as. It is unchecked, and
+  `ccx login` does not check a sign-in against it, so it is never proof of
+  which account will approve one. It is given only when there is no `email`,
+  and left out when any account reports or is recorded as that address, or
+  another account without an `email` claims it too, since a refused sign-in
+  leaves the profile claiming the address it was refused for. `email` keeps
+  its meaning: the address `claude auth status` reports, else the one
+  recorded for it. Reading never writes the record.
+
+### Fixed
+
+- **`ccx list` and `ccx status` name an account as `ccx state` does.** They gave
+  only the address `claude auth status` reported, so a signed-out account had
+  none even when one was recorded for it. They now give the reported address,
+  else the recorded one, so `ccx list --json` and `ccx status --json` give a
+  signed-out account its recorded `email` (an addition; no schema bump).
+- **A sign-in refused for being another account says "recorded as".** The
+  address it names is the one ccx recorded, from `ccx add --email` or from an
+  earlier sign-in whose owner the API confirmed; "registered as" said the
+  first even when it was the second.
+
 ## [2.6.32]
 
 ### Added
